@@ -12,8 +12,10 @@ import {
   Send,
   ShieldAlert,
   Sparkles,
+  Trash2,
   Volume2,
   Wrench,
+  X,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router';
 import { healthOf, useAgents } from '@/app/useAgents';
@@ -47,6 +49,7 @@ interface CinemaBridgeApi {
   cinemaResumeProduction?: (projectId: string) => Promise<StagedJobView>;
   cinemaResolvePendingMedia?: (input: Record<string, unknown>) => Promise<StagedJobView>;
   cinemaListStagedJobs?: () => Promise<StagedJobView[]>;
+  cinemaDeleteProject?: (projectId: string) => Promise<{ deleted: boolean; projectId: string }>;
   cinemaEvolutionSnapshot?: (input?: { refresh?: boolean }) => Promise<{
     directors?: Array<{ directorId: string; displayName: string }>;
   }>;
@@ -240,6 +243,33 @@ export function CinemaDirectorPanel() {
   const [renderProfile, setRenderProfile] = useState<'draft_540p' | 'review_720p' | 'master_1080p'>('review_720p');
   const [revisionNote, setRevisionNote] = useState('');
   const [planApproved, setPlanApproved] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<StagedJobView | null>(null);
+  const [deletingProject, setDeletingProject] = useState(false);
+
+  async function handleConfirmDeleteJob() {
+    if (!deleteTarget) return;
+    const api = bridge();
+    if (!api?.cinemaDeleteProject) return;
+    setDeletingProject(true);
+    try {
+      await api.cinemaDeleteProject(deleteTarget.projectId);
+      setStagedJobs((prev) => prev.filter((j) => j.projectId !== deleteTarget.projectId));
+      notify({
+        title: 'Projeto excluído',
+        message: `O projeto "${deleteTarget.prompt || deleteTarget.projectId}" foi removido.`,
+        type: 'success',
+      });
+      setDeleteTarget(null);
+    } catch (err) {
+      notify({
+        title: 'Erro ao excluir projeto',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
+    } finally {
+      setDeletingProject(false);
+    }
+  }
 
   function parsePromptDurationSec(text: string): number | null {
     const minMatch = text.match(/(\d+(?:[.,]\d+)?)\s*(?:minuto|minutos|min)\b/i);
@@ -857,16 +887,27 @@ export function CinemaDirectorPanel() {
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-mono text-[10px] text-muted-foreground">{job.projectId}</span>
-                      <button
-                        type="button"
-                        disabled={!ready}
-                        title={ready ? 'Abrir produção concluída no Editor' : 'Aguarde todas as etapas serem concluídas para abrir no Editor'}
-                        onClick={() => navigate(`/video?projectId=${encodeURIComponent(job.projectId)}`)}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-primary/25 px-3 py-1.5 text-[11px] font-semibold text-purple-100 hover:bg-primary/40 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        <Film className="size-3.5" />
-                        {ready ? 'Editor' : 'Aguardando etapas'}
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(job)}
+                          title="Excluir projeto"
+                          aria-label={`Excluir projeto ${job.prompt || job.projectId}`}
+                          className="inline-flex items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-300 hover:border-rose-400 hover:bg-rose-500/20"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!ready}
+                          title={ready ? 'Abrir produção concluída no Editor' : 'Aguarde todas as etapas serem concluídas para abrir no Editor'}
+                          onClick={() => navigate(`/video?projectId=${encodeURIComponent(job.projectId)}`)}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-primary/25 px-3 py-1.5 text-[11px] font-semibold text-purple-100 hover:bg-primary/40 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <Film className="size-3.5" />
+                          {ready ? 'Editor' : 'Aguardando etapas'}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </article>
@@ -1095,6 +1136,53 @@ export function CinemaDirectorPanel() {
               </pre>
             )}
           </section>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirmar exclusão de projeto"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-border bg-[#0d0d17] p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">Excluir Projeto com IA</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Tem certeza que deseja excluir <span className="font-semibold text-foreground">"{deleteTarget.prompt || deleteTarget.projectId}"</span>? Essa ação removerá o projeto e seu histórico de produção.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-lg border border-border p-1 text-muted-foreground hover:text-foreground"
+                aria-label="Fechar"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="mt-5 flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                disabled={deletingProject}
+                className="rounded-lg border border-border px-3 py-1.5 text-muted-foreground hover:text-foreground"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmDeleteJob()}
+                disabled={deletingProject}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3.5 py-1.5 font-semibold text-white hover:bg-rose-500 disabled:opacity-50"
+              >
+                <Trash2 className="size-3.5" />
+                {deletingProject ? 'Excluindo...' : 'Confirmar Exclusão'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

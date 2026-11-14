@@ -1091,6 +1091,7 @@ export const ipcContract = {
   [IpcChannel.contentProjectsList]: { input: z.strictObject({ workspaceId: z.string().min(1).max(200) }), output: z.array(contentProjectSchema) },
   [IpcChannel.contentQueueList]: { input: z.strictObject({ workspaceId: z.string().min(1).max(200) }), output: z.array(contentQueueItemSchema) },
   [IpcChannel.contentProjectCreate]: { input: z.strictObject({ id: z.string().min(1).max(200), workspaceId: z.string().min(1).max(200), channelId: z.string().min(1).max(200).nullable(), videoProjectId: z.string().min(1).max(200).nullable(), title: z.string().trim().min(1).max(300), autonomy: z.enum(autonomyModes) }), output: contentProjectSchema },
+  [IpcChannel.contentProjectDelete]: { input: z.strictObject({ projectId: z.string().min(1).max(200) }), output: z.strictObject({ deleted: z.boolean() }) },
   [IpcChannel.contentProjectBriefSave]: { input: z.strictObject({ projectId: z.string().min(1).max(200), brief: contentBriefSchema }), output: contentProjectSchema },
   [IpcChannel.contentProjectScriptSave]: { input: z.strictObject({ projectId: z.string().min(1).max(200), script: contentScriptSchema }), output: contentProjectSchema },
   [IpcChannel.contentProjectScriptGenerate]: { input: z.strictObject({ projectId: z.string().min(1).max(200), agent: z.enum(['claude', 'codex']).optional() }), output: contentProjectSchema },

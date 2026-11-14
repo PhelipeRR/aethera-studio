@@ -54,6 +54,22 @@ export class ContentOperatingSystemRepository {
     return contentProjectSchema.parse({ ...input, brief: null, script: null, status: 'active', createdAt: timestamp, updatedAt: timestamp });
   }
 
+  deleteProject(projectId: string): { deleted: boolean } {
+    const existing = this.project(projectId);
+    if (!existing) return { deleted: false };
+    const packages = this.db.select({ id: contentPublicationPackages.id }).from(contentPublicationPackages).where(eq(contentPublicationPackages.projectId, projectId)).all();
+    const packageIds = packages.map((p) => p.id);
+    if (packageIds.length > 0) {
+      this.db.delete(contentPublicationApprovals).where(inArray(contentPublicationApprovals.packageId, packageIds)).run();
+    }
+    this.db.delete(contentAnalyticsSnapshots).where(eq(contentAnalyticsSnapshots.projectId, projectId)).run();
+    this.db.delete(contentPublications).where(eq(contentPublications.projectId, projectId)).run();
+    this.db.delete(contentPublicationPackages).where(eq(contentPublicationPackages.projectId, projectId)).run();
+    this.db.delete(contentExecutions).where(eq(contentExecutions.projectId, projectId)).run();
+    this.db.delete(contentProjects).where(eq(contentProjects.id, projectId)).run();
+    return { deleted: true };
+  }
+
   saveBrief(projectId: string, brief: ContentBrief): ContentProject {
     const parsed = contentBriefSchema.parse(brief);
     const updatedAt = now();

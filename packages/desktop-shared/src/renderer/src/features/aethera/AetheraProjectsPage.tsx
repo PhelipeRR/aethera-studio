@@ -8,9 +8,12 @@ import {
   Plus,
   Search,
   SlidersHorizontal,
+  Trash2,
+  X,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
+import { notify } from '@/components/NotificationsOverlay';
 
 type StageFilter = 'all' | 'draft' | 'active' | 'paused' | 'completed' | 'archived';
 
@@ -29,6 +32,7 @@ export function AetheraProjectsPage() {
   const [filter, setFilter] = useState<StageFilter>('all');
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
 
   const projects = useQuery({
     queryKey: ['aethera-content-projects', 'default'],
@@ -60,6 +64,27 @@ export function AetheraProjectsPage() {
     onSuccess: (created) => {
       void client.invalidateQueries({ queryKey: ['aethera-content-projects', 'default'] });
       navigate(`/aethera/projects/${created.id}`);
+    },
+  });
+
+  const deleteProject = useMutation({
+    mutationFn: (projectId: string) => window.neuralbridge.content.deleteProject(projectId),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['aethera-content-projects', 'default'] });
+      void client.invalidateQueries({ queryKey: ['aethera-content-queue', 'default'] });
+      notify({
+        title: 'Projeto excluído',
+        message: `O projeto "${deleteTarget?.title ?? ''}" foi removido.`,
+        type: 'success',
+      });
+      setDeleteTarget(null);
+    },
+    onError: (err) => {
+      notify({
+        title: 'Erro ao excluir projeto',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
     },
   });
 
@@ -245,12 +270,68 @@ export function AetheraProjectsPage() {
                       >
                         Gerenciar
                       </Link>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget({ id: project.id, title: project.title })}
+                        title="Excluir projeto"
+                        aria-label={`Excluir projeto ${project.title}`}
+                        className="inline-flex items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-rose-300 hover:border-rose-400 hover:bg-rose-500/20"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
                     </div>
                   </div>
                 </div>
               </article>
             );
           })}
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirmar exclusão de projeto"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-border bg-[#0d0d17] p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">Excluir Projeto Manual</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Tem certeza que deseja excluir <span className="font-semibold text-foreground">"{deleteTarget.title}"</span>? Essa ação não pode ser desfeita.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-lg border border-border p-1 text-muted-foreground hover:text-foreground"
+                aria-label="Fechar"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="mt-5 flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleteProject.isPending}
+                className="rounded-lg border border-border px-3 py-1.5 text-muted-foreground hover:text-foreground"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteProject.mutate(deleteTarget.id)}
+                disabled={deleteProject.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3.5 py-1.5 font-semibold text-white hover:bg-rose-500 disabled:opacity-50"
+              >
+                <Trash2 className="size-3.5" />
+                {deleteProject.isPending ? 'Excluindo...' : 'Confirmar Exclusão'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

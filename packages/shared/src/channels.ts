@@ -153,6 +153,7 @@ export const IpcChannel = {
   contentProjectsList: 'content:projects:list',
   contentQueueList: 'content:queue:list',
   contentProjectCreate: 'content:projects:create',
+  contentProjectDelete: 'content:projects:delete',
   contentProjectBriefSave: 'content:projects:brief:save',
   contentProjectScriptSave: 'content:projects:script:save',
   contentProjectScriptGenerate: 'content:projects:script:generate',
@@ -714,6 +715,7 @@ export interface NeuralBridgeApi {
     projects(workspaceId: string): Promise<ContentProject[]>;
     queue(workspaceId: string): Promise<ContentQueueItem[]>;
     createProject(input: { id: string; workspaceId: string; channelId: string | null; videoProjectId: string | null; title: string; autonomy: AutonomyMode }): Promise<ContentProject>;
+    deleteProject(projectId: string): Promise<{ deleted: boolean }>;
     dashboard(projectId: string): Promise<{ project: ContentProject; executions: ProductionExecution[]; packages: PublicationPackage[]; publications: ContentPublication[]; approvals: PublicationApproval[]; nextAction: ProjectNextAction }>;
     savePublicationPackage(input: { id: string; projectId: string; version: number; title: string; description?: string; tags: string[]; thumbnailAssetId?: string | null }): Promise<PublicationPackage>;
     saveBrief(input: { projectId: string; brief: ContentBrief }): Promise<ContentProject>;

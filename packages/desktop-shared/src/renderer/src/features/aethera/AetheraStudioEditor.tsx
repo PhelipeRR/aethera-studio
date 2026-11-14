@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   Sliders,
   Sparkles,
+  Trash2,
   Type,
   Undo2,
   Upload,
@@ -180,6 +181,7 @@ interface CinemaProjectSummary {
 interface CinemaBridge {
   cinemaProduce?: (input: Record<string, unknown>) => Promise<EditorPackageView>;
   cinemaListProjects?: () => Promise<CinemaProjectSummary[]>;
+  cinemaDeleteProject?: (projectId: string) => Promise<{ deleted: boolean; projectId: string }>;
   cinemaLoadProject?: (projectId: string) => Promise<{ pkg: EditorPackageView | null; lastRender: RealRenderResultView | null }>;
   cinemaUpdateTimeline?: (input: { projectId: string; clips: EditorClip[] }) => Promise<EditorPackageView>;
   cinemaExportOtio?: (projectId: string) => Promise<{ otioJson: string }>;
@@ -319,6 +321,8 @@ export function AetheraStudioEditor() {
   const [treatmentDraft, setTreatmentDraft] = useState('');
   const [beatsDraft, setBeatsDraft] = useState<Array<{ beatId: string; act: string; title: string; narrationText: string; durationSec: number }>>([]);
   const [savingScript, setSavingScript] = useState(false);
+  const [deleteProjectTarget, setDeleteProjectTarget] = useState<{ projectId: string; title: string } | null>(null);
+  const [deletingProject, setDeletingProject] = useState(false);
   const [layoutSizes, setLayoutSizes] = useState<{
     leftPct: number;
     rightPct: number;
@@ -1042,6 +1046,37 @@ export function AetheraStudioEditor() {
     }
   }
 
+  async function handleConfirmDeleteProject() {
+    if (!deleteProjectTarget) return;
+    const api = getBridge();
+    if (!api?.cinemaDeleteProject) {
+      setStatusMsg('Exclusão de projeto indisponível neste modo.');
+      return;
+    }
+    setDeletingProject(true);
+    try {
+      await api.cinemaDeleteProject(deleteProjectTarget.projectId);
+      const remaining = projects.filter((p) => p.projectId !== deleteProjectTarget.projectId);
+      setProjects(remaining);
+      if (pkg?.timeline.projectId === deleteProjectTarget.projectId) {
+        if (remaining[0]) {
+          await handleSelectProject(remaining[0].projectId);
+        } else {
+          setPkg(null);
+          setClips([]);
+          setSelectedClipId('');
+          setRenderedMedia(null);
+        }
+      }
+      setStatusMsg(`Projeto "${deleteProjectTarget.title}" excluído.`);
+      setDeleteProjectTarget(null);
+    } catch (err) {
+      setStatusMsg(`Erro ao excluir projeto: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setDeletingProject(false);
+    }
+  }
+
   async function handleSplitAtPlayhead(targetClipId?: string) {
     const api = getBridge();
     const target = clips.find((c) => c.clipId === (targetClipId ?? activeClipAtPlayhead?.clipId ?? selectedClipId));
@@ -1282,6 +1317,23 @@ export function AetheraStudioEditor() {
                 ))}
               </select>
             </label>
+          )}
+          {projects.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                const currentId = pkg?.timeline.projectId ?? projects[0]?.projectId;
+                const current = projects.find((p) => p.projectId === currentId) ?? projects[0];
+                if (current) {
+                  setDeleteProjectTarget({ projectId: current.projectId, title: current.title });
+                }
+              }}
+              title="Excluir projeto selecionado"
+              aria-label="Excluir projeto selecionado"
+              className="inline-flex items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-300 hover:border-rose-400 hover:bg-rose-500/20"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
           )}
           {pkg && (
             <span className="rounded-full border border-purple-500/40 bg-purple-500/15 px-2.5 py-0.5 font-mono text-[10px] text-purple-200">
@@ -2708,6 +2760,53 @@ export function AetheraStudioEditor() {
                   </button>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteProjectTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirmar exclusão de projeto"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-border bg-[#0d0d17] p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">Excluir Projeto</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Tem certeza que deseja excluir <span className="font-semibold text-foreground">"{deleteProjectTarget.title}"</span>? Essa ação removerá o projeto e não pode ser desfeita.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteProjectTarget(null)}
+                className="rounded-lg border border-border p-1 text-muted-foreground hover:text-foreground"
+                aria-label="Fechar"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="mt-5 flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setDeleteProjectTarget(null)}
+                disabled={deletingProject}
+                className="rounded-lg border border-border px-3 py-1.5 text-muted-foreground hover:text-foreground"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmDeleteProject()}
+                disabled={deletingProject}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3.5 py-1.5 font-semibold text-white hover:bg-rose-500 disabled:opacity-50"
+              >
+                <Trash2 className="size-3.5" />
+                {deletingProject ? 'Excluindo...' : 'Confirmar Exclusão'}
+              </button>
             </div>
           </div>
         </div>

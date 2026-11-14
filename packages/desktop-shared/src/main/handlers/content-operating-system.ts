@@ -21,6 +21,7 @@ export function registerContentOperatingSystemIpcHandlers(ipc: IpcMainLike, repo
     return parseIpcOutput(IpcChannel.contentQueueList, items);
   }, isTrustedSender);
   registerIpcHandler(ipc, IpcChannel.contentProjectCreate, async (input) => parseIpcOutput(IpcChannel.contentProjectCreate, repository.createProject(input)), isTrustedSender);
+  registerIpcHandler(ipc, IpcChannel.contentProjectDelete, async ({ projectId }) => parseIpcOutput(IpcChannel.contentProjectDelete, repository.deleteProject(projectId)), isTrustedSender);
   registerIpcHandler(ipc, IpcChannel.contentProjectBriefSave, async (input) => parseIpcOutput(IpcChannel.contentProjectBriefSave, repository.saveBrief(input.projectId, input.brief)), isTrustedSender);
   registerIpcHandler(ipc, IpcChannel.contentProjectScriptSave, async (input) => parseIpcOutput(IpcChannel.contentProjectScriptSave, repository.saveScript(input.projectId, input.script)), isTrustedSender);
   registerIpcHandler(ipc, IpcChannel.contentProjectScriptGenerate, async (input) => { const project = repository.project(input.projectId); if (!project) throw new Error('not_found: projeto de conteúdo não encontrado.'); if (!generateScript) throw new Error('unavailable: geração de roteiro ainda não está configurada.'); return parseIpcOutput(IpcChannel.contentProjectScriptGenerate, await generateScript(project, input.agent ?? 'claude')); }, isTrustedSender);

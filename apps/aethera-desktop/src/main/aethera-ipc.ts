@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
@@ -2254,6 +2254,31 @@ export function registerAetheraDomainIpc(options: {
   ipcMain.handle('cinema:list-staged-jobs', async (event) => {
     ensureTrusted(event.senderFrame);
     return stagedPipeline.listJobs();
+  });
+
+  ipcMain.handle('cinema:delete-project', async (event, projectId: string) => {
+    ensureTrusted(event.senderFrame);
+    try {
+      stagedPipeline.cancel(projectId);
+    } catch {
+      // ignore if job is not active
+    }
+    cinemaPackages.delete(projectId);
+    cinemaPrompts.delete(projectId);
+    cinemaRenders.delete(projectId);
+    if (latestCinemaProjectId === projectId) {
+      latestCinemaProjectId = null;
+    }
+    const safeId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const projectFile = join(cinemaProjectsDir, `${safeId}.json`);
+    if (existsSync(projectFile)) {
+      unlinkSync(projectFile);
+    }
+    const jobFile = join(app.getPath('userData'), 'cinema-jobs', `${safeId}.json`);
+    if (existsSync(jobFile)) {
+      unlinkSync(jobFile);
+    }
+    return { deleted: true, projectId };
   });
 
   ipcMain.handle(
