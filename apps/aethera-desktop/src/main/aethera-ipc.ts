@@ -1746,12 +1746,10 @@ export function registerAetheraDomainIpc(options: {
       const extractedAll = isImage
         ? [uri]
         : await extractVerificationFrames(uri, framesOutDir, timestampsSec);
-      // TaskEngine VisionProviders suportam no máximo 3 imagens por chamada
-      const extracted = extractedAll.slice(0, 3);
-      if (extracted.length === 0) return [];
+      if (extractedAll.length === 0) return [];
       const visionCache = new Map<string, unknown>();
       const frameDir = isImage ? dirname(uri) : framesOutDir;
-      const framesPayload = extracted.map((framePath, idx) => ({
+      const allFramesPayload = extractedAll.map((framePath, idx) => ({
         path: framePath,
         hash: createHash('sha256').update(readFileSync(framePath)).digest('hex'),
         atMs: Math.round((timestampsSec[idx] ?? 0) * 1000),
@@ -1810,38 +1808,100 @@ export function registerAetheraDomainIpc(options: {
         budgetUsd: 0.25,
         maxLatencyMs: 45_000,
       };
-      const analyzed = await router.analyze({
-        frames: framesPayload,
-        context: `Segmento "${segment.segmentId}": ${segment.narrationText.slice(0, 220)}`,
-        policy,
-      });
-      // Nunca inventar correspondência visual a partir de heurística FFmpeg sem visão semântica real
-      if (!analyzed.value || analyzed.provider === 'ffmpeg-heuristics') {
-        const attemptsSummary = analyzed.attempts
-          .map((a) => `${a.provider}:${a.outcome}${a.detail ? `(${a.detail.slice(-120)})` : ''}`)
-          .join('; ');
-        throw new Error(`VisionRouter sem provedor visual válido [${attemptsSummary || 'sem tentativas'}]`);
-      }
-      const segVal = analyzed.value;
-      const descLower = segVal.description.toLowerCase();
-      const natureToCat = (): VisualCategory => {
-        if (/\b(anime|animad|animac|desenho|cel[- ]shading|ilustra)/i.test(descLower)) return 'anime_animation';
-        if (segVal.nature === 'interface' || /\b(gameplay|hud)\b/i.test(descLower)) return 'gameplay';
-        if (segVal.overlays?.webcam || segVal.nature === 'portrait' || segVal.nature === 'speech') {
-          return 'real_person_camera';
+      const normalizeVisionText = (txt: string) =>
+        txt
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '');
+
+      const results: Array<{
+        timestampSec: number;
+        visualCategory: VisualCategory;
+        detectedEntities: string[];
+        detectedActions: string[];
+        description: string;
+        confidence: number;
+      }> = [];
+      // TaskEngine VisionProviders suportam no máximo 3 imagens por chamada: processar em lotes de 3 para cobrir todos os timestamps
+      for (let offset = 0; offset < allFramesPayload.length; offset += 3) {
+        const framesPayload = allFramesPayload.slice(offset, offset + 3);
+        const analyzed = await router.analyze({
+          frames: framesPayload,
+          context: `Segmento "${segment.segmentId}": ${segment.narrationText.slice(0, 220)}`,
+          policy,
+        });
+        // Nunca inventar correspondência visual a partir de heurística FFmpeg sem visão semântica real
+        if (!analyzed.value || analyzed.provider === 'ffmpeg-heuristics') {
+          const attemptsSummary = analyzed.attempts
+            .map((a) => `${a.provider}:${a.outcome}${a.detail ? `(${a.detail.slice(-120)})` : ''}`)
+            .join('; ');
+          throw new Error(`VisionRouter sem provedor visual válido [${attemptsSummary || 'sem tentativas'}]`);
         }
-        if (segVal.nature === 'document') return 'motion_graphic';
-        return 'unknown';
-      };
-      const cat = natureToCat();
-      return framesPayload.map((f) => ({
-        timestampSec: f.atMs / 1000,
-        visualCategory: cat,
-        detectedEntities: segVal.entities.map((e) => e.name.toLowerCase()),
-        detectedActions: segVal.actions.map((a) => a.description.toLowerCase()),
-        description: segVal.description,
-        confidence: segVal.confidence,
-      }));
+        const segVal = analyzed.value;
+        const descLower = segVal.description.toLowerCase();
+        const natureToCat = (): VisualCategory => {
+          if (/\b(anime|animad|animac|desenho|cel[- ]shading|ilustra)/i.test(descLower)) return 'anime_animation';
+          if (segVal.nature === 'interface' || /\b(gameplay|hud)\b/i.test(descLower)) return 'gameplay';
+          if (segVal.overlays?.webcam || segVal.nature === 'portrait' || segVal.nature === 'speech') {
+            return 'real_person_camera';
+          }
+          if (segVal.nature === 'document') return 'motion_graphic';
+          return 'unknown';
+        };
+        const cat = natureToCat();
+        const isSingleFrameCall = segVal.frames.length <= 1;
+
+        for (let idx = 0; idx < framesPayload.length; idx += 1) {
+          const f = framesPayload[idx]!;
+          const matchedFrame =
+            segVal.frames.find((sf) => sf.atMs === f.atMs) ??
+            segVal.frames
+              .slice()
+              .sort((a, b) => Math.abs(a.atMs - f.atMs) - Math.abs(b.atMs - f.atMs))
+              .find((sf) => Math.abs(sf.atMs - f.atMs) <= 2000) ??
+            segVal.frames[idx];
+
+          const visibleTextStr = matchedFrame?.visibleText?.map((vt) => vt.text).filter(Boolean).join(' ') ?? '';
+          const frameDesc = matchedFrame
+            ? `${matchedFrame.observed}${visibleTextStr ? ` [Texto visível: ${visibleTextStr}]` : ''}`
+            : segVal.description;
+          const normFrameDesc = normalizeVisionText(frameDesc);
+
+          const frameEntities = isSingleFrameCall
+            ? segVal.entities.map((e) => e.name.toLowerCase())
+            : segVal.entities
+                .filter((e) => {
+                  const eName = normalizeVisionText(e.name);
+                  const nameTokens = eName.split(/\s+/).filter((t) => t.length >= 3);
+                  return (
+                    normFrameDesc.includes(eName) ||
+                    nameTokens.some((t) => normFrameDesc.includes(t))
+                  );
+                })
+                .map((e) => e.name.toLowerCase());
+
+          const frameActions = isSingleFrameCall
+            ? segVal.actions.map((a) => a.description.toLowerCase())
+            : segVal.actions
+                .filter((a) => {
+                  const aTokens = normalizeVisionText(a.description)
+                    .split(/[^a-z0-9]+/)
+                    .filter((t) => t.length >= 4);
+                  return aTokens.some((t) => normFrameDesc.includes(t));
+                })
+                .map((a) => a.description.toLowerCase());
+
+          results.push({
+            timestampSec: f.atMs / 1000,
+            visualCategory: cat,
+            detectedEntities: frameEntities,
+            detectedActions: frameActions,
+            description: frameDesc,
+            confidence: segVal.confidence,
+          });
+        }
+      }
+      return results;
     },
     onProgress: (job: StagedProductionJob) => {
       for (const win of BrowserWindow.getAllWindows()) {

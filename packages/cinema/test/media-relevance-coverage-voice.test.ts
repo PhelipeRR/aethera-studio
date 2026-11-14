@@ -15,6 +15,8 @@ import {
   planMediaCoverage,
   planTargetedSegmentRegeneration,
   recordApprovedPronunciationRule,
+  recordSceneGroundingNegativeExample,
+  findMatchingSceneGroundingNegativeExample,
   runAutonomousMediaAcquisition,
   sampleDistributedFrameTimestamps,
   searchResilientMediaSources,
@@ -775,5 +777,166 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(run2.funnelMetrics.pendingVerificationCount).toBe(0);
     expect(run2.funnelMetrics.counts.verified).toBe(1);
     expect(run2.funnelMetrics.conversionRates.downloadedToVerifiedRate).toBe(1);
+  });
+
+  it('selects only the specific timestamp interval where the narrated event visibly occurs', async () => {
+    const decision = await evaluateMediaRelevance(
+      {
+        mediaId: 'clip_ssj_transform',
+        uri: 'C:/tmp/goku_namek.mp4',
+        title: 'Dragon Ball Z Namekusei Batalha',
+        origin: 'youtube',
+        durationSec: 45,
+      },
+      {
+        segmentId: 'slot_ssj',
+        prompt: 'Dragon Ball Z Saga Freeza',
+        genre: 'anime',
+        narrationText: 'Goku se transforma em Super Saiyajin após a morte de Kuririn.',
+        expectedEntities: ['goku', 'super saiyajin', 'kuririn'],
+      },
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async () => [
+          {
+            timestampSec: 4.5,
+            visualCategory: 'anime_animation',
+            detectedEntities: ['freeza'],
+            detectedActions: [],
+            description: 'Freeza parado em cenário rochoso observando ao longe.',
+            confidence: 0.9,
+          },
+          {
+            timestampSec: 15.75,
+            visualCategory: 'anime_animation',
+            detectedEntities: ['gohan'],
+            detectedActions: [],
+            description: 'Gohan olhando assustado para o céu nublado.',
+            confidence: 0.88,
+          },
+          {
+            timestampSec: 27.9,
+            visualCategory: 'anime_animation',
+            detectedEntities: ['freeza'],
+            detectedActions: [],
+            description: 'Raios verdes no céu escuro de Namekusei.',
+            confidence: 0.87,
+          },
+          {
+            timestampSec: 38.7,
+            visualCategory: 'anime_animation',
+            detectedEntities: ['goku', 'super saiyajin'],
+            detectedActions: ['transformacao'],
+            description: 'Goku gritando em fúria se transforma em Super Saiyajin com cabelo loiro e aura dourada.',
+            confidence: 0.96,
+          },
+        ],
+      },
+    );
+
+    expect(decision.accepted).toBe(true);
+    expect(decision.correspondenceLevel).toBe('exact_match');
+    expect(decision.eligibleSegmentIds).toEqual(['slot_ssj']);
+    expect(decision.matchedIntervals).toBeDefined();
+    expect(decision.matchedIntervals!.length).toBe(1);
+    expect(decision.matchedIntervals![0]!.startSec).toBeCloseTo(37.2, 1);
+    expect(decision.matchedIntervals![0]!.endSec).toBeCloseTo(41.2, 1);
+  });
+
+  it('does not approve same-universe Dragon Ball clips when frames do not depict the required Raditz arrival event', async () => {
+    const decision = await evaluateMediaRelevance(
+      {
+        mediaId: 'clip_snake_way',
+        uri: 'C:/tmp/goku_kaioh.mp4',
+        title: 'Goku chega Ao fim do caminho da serpente e Encontra o Planeta do Sr kaioh',
+        origin: 'youtube',
+        durationSec: 45,
+      },
+      {
+        segmentId: 'slot_1',
+        prompt: 'Dragon Ball Z história completa',
+        genre: 'anime',
+        narrationText: 'A chegada de Raditz à Terra revela a origem Saiyajin de Goku.',
+        expectedEntities: ['raditz', 'goku'],
+      },
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async () => [
+          {
+            timestampSec: 4.5,
+            visualCategory: 'anime_animation',
+            detectedEntities: ['goku'],
+            detectedActions: [],
+            description: 'Goku correndo por um caminho longo nas nuvens amarelas.',
+            confidence: 0.9,
+          },
+          {
+            timestampSec: 20,
+            visualCategory: 'anime_animation',
+            detectedEntities: ['goku', 'sr kaioh'],
+            detectedActions: [],
+            description: 'Goku conversando com o Sr. Kaioh em um pequeno planeta verde.',
+            confidence: 0.91,
+          },
+        ],
+      },
+    );
+
+    expect(decision.correspondenceLevel).toBe('universe_only_coincidence');
+    expect(decision.eligibleSegmentIds).toEqual([]);
+  });
+
+  it('records Scene Grounding mismatches as Academy negative examples and blocks repeated false matches', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aethera-sg-neg-'));
+    const evolution = new AetheraEvolutionCore(join(dir, 'evolution.json'));
+
+    const recorded = recordSceneGroundingNegativeExample(evolution, {
+      projectId: 'proj_dbz_1',
+      segmentId: 'slot_1',
+      mediaTitle: 'DRAGON BALL GT Vegeta mata nappa denovo dublado',
+      mediaSha256: 'deadbeef1234',
+      expectedContext: 'raditz, chegada_desembarque',
+      observedVisualSummary: 'Vegeta derrotando Nappa em Dragon Ball GT',
+      mismatchReason: 'Cena de Dragon Ball GT com Vegeta e Nappa não corresponde à chegada de Raditz.',
+      genre: 'anime',
+    });
+    expect(recorded.memoryId).toBeTruthy();
+
+    const lookup = findMatchingSceneGroundingNegativeExample(evolution, {
+      mediaTitle: 'DRAGON BALL GT Vegeta mata nappa denovo dublado',
+      mediaSha256: 'deadbeef1234',
+      expectedContext: 'raditz | ações: chegada_desembarque',
+      genre: 'anime',
+    });
+    expect(lookup.matched).toBe(true);
+
+    const blocked = await evaluateMediaRelevance(
+      {
+        mediaId: 'auto_yt_dlp_1',
+        uri: 'C:/tmp/vegeta_nappa_gt.mp4',
+        title: 'DRAGON BALL GT Vegeta mata nappa denovo dublado',
+        sha256: 'deadbeef1234',
+        origin: 'yt_dlp',
+        durationSec: 45,
+      },
+      {
+        segmentId: 'slot_1',
+        prompt: 'Dragon Ball Z Chegada de Raditz',
+        genre: 'anime',
+        narrationText: 'A chegada de Raditz à Terra inicia a saga Saiyajin.',
+        expectedEntities: ['raditz'],
+      },
+      {
+        requireVisualVerification: true,
+        evolution,
+        analyzeFrames: async () => {
+          throw new Error('Should not invoke vision for already-recorded Academy negative example');
+        },
+      },
+    );
+
+    expect(blocked.accepted).toBe(false);
+    expect(blocked.rejectionCode).toBe('academy_negative_example');
+    expect(blocked.correspondenceLevel).toBe('rejected');
   });
 });

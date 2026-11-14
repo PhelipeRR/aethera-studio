@@ -634,6 +634,7 @@ export class StagedCinemaPipeline {
             probeDurationFn: async (fp) => (await probeRealMp4(fp)).durationSec,
             ...(this.deps.analyzeFrames ? { analyzeFrames: this.deps.analyzeFrames } : {}),
             requireVisualVerification: this.deps.requireVisualVerification ?? true,
+            evolution: this.deps.evolutionCore,
             ...(job.acquisitionBudgetMultiplier !== undefined
               ? { limits: { budgetMultiplier: job.acquisitionBudgetMultiplier } }
               : {}),

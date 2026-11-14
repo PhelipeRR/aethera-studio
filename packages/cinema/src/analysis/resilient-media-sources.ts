@@ -10,6 +10,8 @@ import {
   type ScriptSegmentExpectation,
   type VisualVerificationStatus,
 } from '../qc/media-relevance-gate.js';
+import type { AetheraEvolutionCore } from '../evolution/evolution-core.js';
+import { recordSceneGroundingNegativeExample } from '../evolution/production-learning.js';
 import {
   expandScriptOrientedQueries,
   planMediaCoverage,
@@ -614,6 +616,7 @@ export async function runAutonomousMediaAcquisition(input: {
     segment: ScriptSegmentExpectation,
   ) => Promise<DistributedFrameAnalysis[]>;
   requireVisualVerification?: boolean;
+  evolution?: AetheraEvolutionCore;
   stageMode?: AcquisitionStageMode;
   limits?: {
     maxRounds?: number;
@@ -1248,6 +1251,7 @@ export async function runAutonomousMediaAcquisition(input: {
               ...(input.requireVisualVerification !== undefined
                 ? { requireVisualVerification: input.requireVisualVerification }
                 : {}),
+              ...(input.evolution ? { evolution: input.evolution } : {}),
             },
           );
 
@@ -1262,6 +1266,28 @@ export async function runAutonomousMediaAcquisition(input: {
           if (input.analyzeFrames) visionDiagnostics.callsSucceeded += 1;
           pendingVerificationAssets.delete(candKey);
           relevanceDecisions.push(decision);
+
+          if (
+            input.evolution &&
+            ((!decision.accepted &&
+              decision.rejectionCode !== 'academy_negative_example' &&
+              decision.visualVerificationStatus === 'visually_verified') ||
+              decision.correspondenceLevel === 'universe_only_coincidence')
+          ) {
+            const observedSummary = (decision.visualEvidence ?? [])
+              .map((ev) => `${ev.timestampSec}s: ${ev.description}`)
+              .join(' | ');
+            recordSceneGroundingNegativeExample(input.evolution, {
+              projectId: input.projectId,
+              segmentId: seg.segmentId,
+              mediaTitle: item.cand.title ?? item.filePath,
+              ...(item.sha256 ? { mediaSha256: item.sha256 } : {}),
+              expectedContext: `${(seg.entities ?? extractTopicEntities(seg.narrationText)).join(', ')}${seg.narrationText ? ` (${seg.narrationText.slice(0, 80)})` : ''}`,
+              observedVisualSummary: observedSummary || decision.reason,
+              mismatchReason: decision.reason,
+              ...(input.genre ? { genre: input.genre } : {}),
+            });
+          }
 
           if (!decision.accepted) {
             candidateStates.set(candKey, 'rejected');

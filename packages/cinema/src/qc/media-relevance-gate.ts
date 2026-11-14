@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
+import type { AetheraEvolutionCore } from '../evolution/evolution-core.js';
+import { findMatchingSceneGroundingNegativeExample } from '../evolution/production-learning.js';
 
 export type VisualCategory =
   | 'anime_animation'
@@ -89,7 +91,8 @@ export interface MediaRelevanceDecision {
     | 'cross_project_cache_leak'
     | 'generic_anime_style_without_entity'
     | 'unverified_no_visual_evidence'
-    | 'insufficient_metadata_and_visual_match';
+    | 'insufficient_metadata_and_visual_match'
+    | 'academy_negative_example';
   reason: string;
   sampledTimestampsSec: number[];
   extractedFramePaths?: string[];
@@ -153,12 +156,12 @@ export function extractTopicEntities(text: string): string[] {
 }
 
 const NARRATIVE_ACTION_PATTERNS: Array<{ key: string; regex: RegExp }> = [
-  { key: 'transformacao', regex: /\b(transforma\w*|despert\w*|super saiyajin|ssj|forma final)\b/i },
+  { key: 'transformacao', regex: /\b(transforma\w*|despert\w*|super saiyajin|ssj|forma final|aura dourada|cabelo loiro|cabelo dourado)\b/i },
   { key: 'fusao', regex: /\b(fusao|funde|fundir)\b/i },
   { key: 'genki_dama', regex: /\b(genki dama|spirit bomb)\b/i },
-  { key: 'morte_sacrificio', regex: /\b(morte|morre\w*|sacrific\w*|cai diante)\b/i },
-  { key: 'batalha_confronto', regex: /\b(luta\w*|batalha\w*|enfrent\w*|confront\w*|derrot\w*|ataque|vs)\b/i },
-  { key: 'chegada_desembarque', regex: /\b(chegada|chegam|desembarc\w*|esconder)\b/i },
+  { key: 'morte_sacrificio', regex: /\b(morte|morre\w*|morto|caido|sacrific\w*|cai diante)\b/i },
+  { key: 'batalha_confronto', regex: /\b(luta\w*|batalha\w*|enfrent\w*|confront\w*|derrot\w*|ataque|golpe\w*|chute|soco|energia|ki|vs)\b/i },
+  { key: 'chegada_desembarque', regex: /\b(chegada|chegam|chega\w*|desembarc\w*|esconder|nave|capsula|pouso|aterriss\w*)\b/i },
   { key: 'explosao', regex: /\b(explos\w*|destruic\w*)\b/i },
   { key: 'treinamento', regex: /\b(trein\w*|gravidade)\b/i },
 ];
@@ -186,7 +189,7 @@ export function extractNarrativeVisualExpectation(
     actionsAndEvents.some((a) =>
       ['transformacao', 'fusao', 'genki_dama', 'morte_sacrificio', 'explosao'].includes(a),
     ) ||
-    (actionsAndEvents.length > 0 && entities.length >= 2);
+    (actionsAndEvents.length > 0 && entities.length >= 1);
 
   return {
     segmentId: segment.segmentId,
@@ -294,11 +297,36 @@ export async function evaluateMediaRelevance(
       segment: ScriptSegmentExpectation,
     ) => Promise<DistributedFrameAnalysis[]>;
     requireVisualVerification?: boolean;
+    evolution?: AetheraEvolutionCore;
   },
 ): Promise<MediaRelevanceDecision> {
   const sampledTimestampsSec = sampleDistributedFrameTimestamps(candidate.durationSec, 4);
   const expectation = extractNarrativeVisualExpectation(segment);
   const expectedEntities = expectation.entities;
+
+  // 0. Consult Academy negative examples before wasting vision or accepting repeated false matches
+  if (options?.evolution) {
+    const negativeMatch = findMatchingSceneGroundingNegativeExample(options.evolution, {
+      ...(candidate.title ? { mediaTitle: candidate.title } : {}),
+      ...(candidate.sha256 ? { mediaSha256: candidate.sha256 } : {}),
+      expectedContext: expectation.expectedVisualContext,
+      ...(segment.genre ? { genre: segment.genre } : {}),
+    });
+    if (negativeMatch.matched) {
+      return {
+        mediaId: candidate.mediaId,
+        accepted: false,
+        score: 0.05,
+        relevanceTier: 'rejected',
+        correspondenceLevel: 'rejected',
+        rejectionCode: 'academy_negative_example',
+        reason: negativeMatch.reason,
+        sampledTimestampsSec,
+        matchedEntities: [],
+        visualCategory: candidate.visualCategoryHint ?? 'unknown',
+      };
+    }
+  }
 
   // 1. Cross-project isolation check
   if (candidate.projectId && segment.segmentId && candidate.origin?.startsWith('project:') && candidate.origin !== `project:${candidate.projectId}`) {
@@ -379,15 +407,51 @@ export async function evaluateMediaRelevance(
         )
       : 0;
 
-  const candidateEntities = extractTopicEntities(combinedText);
-  const matchedEntities = expectedEntities.filter(
-    (entity) => combinedText.includes(entity) || candidateEntities.includes(entity),
-  );
-  const matchedActions = expectation.actionsAndEvents.filter((actionKey) => {
-    const pattern = NARRATIVE_ACTION_PATTERNS.find((p) => p.key === actionKey);
-    const inFrames = frameAnalyses.some((f) => f.detectedActions?.includes(actionKey));
-    return inFrames || Boolean(pattern?.regex.test(combinedText));
+  const normalizeFrameText = (f: DistributedFrameAnalysis): string =>
+    expandNarrativeAliases(
+      `${f.description ?? ''} ${(f.detectedEntities ?? []).join(' ')} ${(f.detectedActions ?? []).join(' ')}`
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase(),
+    );
+
+  const perFrameMatches = validVisualFrames.map((frame) => {
+    const fText = normalizeFrameText(frame);
+    const fTopicEntities = extractTopicEntities(fText);
+    const fEntities = expectedEntities.filter(
+      (entity) => fText.includes(entity) || fTopicEntities.includes(entity),
+    );
+    const fActions = expectation.actionsAndEvents.filter((actionKey) => {
+      const pattern = NARRATIVE_ACTION_PATTERNS.find((p) => p.key === actionKey);
+      return (frame.detectedActions ?? []).includes(actionKey) || Boolean(pattern?.regex.test(fText));
+    });
+    const isEventMatch =
+      expectation.actionsAndEvents.length > 0
+        ? fActions.length > 0 && (fEntities.length > 0 || fTopicEntities.length > 0)
+        : fEntities.length > 0;
+    return {
+      frame,
+      fEntities,
+      fActions,
+      isEventMatch,
+      matchWeight: fActions.length * 2 + fEntities.length,
+    };
   });
+
+  const eventMatchingFrames = perFrameMatches.filter((m) => m.isEventMatch);
+  const candidateEntities = extractTopicEntities(combinedText);
+  const matchedEntities =
+    validVisualFrames.length > 0
+      ? Array.from(new Set(perFrameMatches.flatMap((m) => m.fEntities)))
+      : expectedEntities.filter((entity) => combinedText.includes(entity) || candidateEntities.includes(entity));
+  const matchedActions =
+    validVisualFrames.length > 0
+      ? Array.from(new Set(perFrameMatches.flatMap((m) => m.fActions)))
+      : expectation.actionsAndEvents.filter((actionKey) => {
+          const pattern = NARRATIVE_ACTION_PATTERNS.find((p) => p.key === actionKey);
+          const inFrames = frameAnalyses.some((f) => f.detectedActions?.includes(actionKey));
+          return inFrames || Boolean(pattern?.regex.test(combinedText));
+        });
   const universeEntities = extractTopicEntities(segment.prompt);
   const matchedUniverseEntities = universeEntities.filter(
     (entity) => combinedText.includes(entity) || candidateEntities.includes(entity),
@@ -491,12 +555,17 @@ export async function evaluateMediaRelevance(
   }
 
   const isSameUniverseOnly = matchedEntities.length === 0 && matchedUniverseEntities.length > 0;
-  // Same universe but wrong specific event/character when segment requires a specific event -> universe_only_coincidence (contextual candidate only, cannot satisfy coverage!)
-  if (isSameUniverseOnly && expectation.requiresSpecificEventVisual) {
+  const missingSpecificVisualEvent =
+    expectation.requiresSpecificEventVisual &&
+    validVisualFrames.length > 0 &&
+    eventMatchingFrames.length === 0;
+  // Same universe (or even shared protagonist) without visually depicting the required specific event -> cannot satisfy coverage!
+  if ((isSameUniverseOnly || missingSpecificVisualEvent) && expectation.requiresSpecificEventVisual) {
+    const contextEntities = matchedEntities.length > 0 ? matchedEntities : matchedUniverseEntities;
     return {
       mediaId: candidate.mediaId,
       accepted: true,
-      score: 0.42,
+      score: 0.38,
       relevanceTier: 'same_universe_context',
       correspondenceLevel: 'universe_only_coincidence',
       visualVerificationStatus,
@@ -504,9 +573,9 @@ export async function evaluateMediaRelevance(
       visualEvidence,
       matchedActions,
       eligibleSegmentIds: [],
-      reason: `Coincidência de universo (${matchedUniverseEntities.slice(0, 3).join(', ')}): candidata apenas contextual, não satisfaz acontecimento específico (${expectation.expectedVisualContext}).`,
+      reason: `Coincidência de universo (${contextEntities.slice(0, 3).join(', ')}): nenhum frame comprovou o acontecimento específico (${expectation.expectedVisualContext}).`,
       sampledTimestampsSec,
-      matchedEntities: matchedUniverseEntities,
+      matchedEntities: contextEntities,
       visualCategory: dominantVisualCategory,
     };
   }
@@ -548,22 +617,35 @@ export async function evaluateMediaRelevance(
     };
   }
 
-  const matchingFrames = frameAnalyses.filter(
-    (f) =>
-      (f.detectedEntities ?? []).some((e) => effectiveMatched.includes(e.toLowerCase())) ||
-      (f.detectedActions ?? []).some((a) => matchedActions.includes(a)),
+  const activeFrameMatches = (
+    eventMatchingFrames.length > 0
+      ? eventMatchingFrames
+      : perFrameMatches.filter((m) => m.fEntities.length > 0 || m.fActions.length > 0)
+  )
+    .slice()
+    .sort((a, b) => a.frame.timestampSec - b.frame.timestampSec);
+
+  const maxContiguousGapSec = Math.max(
+    8,
+    (candidate.durationSec / Math.max(1, sampledTimestampsSec.length)) * 1.4,
   );
+  const groupedIntervals: Array<{ startSec: number; endSec: number; segmentId: string; weight: number }> = [];
+  for (const m of activeFrameMatches) {
+    const prev = groupedIntervals[groupedIntervals.length - 1];
+    const startSec = Number(Math.max(0, m.frame.timestampSec - 1.5).toFixed(2));
+    const endSec = Number(Math.min(candidate.durationSec, m.frame.timestampSec + 2.5).toFixed(2));
+    if (prev && m.frame.timestampSec - (prev.endSec - 2.5) <= maxContiguousGapSec) {
+      prev.endSec = Math.max(prev.endSec, endSec);
+      prev.weight += m.matchWeight;
+    } else {
+      groupedIntervals.push({ startSec, endSec, segmentId: segment.segmentId, weight: m.matchWeight });
+    }
+  }
+  groupedIntervals.sort((a, b) => b.weight - a.weight);
+
   const matchedIntervals =
-    matchingFrames.length > 0
-      ? [
-          {
-            startSec: Number(Math.max(0, matchingFrames[0]!.timestampSec - 2).toFixed(2)),
-            endSec: Number(
-              Math.min(candidate.durationSec, matchingFrames[matchingFrames.length - 1]!.timestampSec + 4).toFixed(2),
-            ),
-            segmentId: segment.segmentId,
-          },
-        ]
+    groupedIntervals.length > 0
+      ? groupedIntervals.map(({ startSec, endSec, segmentId }) => ({ startSec, endSec, segmentId }))
       : [{ startSec: 0, endSec: Number(candidate.durationSec.toFixed(2)), segmentId: segment.segmentId }];
 
   return {
