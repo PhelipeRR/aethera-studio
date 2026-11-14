@@ -100,11 +100,29 @@ export interface StagedPipelineDeps {
   onRenderReady: (projectId: string, render: RealRenderResult) => void;
   analyzeFrameWithAI?: (
     framePath: string,
-    scene: { sceneId: string; narration?: string; hasGameplayHud?: boolean },
+    scene: {
+      sceneId: string;
+      startSec: number;
+      durationSec: number;
+      narrationText?: string;
+      subtitleText?: string;
+      hasGameplayHud?: boolean;
+      framing?: string;
+      sfxCues?: string[];
+      vfxEffects?: string[];
+    },
   ) => Promise<{
     issue?: string;
     severity?: 'warning' | 'critical';
-    suggestedAction?: 'hide_lower_third' | 'swap_duplicate_clip' | 'rerender_scene';
+    suggestedAction?:
+      | 'hide_lower_third'
+      | 'adjust_typography'
+      | 'adjust_vfx'
+      | 'adjust_sfx'
+      | 'adjust_framing'
+      | 'swap_duplicate_clip'
+      | 'retry_media_research'
+      | 'rerender_scene';
   } | null>;
   searchExternalMedia?: (
     query: string,
@@ -864,16 +882,29 @@ export class StagedCinemaPipeline {
       });
 
       const v1Clips = pkg.timeline.clips.filter((c) => c.trackId === 'v1');
+      const sfxTrackClips = pkg.timeline.clips.filter((c) => c.trackId === 'a4_sfx' || c.trackId === 'sfx');
       const buildSceneSpecs = (clips: typeof v1Clips) =>
-        clips.map((c, idx) => ({
-          sceneId: c.clipId,
-          startSec: c.timelineRange.start.value / Math.max(1, c.timelineRange.start.rate),
-          durationSec: c.timelineRange.duration.value / Math.max(1, c.timelineRange.duration.rate),
-          sourceMediaId: c.mediaId,
-          hasTextOverlay: !c.effects.some((e) => e.kind === 'hide_title' && e.enabled),
-          hasGameplayHud: job.genre === 'gameplay_essay',
-          ...(pkg.direction.narrativeBeats[idx]?.summary ? { narration: pkg.direction.narrativeBeats[idx].summary } : {}),
-        }));
+        clips.map((c, idx) => {
+          const startSec = c.timelineRange.start.value / Math.max(1, c.timelineRange.start.rate);
+          const durationSec = c.timelineRange.duration.value / Math.max(1, c.timelineRange.duration.rate);
+          const sceneSfx = sfxTrackClips
+            .filter((s) => {
+              const sStart = s.timelineRange.start.value / Math.max(1, s.timelineRange.start.rate);
+              return sStart >= startSec && sStart < startSec + durationSec;
+            })
+            .map((s) => s.label || s.clipId);
+          return {
+            sceneId: c.clipId,
+            startSec,
+            durationSec,
+            sourceMediaId: c.mediaId,
+            hasTextOverlay: !c.effects.some((e) => e.kind === 'hide_title' && e.enabled),
+            hasGameplayHud: job.genre === 'gameplay_essay',
+            vfxEffects: c.effects.filter((e) => e.enabled).map((e) => e.kind),
+            sfxCues: sceneSfx,
+            ...(pkg.direction.narrativeBeats[idx]?.summary ? { narrationText: pkg.direction.narrativeBeats[idx].summary } : {}),
+          };
+        });
 
       const critic1 = await evaluateRenderedVisualCritic({
         projectId: job.projectId,
@@ -902,28 +933,48 @@ export class StagedCinemaPipeline {
             clips: pkg.timeline.clips.map((c) => {
               if (!repairIds.has(c.clipId)) return c;
               const needHideTitle = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'hide_lower_third');
-              const needSwapClip = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'swap_duplicate_clip');
+              const needSwapClip = sup1.actions.some(
+                (a) => a.sceneId === c.clipId && (a.action === 'swap_duplicate_clip' || a.action === 'retry_media_research'),
+              );
+              const needAdjustVfx = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'adjust_vfx');
+              const needAdjustTypo = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'adjust_typography');
               const nextMediaId =
                 needSwapClip && altMediaPool.length > 1
                   ? altMediaPool.find((id) => id !== c.mediaId) ?? c.mediaId
                   : c.mediaId;
+              let nextEffects = c.effects.map((e) =>
+                needAdjustVfx && /blur|shake|glitch|glow/i.test(e.kind) ? { ...e, enabled: false } : e,
+              );
+              if (needHideTitle && !nextEffects.some((e) => e.kind === 'hide_title')) {
+                nextEffects = [
+                  ...nextEffects,
+                  {
+                    effectId: `sup_hide_title_${c.clipId}`,
+                    kind: 'hide_title',
+                    params: { reason: 'supervisor_targeted_repair' },
+                    enabled: true,
+                    estimatedCostMs: 0,
+                    fallbackMode: 'skip',
+                  },
+                ];
+              }
+              if (needAdjustTypo && !nextEffects.some((e) => e.kind === 'safe_typography')) {
+                nextEffects = [
+                  ...nextEffects,
+                  {
+                    effectId: `sup_safe_typo_${c.clipId}`,
+                    kind: 'safe_typography',
+                    params: { maxCharsPerLine: 42, scale: 0.9 },
+                    enabled: true,
+                    estimatedCostMs: 0,
+                    fallbackMode: 'skip',
+                  },
+                ];
+              }
               return {
                 ...c,
                 mediaId: nextMediaId,
-                effects:
-                  needHideTitle && !c.effects.some((e) => e.kind === 'hide_title')
-                    ? [
-                        ...c.effects,
-                        {
-                          effectId: `sup_hide_title_${c.clipId}`,
-                          kind: 'hide_title',
-                          params: { reason: 'supervisor_targeted_repair' },
-                          enabled: true,
-                          estimatedCostMs: 0,
-                          fallbackMode: 'skip',
-                        },
-                      ]
-                    : c.effects,
+                effects: nextEffects,
               };
             }),
           },
@@ -941,6 +992,23 @@ export class StagedCinemaPipeline {
           previewQuality: 'fast_preview',
           segmentCacheDir,
           ...(job.genre ? { genre: job.genre } : {}),
+        });
+
+        const critic2 = await evaluateRenderedVisualCritic({
+          projectId: job.projectId,
+          mp4Path: render.mp4Path,
+          framesDir: join(projectPaths.tempDir, 'visual-critic'),
+          prompt: job.prompt,
+          ...(job.genre ? { genre: job.genre } : {}),
+          scenes: buildSceneSpecs(pkg.timeline.clips.filter((c) => c.trackId === 'v1')),
+          ...(render.anomalies ? { anomalies: render.anomalies } : {}),
+          evolution: this.deps.evolutionCore,
+          ...(this.deps.analyzeFrameWithAI ? { analyzeFrameWithAI: this.deps.analyzeFrameWithAI } : {}),
+        });
+        runAutonomousSupervisorPass(critic2, {
+          attempt: 2,
+          maxAttempts: 2,
+          previousActionSignatures: sup1.actions.map((a) => `${a.sceneId}:${a.action}`),
         });
       }
 

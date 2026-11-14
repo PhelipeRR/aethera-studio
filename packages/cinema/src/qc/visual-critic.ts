@@ -11,6 +11,10 @@ import {
 
 export type VisualRepairAction =
   | 'hide_lower_third'
+  | 'adjust_typography'
+  | 'adjust_vfx'
+  | 'adjust_sfx'
+  | 'adjust_framing'
   | 'swap_duplicate_clip'
   | 'rerender_scene'
   | 'retry_media_research'
@@ -31,6 +35,11 @@ export interface VisualCriticSceneInput {
   hasTextOverlay?: boolean;
   hasGameplayHud?: boolean;
   narrationText?: string;
+  subtitleText?: string;
+  framing?: string;
+  sfxCues?: string[];
+  vfxEffects?: string[];
+  visualTopic?: string;
 }
 
 export interface VisualCriticReport {
@@ -164,7 +173,7 @@ export async function evaluateRenderedVisualCritic(input: {
     }
   }
 
-  // 3. Check HUD / overlay collision (amplified by Academy Production Learning)
+  // 3. Check HUD / overlay collision, typography/subtitles, and SFX/VFX balance
   for (const scene of input.scenes) {
     if (scene.hasGameplayHud && scene.hasTextOverlay && learned.avoidHudOverlap) {
       const reason = `Regra aprendida na Academy: overlay/título em ${scene.sceneId} pode cobrir o HUD de gameplay.`;
@@ -188,6 +197,88 @@ export async function evaluateRenderedVisualCritic(input: {
         action: 'hide_lower_third',
         reason,
         severity: 'critical',
+      });
+    }
+
+    if (scene.subtitleText && scene.subtitleText.length > 90) {
+      const reason = `Legenda/tipografia extensa em ${scene.sceneId} (${scene.subtitleText.length} chars) compromete legibilidade e enquadramento.`;
+      findings.push({
+        issueId: `visual_critic_typo_${scene.sceneId}`,
+        timeRange: {
+          start: { value: Math.floor(scene.startSec), rate: 1 },
+          duration: { value: Math.max(1, Math.ceil(scene.durationSec)), rate: 1 },
+        },
+        category: 'visual',
+        severity: 'warning',
+        confidence: 0.9,
+        evidence: reason,
+        owner: 'vfx',
+        fixSuggestion: 'Quebrar legenda em 2 linhas e reduzir fonte para zona segura.',
+        affectedDependencies: [scene.sceneId],
+        status: 'open',
+      });
+      proposedRepairs.push({
+        sceneId: scene.sceneId,
+        action: 'adjust_typography',
+        reason,
+        severity: 'warning',
+      });
+    }
+
+    const vfxList = scene.vfxEffects ?? [];
+    const hasHeavyVfx = vfxList.some((v) => /blur|shake|glitch|heavy_glow/i.test(v));
+    if (hasHeavyVfx && (scene.hasTextOverlay || Boolean(scene.subtitleText))) {
+      const reason = `VFX intenso (${vfxList.join(', ')}) em ${scene.sceneId} reduz contraste e legibilidade de texto/legenda.`;
+      findings.push({
+        issueId: `visual_critic_vfx_${scene.sceneId}`,
+        timeRange: {
+          start: { value: Math.floor(scene.startSec), rate: 1 },
+          duration: { value: Math.max(1, Math.ceil(scene.durationSec)), rate: 1 },
+        },
+        category: 'visual',
+        severity: 'warning',
+        confidence: 0.86,
+        evidence: reason,
+        owner: 'vfx',
+        fixSuggestion: 'Atenuar intensidade de VFX na cena para preservar nitidez da tipografia.',
+        affectedDependencies: [scene.sceneId],
+        status: 'open',
+      });
+      proposedRepairs.push({
+        sceneId: scene.sceneId,
+        action: 'adjust_vfx',
+        reason,
+        severity: 'warning',
+      });
+    }
+
+    if (
+      Array.isArray(scene.sfxCues) &&
+      scene.sfxCues.length === 0 &&
+      scene.narrationText &&
+      /cl[ií]max|impacto|explos[aã]o|batalha|chefe|ataque|tensão/i.test(scene.narrationText)
+    ) {
+      const reason = `Cena de impacto/tensão (${scene.sceneId}) sem SFX de apoio na trilha.`;
+      findings.push({
+        issueId: `visual_critic_sfx_${scene.sceneId}`,
+        timeRange: {
+          start: { value: Math.floor(scene.startSec), rate: 1 },
+          duration: { value: Math.max(1, Math.ceil(scene.durationSec)), rate: 1 },
+        },
+        category: 'audio',
+        severity: 'warning',
+        confidence: 0.82,
+        evidence: reason,
+        owner: 'sound',
+        fixSuggestion: 'Inserir SFX pontual de transição/impacto sincronizado com a cena.',
+        affectedDependencies: [scene.sceneId],
+        status: 'open',
+      });
+      proposedRepairs.push({
+        sceneId: scene.sceneId,
+        action: 'adjust_sfx',
+        reason,
+        severity: 'warning',
       });
     }
   }
@@ -293,7 +384,13 @@ export function runAutonomousSupervisorPass(
   let regenerateNarration = false;
 
   for (const repair of novelRepairs) {
-    if (repair.action === 'hide_lower_third' || repair.action === 'rerender_scene') {
+    if (
+      repair.action === 'hide_lower_third' ||
+      repair.action === 'adjust_typography' ||
+      repair.action === 'adjust_vfx' ||
+      repair.action === 'adjust_framing' ||
+      repair.action === 'rerender_scene'
+    ) {
       rerenderSet.add(repair.sceneId);
     } else if (repair.action === 'swap_duplicate_clip' || repair.action === 'retry_media_research') {
       researchSet.add(repair.sceneId);
@@ -301,6 +398,7 @@ export function runAutonomousSupervisorPass(
     } else if (repair.action === 'regenerate_narration') {
       regenerateNarration = true;
     }
+    // adjust_sfx is audio-only and does not require re-rendering video segments
   }
 
   return {

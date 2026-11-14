@@ -656,3 +656,14 @@ composição, ritmo e coerência.
   - TypeScript (`npm run typecheck -w @neuralbridge/aethera-desktop`): **0 erros**.
   - Build (`npm run build:aethera`): **Concluído com sucesso**.
 - [ ] **Lacuna Conhecida**: `StagedPipelineDeps.analyzeFrameWithAI` está integrado como hook opcional; enquanto nenhum provedor multimodal de visão for plugado no `aethera-ipc.ts`, o Visual Critic executa em modo degradado determinístico. Aprovação visual final dos vídeos permanece manual.
+
+### AI Visual Critic com Visão Real & Reparos Direcionados — 2026-11-14
+
+- [x] **Visão real conectada (`apps/aethera-desktop/src/main/aethera-ipc.ts`)**: `StagedCinemaPipeline` conectado ao `VisionRouter` + `createVisionProviders` + `createTaskEngineVisionProvider` (`claude` / `codex` / fallback `ffmpeg-heuristics`), sem criar provedores duplicados.
+- [x] **Avaliação audiovisual completa (`packages/cinema/src/qc/visual-critic.ts`)**: Cobertura de composição/enquadramento, HUD, legendas/tipografia, repetição visual, correspondência narração-imagem, SFX (`adjust_sfx`) e VFX (`adjust_vfx`), emitindo achados com timestamp, cena, severidade, evidência e reparo sugerido.
+- [x] **Reparos seguros e anti-loop (`apps/aethera-desktop/src/main/cinema-pipeline.ts`)**: Reparos aplicados apenas nas cenas reprovadas, preservando cenas aprovadas via `segmentCacheDir`, com limite `maxAttempts: 2` e escalonamento `escalate_to_user`.
+- [x] **Validação Executada**:
+  - Vitest (`visual-critic-vision.test.ts`, `evolution-2.0.test.ts`, `nle-editor-integration.test.ts`, `waveform-extractor.test.ts`, `trend-radar.test.ts`): **5 arquivos / 23 testes passando**, incluindo geração de PNGs reais, vídeo multi-cena FFmpeg e re-render incremental com `cacheHits: 2` e `reRenderedScenes: 1`.
+  - TypeScript (`npm run typecheck -w @neuralbridge/aethera-desktop`): **0 erros**.
+  - Build (`npm run build:aethera`): **Concluído com sucesso**.
+- [x] **Aprovação visual final**: Permanece manual pelo usuário.

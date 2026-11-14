@@ -96,6 +96,7 @@ import {
   createScriptStageAdapter,
   createStoryboardStageAdapter,
   createSyncStageAdapter,
+  createTaskEngineVisionProvider,
   createVisionProviders,
   createVisualIndexStageAdapter,
   createYouTubeChannelClient,
@@ -113,6 +114,7 @@ import {
   suggestVideoTopics,
   tokenReport,
   toYouTubePublicationRequest,
+  VisionRouter,
   YOUTUBE_ENDPOINTS,
   type YouTubeEndpoints,
 } from '@neuralbridge/orchestrator';
@@ -1691,6 +1693,92 @@ export function registerAetheraDomainIpc(options: {
           ...(typeof parsed.treatment === 'string' ? { treatment: parsed.treatment } : {}),
           beats: cleanBeats,
         };
+      } catch {
+        return null;
+      }
+    },
+    analyzeFrameWithAI: async (framePath, scene) => {
+      try {
+        const frameDir = dirname(framePath);
+        const frameBytes = readFileSync(framePath);
+        const frameHash = createHash('sha256').update(frameBytes).digest('hex');
+        const configured = taskEngine
+          ? [
+              createTaskEngineVisionProvider({
+                id: 'claude',
+                model: 'sonnet',
+                root: frameDir,
+                projectId: scene.sceneId,
+                enabled: true,
+                taskEngine,
+              }),
+              createTaskEngineVisionProvider({
+                id: 'codex',
+                model: 'gpt-5-codex',
+                root: frameDir,
+                projectId: scene.sceneId,
+                enabled: true,
+                taskEngine,
+              }),
+            ]
+          : [];
+        const visionCache = new Map<string, unknown>();
+        const router = new VisionRouter(createVisionProviders(configured), {
+          get: (k) => visionCache.get(JSON.stringify(k)),
+          put: (k, v) => {
+            visionCache.set(JSON.stringify(k), v);
+          },
+        });
+        const policy: VisionPolicy = {
+          schemaVersion: 1,
+          task: 'describe',
+          chain: ['claude', 'codex', 'local-siglip', 'local-vlm', 'ffmpeg-heuristics'],
+          scope: 'project',
+          thresholds: null,
+          version: 'aethera-visual-critic-v1',
+          budgetUsd: 0.25,
+          maxLatencyMs: 25_000,
+        };
+        const context = [
+          `Cena ${scene.sceneId} (${scene.startSec}s, ${scene.durationSec}s)`,
+          scene.narrationText ? `Narração: "${scene.narrationText}"` : '',
+          scene.subtitleText ? `Legenda: "${scene.subtitleText}"` : '',
+          scene.framing ? `Enquadramento esperado: ${scene.framing}` : '',
+          scene.hasGameplayHud ? 'Gameplay com HUD visível' : '',
+          scene.vfxEffects?.length ? `VFX ativos: ${scene.vfxEffects.join(', ')}` : '',
+          scene.sfxCues?.length ? `SFX na cena: ${scene.sfxCues.join(', ')}` : '',
+        ]
+          .filter(Boolean)
+          .join(' | ');
+        const analyzed = await router.analyze({
+          frames: [{ path: framePath, hash: frameHash, atMs: Math.round(scene.startSec * 1000) }],
+          context,
+          policy,
+        });
+        const seg = analyzed.value;
+        if (!seg) return null;
+        if (seg.overlays?.watermark) {
+          return {
+            issue: `Marca d'água visível detectada por ${analyzed.provider ?? 'visão'} na cena ${scene.sceneId}.`,
+            severity: 'warning',
+            suggestedAction: 'swap_duplicate_clip',
+          };
+        }
+        if (seg.overlays?.burnedText && scene.hasGameplayHud) {
+          return {
+            issue: `Texto sobreposto colidindo com HUD de gameplay detectado por ${analyzed.provider ?? 'visão'}.`,
+            severity: 'critical',
+            suggestedAction: 'hide_lower_third',
+          };
+        }
+        if (seg.nature === 'text_card' && scene.narrationText && scene.narrationText.length > 40) {
+          return {
+            issue: `Quadro apenas com cartão de texto em cena que exige ação/conteúdo visual para a narração.`,
+            severity: 'warning',
+            suggestedAction: 'retry_media_research',
+          };
+        }
+        return null;
       } catch {
         return null;
       }
