@@ -210,7 +210,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     const rawDur = clip
       ? (clip.timelineRange.duration.value / clip.timelineRange.duration.rate) / Math.max(0.25, clip.speed || 1)
       : 6.0;
-    const effectiveDur = Number(Math.max(1.2, Math.min(12.0, rawDur)).toFixed(2));
+    const effectiveDur = Number(Math.max(1.2, Math.min(600, rawDur)).toFixed(2));
     const sourceUri = clip ? input.pkg.timeline.sourceMedia[clip.mediaId]?.uri : undefined;
     const resolvedUri = sourceUri && existsSync(sourceUri) ? sourceUri : null;
     const allowProcedural = clip?.effects?.some((e) => e.kind === 'allow_procedural' && e.enabled) ?? false;
@@ -315,18 +315,24 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       : `geq=r='clip(44+38*sin(X/45+T*1.4)+24*cos(Y/35-T),24,235)':g='clip(34+28*cos(X/55-T)+30*sin((X+Y)/60+T),20,235)':b='clip(68+58*sin((X-Y)/42+T*1.8),32,235)',scale=1280:720:flags=bilinear`;
 
     const isDiscrete = Boolean(directives?.discreteTypography);
-    const hideTitle = spec.clip?.effects?.some((e) => e.kind === 'hide_title' && e.enabled) ?? false;
+    const hasRealFootage = Boolean(spec.sourceUri);
+    const isGenericShotLabel = /^shot_\d+$/i.test(rawTitle) || /^Cena\s+\d+$/i.test(rawTitle);
+    const hideTitle =
+      (spec.clip?.effects?.some((e) => e.kind === 'hide_title' && e.enabled) ?? false) ||
+      (hasRealFootage && isGenericShotLabel);
     const headlineSize = isDiscrete ? 22 : directives?.elaborateMotionGraphics ? 36 : 34;
     const sublineSize = isDiscrete ? 15 : 20;
-    const motionBar = isDiscrete || hideTitle
+    const motionBar = isDiscrete || hideTitle || hasRealFootage
       ? ''
       : `drawbox=x='mod(t*220,w-240)':y=140:w=220:h=8:color=${accentHex}@0.92:t=fill`;
     const lowerBox = hideTitle
       ? ''
-      : isDiscrete
-        ? `drawbox=x=72:y=560:w=1136:h=82:color=${bgHex}@0.64:t=fill`
-        : `drawbox=x=72:y=515:w=1136:h=130:color=${bgHex}@0.82:t=fill`;
-    const headlineY = isDiscrete ? 574 : 536;
+      : hasRealFootage
+        ? `drawbox=x=72:y=568:w=1136:h=72:color=${bgHex}@0.58:t=fill`
+        : isDiscrete
+          ? `drawbox=x=72:y=560:w=1136:h=82:color=${bgHex}@0.64:t=fill`
+          : `drawbox=x=72:y=515:w=1136:h=130:color=${bgHex}@0.82:t=fill`;
+    const headlineY = hasRealFootage ? 584 : isDiscrete ? 574 : 536;
     const sublineY = isDiscrete ? 608 : 588;
     const colorFilterChain =
       input.pkg.colorPlan?.ffmpegColorFilterChain?.trim() ||
@@ -366,10 +372,12 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       lowerBox,
       ...(hideTitle
         ? []
-        : [
-            `drawtext=text='${headline}'${resolveFontOption()}:expansion=none:x=104:y=${headlineY}:fontsize=${headlineSize}:fontcolor=white`,
-            `drawtext=text='${subline}'${resolveFontOption()}:expansion=none:x=104:y=${sublineY}:fontsize=${sublineSize}:fontcolor=0xf59e0b`,
-          ]),
+        : hasRealFootage
+          ? [`drawtext=text='${headline}'${resolveFontOption()}:expansion=none:x=104:y=${headlineY}:fontsize=${headlineSize}:fontcolor=white`]
+          : [
+              `drawtext=text='${headline}'${resolveFontOption()}:expansion=none:x=104:y=${headlineY}:fontsize=${headlineSize}:fontcolor=white`,
+              `drawtext=text='${subline}'${resolveFontOption()}:expansion=none:x=104:y=${sublineY}:fontsize=${sublineSize}:fontcolor=0xf59e0b`,
+            ]),
       `vignette=PI/6`,
       colorFilterChain,
       blackOverlay.replace(/^,/, ''),
@@ -380,7 +388,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     const inputArgs = spec.sourceUri
       ? isImageSource
         ? ['-loop', '1', '-t', String(spec.effectiveDur), '-i', spec.sourceUri]
-        : ['-t', String(spec.effectiveDur * Math.max(0.25, spec.clip?.speed ?? 1) + 0.5), '-i', spec.sourceUri]
+        : ['-stream_loop', '-1', '-t', String(spec.effectiveDur * Math.max(0.25, spec.clip?.speed ?? 1) + 0.5), '-i', spec.sourceUri]
       : ['-f', 'lavfi', '-i', `color=c=${bgHex}:s=640x360:r=30:d=${spec.effectiveDur}`];
 
     await execFileAsync('ffmpeg', [

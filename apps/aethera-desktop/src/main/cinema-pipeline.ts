@@ -81,14 +81,26 @@ const LOCAL_MEDIA_EXT_RE = /\.(mp4|mov|webm|mkv|png|jpe?g|webp)$/i;
 export function extractSceneQueriesFromPrompt(prompt: string, sceneCount = 4): string[] {
   const cleaned = prompt.trim();
   if (!cleaned) return ['Cena principal'];
-  const parts = cleaned
-    .split(/[,;|•\n]+|\be\b/i)
-    .map((p) => p.trim())
-    .filter((p) => p.length >= 4);
+
+  // Strip meta-directives (format, tone, duration, humor) to isolate the actual subject
+  const stripped = cleaned
+    .replace(/\b(crie|faça|gere|produza|monte)\s+(um|uma)\s+v[ií]deo\s*(cinematogr[áa]fico|épico|curto|longo)?\s*(sobre|de|acerca\s+de)?/gi, ' ')
+    .replace(/\bcom\s+narrativa\s+\w+/gi, ' ')
+    .replace(/\bhumor\s*(pontual|leve|moderado|forte|\d+%)?/gi, ' ')
+    .replace(/\b(e\s+)?dura[çc][ãa]o\s*(de)?\s*\d+\s*(min(utos?)?|seg(undos?)?|s|m)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const coreTopic = (stripped.split(/[,;|•\n]+/)[0] ?? stripped).replace(/[.,;!?]+$/g, '').trim() || cleaned.slice(0, 60);
+  const isGaming = /\b(elden ring|game|jogo|boss|chefe|gameplay|soulslike|minecraft|gta|valorant|fortnite|zelda)\b/i.test(cleaned);
+  const suffixes = isGaming
+    ? ['gameplay no commentary', 'boss fight', 'cinematic', 'best moments', 'highlights', 'trailer']
+    : ['cinematic 4k', 'documentary footage', 'scenes', 'overview', 'visuals', 'b-roll'];
+
   const queries: string[] = [];
   for (let i = 0; i < sceneCount; i += 1) {
-    const base = parts[i % Math.max(1, parts.length)] ?? cleaned.slice(0, 60);
-    queries.push(base.slice(0, 80));
+    const suffix = suffixes[i % suffixes.length] ?? '';
+    queries.push(`${coreTopic} ${suffix}`.trim().slice(0, 90));
   }
   return queries;
 }

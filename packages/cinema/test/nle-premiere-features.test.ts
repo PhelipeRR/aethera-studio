@@ -151,7 +151,7 @@ describe('NLE Premiere-Grade Timeline, Color, Subtitles & Real Render', () => {
       saturation: 1.18,
       temperatureKelvinDelta: 450,
       curves: { shadows: -0.04, midtones: 0.03, highlights: 0.05 },
-      lutId: luts[0]?.lutId,
+      ...(luts[0]?.lutId ? { lutId: luts[0].lutId } : {}),
     });
 
     expect(chain).toContain('colorspace=all=bt709');

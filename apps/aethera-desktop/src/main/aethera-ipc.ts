@@ -1603,8 +1603,9 @@ export function registerAetheraDomainIpc(options: {
     },
     acquireExternalMedia: async (query, slotIndex, mediaDir, signal) => {
       try {
-        const results = await ytDlpSearch(ytDlp, query, 1, signal);
-        const firstUrl = results[0]?.url;
+        const results = await ytDlpSearch(ytDlp, query, 5, signal);
+        const picked = results[slotIndex % Math.max(1, results.length)] ?? results[0];
+        const firstUrl = picked?.url;
         if (!firstUrl) return null;
         const relativeDir = `acq_${slotIndex + 1}`;
         mkdirSync(join(mediaDir, relativeDir), { recursive: true });
