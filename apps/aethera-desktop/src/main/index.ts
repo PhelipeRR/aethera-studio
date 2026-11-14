@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, net, protocol, safeStorage } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, net, protocol, safeStorage } from 'electron';
 import {
   IntegrationAuthRegistry,
   PeerPairingManager,
@@ -43,15 +43,62 @@ function resolveDiscoveryDir(): string {
 }
 
 function createWindow() {
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null);
+  }
+
   const win = new BrowserWindow({
     width: 1280,
     height: 840,
     title: 'Aethera Studio',
+    autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  if (process.platform !== 'darwin') {
+    win.setMenu(null);
+    win.setMenuBarVisibility(false);
+  }
+
+  // Preserve essential keyboard shortcuts without native menu bar
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    const isAccel = input.control || input.meta;
+    if (input.key === 'F12' || (isAccel && input.shift && input.key.toLowerCase() === 'i')) {
+      event.preventDefault();
+      win.webContents.toggleDevTools();
+      return;
+    }
+    if (!app.isPackaged && (input.key === 'F5' || (isAccel && input.key.toLowerCase() === 'r'))) {
+      event.preventDefault();
+      win.webContents.reload();
+    }
+  });
+
+  // Preserve right-click context menu for editable inputs and text selection
+  win.webContents.on('context-menu', (_event, params) => {
+    const template: Electron.MenuItemConstructorOptions[] = [];
+    if (params.isEditable) {
+      template.push(
+        { role: 'undo', label: 'Desfazer', enabled: params.editFlags.canUndo },
+        { role: 'redo', label: 'Refazer', enabled: params.editFlags.canRedo },
+        { type: 'separator' },
+        { role: 'cut', label: 'Recortar', enabled: params.editFlags.canCut },
+        { role: 'copy', label: 'Copiar', enabled: params.editFlags.canCopy },
+        { role: 'paste', label: 'Colar', enabled: params.editFlags.canPaste },
+        { type: 'separator' },
+        { role: 'selectAll', label: 'Selecionar tudo', enabled: params.editFlags.canSelectAll },
+      );
+    } else if (params.selectionText.trim().length > 0) {
+      template.push({ role: 'copy', label: 'Copiar' });
+    }
+    if (template.length > 0) {
+      Menu.buildFromTemplate(template).popup({ window: win });
+    }
   });
 
   if (process.env['ELECTRON_RENDERER_URL']) {

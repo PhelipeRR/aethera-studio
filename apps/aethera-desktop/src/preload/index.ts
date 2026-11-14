@@ -43,4 +43,28 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaAcademyReprocess: () => ipcRenderer.invoke('cinema:academy-reprocess'),
   cinemaAcademyDeleteMaterial: (input: { materialId: string }) =>
     ipcRenderer.invoke('cinema:academy-delete-material', input),
+  cinemaUpdateAudioMix: (input: {
+    projectId: string;
+    stems: Array<{ stemRole: string; targetGainDb?: number; muted?: boolean; duckingUnderVoiceDb?: number }>;
+    targetLufs?: number;
+  }) => ipcRenderer.invoke('cinema:update-audio-mix', input),
+  cinemaUpdateColorPlan: (input: {
+    projectId: string;
+    ffmpegColorFilterChain: string;
+    targetSpace?: 'rec709' | 'rec2020_hdr' | 'srgb_web';
+  }) => ipcRenderer.invoke('cinema:update-color-plan', input),
+  cinemaApplyPromptRevision: (input: { projectId: string; instruction: string; selectedClipId?: string }) =>
+    ipcRenderer.invoke('cinema:apply-prompt-revision', input),
+  cinemaStartStagedProduction: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke('cinema:start-staged-production', input),
+  cinemaCancelProduction: (projectId: string) => ipcRenderer.invoke('cinema:cancel-production', projectId),
+  cinemaResumeProduction: (projectId: string) => ipcRenderer.invoke('cinema:resume-production', projectId),
+  cinemaGetProductionState: (projectId: string) => ipcRenderer.invoke('cinema:get-production-state', projectId),
+  cinemaResolvePendingMedia: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke('cinema:resolve-pending-media', input),
+  onCinemaProductionProgress: (listener: (job: unknown) => void) => {
+    const wrapped = (_event: unknown, job: unknown) => listener(job);
+    ipcRenderer.on('cinema:production-progress', wrapped);
+    return () => ipcRenderer.removeListener('cinema:production-progress', wrapped);
+  },
 });

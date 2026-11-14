@@ -6,9 +6,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
+import { StagedCinemaPipeline, type StagedProductionJob } from './cinema-pipeline.js';
 import {
   AetheraAcademyEngine,
   AetheraEvolutionCore,
+  applyAudioMixerUpdates,
+  applyPromptRevisionToPackage,
   applyTargetedRepair,
   evaluateEnsemble,
   evaluateReleaseGates,
@@ -26,6 +29,7 @@ import {
   type AcademyLearningMode,
   type AcademyMaterialKind,
   type AcademyRightsScope,
+  type AudioStemRole,
   type CinemaProductionPackage,
   type DirectorId,
   type ProduceCinemaPackageInput,
@@ -1564,6 +1568,48 @@ export function registerAetheraDomainIpc(options: {
     evolutionCore,
     join(evolutionDir, 'academy-store.json'),
   );
+  const stagedPipeline = new StagedCinemaPipeline({
+    jobsDir: join(app.getPath('userData'), 'cinema-jobs'),
+    mediaDir: join(app.getPath('userData'), 'cinema-media'),
+    outputDir: join(app.getPath('userData'), 'cinema-renders'),
+    evolutionCore,
+    onProgress: (job: StagedProductionJob) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send('cinema:production-progress', job);
+        }
+      }
+    },
+    onPackageReady: (pkg, prompt) => {
+      cinemaPackages.set(pkg.timeline.projectId, pkg);
+      cinemaPrompts.set(pkg.timeline.projectId, prompt);
+      persistCinemaProject(pkg);
+    },
+    onRenderReady: (projectId, render) => {
+      cinemaRenders.set(projectId, { ...render, mediaUrl: toMediaUrl(render.mp4Path) });
+    },
+    acquireExternalMedia: async (query, slotIndex, mediaDir, signal) => {
+      try {
+        const results = await ytDlpSearch(ytDlp, query, 1, signal);
+        const firstUrl = results[0]?.url;
+        if (!firstUrl) return null;
+        const relativeDir = `acq_${slotIndex + 1}`;
+        mkdirSync(join(mediaDir, relativeDir), { recursive: true });
+        const acq = await acquireWithYtDlp({
+          ytDlp,
+          url: firstUrl,
+          root: mediaDir,
+          relativeDir,
+          fileStem: `slot_${slotIndex + 1}`,
+          signal,
+          ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),
+        });
+        return acq.relativePath ? join(mediaDir, acq.relativePath) : null;
+      } catch {
+        return null;
+      }
+    },
+  });
   ipcMain.handle('cinema:capabilities', async (event) => {
     ensureTrusted(event.senderFrame);
     return probeCapabilities();
@@ -2040,6 +2086,169 @@ export function registerAetheraDomainIpc(options: {
         academy: academyEngine.getSnapshot(),
         evolution: evolutionCore.getSnapshot(),
       };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:update-audio-mix',
+    async (
+      event,
+      input: {
+        projectId: string;
+        stems: Array<{
+          stemRole: AudioStemRole;
+          targetGainDb?: number;
+          muted?: boolean;
+          duckingUnderVoiceDb?: number;
+        }>;
+        targetLufs?: number;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const pkg = cinemaPackages.get(input.projectId);
+      if (!pkg) throw new Error(`not_found: pacote Cinema ${input.projectId} não encontrado.`);
+      const { soundPlan, validation } = applyAudioMixerUpdates(pkg.soundPlan, input.stems, input.targetLufs);
+      const mixHash = createHash('sha256').update(JSON.stringify(soundPlan.stems)).digest('hex').slice(0, 8);
+      const updated: CinemaProductionPackage = {
+        ...pkg,
+        soundPlan,
+        timeline: {
+          ...pkg.timeline,
+          version: pkg.timeline.version + 1,
+          renderFingerprint: `${pkg.timeline.renderFingerprint.slice(0, 8)}_${mixHash}`,
+        },
+      };
+      cinemaPackages.set(input.projectId, updated);
+      persistCinemaProject(updated);
+      return { pkg: updated, validation };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:update-color-plan',
+    async (
+      event,
+      input: {
+        projectId: string;
+        ffmpegColorFilterChain: string;
+        targetSpace?: 'rec709' | 'rec2020_hdr' | 'srgb_web';
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const pkg = cinemaPackages.get(input.projectId);
+      if (!pkg) throw new Error(`not_found: pacote Cinema ${input.projectId} não encontrado.`);
+      const chain = input.ffmpegColorFilterChain.trim();
+      if (!chain) throw new Error('invalid_color_chain: O filtro de cor FFmpeg não pode ficar vazio.');
+      const colorHash = createHash('sha256').update(chain).digest('hex').slice(0, 8);
+      const updated: CinemaProductionPackage = {
+        ...pkg,
+        colorPlan: {
+          ...pkg.colorPlan,
+          ...(input.targetSpace ? { targetSpace: input.targetSpace } : {}),
+          ffmpegColorFilterChain: chain,
+        },
+        timeline: {
+          ...pkg.timeline,
+          version: pkg.timeline.version + 1,
+          renderFingerprint: `${pkg.timeline.renderFingerprint.slice(0, 8)}_${colorHash}`,
+        },
+      };
+      cinemaPackages.set(input.projectId, updated);
+      persistCinemaProject(updated);
+      return { pkg: updated };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:apply-prompt-revision',
+    async (event, input: { projectId: string; instruction: string; selectedClipId?: string }) => {
+      ensureTrusted(event.senderFrame);
+      const pkg = cinemaPackages.get(input.projectId);
+      if (!pkg) throw new Error(`not_found: pacote Cinema ${input.projectId} não encontrado.`);
+      const res = applyPromptRevisionToPackage(pkg, input.instruction, {
+        ...(input.selectedClipId ? { selectedClipId: input.selectedClipId } : {}),
+      });
+      evolutionCore.ingestHumanFeedback(input.instruction, {
+        projectId: input.projectId,
+        ...(pkg.direction?.brief?.genre ? { genre: pkg.direction.brief.genre } : {}),
+      });
+      cinemaPackages.set(input.projectId, res.pkg);
+      persistCinemaProject(res.pkg);
+      return res;
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:start-staged-production',
+    async (
+      event,
+      input: {
+        projectId: string;
+        prompt: string;
+        genre?: 'documentary' | 'gameplay_essay' | 'top_list' | 'trailer';
+        format?: 'youtube_16_9' | 'shorts_9_16';
+        targetDurationSec?: number;
+        humorIntensity?: number;
+        renderProfile?: 'draft_540p' | 'review_720p' | 'master_1080p';
+        useNvenc?: boolean;
+        seedMediaFiles?: string[];
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      return stagedPipeline.start(input);
+    },
+  );
+
+  ipcMain.handle('cinema:cancel-production', async (event, projectId: string) => {
+    ensureTrusted(event.senderFrame);
+    return stagedPipeline.cancel(projectId);
+  });
+
+  ipcMain.handle('cinema:resume-production', async (event, projectId: string) => {
+    ensureTrusted(event.senderFrame);
+    return stagedPipeline.resume(projectId);
+  });
+
+  ipcMain.handle('cinema:get-production-state', async (event, projectId: string) => {
+    ensureTrusted(event.senderFrame);
+    return stagedPipeline.loadJob(projectId);
+  });
+
+  ipcMain.handle(
+    'cinema:resolve-pending-media',
+    async (
+      event,
+      input: {
+        projectId: string;
+        resolutions: Array<{
+          slotIndex: number;
+          filePath?: string;
+          pickFile?: boolean;
+          allowProcedural?: boolean;
+          retryQuery?: string;
+        }>;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const normalized = [];
+      for (const item of input.resolutions) {
+        if (item.pickFile) {
+          const picked = await dialog.showOpenDialog({
+            title: `Selecionar mídia real para cena #${item.slotIndex + 1}`,
+            properties: ['openFile'],
+            filters: [
+              { name: 'Mídia (Vídeo/Imagem)', extensions: ['mp4', 'mov', 'webm', 'mkv', 'png', 'jpg', 'jpeg', 'webp'] },
+            ],
+          });
+          if (picked.canceled || !picked.filePaths[0]) {
+            throw new Error('cancelled_pick: Seleção de arquivo cancelada.');
+          }
+          normalized.push({ slotIndex: item.slotIndex, filePath: picked.filePaths[0] });
+        } else {
+          normalized.push(item);
+        }
+      }
+      return stagedPipeline.resolvePendingMedia(input.projectId, normalized);
     },
   );
 

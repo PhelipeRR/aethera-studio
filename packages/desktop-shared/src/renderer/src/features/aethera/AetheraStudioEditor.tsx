@@ -54,6 +54,22 @@ interface ImportedAsset {
   waveformPeaks: number[];
 }
 
+interface AudioStemView {
+  stemRole: 'voiceover' | 'music' | 'sfx' | 'ambience';
+  targetGainDb: number;
+  defaultGainDb?: number;
+  muted?: boolean;
+  duckingUnderVoiceDb?: number;
+}
+
+interface AudioMixValidationView {
+  valid: boolean;
+  peakRisk: boolean;
+  estimatedPeakDbtp: number;
+  estimatedIntegratedLufs: number;
+  warnings: string[];
+}
+
 interface EditorPackageView {
   direction?: {
     treatment?: string;
@@ -76,6 +92,7 @@ interface EditorPackageView {
       speed: number;
       mediaId?: string;
       sourceMediaId?: string;
+      effects?: string[];
       timelineRange: { start: { value: number; rate: number }; duration: { value: number; rate: number } };
     }>;
     sourceMedia: Record<string, { mediaId: string; kind: string; uri?: string; width?: number; height?: number; license: string }>;
@@ -83,7 +100,7 @@ interface EditorPackageView {
   colorPlan: { targetSpace: string; ffmpegColorFilterChain: string; grades: Array<{ skinToneProtected: boolean }> };
   soundPlan: {
     platformProfile: { integratedLufs: number };
-    stems: Array<{ stemRole: string; targetGainDb: number }>;
+    stems: AudioStemView[];
     sfxEvents: Array<{ cueId: string; sfxName: string; timeSeconds: number; reason: string }>;
   };
 }
@@ -126,6 +143,30 @@ interface CinemaBridge {
     projectId?: string;
     genre?: string;
   }) => Promise<unknown>;
+  cinemaUpdateAudioMix?: (input: {
+    projectId: string;
+    stems: Array<{ stemRole: string; targetGainDb?: number; muted?: boolean; duckingUnderVoiceDb?: number }>;
+    targetLufs?: number;
+  }) => Promise<{ pkg: EditorPackageView; validation: AudioMixValidationView }>;
+  cinemaUpdateColorPlan?: (input: {
+    projectId: string;
+    ffmpegColorFilterChain: string;
+    targetSpace?: 'rec709' | 'rec2020_hdr' | 'srgb_web';
+  }) => Promise<{ pkg: EditorPackageView }>;
+  cinemaApplyPromptRevision?: (input: {
+    projectId: string;
+    instruction: string;
+    selectedClipId?: string;
+  }) => Promise<{
+    pkg: EditorPackageView;
+    summary: string;
+    affectedClipIds: string[];
+    affectedBuses: string[];
+    requiresVideoReRender: boolean;
+    requiresAudioReRender: boolean;
+    requiresMediaAcquisition: boolean;
+    audioValidation?: AudioMixValidationView;
+  }>;
 }
 
 function getBridge(): CinemaBridge | undefined {
@@ -166,6 +207,17 @@ export function AetheraStudioEditor() {
   const [exportingOtio, setExportingOtio] = useState(false);
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [playerVolume, setPlayerVolume] = useState(1);
+  const [playerMuted, setPlayerMuted] = useState(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [previewStale, setPreviewStale] = useState(false);
+  const [colorDraft, setColorDraft] = useState('');
+  const [colorExpanded, setColorExpanded] = useState(false);
+  const [savingColor, setSavingColor] = useState(false);
+  const [colorCopied, setColorCopied] = useState(false);
+  const [audioValidation, setAudioValidation] = useState<AudioMixValidationView | null>(null);
+  const [savingAudio, setSavingAudio] = useState(false);
+  const [previewingBus, setPreviewingBus] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -336,6 +388,16 @@ export function AetheraStudioEditor() {
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [playing, previewMode, totalDurationSec]);
+
+  useEffect(() => {
+    setColorDraft(pkg?.colorPlan?.ffmpegColorFilterChain ?? '');
+  }, [pkg?.colorPlan?.ffmpegColorFilterChain]);
+
+  useEffect(() => {
+    if (!videoRef.current) return;
+    videoRef.current.volume = playerMuted ? 0 : playerVolume;
+    videoRef.current.muted = playerMuted;
+  }, [playerVolume, playerMuted, previewMode, renderedMedia]);
 
   // Toggle video element when in MP4 mode
   useEffect(() => {
@@ -560,6 +622,139 @@ export function AetheraStudioEditor() {
     setStatusMsg(`Projeto carregado: ${nextProjectId}`);
   }
 
+  async function handleAudioBusChange(
+    stemRole: AudioStemView['stemRole'],
+    patch: { targetGainDb?: number; muted?: boolean },
+  ) {
+    if (!pkg) return;
+    const clampedGain =
+      patch.targetGainDb !== undefined
+        ? Number(Math.max(-48, Math.min(12, patch.targetGainDb)).toFixed(1))
+        : undefined;
+    const nextStems = pkg.soundPlan.stems.map((s) =>
+      s.stemRole === stemRole
+        ? {
+            ...s,
+            ...(clampedGain !== undefined ? { targetGainDb: clampedGain } : {}),
+            ...(patch.muted !== undefined ? { muted: patch.muted } : {}),
+          }
+        : s,
+    );
+    setPkg({ ...pkg, soundPlan: { ...pkg.soundPlan, stems: nextStems } });
+    setPreviewStale(true);
+
+    const api = getBridge();
+    if (!api?.cinemaUpdateAudioMix) return;
+    setSavingAudio(true);
+    try {
+      const res = await api.cinemaUpdateAudioMix({
+        projectId: pkg.timeline.projectId,
+        stems: nextStems.map((s) => ({
+          stemRole: s.stemRole,
+          targetGainDb: s.targetGainDb,
+          muted: Boolean(s.muted),
+        })),
+      });
+      setPkg(res.pkg);
+      setAudioValidation(res.validation);
+      setStatusMsg(
+        res.validation.warnings.length > 0
+          ? `Mixer atualizado com alerta: ${res.validation.warnings[0]}`
+          : `Mixer salvo (${stemRole} · v${res.pkg.timeline.version}). Clique em "Renderizar MP4" para atualizar a prévia final.`,
+      );
+    } catch (err) {
+      setStatusMsg(`Erro ao atualizar mixer: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSavingAudio(false);
+    }
+  }
+
+  async function handleResetAudioBus(stemRole?: AudioStemView['stemRole']) {
+    if (!pkg) return;
+    const defaults: Record<string, number> = { voiceover: 0, music: -16, sfx: -8, ambience: -22 };
+    const targets = pkg.soundPlan.stems
+      .filter((s) => !stemRole || s.stemRole === stemRole)
+      .map((s) => ({
+        stemRole: s.stemRole,
+        targetGainDb: s.defaultGainDb ?? defaults[s.stemRole] ?? 0,
+        muted: false,
+      }));
+    const nextStems = pkg.soundPlan.stems.map((s) => {
+      const hit = targets.find((t) => t.stemRole === s.stemRole);
+      return hit ? { ...s, targetGainDb: hit.targetGainDb, muted: false } : s;
+    });
+    setPkg({ ...pkg, soundPlan: { ...pkg.soundPlan, stems: nextStems } });
+    setPreviewStale(true);
+    const api = getBridge();
+    if (api?.cinemaUpdateAudioMix) {
+      const res = await api.cinemaUpdateAudioMix({
+        projectId: pkg.timeline.projectId,
+        stems: targets,
+      });
+      setPkg(res.pkg);
+      setAudioValidation(res.validation);
+    }
+    setStatusMsg(stemRole ? `Bus ${stemRole} restaurado ao padrão.` : 'Todos os buses restaurados ao padrão.');
+  }
+
+  function handlePreListenBus(stem: AudioStemView) {
+    if (typeof window === 'undefined') return;
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    setPreviewingBus(stem.stemRole);
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+    const freqs: Record<string, number> = { voiceover: 330, music: 220, sfx: 587, ambience: 146 };
+    osc.type = stem.stemRole === 'ambience' ? 'triangle' : 'sine';
+    osc.frequency.value = freqs[stem.stemRole] ?? 261;
+    const linearGain = stem.muted ? 0 : Math.min(0.95, Math.max(0, 0.28 * Math.pow(10, stem.targetGainDb / 20)));
+    gainNode.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(Math.max(0.0001, linearGain), ctx.currentTime + 0.04);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.85);
+    osc.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.9);
+    setTimeout(() => {
+      void ctx.close().catch(() => {});
+      setPreviewingBus((cur) => (cur === stem.stemRole ? null : cur));
+    }, 950);
+  }
+
+  async function handleSaveColorChain() {
+    if (!pkg || !colorDraft.trim()) return;
+    const api = getBridge();
+    setPreviewStale(true);
+    if (!api?.cinemaUpdateColorPlan) {
+      setPkg({ ...pkg, colorPlan: { ...pkg.colorPlan, ffmpegColorFilterChain: colorDraft.trim() } });
+      return;
+    }
+    setSavingColor(true);
+    try {
+      const res = await api.cinemaUpdateColorPlan({
+        projectId: pkg.timeline.projectId,
+        ffmpegColorFilterChain: colorDraft.trim(),
+      });
+      setPkg(res.pkg);
+      setStatusMsg(`Filtro de cor salvo (v${res.pkg.timeline.version}).`);
+    } catch (err) {
+      setStatusMsg(`Erro ao salvar filtro de cor: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSavingColor(false);
+    }
+  }
+
+  async function handleCopyColorChain() {
+    try {
+      await navigator.clipboard.writeText(colorDraft);
+      setColorCopied(true);
+      setTimeout(() => setColorCopied(false), 1500);
+    } catch {
+      setStatusMsg('Use Ctrl+C no campo de filtro para copiar.');
+    }
+  }
+
   async function handleApplyRevisionAndLearn(e: React.FormEvent) {
     e.preventDefault();
     const api = getBridge();
@@ -568,6 +763,43 @@ export function AetheraStudioEditor() {
     setSubmittingRevision(true);
     setStatusMsg(null);
     try {
+      if (api.cinemaApplyPromptRevision) {
+        const rev = await api.cinemaApplyPromptRevision({
+          projectId: pkg.timeline.projectId,
+          instruction: note,
+          selectedClipId,
+        });
+        setPkg(rev.pkg);
+        const mapped = mapClipsFromPkg(rev.pkg);
+        setClips(mapped);
+        if (rev.audioValidation) setAudioValidation(rev.audioValidation);
+        if ((rev.requiresVideoReRender || rev.requiresAudioReRender) && api.cinemaRenderRealMp4) {
+          setRendering(true);
+          setRenderProgress(45);
+          try {
+            const rendered = await api.cinemaRenderRealMp4({
+              projectId: rev.pkg.timeline.projectId,
+              useNvenc: true,
+            });
+            setRenderedMedia(rendered);
+            setPreviewMode('mp4');
+            setPreviewStale(false);
+            setMediaError(null);
+          } finally {
+            setRendering(false);
+            setRenderProgress(null);
+          }
+        } else {
+          setPreviewStale(true);
+        }
+        await refreshProjects();
+        setRevisionText('');
+        setStatusMsg(
+          `Revisão direcionada aplicada (${rev.summary}) · segmentos: ${rev.affectedClipIds.length || 'áudio'}. Memória salva.`,
+        );
+        return;
+      }
+
       if (api.cinemaSubmitFeedback) {
         const genre = pkg.direction?.brief?.genre;
         await api.cinemaSubmitFeedback({
@@ -598,6 +830,7 @@ export function AetheraStudioEditor() {
         });
         setRenderedMedia(rendered);
         setPreviewMode('mp4');
+        setPreviewStale(false);
       }
       await refreshProjects();
       setRevisionText('');
@@ -842,14 +1075,31 @@ export function AetheraStudioEditor() {
                 onTimeUpdate={(e) => setPlayheadSec(Number(e.currentTarget.currentTime.toFixed(2)))}
                 onPlay={() => setPlaying(true)}
                 onPause={() => setPlaying(false)}
+                onError={() =>
+                  setMediaError(
+                    'Erro ao decodificar ou carregar a prévia MP4. Clique em "Renderizar MP4" para gerar novamente.',
+                  )
+                }
+                onLoadedData={() => setMediaError(null)}
                 className="h-full w-full object-contain"
               />
             ) : (
               <canvas ref={canvasRef} width={768} height={432} className="h-full w-full object-contain" />
             )}
+            {previewStale && (
+              <div className="absolute top-2 right-2 rounded-md border border-amber-400/50 bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-200">
+                Prévia desatualizada — clique em Renderizar MP4
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center justify-between border-t border-border/70 pt-2 text-xs">
+          {mediaError && (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+              {mediaError}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-2 text-xs">
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -859,6 +1109,27 @@ export function AetheraStudioEditor() {
               >
                 {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
               </button>
+              <button
+                type="button"
+                onClick={() => setPlayerMuted((m) => !m)}
+                className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                aria-label={playerMuted ? 'Ativar som' : 'Mutar player'}
+              >
+                {playerMuted ? 'Mudo' : 'Som'}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={playerMuted ? 0 : playerVolume}
+                onChange={(e) => {
+                  setPlayerMuted(false);
+                  setPlayerVolume(Number(e.target.value));
+                }}
+                aria-label="Volume do player"
+                className="w-20 accent-purple-500"
+              />
               <span className="font-mono text-muted-foreground">30 fps · Rec.709</span>
             </div>
             <span className="text-[11px] text-muted-foreground">
@@ -872,7 +1143,7 @@ export function AetheraStudioEditor() {
         </section>
 
         {/* Right: Inspector */}
-        <aside className="rounded-2xl border border-border bg-card p-3 lg:col-span-3 space-y-3">
+        <aside className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card p-3 lg:col-span-3 space-y-3">
           <div className="flex gap-1 text-[11px]">
             {(
               [
@@ -930,25 +1201,145 @@ export function AetheraStudioEditor() {
           )}
 
           {inspectorTab === 'color' && pkg && (
-            <div className="space-y-2 text-xs">
-              <p className="font-semibold text-foreground">Target: {pkg.colorPlan.targetSpace}</p>
-              <code className="block rounded-lg border border-border bg-[#0d0d17] p-2 text-[10px] text-purple-200">
-                {pkg.colorPlan.ffmpegColorFilterChain}
-              </code>
+            <div className="min-w-0 space-y-2 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                <p className="font-semibold text-foreground">Target: {pkg.colorPlan.targetSpace}</p>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setColorExpanded((v) => !v)}
+                    className="rounded border border-border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                  >
+                    {colorExpanded ? 'Recolher' : 'Expandir'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopyColorChain}
+                    className="rounded border border-border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                  >
+                    {colorCopied ? 'Copiado!' : 'Copiar'}
+                  </button>
+                </div>
+              </div>
+              <textarea
+                aria-label="Cadeia de filtro de cor FFmpeg"
+                rows={colorExpanded ? 6 : 3}
+                value={colorDraft}
+                onChange={(e) => setColorDraft(e.target.value)}
+                className="w-full min-w-0 max-w-full resize-y break-all whitespace-pre-wrap rounded-lg border border-border bg-[#0d0d17] p-2 font-mono text-[10px] leading-relaxed text-purple-200 focus:border-primary focus:outline-none"
+              />
+              <button
+                type="button"
+                disabled={savingColor || !colorDraft.trim()}
+                onClick={handleSaveColorChain}
+                className="w-full rounded-lg border border-primary/40 bg-primary/20 py-1.5 text-[11px] font-medium text-purple-100 hover:bg-primary/30 disabled:opacity-50"
+              >
+                {savingColor ? 'Salvando cor...' : 'Aplicar Filtro de Cor'}
+              </button>
             </div>
           )}
 
           {inspectorTab === 'audio' && pkg && (
-            <div className="space-y-2 text-xs">
-              <p className="font-semibold text-foreground">
-                Loudness Alvo: {pkg.soundPlan.platformProfile.integratedLufs} LUFS
-              </p>
-              {pkg.soundPlan.stems.map((stem) => (
-                <div key={stem.stemRole} className="flex items-center justify-between rounded-lg border border-border/70 bg-[#0d0d17] px-2.5 py-1.5 text-[11px]">
-                  <span className="inline-flex items-center gap-1.5"><Volume2 className="size-3 text-purple-400" /> {stem.stemRole}</span>
-                  <span>{stem.targetGainDb} dB</span>
+            <div className="min-w-0 space-y-2.5 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-1">
+                <p className="font-semibold text-foreground">
+                  Loudness Alvo: {pkg.soundPlan.platformProfile.integratedLufs} LUFS
+                </p>
+                <button
+                  type="button"
+                  onClick={() => handleResetAudioBus()}
+                  className="rounded border border-border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                >
+                  Restaurar todos
+                </button>
+              </div>
+              {audioValidation && audioValidation.warnings.length > 0 && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                  {audioValidation.warnings.map((w, idx) => (
+                    <div key={idx}>{w}</div>
+                  ))}
                 </div>
-              ))}
+              )}
+              <div className="space-y-2">
+                {pkg.soundPlan.stems.map((stem) => (
+                  <div
+                    key={stem.stemRole}
+                    className="space-y-1.5 rounded-lg border border-border/70 bg-[#0d0d17] p-2 text-[11px]"
+                  >
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-foreground">
+                        <Volume2 className="size-3 shrink-0 text-purple-400" />
+                        <span className="truncate">{stem.stemRole}</span>
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handlePreListenBus(stem)}
+                          className={`rounded border px-1.5 py-0.5 text-[10px] ${
+                            previewingBus === stem.stemRole
+                              ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+                              : 'border-border text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          {previewingBus === stem.stemRole ? 'Ouvindo...' : 'Ouvir'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleAudioBusChange(stem.stemRole, { muted: !stem.muted })}
+                          className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+                            stem.muted
+                              ? 'border-destructive/60 bg-destructive/20 text-destructive'
+                              : 'border-border text-muted-foreground hover:text-foreground'
+                          }`}
+                          aria-label={`Mutar ${stem.stemRole}`}
+                        >
+                          M
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleResetAudioBus(stem.stemRole)}
+                          className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                          title="Restaurar ganho padrão"
+                        >
+                          Reset
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="range"
+                        aria-label={`Ganho ${stem.stemRole} em dB`}
+                        min={-48}
+                        max={12}
+                        step={0.5}
+                        disabled={Boolean(stem.muted)}
+                        value={stem.targetGainDb}
+                        onChange={(e) =>
+                          handleAudioBusChange(stem.stemRole, { targetGainDb: Number(e.target.value) })
+                        }
+                        className="min-w-0 flex-1 accent-purple-500 disabled:opacity-40"
+                      />
+                      <div className="flex shrink-0 items-center gap-1">
+                        <input
+                          type="number"
+                          aria-label={`Valor numérico ${stem.stemRole} dB`}
+                          min={-48}
+                          max={12}
+                          step={0.5}
+                          disabled={Boolean(stem.muted)}
+                          value={stem.targetGainDb}
+                          onChange={(e) =>
+                            handleAudioBusChange(stem.stemRole, { targetGainDb: Number(e.target.value) })
+                          }
+                          className="w-14 rounded border border-border bg-background px-1.5 py-0.5 text-right font-mono text-[10px] text-foreground disabled:opacity-40"
+                        />
+                        <span className="text-[10px] text-muted-foreground">dB</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {savingAudio && <p className="text-[10px] text-purple-300">Salvando mixer...</p>}
             </div>
           )}
 
@@ -1125,30 +1516,46 @@ export function AetheraStudioEditor() {
                 </div>
 
                 {/* A1 Narration Waveform */}
-                <div className="relative flex h-10 items-center rounded-lg border border-emerald-500/25 bg-[#090910] px-1" style={{ width: timelineWidthPx }}>
-                  <div className="flex h-7 w-full items-center gap-[2px]">
-                    {waveformBars.map((amp, idx) => (
-                      <div
-                        key={idx}
-                        className="flex-1 rounded-full bg-emerald-400/70"
-                        style={{ height: `${Math.round(amp * 100)}%` }}
-                      />
-                    ))}
-                  </div>
-                </div>
+                {(() => {
+                  const nar = pkg?.soundPlan.stems.find((s) => s.stemRole === 'voiceover');
+                  const mus = pkg?.soundPlan.stems.find((s) => s.stemRole === 'music');
+                  const narScale = nar?.muted ? 0.08 : Math.min(1.4, Math.max(0.2, Math.pow(10, (nar?.targetGainDb ?? 0) / 20)));
+                  const musScale = mus?.muted ? 0.08 : Math.min(1.4, Math.max(0.15, Math.pow(10, ((mus?.targetGainDb ?? -16) + 16) / 20)));
+                  return (
+                    <>
+                      <div className={`relative flex h-10 items-center rounded-lg border border-emerald-500/25 bg-[#090910] px-1 ${nar?.muted ? 'opacity-40' : ''}`} style={{ width: timelineWidthPx }}>
+                        <span className="pointer-events-none absolute right-2 top-0.5 z-10 font-mono text-[9px] text-emerald-300">
+                          {nar?.muted ? 'MUTE' : `${nar?.targetGainDb ?? 0} dB`}
+                        </span>
+                        <div className="flex h-7 w-full items-center gap-[2px]">
+                          {waveformBars.map((amp, idx) => (
+                            <div
+                              key={idx}
+                              className="flex-1 rounded-full bg-emerald-400/70"
+                              style={{ height: `${Math.min(100, Math.round(amp * 100 * narScale))}%` }}
+                            />
+                          ))}
+                        </div>
+                      </div>
 
-                {/* A2 Music Waveform */}
-                <div className="relative flex h-10 items-center rounded-lg border border-sky-500/25 bg-[#090910] px-1" style={{ width: timelineWidthPx }}>
-                  <div className="flex h-6 w-full items-center gap-[3px]">
-                    {waveformBars.map((amp, idx) => (
-                      <div
-                        key={idx}
-                        className="flex-1 rounded-full bg-sky-400/55"
-                        style={{ height: `${Math.max(18, Math.round(amp * 75))}%` }}
-                      />
-                    ))}
-                  </div>
-                </div>
+                      {/* A2 Music Waveform */}
+                      <div className={`relative flex h-10 items-center rounded-lg border border-sky-500/25 bg-[#090910] px-1 ${mus?.muted ? 'opacity-40' : ''}`} style={{ width: timelineWidthPx }}>
+                        <span className="pointer-events-none absolute right-2 top-0.5 z-10 font-mono text-[9px] text-sky-300">
+                          {mus?.muted ? 'MUTE' : `${mus?.targetGainDb ?? -16} dB`}
+                        </span>
+                        <div className="flex h-6 w-full items-center gap-[3px]">
+                          {waveformBars.map((amp, idx) => (
+                            <div
+                              key={idx}
+                              className="flex-1 rounded-full bg-sky-400/55"
+                              style={{ height: `${Math.min(100, Math.max(12, Math.round(amp * 75 * musScale)))}%` }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
 
                 {/* A3 SFX Cues */}
                 <div className="relative h-10 rounded-lg bg-[#090910]" style={{ width: timelineWidthPx }}>

@@ -27,6 +27,7 @@ export interface RealRenderInput {
   fileName?: string;
   useNvenc?: boolean;
   injectRealBlackFrameDefect?: boolean;
+  requireRealMedia?: boolean;
   voiceStudioUrl?: string;
   voiceStudioModelId?: string;
   voiceStudioVoiceId?: string;
@@ -205,11 +206,18 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       : 6.0;
     const effectiveDur = Number(Math.max(1.2, Math.min(12.0, rawDur)).toFixed(2));
     const sourceUri = clip ? input.pkg.timeline.sourceMedia[clip.mediaId]?.uri : undefined;
+    const resolvedUri = sourceUri && existsSync(sourceUri) ? sourceUri : null;
+    const allowProcedural = clip?.effects?.some((e) => e.kind === 'allow_procedural' && e.enabled) ?? false;
+    if (input.requireRealMedia && !resolvedUri && !allowProcedural) {
+      throw new Error(
+        `missing_real_media: Clipe "${clip?.label ?? `cena_${i + 1}`}" (${clip?.clipId ?? i + 1}) não possui mídia real adquirida (${sourceUri ?? 'sem URI'}). Resolva ou importe a mídia antes da renderização.`,
+      );
+    }
     return {
       clip,
       shot: shots[i % Math.max(1, shots.length)],
       effectiveDur,
-      sourceUri: sourceUri && existsSync(sourceUri) ? sourceUri : null,
+      sourceUri: resolvedUri,
     };
   });
   const minClipDur = Math.min(...clipSpecs.map((s) => s.effectiveDur));
@@ -301,26 +309,36 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       : `geq=r='clip(44+38*sin(X/45+T*1.4)+24*cos(Y/35-T),24,235)':g='clip(34+28*cos(X/55-T)+30*sin((X+Y)/60+T),20,235)':b='clip(68+58*sin((X-Y)/42+T*1.8),32,235)',scale=1280:720:flags=bilinear`;
 
     const isDiscrete = Boolean(directives?.discreteTypography);
+    const hideTitle = spec.clip?.effects?.some((e) => e.kind === 'hide_title' && e.enabled) ?? false;
     const headlineSize = isDiscrete ? 22 : directives?.elaborateMotionGraphics ? 36 : 34;
     const sublineSize = isDiscrete ? 15 : 20;
-    const motionBar = isDiscrete
+    const motionBar = isDiscrete || hideTitle
       ? ''
       : `drawbox=x='mod(t*220,w-240)':y=140:w=220:h=8:color=${accentHex}@0.92:t=fill`;
-    const lowerBox = isDiscrete
-      ? `drawbox=x=72:y=560:w=1136:h=82:color=${bgHex}@0.64:t=fill`
-      : `drawbox=x=72:y=515:w=1136:h=130:color=${bgHex}@0.82:t=fill`;
+    const lowerBox = hideTitle
+      ? ''
+      : isDiscrete
+        ? `drawbox=x=72:y=560:w=1136:h=82:color=${bgHex}@0.64:t=fill`
+        : `drawbox=x=72:y=515:w=1136:h=130:color=${bgHex}@0.82:t=fill`;
     const headlineY = isDiscrete ? 574 : 536;
     const sublineY = isDiscrete ? 608 : 588;
+    const colorFilterChain =
+      input.pkg.colorPlan?.ffmpegColorFilterChain?.trim() ||
+      'colorspace=all=bt709:iall=bt709:fast=1,eq=contrast=1.06:saturation=1.12,limiter=min=16:max=235';
 
-    // Real source or procedural texture + motion graphics + safe-zone typography + Rec.709 grading + vignette VFX
+    // Real source or procedural texture + motion graphics + safe-zone typography + project color grading + vignette VFX
     const vf = [
       baseFilter,
       motionBar,
       lowerBox,
-      `drawtext=text='${headline}'${resolveFontOption()}:expansion=none:x=104:y=${headlineY}:fontsize=${headlineSize}:fontcolor=white`,
-      `drawtext=text='${subline}'${resolveFontOption()}:expansion=none:x=104:y=${sublineY}:fontsize=${sublineSize}:fontcolor=0xf59e0b`,
+      ...(hideTitle
+        ? []
+        : [
+            `drawtext=text='${headline}'${resolveFontOption()}:expansion=none:x=104:y=${headlineY}:fontsize=${headlineSize}:fontcolor=white`,
+            `drawtext=text='${subline}'${resolveFontOption()}:expansion=none:x=104:y=${sublineY}:fontsize=${sublineSize}:fontcolor=0xf59e0b`,
+          ]),
       `vignette=PI/6`,
-      `colorspace=all=bt709:iall=bt709:fast=1,eq=contrast=1.06:saturation=1.12,limiter=min=16:max=235`,
+      colorFilterChain,
       blackOverlay.replace(/^,/, ''),
     ]
       .filter(Boolean)
@@ -365,11 +383,17 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     let prevLabel = '[0:v]';
     let runningDur = clipSpecs[0]?.effectiveDur ?? 6.0;
     for (let i = 1; i < sceneFiles.length; i += 1) {
-      const offset = Number(Math.max(0.1, runningDur - xfadeDur).toFixed(2));
+      const trEffect = clipSpecs[i]?.clip?.effects?.find((e) => e.kind === 'transition' && e.enabled);
+      const customKind = typeof trEffect?.params?.['transitionKind'] === 'string' ? trEffect.params['transitionKind'] : undefined;
+      const customDurRaw = trEffect?.params?.['durationSec'];
+      const segXfadeDur = customDurRaw !== undefined && Number.isFinite(Number(customDurRaw))
+        ? Number(Math.min(1.2, Math.max(0.15, Number(customDurRaw))).toFixed(2))
+        : xfadeDur;
+      const offset = Number(Math.max(0.1, runningDur - segXfadeDur).toFixed(2));
       const nextLabel = i === sceneFiles.length - 1 ? '[vout]' : `[v${i}]`;
-      const tr = transitionKinds[(i - 1) % transitionKinds.length] ?? 'fade';
+      const tr = customKind || transitionKinds[(i - 1) % transitionKinds.length] || 'fade';
       xfadeFilters.push(
-        `${prevLabel}[${i}:v]xfade=transition=${tr}:duration=${xfadeDur}:offset=${offset}${nextLabel}`,
+        `${prevLabel}[${i}:v]xfade=transition=${tr}:duration=${segXfadeDur}:offset=${offset}${nextLabel}`,
       );
       prevLabel = nextLabel;
       runningDur = offset + (clipSpecs[i]?.effectiveDur ?? 6.0);
@@ -467,19 +491,37 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   assertSoundDirectorApproval(audioAudit);
 
   const audioMixPath = join(workDir, 'audio_master.wav');
-  // Generate warm chord music bed (220Hz + 277.18Hz + 329.63Hz) + SFX whoosh/impact cues at transitions + comedy pause cue at 11.6s
+  const stemByRole = new Map(input.pkg.soundPlan.stems.map((s) => [s.stemRole, s]));
+  const voiceStem = stemByRole.get('voiceover');
+  const musicStem = stemByRole.get('music');
+  const sfxStem = stemByRole.get('sfx');
+  const ambienceStem = stemByRole.get('ambience');
+  const voiceVol = voiceStem?.muted ? '0' : `${voiceStem?.targetGainDb ?? 0}dB`;
+  const musicBaseDb = (musicStem?.targetGainDb ?? -16) + 16;
+  const musicVol = musicStem?.muted ? '0' : `${musicBaseDb}dB`;
+  const sfxBaseDb = (sfxStem?.targetGainDb ?? -8) + 8;
+  const sfxVol = sfxStem?.muted ? '0' : `${sfxBaseDb}dB`;
+  const ambienceBaseDb = (ambienceStem?.targetGainDb ?? -22) + 22;
+  const ambienceVol = ambienceStem?.muted ? '0' : `${ambienceBaseDb}dB`;
+  const duckRatio = Math.max(2, Math.min(12, Math.round(Math.abs(musicStem?.duckingUnderVoiceDb ?? -9) * 0.5)));
+  const targetLufs = input.pkg.soundPlan.platformProfile?.integratedLufs ?? -14.0;
+  const targetTp = input.pkg.soundPlan.platformProfile?.truePeakDbtp ?? -1.0;
+  const targetLra = input.pkg.soundPlan.platformProfile?.loudnessRangeLu ?? 8.0;
+
+  // Generate warm chord music bed + ambience room tone + SFX whoosh/impact cues synced to stems & mixer gains
   const audioComplex = [
-    `[0:a]apad=whole_dur=${totalDur},asplit=2[nar_sc][nar_mix]`,
+    `[0:a]apad=whole_dur=${totalDur},volume=${voiceVol},asplit=2[nar_sc][nar_mix]`,
     `sine=frequency=110:sample_rate=48000:duration=${totalDur},volume=0.14[m1]`,
     `sine=frequency=164.81:sample_rate=48000:duration=${totalDur},volume=0.09[m2]`,
     `sine=frequency=220:sample_rate=48000:duration=${totalDur},volume=0.07[m3]`,
-    `[m1][m2][m3]amix=inputs=3:normalize=0,afade=t=in:st=0:d=1.2,afade=t=out:st=${totalDur - 1.5}:d=1.5[music]`,
-    `[music][nar_sc]sidechaincompress=threshold=0.03:ratio=4:attack=25:release=250[ducked_music]`,
-    // SFX impacts synced to scene transitions (5.6s, 11.2s comedy beat, 16.8s, 22.4s, 28.0s)
-    `sine=frequency=520:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.32,adelay=5600|5600[sfx1]`,
-    `sine=frequency=780:sample_rate=48000:duration=0.22,afade=t=out:st=0.04:d=0.18,volume=0.35,adelay=11200|11200[sfx2]`,
-    `sine=frequency=440:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.30,adelay=16800|16800[sfx3]`,
-    `[nar_mix][ducked_music][sfx1][sfx2][sfx3]amix=inputs=5:duration=longest:normalize=0,atrim=0:${totalDur},loudnorm=I=-14.0:TP=-1.0:LRA=8.0[aout]`,
+    `[m1][m2][m3]amix=inputs=3:normalize=0,afade=t=in:st=0:d=1.2,afade=t=out:st=${Math.max(0.2, totalDur - 1.5)}:d=1.5,volume=${musicVol}[music]`,
+    `[music][nar_sc]sidechaincompress=threshold=0.03:ratio=${duckRatio}:attack=25:release=250[ducked_music]`,
+    `anoisesrc=color=pink:sample_rate=48000:duration=${totalDur},volume=0.015,volume=${ambienceVol}[amb]`,
+    // SFX impacts synced to scene transitions
+    `sine=frequency=520:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.32,volume=${sfxVol},adelay=5600|5600[sfx1]`,
+    `sine=frequency=780:sample_rate=48000:duration=0.22,afade=t=out:st=0.04:d=0.18,volume=0.35,volume=${sfxVol},adelay=11200|11200[sfx2]`,
+    `sine=frequency=440:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.30,volume=${sfxVol},adelay=16800|16800[sfx3]`,
+    `[nar_mix][ducked_music][amb][sfx1][sfx2][sfx3]amix=inputs=6:duration=longest:normalize=0,atrim=0:${totalDur},loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}[aout]`,
   ].join(';');
 
   await execFileAsync('ffmpeg', [

@@ -3,6 +3,7 @@ export * from './analysis/media-intelligence.js';
 export * from './director/cinematography-director.js';
 export * from './comedy/comedy-director.js';
 export * from './edit/editorial-engine.js';
+export * from './edit/prompt-revision.js';
 export * from './vfx/vfx-typography.js';
 export * from './color/color-pipeline.js';
 export * from './audio/sound-engine.js';

@@ -41,7 +41,44 @@ interface CinemaBridgeApi {
     injectRealBlackFrameDefect?: boolean;
     useNvenc?: boolean;
   }) => Promise<RealRenderView>;
+  cinemaStartStagedProduction?: (input: Record<string, unknown>) => Promise<StagedJobView>;
+  cinemaCancelProduction?: (projectId: string) => Promise<StagedJobView | null>;
+  cinemaResumeProduction?: (projectId: string) => Promise<StagedJobView>;
+  cinemaResolvePendingMedia?: (input: Record<string, unknown>) => Promise<StagedJobView>;
+  onCinemaProductionProgress?: (listener: (job: StagedJobView) => void) => () => void;
 }
+
+interface PendingMediaSlotView {
+  slotIndex: number;
+  clipId: string;
+  query: string;
+  reason: string;
+  resolvedUri?: string;
+  allowProcedural?: boolean;
+}
+
+interface StagedJobView {
+  projectId: string;
+  prompt: string;
+  state: string;
+  progressPct: number;
+  message: string;
+  completedStages: string[];
+  pendingMedia: PendingMediaSlotView[];
+  error?: string;
+}
+
+const PIPELINE_STAGES: Array<{ id: string; label: string }> = [
+  { id: 'prompt', label: 'PROMPT' },
+  { id: 'pesquisa', label: 'PESQUISA' },
+  { id: 'aquisicao', label: 'AQUISIÇÃO' },
+  { id: 'roteiro', label: 'ROTEIRO' },
+  { id: 'planejamento', label: 'PLANEJAMENTO' },
+  { id: 'montagem', label: 'MONTAGEM' },
+  { id: 'audio_sfx_vfx', label: 'ÁUDIO/SFX/VFX' },
+  { id: 'previa', label: 'PRÉVIA' },
+  { id: 'editor', label: 'EDITOR' },
+];
 
 interface RealRenderView {
   mp4Path: string;
@@ -210,27 +247,73 @@ export function CinemaDirectorPanel() {
   const [renderingReal, setRenderingReal] = useState(false);
   const [progressPct, setProgressPct] = useState<number | null>(null);
   const [progressStage, setProgressStage] = useState('');
+  const [stagedJob, setStagedJob] = useState<StagedJobView | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void bridge()?.cinemaCapabilities?.().then(setCapabilities).catch(() => {});
+    const api = bridge();
+    void api?.cinemaCapabilities?.().then(setCapabilities).catch(() => {});
+    const off = api?.onCinemaProductionProgress?.((job) => {
+      setStagedJob(job);
+      setProgressPct(job.progressPct);
+      setProgressStage(job.message);
+    });
+    return () => {
+      off?.();
+    };
   }, []);
 
   async function runProduction(effectivePrompt: string, options?: { autoOpenEditor?: boolean }) {
     const api = bridge();
-    if (!api?.cinemaProduce) {
+    if (!api?.cinemaProduce && !api?.cinemaStartStagedProduction) {
       setError('Cinema IPC bridge indisponível neste contexto.');
       return;
     }
     setBusy(true);
     setError(null);
     setOtioPreview(null);
+    const newProjectId = `cinema_${Date.now()}`;
+
+    if (api.cinemaStartStagedProduction) {
+      setProgressPct(5);
+      setProgressStage('Iniciando fluxo em etapas (Prompt → Pesquisa → Aquisição → Montagem → Prévia)...');
+      try {
+        const finalJob = await api.cinemaStartStagedProduction({
+          projectId: newProjectId,
+          prompt: effectivePrompt,
+          genre,
+          format,
+          targetDurationSec,
+          humorIntensity,
+          renderProfile,
+          useNvenc: capabilities?.gpuNvenc ?? true,
+        });
+        setStagedJob(finalJob);
+        setProgressPct(finalJob.progressPct);
+        setProgressStage(finalJob.message);
+
+        if (finalJob.state === 'error') {
+          setError(finalJob.error ?? finalJob.message);
+          return;
+        }
+        if (finalJob.state === 'editor' && options?.autoOpenEditor !== false) {
+          navigate(`/video?projectId=${encodeURIComponent(finalJob.projectId)}`);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     setProgressPct(15);
     setProgressStage('Planejando direção, roteiro e storyboard...');
     let progressTimer: ReturnType<typeof setInterval> | null = null;
     try {
+      if (!api.cinemaProduce) return;
       let result = await api.cinemaProduce({
-        projectId: `cinema_${Date.now()}`,
+        projectId: newProjectId,
         prompt: effectivePrompt,
         genre,
         format,
@@ -275,6 +358,64 @@ export function CinemaDirectorPanel() {
       setBusy(false);
       setProgressPct(null);
       setProgressStage('');
+    }
+  }
+
+  async function handleCancelStaged() {
+    const api = bridge();
+    if (!api?.cinemaCancelProduction || !stagedJob) return;
+    const updated = await api.cinemaCancelProduction(stagedJob.projectId);
+    if (updated) {
+      setStagedJob(updated);
+      setProgressStage(updated.message);
+    }
+    setBusy(false);
+  }
+
+  async function handleResumeStaged() {
+    const api = bridge();
+    if (!api?.cinemaResumeProduction || !stagedJob) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api.cinemaResumeProduction(stagedJob.projectId);
+      setStagedJob(updated);
+      if (updated.state === 'editor') {
+        navigate(`/video?projectId=${encodeURIComponent(updated.projectId)}`);
+      } else if (updated.state === 'error') {
+        setError(updated.error ?? updated.message);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleResolvePendingSlot(
+    slotIndex: number,
+    action: { pickFile?: boolean; allowProcedural?: boolean },
+  ) {
+    const api = bridge();
+    if (!api?.cinemaResolvePendingMedia || !stagedJob) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api.cinemaResolvePendingMedia({
+        projectId: stagedJob.projectId,
+        resolutions: [{ slotIndex, ...action }],
+      });
+      setStagedJob(updated);
+      if (updated.state === 'editor') {
+        navigate(`/video?projectId=${encodeURIComponent(updated.projectId)}`);
+      } else if (updated.state === 'error') {
+        setError(updated.error ?? updated.message);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('cancelled_pick')) setError(msg);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -495,17 +636,127 @@ export function CinemaDirectorPanel() {
           </div>
         </div>
 
-        {progressPct !== null && (
-          <div className="lg:col-span-12 space-y-1.5 rounded-xl border border-purple-500/30 bg-[#0d0d17] p-3">
-            <div className="flex items-center justify-between text-[11px]">
-              <span className="text-purple-200">{progressStage}</span>
-              <span className="font-mono font-semibold text-amber-300">{progressPct}%</span>
+        {(progressPct !== null || stagedJob) && (
+          <div className="lg:col-span-12 space-y-2.5 rounded-xl border border-purple-500/30 bg-[#0d0d17] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+              <span className="text-purple-200">{stagedJob?.message || progressStage}</span>
+              <div className="flex items-center gap-2">
+                {busy && stagedJob && (
+                  <button
+                    type="button"
+                    onClick={handleCancelStaged}
+                    className="rounded-lg border border-destructive/40 bg-destructive/15 px-2.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/25"
+                  >
+                    Cancelar
+                  </button>
+                )}
+                {!busy && stagedJob && (stagedJob.state === 'cancelled' || stagedJob.state === 'error') && (
+                  <button
+                    type="button"
+                    onClick={handleResumeStaged}
+                    className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/25"
+                  >
+                    Retomar Projeto
+                  </button>
+                )}
+                <span className="font-mono font-semibold text-amber-300">{stagedJob?.progressPct ?? progressPct ?? 0}%</span>
+              </div>
             </div>
             <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
               <div
                 className="h-full rounded-full bg-gradient-to-r from-purple-500 to-amber-400 transition-all duration-300"
-                style={{ width: `${progressPct}%` }}
+                style={{ width: `${stagedJob?.progressPct ?? progressPct ?? 0}%` }}
               />
+            </div>
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {PIPELINE_STAGES.map((st) => {
+                const done = stagedJob?.completedStages?.includes(st.id);
+                const active = stagedJob?.state === st.id;
+                return (
+                  <span
+                    key={st.id}
+                    className={`rounded-md border px-2 py-0.5 text-[10px] font-medium ${
+                      done
+                        ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                        : active
+                          ? 'border-amber-400/60 bg-amber-500/20 text-amber-200'
+                          : 'border-border/60 bg-background/40 text-muted-foreground'
+                    }`}
+                  >
+                    {st.label}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {stagedJob?.state === 'paused_pending_media' && stagedJob.pendingMedia.length > 0 && (
+          <div className="lg:col-span-12 space-y-2.5 rounded-xl border border-amber-500/45 bg-amber-500/10 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-semibold text-amber-200">
+                  Pendências de Mídia Real ({stagedJob.pendingMedia.length} cena(s))
+                </h3>
+                <p className="text-[11px] text-amber-100/80">
+                  A montagem final aguarda mídias válidas. Nenhuma cena foi substituída silenciosamente por placeholder.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  const api = bridge();
+                  if (!api?.cinemaResolvePendingMedia || !stagedJob) return;
+                  setBusy(true);
+                  try {
+                    const updated = await api.cinemaResolvePendingMedia({
+                      projectId: stagedJob.projectId,
+                      resolutions: stagedJob.pendingMedia.map((s) => ({
+                        slotIndex: s.slotIndex,
+                        allowProcedural: true,
+                      })),
+                    });
+                    setStagedJob(updated);
+                    if (updated.state === 'editor') {
+                      navigate(`/video?projectId=${encodeURIComponent(updated.projectId)}`);
+                    }
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+                className="rounded-lg border border-amber-400/50 bg-amber-500/20 px-3 py-1.5 text-[11px] font-semibold text-amber-100 hover:bg-amber-500/30 disabled:opacity-50"
+              >
+                Autorizar Motion Visual para todas e Continuar
+              </button>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {stagedJob.pendingMedia.map((slot) => (
+                <div key={slot.clipId} className="rounded-lg border border-border bg-[#0d0d17] p-3 text-xs space-y-2">
+                  <div className="font-semibold text-foreground">
+                    Cena #{slot.slotIndex + 1} · {slot.query}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">{slot.reason}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleResolvePendingSlot(slot.slotIndex, { pickFile: true })}
+                      className="rounded-md border border-primary/50 bg-primary/20 px-2.5 py-1 text-[11px] font-medium text-purple-200 hover:bg-primary/30 disabled:opacity-50"
+                    >
+                      Importar Mídia Local
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleResolvePendingSlot(slot.slotIndex, { allowProcedural: true })}
+                      className="rounded-md border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+                    >
+                      Autorizar Motion Visual
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
