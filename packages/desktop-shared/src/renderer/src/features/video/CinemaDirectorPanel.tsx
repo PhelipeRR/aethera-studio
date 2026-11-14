@@ -45,6 +45,9 @@ interface CinemaBridgeApi {
   cinemaCancelProduction?: (projectId: string) => Promise<StagedJobView | null>;
   cinemaResumeProduction?: (projectId: string) => Promise<StagedJobView>;
   cinemaResolvePendingMedia?: (input: Record<string, unknown>) => Promise<StagedJobView>;
+  cinemaEvolutionSnapshot?: (input?: { refresh?: boolean }) => Promise<{
+    directors?: Array<{ directorId: string; displayName: string }>;
+  }>;
   onCinemaProductionProgress?: (listener: (job: StagedJobView) => void) => () => void;
 }
 
@@ -248,11 +251,17 @@ export function CinemaDirectorPanel() {
   const [progressPct, setProgressPct] = useState<number | null>(null);
   const [progressStage, setProgressStage] = useState('');
   const [stagedJob, setStagedJob] = useState<StagedJobView | null>(null);
+  const [directorCount, setDirectorCount] = useState<number>(7);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const api = bridge();
     void api?.cinemaCapabilities?.().then(setCapabilities).catch(() => {});
+    void api?.cinemaEvolutionSnapshot?.()
+      .then((snap) => {
+        if (snap?.directors?.length) setDirectorCount(snap.directors.length);
+      })
+      .catch(() => {});
     const off = api?.onCinemaProductionProgress?.((job) => {
       setStagedJob(job);
       setProgressPct(job.progressPct);
@@ -505,15 +514,15 @@ export function CinemaDirectorPanel() {
             </p>
             <h1 className="mt-1 text-2xl font-semibold text-foreground">Produção com IA</h1>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              Descreva o vídeo desejado em linguagem natural. O Aethera planeja narrativa, storyboard, ritmo e humor pontual (35% padrão).
+              Descreva o vídeo desejado em linguagem natural. O Aethera planeja narrativa, storyboard, ritmo e humor pontual ({humorIntensity}%{humorIntensity === 35 ? ' padrão' : humorIntensity === 0 ? ' desativado' : ' ativo'}).
             </p>
           </div>
           <div className="flex flex-wrap gap-2 text-xs">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-[#121220] px-3 py-1 text-purple-200">
               <Bot className="size-3.5 text-purple-400" />
               {readyAgents.length > 0
-                ? `${readyAgents.length} agente(s) ativo(s) (RF-07)`
-                : 'Modo determinístico local'}
+                ? `${directorCount} diretores · ${readyAgents.length} provedor(es) RF-07`
+                : `${directorCount} diretores · Modo determinístico local`}
             </span>
             {capabilities && (
               <span className="rounded-full border border-border bg-[#121220] px-3 py-1 text-muted-foreground">
