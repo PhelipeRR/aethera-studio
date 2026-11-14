@@ -64,7 +64,9 @@ export function AetheraProjectsPage() {
   });
 
   const filtered = useMemo(() => {
-    const items = projects.data ?? [];
+    const items = (projects.data ?? []).filter(
+      (p) => !p.id.startsWith('cinema_') && !p.id.startsWith('ai_') && !p.id.startsWith('gdc_'),
+    );
     return items.filter((p) => {
       const matchesSearch =
         !search.trim() || p.title.toLowerCase().includes(search.toLowerCase());
@@ -80,11 +82,11 @@ export function AetheraProjectsPage() {
       <div className="flex flex-wrap items-end justify-between gap-4 rounded-2xl border border-border bg-gradient-to-r from-[#171128] via-[#10101b] to-[#0d0d16] p-6">
         <div>
           <p className="text-[11px] font-semibold tracking-[0.22em] text-purple-400 uppercase">
-            Estúdio / Projetos
+            Estúdio / Projeto Manual
           </p>
-          <h1 className="mt-1 text-2xl font-semibold text-foreground">Projetos</h1>
+          <h1 className="mt-1 text-2xl font-semibold text-foreground">Projeto Manual</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Gerencie suas produções, acompanhe o progresso e avance suas ideias do roteiro ao vídeo final.
+            Gerencie seus projetos manuais, acompanhe o progresso e avance suas ideias do roteiro ao vídeo final.
           </p>
         </div>
 
@@ -94,7 +96,7 @@ export function AetheraProjectsPage() {
           disabled={createProject.isPending}
           className="inline-flex h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-violet-600 px-4 text-sm font-semibold text-white shadow-[0_0_20px_rgba(139,92,246,0.3)] hover:brightness-110 disabled:opacity-50"
         >
-          <Plus className="size-4" /> {createProject.isPending ? 'Criando...' : 'Novo Projeto'}
+          <Plus className="size-4" /> {createProject.isPending ? 'Criando...' : 'Novo Projeto Manual'}
         </button>
       </div>
 

@@ -45,6 +45,7 @@ interface CinemaBridgeApi {
   cinemaCancelProduction?: (projectId: string) => Promise<StagedJobView | null>;
   cinemaResumeProduction?: (projectId: string) => Promise<StagedJobView>;
   cinemaResolvePendingMedia?: (input: Record<string, unknown>) => Promise<StagedJobView>;
+  cinemaListStagedJobs?: () => Promise<StagedJobView[]>;
   cinemaEvolutionSnapshot?: (input?: { refresh?: boolean }) => Promise<{
     directors?: Array<{ directorId: string; displayName: string }>;
   }>;
@@ -69,6 +70,30 @@ interface StagedJobView {
   completedStages: string[];
   pendingMedia: PendingMediaSlotView[];
   error?: string;
+}
+
+const STAGE_DISPLAY_LABELS: Record<string, string> = {
+  prompt: 'Prompt',
+  pesquisa: 'Pesquisa',
+  aquisicao: 'Aquisição de Mídia',
+  paused_pending_media: 'Pausado (Mídia Pendente)',
+  roteiro: 'Roteiro',
+  planejamento: 'Planejamento',
+  montagem: 'Montagem',
+  audio_sfx_vfx: 'Áudio / SFX / VFX',
+  previa: 'Prévia',
+  editor: 'Concluído — Pronto para Editor',
+  cancelled: 'Cancelado',
+  error: 'Erro',
+};
+
+function isJobReadyForEditor(job: StagedJobView): boolean {
+  const requiredStages = ['prompt', 'pesquisa', 'aquisicao', 'roteiro', 'planejamento', 'montagem', 'audio_sfx_vfx', 'previa'];
+  return (
+    job.state === 'editor' &&
+    job.progressPct >= 100 &&
+    requiredStages.every((s) => job.completedStages?.includes(s))
+  );
 }
 
 const PIPELINE_STAGES: Array<{ id: string; label: string }> = [
@@ -251,12 +276,16 @@ export function CinemaDirectorPanel() {
   const [progressPct, setProgressPct] = useState<number | null>(null);
   const [progressStage, setProgressStage] = useState('');
   const [stagedJob, setStagedJob] = useState<StagedJobView | null>(null);
+  const [stagedJobs, setStagedJobs] = useState<StagedJobView[]>([]);
   const [directorCount, setDirectorCount] = useState<number>(7);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const api = bridge();
     void api?.cinemaCapabilities?.().then(setCapabilities).catch(() => {});
+    void api?.cinemaListStagedJobs?.().then((jobs) => {
+      if (Array.isArray(jobs)) setStagedJobs(jobs);
+    }).catch(() => {});
     void api?.cinemaEvolutionSnapshot?.()
       .then((snap) => {
         if (snap?.directors?.length) setDirectorCount(snap.directors.length);
@@ -264,6 +293,7 @@ export function CinemaDirectorPanel() {
       .catch(() => {});
     const off = api?.onCinemaProductionProgress?.((job) => {
       setStagedJob(job);
+      setStagedJobs((prev) => [job, ...prev.filter((j) => j.projectId !== job.projectId)]);
       setProgressPct(job.progressPct);
       setProgressStage(job.message);
     });
@@ -770,6 +800,73 @@ export function CinemaDirectorPanel() {
           </div>
         )}
       </form>
+
+      {stagedJobs.length > 0 && (
+        <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">
+                Projetos em Produção com IA ({stagedJobs.length})
+              </h2>
+              <p className="text-[11px] text-muted-foreground">
+                Acompanhe a etapa atual e a porcentagem de cada produção. O botão Editor é liberado somente após concluir todas as etapas.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {stagedJobs.map((job) => {
+              const ready = isJobReadyForEditor(job);
+              const stageLabel = STAGE_DISPLAY_LABELS[job.state] ?? job.state;
+              const completedCount = Math.min(8, job.completedStages?.length ?? 0);
+              return (
+                <article
+                  key={job.projectId}
+                  className="flex flex-col justify-between gap-3 rounded-xl border border-border/80 bg-[#0d0d17] p-4"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="line-clamp-2 text-xs font-semibold text-foreground">
+                        {job.prompt || job.projectId}
+                      </p>
+                      <span className="shrink-0 rounded-full border border-purple-500/35 bg-purple-500/15 px-2 py-0.5 font-mono text-[10px] text-purple-200">
+                        {job.progressPct}%
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-amber-300">
+                      Etapa ({completedCount}/8): {stageLabel}
+                    </p>
+                    {job.message && (
+                      <p className="truncate text-[10px] text-muted-foreground">{job.message}</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-purple-500 to-amber-400 transition-all duration-300"
+                        style={{ width: `${job.progressPct}%` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-[10px] text-muted-foreground">{job.projectId}</span>
+                      <button
+                        type="button"
+                        disabled={!ready}
+                        title={ready ? 'Abrir produção concluída no Editor' : 'Aguarde todas as etapas serem concluídas para abrir no Editor'}
+                        onClick={() => navigate(`/video?projectId=${encodeURIComponent(job.projectId)}`)}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-primary/25 px-3 py-1.5 text-[11px] font-semibold text-purple-100 hover:bg-primary/40 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <Film className="size-3.5" />
+                        {ready ? 'Editor' : 'Aguardando etapas'}
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {error && (
         <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive">

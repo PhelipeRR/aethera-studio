@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaUpdateTimeline: (input: { projectId: string; clips: unknown[] }) =>
     ipcRenderer.invoke('cinema:update-timeline', input),
   cinemaListProjects: () => ipcRenderer.invoke('cinema:list-projects'),
+  cinemaListStagedJobs: () => ipcRenderer.invoke('cinema:list-staged-jobs'),
   cinemaLoadProject: (projectId: string) => ipcRenderer.invoke('cinema:load-project', projectId),
   cinemaImportMedia: (input?: { filePath?: string }) =>
     ipcRenderer.invoke('cinema:import-media', input),

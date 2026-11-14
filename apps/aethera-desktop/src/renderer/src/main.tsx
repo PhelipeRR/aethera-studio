@@ -43,7 +43,7 @@ const VelixPage = React.lazy(() =>
 
 const AETHERA_ROUTES: readonly AppRoute[] = [
   { path: '/aethera', label: 'Home', icon: Home, group: 'Trabalho', description: 'Centro de produção audiovisual.' },
-  { path: '/aethera/projects', label: 'Projetos', icon: FolderKanban, group: 'Trabalho', description: 'Gerenciamento visual de produções.' },
+  { path: '/aethera/projects', label: 'Projeto Manual', icon: FolderKanban, group: 'Trabalho', description: 'Gerenciamento manual de produções.' },
   { path: '/aethera/cinema', label: 'Produção com IA', icon: Clapperboard, group: 'Trabalho', description: 'Direção criativa, storyboard e humor pontual.' },
   { path: '/video', label: 'Editor', icon: Film, group: 'Trabalho', description: 'Editor profissional com timeline multifaixa.' },
   { path: '/aethera/library', label: 'Biblioteca', icon: Library, group: 'Conhecimento', description: 'Mídias, áudios, roteiros e direitos.' },

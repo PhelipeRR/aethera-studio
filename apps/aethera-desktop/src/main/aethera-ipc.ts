@@ -2250,6 +2250,11 @@ export function registerAetheraDomainIpc(options: {
     return stagedPipeline.loadJob(projectId);
   });
 
+  ipcMain.handle('cinema:list-staged-jobs', async (event) => {
+    ensureTrusted(event.senderFrame);
+    return stagedPipeline.listJobs();
+  });
+
   ipcMain.handle(
     'cinema:update-color-grade',
     async (

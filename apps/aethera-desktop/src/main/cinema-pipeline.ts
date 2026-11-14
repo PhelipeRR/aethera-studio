@@ -173,6 +173,21 @@ export class StagedCinemaPipeline {
     }
   }
 
+  listJobs(): StagedProductionJob[] {
+    if (!existsSync(this.deps.jobsDir)) return [];
+    const jobs: StagedProductionJob[] = [];
+    for (const file of readdirSync(this.deps.jobsDir)) {
+      if (!file.endsWith('.job.json')) continue;
+      try {
+        const parsed = JSON.parse(readFileSync(join(this.deps.jobsDir, file), 'utf8')) as StagedProductionJob;
+        if (parsed?.projectId) jobs.push(parsed);
+      } catch {
+        // ignore malformed job file
+      }
+    }
+    return jobs.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+  }
+
   private saveJob(job: StagedProductionJob): StagedProductionJob {
     job.updatedAt = new Date().toISOString();
     writeFileSync(this.jobFile(job.projectId), JSON.stringify(job, null, 2), 'utf8');
