@@ -61,4 +61,9 @@ export const EXTERNAL_HOST_ALLOWLIST = [
   'docs.anthropic.com',
   'code.claude.com',
   'developers.openai.com',
+  'console.cloud.google.com',
+  'dev.twitch.tv',
+  'rawg.io',
+  'learn.microsoft.com',
+  'ffmpeg.org',
 ] as const;
