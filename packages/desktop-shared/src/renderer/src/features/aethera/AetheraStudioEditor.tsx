@@ -91,10 +91,10 @@ interface EditorPackageView {
     };
     narrativeBeats?: Array<{
       beatId: string;
-      act: string;
-      title: string;
-      narrationText: string;
-      durationSec: number;
+      stage: string;
+      summary: string;
+      intensity?: number;
+      timeRange?: { start: { value: number; rate: number }; duration: { value: number; rate: number } };
     }>;
     shots?: Array<{
       shotId: string;
@@ -200,7 +200,7 @@ interface CinemaBridge {
   cinemaUpdateScript?: (input: {
     projectId: string;
     treatment?: string;
-    beats?: Array<{ beatId: string; title?: string; narrationText?: string }>;
+    beats?: Array<{ beatId: string; summary?: string }>;
   }) => Promise<EditorPackageView>;
   cinemaSubmitFeedback?: (input: {
     text: string;
@@ -319,7 +319,7 @@ export function AetheraStudioEditor() {
     pendingMedia?: Array<{ slotIndex: number; query: string; reason: string }>;
   } | null>(null);
   const [treatmentDraft, setTreatmentDraft] = useState('');
-  const [beatsDraft, setBeatsDraft] = useState<Array<{ beatId: string; act: string; title: string; narrationText: string; durationSec: number }>>([]);
+  const [beatsDraft, setBeatsDraft] = useState<Array<{ beatId: string; stage: string; summary: string; durationSec: number }>>([]);
   const [savingScript, setSavingScript] = useState(false);
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<{ projectId: string; title: string } | null>(null);
   const [deletingProject, setDeletingProject] = useState(false);
@@ -996,10 +996,11 @@ export function AetheraStudioEditor() {
     setBeatsDraft(
       (pkg.direction?.narrativeBeats ?? []).map((b) => ({
         beatId: b.beatId,
-        act: b.act,
-        title: b.title,
-        narrationText: b.narrationText,
-        durationSec: b.durationSec,
+        stage: b.stage ?? 'beat',
+        summary: b.summary ?? '',
+        durationSec: b.timeRange?.duration
+          ? Math.round(b.timeRange.duration.value / Math.max(1, b.timeRange.duration.rate))
+          : 0,
       }))
     );
     setAuditOpen(true);
@@ -1032,8 +1033,7 @@ export function AetheraStudioEditor() {
         treatment: treatmentDraft,
         beats: beatsDraft.map((b) => ({
           beatId: b.beatId,
-          title: b.title,
-          narrationText: b.narrationText,
+          summary: b.summary,
         })),
       });
       setPkg(updated);
@@ -2539,7 +2539,7 @@ export function AetheraStudioEditor() {
                         Cenas / Beats Narrativos ({beatsDraft.length})
                       </span>
                       <span className="text-[11px] text-muted-foreground">
-                        Edite o título ou texto de narração e clique em Salvar Roteiro.
+                        Edite o roteiro de cada cena e clique em Salvar Roteiro.
                       </span>
                     </div>
 
@@ -2555,41 +2555,28 @@ export function AetheraStudioEditor() {
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
-                              <span className="rounded bg-purple-500/20 px-2 py-0.5 font-mono text-[10px] text-purple-200">
-                                #{idx + 1} · {beat.act}
+                              <span className="rounded bg-purple-500/20 px-2 py-0.5 font-mono text-[10px] uppercase text-purple-200">
+                                #{idx + 1} · {beat.stage}
                               </span>
                               <span className="font-mono text-[10px] text-muted-foreground">
                                 {beat.durationSec}s
                               </span>
                             </div>
-                            <input
-                              type="text"
-                              value={beat.title}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setBeatsDraft((prev) =>
-                                  prev.map((item) =>
-                                    item.beatId === beat.beatId ? { ...item, title: val } : item
-                                  )
-                                );
-                              }}
-                              className="min-w-[240px] flex-1 rounded-lg border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground focus:border-purple-500 focus:outline-none"
-                              aria-label={`Título do beat ${idx + 1}`}
-                            />
+                            <span className="font-mono text-[10px] text-muted-foreground">{beat.beatId}</span>
                           </div>
                           <textarea
                             rows={3}
-                            value={beat.narrationText}
+                            value={beat.summary}
                             onChange={(e) => {
                               const val = e.target.value;
                               setBeatsDraft((prev) =>
                                 prev.map((item) =>
-                                  item.beatId === beat.beatId ? { ...item, narrationText: val } : item
+                                  item.beatId === beat.beatId ? { ...item, summary: val } : item
                                 )
                               );
                             }}
                             className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground focus:border-purple-500 focus:outline-none"
-                            aria-label={`Narração do beat ${idx + 1}`}
+                            aria-label={`Roteiro do beat ${idx + 1}`}
                           />
                         </div>
                       ))

@@ -2280,7 +2280,7 @@ export function registerAetheraDomainIpc(options: {
       input: {
         projectId: string;
         treatment?: string;
-        beats?: Array<{ beatId: string; title?: string; narrationText?: string }>;
+        beats?: Array<{ beatId: string; summary?: string }>;
       },
     ) => {
       ensureTrusted(event.senderFrame);
@@ -2299,8 +2299,7 @@ export function registerAetheraDomainIpc(options: {
         if (!patch) return beat;
         return {
           ...beat,
-          ...(typeof patch.title === 'string' ? { title: patch.title } : {}),
-          ...(typeof patch.narrationText === 'string' ? { narrationText: patch.narrationText } : {}),
+          ...(typeof patch.summary === 'string' ? { summary: patch.summary } : {}),
         };
       });
       const updated: CinemaProductionPackage = {

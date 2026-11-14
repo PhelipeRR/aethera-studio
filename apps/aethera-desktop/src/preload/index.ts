@@ -61,7 +61,7 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaUpdateScript: (input: {
     projectId: string;
     treatment?: string;
-    beats?: Array<{ beatId: string; title?: string; narrationText?: string }>;
+    beats?: Array<{ beatId: string; summary?: string }>;
   }) => ipcRenderer.invoke('cinema:update-script', input),
   cinemaStartStagedProduction: (input: Record<string, unknown>) =>
     ipcRenderer.invoke('cinema:start-staged-production', input),
