@@ -226,8 +226,14 @@ export function AetheraMediaLibraryPage() {
               </p>
             </div>
           ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
-              {filtered.map((item) => {
+            <div className="space-y-3">
+              {filtered.length > 120 && (
+                <p className="text-[11px] text-muted-foreground">
+                  Exibindo 120 de {filtered.length} ativos (use a busca acima para filtrar).
+                </p>
+              )}
+              <div className="grid gap-3 sm:grid-cols-2">
+                {filtered.slice(0, 120).map((item) => {
                 const Icon =
                   item.kind === 'audio'
                     ? Music
@@ -265,6 +271,7 @@ export function AetheraMediaLibraryPage() {
                   </button>
                 );
               })}
+              </div>
             </div>
           )}
         </section>
