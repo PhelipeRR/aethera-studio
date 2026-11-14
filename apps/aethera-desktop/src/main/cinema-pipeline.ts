@@ -955,14 +955,18 @@ export class StagedCinemaPipeline {
               Math.round((job.targetDurationSec ?? 90) / Math.max(1, pkg.direction.narrativeBeats.length)),
             ),
           }));
-      const coverageAssets = job.acquiredMedia.map((m) => ({
-        mediaId: m.mediaId,
-        uri: m.uri,
-        title: basename(m.uri),
-        origin: m.origin,
-        durationSec: m.duration.value / Math.max(1, m.duration.rate),
-        compatible: !relevanceDecisions.some((d) => d.mediaId === m.mediaId && !d.accepted),
-      }));
+      const coverageAssets = job.acquiredMedia.map((m) => {
+        const decision = relevanceDecisions.find((d) => d.mediaId === m.mediaId);
+        return {
+          mediaId: m.mediaId,
+          uri: m.uri,
+          title: basename(m.uri),
+          origin: m.origin,
+          durationSec: m.duration.value / Math.max(1, m.duration.rate),
+          compatible: decision ? decision.accepted : false,
+          ...(decision && !decision.accepted ? { rejectedReason: decision.reason } : {}),
+        };
+      });
       const coverageUsages = pkg.timeline.clips
         .filter((c) => c.trackId === 'v1' && c.mediaId)
         .map((c, idx) => ({
@@ -980,6 +984,8 @@ export class StagedCinemaPipeline {
         assets: coverageAssets,
         plannedUsages: coverageUsages,
         format: job.format === 'shorts_9_16' ? 'shorts' : 'analysis',
+        relevanceDecisions,
+        requireRelevanceApproval: true,
       });
       job.coverageReport = coverageReport;
       if (!coverageReport.gatePassed && job.acquiredMedia.length > 0 && (job.targetDurationSec ?? 90) >= 180) {

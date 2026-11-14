@@ -15,6 +15,7 @@ import {
   planTargetedSegmentRegeneration,
   recordApprovedPronunciationRule,
   sampleDistributedFrameTimestamps,
+  searchResilientMediaSources,
 } from '../src/index.js';
 
 describe('Media Relevance Gate & Visual Critic Blocking', () => {
@@ -283,5 +284,76 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(rule.kind).toBe('procedural');
     expect(rule.tags).toContain('audio_rule');
     expect(rule.tags).toContain('scope:voice');
+  });
+
+  it('regression: planMediaCoverage never counts rejected or unapproved media as valid coverage', () => {
+    const report = planMediaCoverage({
+      segments: [
+        { segmentId: 's1', subject: 'Goku', narrationText: 'Goku em Namek', expectedDurationSec: 10 },
+        { segmentId: 's2', subject: 'Freeza', narrationText: 'Freeza ataca', expectedDurationSec: 10 },
+      ],
+      assets: [
+        { mediaId: 'bad_gdc', uri: 'gdc.mp4', durationSec: 120 },
+        { mediaId: 'ok_anime', uri: 'goku.mp4', durationSec: 10 },
+      ],
+      plannedUsages: [
+        { clipId: 'c1', segmentId: 's1', mediaId: 'bad_gdc', sourceStartSec: 0, sourceEndSec: 10, timelineDurationSec: 10 },
+        { clipId: 'c2', segmentId: 's2', mediaId: 'ok_anime', sourceStartSec: 0, sourceEndSec: 10, timelineDurationSec: 10 },
+      ],
+      relevanceDecisions: [
+        {
+          mediaId: 'bad_gdc',
+          accepted: false,
+          score: 0.05,
+          rejectionCode: 'wrong_anime_or_entity',
+          reason: 'Palestra GDC incompatível com Dragon Ball.',
+          sampledTimestampsSec: [5, 30],
+          matchedEntities: [],
+          visualCategory: 'real_person',
+        },
+        {
+          mediaId: 'ok_anime',
+          accepted: true,
+          score: 0.92,
+          reason: 'Cena de Goku em Namek confirmada.',
+          sampledTimestampsSec: [2, 6],
+          matchedEntities: ['goku'],
+          visualCategory: 'anime',
+        },
+      ],
+      requireRelevanceApproval: true,
+    });
+
+    expect(report.gatePassed).toBe(false);
+    expect(report.uniqueAssetCount).toBe(1);
+    expect(report.coverageRatio).toBe(0.5);
+    expect(report.incompatibleMedia.some((m) => m.mediaId === 'bad_gdc')).toBe(true);
+    expect(report.gateReasons.some((r) => r.includes('mídia rejeitada/incompatível'))).toBe(true);
+  });
+
+  it('resilient media acquisition does not depend solely on yt-dlp when anti-bot blocks YouTube', async () => {
+    const mockFetch = (async () =>
+      new Response(JSON.stringify({ query: { pages: { '1': { title: 'File:Anime.png', imageinfo: [{ url: 'https://upload.wikimedia.org/anime.png', mime: 'image/png' }] } } } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as unknown as typeof fetch;
+
+    const result = await searchResilientMediaSources(
+      'Dragon Ball Goku',
+      {
+        fetchImpl: mockFetch,
+        ytDlpSearchFn: async () => {
+          throw new Error("Sign in to confirm you're not a bot");
+        },
+      },
+    );
+
+    expect(result.candidates.length).toBeGreaterThan(0);
+    expect(result.candidates.some((c) => c.origin === 'wikimedia_commons')).toBe(true);
+    expect(
+      result.providerStatuses.some(
+        (s) => s.provider === 'yt_dlp' && s.status === 'blocked_auth_or_antibot',
+      ),
+    ).toBe(true);
   });
 });

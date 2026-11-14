@@ -17,6 +17,8 @@ import {
 import {
   AetheraAcademyEngine,
   AetheraEvolutionCore,
+  acquireResilientMediaFile,
+  searchResilientMediaSources,
   EditorialCalendarEngine,
   analyzeCalendarHealth,
   suggestSmartSchedule,
@@ -1722,40 +1724,52 @@ export function registerAetheraDomainIpc(options: {
     },
     searchExternalMedia: async (query, _slotIndex, signal) => {
       try {
-        const results = await ytDlpSearch(ytDlp, query, 5, signal);
-        return results
-          .filter((r) => Boolean(r.url))
-          .map((r) => ({
-            url: r.url,
-            ...(r.title ? { title: r.title } : {}),
-            origin: 'yt_dlp_search',
-            license: 'external_reference',
-          }));
+        const res = await searchResilientMediaSources(
+          query,
+          {
+            localMediaDirs: [join(app.getPath('userData'), 'cinema-media'), videoRoot()],
+            ytDlpSearchFn: (q, count, sig) => ytDlpSearch(ytDlp, q, count, sig),
+          },
+          signal,
+        );
+        return res.candidates.map((c) => ({
+          url: c.url,
+          ...(c.title ? { title: c.title } : {}),
+          origin: c.origin,
+          license: c.license,
+        }));
       } catch {
         return [];
       }
     },
     acquireExternalMedia: async (query, slotIndex, mediaDir, signal, preferredUrl) => {
       try {
-        let targetUrl = preferredUrl;
-        if (!targetUrl) {
-          const results = await ytDlpSearch(ytDlp, query, 5, signal);
-          const picked = results[slotIndex % Math.max(1, results.length)] ?? results[0];
-          targetUrl = picked?.url;
-        }
-        if (!targetUrl) return null;
-        const relativeDir = `acq_${slotIndex + 1}`;
-        mkdirSync(join(mediaDir, relativeDir), { recursive: true });
-        const acq = await acquireWithYtDlp({
-          ytDlp,
-          url: targetUrl,
-          root: mediaDir,
-          relativeDir,
-          fileStem: `slot_${slotIndex + 1}`,
+        const acq = await acquireResilientMediaFile(
+          query,
+          slotIndex,
+          mediaDir,
+          {
+            localMediaDirs: [join(app.getPath('userData'), 'cinema-media'), videoRoot()],
+            ytDlpSearchFn: (q, count, sig) => ytDlpSearch(ytDlp, q, count, sig),
+            ytDlpAcquireFn: async (targetUrl, idx, dir, sig) => {
+              const relativeDir = `acq_${idx + 1}`;
+              mkdirSync(join(dir, relativeDir), { recursive: true });
+              const out = await acquireWithYtDlp({
+                ytDlp,
+                url: targetUrl,
+                root: dir,
+                relativeDir,
+                fileStem: `slot_${idx + 1}`,
+                ...(sig ? { signal: sig } : {}),
+                ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),
+              });
+              return out.relativePath ? join(dir, out.relativePath) : null;
+            },
+          },
           signal,
-          ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),
-        });
-        return acq.relativePath ? join(mediaDir, acq.relativePath) : null;
+          preferredUrl,
+        );
+        return acq.filePath;
       } catch {
         return null;
       }

@@ -71,12 +71,34 @@ interface RealRenderAuditView {
   realQcFindings: Array<{ issueId: string; severity: string; evidence: string }>;
 }
 
+interface PendingMediaGapView {
+  slotIndex: number;
+  clipId: string;
+  query: string;
+  reason?: string;
+}
+
 interface CinemaBridge {
   cinemaProduce?: (input: Record<string, unknown>) => Promise<ReviewPackageView>;
   cinemaRepair?: (projectId: string) => Promise<ReviewPackageView>;
   cinemaListProjects?: () => Promise<Array<{ projectId: string; title: string; durationSec: number; updatedAt: string }>>;
   cinemaLoadProject?: (projectId: string) => Promise<{ pkg: ReviewPackageView | null; lastRender: RealRenderAuditView | null }>;
   cinemaRenderRealMp4?: (input: { projectId: string; useNvenc?: boolean }) => Promise<RealRenderAuditView>;
+  cinemaGetProductionState?: (projectId: string) => Promise<{
+    projectId: string;
+    state?: string;
+    pendingMedia?: PendingMediaGapView[];
+  } | null>;
+  cinemaResolvePendingMedia?: (input: {
+    projectId: string;
+    resolutions: Array<{
+      slotIndex: number;
+      filePath?: string;
+      pickFile?: boolean;
+      allowProcedural?: boolean;
+      retryQuery?: string;
+    }>;
+  }) => Promise<{ pendingMedia?: PendingMediaGapView[] } | null>;
 }
 
 function getBridge(): CinemaBridge | undefined {
@@ -93,6 +115,9 @@ export function AetheraReviewRoomPage() {
   const [approvedVersion, setApprovedVersion] = useState<string | null>(null);
   const [cinemaProjects, setCinemaProjects] = useState<Array<{ projectId: string; title: string; durationSec: number; updatedAt: string }>>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(() => searchParams.get('projectId') ?? '');
+  const [pendingMedia, setPendingMedia] = useState<PendingMediaGapView[]>([]);
+  const [retryQueryMap, setRetryQueryMap] = useState<Record<number, string>>({});
+  const [resolvingSlot, setResolvingSlot] = useState<number | null>(null);
   const [pkg, setPkg] = useState<ReviewPackageView | null>(null);
   const [realAudit, setRealAudit] = useState<RealRenderAuditView | null>(null);
   const [busy, setBusy] = useState(false);
@@ -125,7 +150,11 @@ export function AetheraReviewRoomPage() {
     setSelectedShotIdx(0);
     setRealAudit(null);
     void (async () => {
-      const loaded = await api.cinemaLoadProject?.(pid);
+      const [loaded, staged] = await Promise.all([
+        api.cinemaLoadProject?.(pid),
+        api.cinemaGetProductionState?.(pid).catch(() => null),
+      ]);
+      setPendingMedia(Array.isArray(staged?.pendingMedia) ? staged.pendingMedia : []);
       if (loaded?.pkg) {
         setPkg(loaded.pkg);
         if (loaded.lastRender) setRealAudit(loaded.lastRender);
@@ -482,6 +511,86 @@ export function AetheraReviewRoomPage() {
               </button>
             )}
           </div>
+
+          {pendingMedia.length > 0 && (
+            <div className="rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-200">
+                  <AlertTriangle className="size-3.5 text-amber-400" />
+                  Lacunas de Mídia ({pendingMedia.length})
+                </h3>
+                <span className="text-[10px] text-amber-300/80">Resolva cada cena</span>
+              </div>
+              <ul className="max-h-72 space-y-2 overflow-y-auto pr-1 text-xs">
+                {pendingMedia.map((gap) => {
+                  const pid = selectedProjectId || pkg?.timeline.projectId || '';
+                  const draftQuery = retryQueryMap[gap.slotIndex] ?? gap.query;
+                  const isBusy = resolvingSlot === gap.slotIndex;
+                  return (
+                    <li key={`${gap.slotIndex}_${gap.clipId}`} className="rounded-lg border border-border/80 bg-[#0d0d17] p-2.5 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-[11px] font-semibold text-amber-200">
+                          #{gap.slotIndex + 1} · {gap.clipId}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={isBusy || !pid}
+                          onClick={async () => {
+                            const api = getBridge();
+                            if (!api?.cinemaResolvePendingMedia || !pid) return;
+                            setResolvingSlot(gap.slotIndex);
+                            try {
+                              const updated = await api.cinemaResolvePendingMedia({
+                                projectId: pid,
+                                resolutions: [{ slotIndex: gap.slotIndex, pickFile: true }],
+                              });
+                              if (updated?.pendingMedia) setPendingMedia(updated.pendingMedia);
+                            } finally {
+                              setResolvingSlot(null);
+                            }
+                          }}
+                          className="rounded border border-primary/40 bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/25 disabled:opacity-50"
+                        >
+                          Selecionar arquivo
+                        </button>
+                      </div>
+                      {gap.reason && <p className="text-[11px] text-muted-foreground">{gap.reason}</p>}
+                      <div className="flex gap-1.5">
+                        <input
+                          value={draftQuery}
+                          onChange={(e) =>
+                            setRetryQueryMap((prev) => ({ ...prev, [gap.slotIndex]: e.target.value }))
+                          }
+                          className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-[11px]"
+                        />
+                        <button
+                          type="button"
+                          disabled={isBusy || !pid || !draftQuery.trim()}
+                          onClick={async () => {
+                            const api = getBridge();
+                            if (!api?.cinemaResolvePendingMedia || !pid) return;
+                            setResolvingSlot(gap.slotIndex);
+                            try {
+                              const updated = await api.cinemaResolvePendingMedia({
+                                projectId: pid,
+                                resolutions: [{ slotIndex: gap.slotIndex, retryQuery: draftQuery.trim() }],
+                              });
+                              if (updated?.pendingMedia) setPendingMedia(updated.pendingMedia);
+                            } finally {
+                              setResolvingSlot(null);
+                            }
+                          }}
+                          className="rounded border border-border px-2 py-1 text-[10px] hover:border-primary disabled:opacity-50"
+                        >
+                          Rebuscar
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
 
           <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
             <h3 className="inline-flex items-center gap-1.5 text-xs font-semibold">

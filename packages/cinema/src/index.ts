@@ -1,6 +1,7 @@
 export * from './ir/timeline-ir.js';
 export * from './analysis/media-intelligence.js';
 export * from './analysis/media-coverage-planner.js';
+export * from './analysis/resilient-media-sources.js';
 export * from './director/cinematography-director.js';
 export * from './editorial/editorial-integrity.js';
 export * from './comedy/comedy-director.js';

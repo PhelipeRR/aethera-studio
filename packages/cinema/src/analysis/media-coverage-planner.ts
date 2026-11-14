@@ -1,4 +1,4 @@
-import { extractTopicEntities } from '../qc/media-relevance-gate.js';
+import { extractTopicEntities, type MediaRelevanceDecision } from '../qc/media-relevance-gate.js';
 
 export type CoverageFormat =
   | 'documentary'
@@ -261,17 +261,51 @@ export function planMediaCoverage(input: {
   plannedUsages?: PlannedClipUsage[];
   format?: CoverageFormat;
   intentionalRepetition?: boolean;
+  relevanceDecisions?: MediaRelevanceDecision[];
+  requireRelevanceApproval?: boolean;
 }): MediaCoverageReport {
   const format = input.format ?? 'analysis';
   const totalExpectedDurationSec = input.segments.reduce((acc, s) => acc + Math.max(1, s.expectedDurationSec), 0);
   const policy = getCoveragePolicyForFormat(format, totalExpectedDurationSec, input.intentionalRepetition);
 
-  const incompatibleMedia = input.assets
-    .filter((a) => a.compatible === false || Boolean(a.rejectedReason))
-    .map((a) => ({ mediaId: a.mediaId, reason: a.rejectedReason ?? 'Mídia incompatível com o roteiro.' }));
+  const decisionByMediaId = new Map<string, MediaRelevanceDecision>();
+  for (const d of input.relevanceDecisions ?? []) {
+    decisionByMediaId.set(d.mediaId, d);
+  }
 
-  const validAssets = input.assets.filter((a) => a.compatible !== false && !a.rejectedReason && a.durationSec > 0);
-  const usages = input.plannedUsages ?? [];
+  const incompatibleMap = new Map<string, string>();
+  const validAssets: AcquiredMediaAsset[] = [];
+
+  for (const a of input.assets) {
+    const decision = decisionByMediaId.get(a.mediaId);
+    if (decision && !decision.accepted) {
+      incompatibleMap.set(a.mediaId, decision.reason || a.rejectedReason || 'Rejeitada pelo Media Relevance Gate.');
+      continue;
+    }
+    if (a.compatible === false || Boolean(a.rejectedReason)) {
+      incompatibleMap.set(a.mediaId, a.rejectedReason ?? 'Mídia incompatível com o roteiro.');
+      continue;
+    }
+    if (input.requireRelevanceApproval && (!decision || !decision.accepted) && a.compatible !== true) {
+      incompatibleMap.set(a.mediaId, 'Sem aprovação explícita do Media Relevance Gate.');
+      continue;
+    }
+    if (a.durationSec > 0) {
+      validAssets.push(a);
+    }
+  }
+
+  for (const d of input.relevanceDecisions ?? []) {
+    if (!d.accepted && !incompatibleMap.has(d.mediaId)) {
+      incompatibleMap.set(d.mediaId, d.reason || 'Rejeitada pelo Media Relevance Gate.');
+    }
+  }
+
+  const incompatibleMedia = [...incompatibleMap.entries()].map(([mediaId, reason]) => ({ mediaId, reason }));
+  const validMediaIds = new Set(validAssets.map((a) => a.mediaId));
+  const rawUsages = input.plannedUsages ?? [];
+  const rejectedUsages = rawUsages.filter((u) => !validMediaIds.has(u.mediaId));
+  const usages = rawUsages.filter((u) => validMediaIds.has(u.mediaId));
 
   // Track unique non-overlapping usable time per asset (capped at 45s per asset if not segmented, so a single 90s clip cannot fake 600s coverage)
   const remainingUsableByAsset = new Map<string, number>();
@@ -354,6 +388,11 @@ export function planMediaCoverage(input: {
   const repetition = detectMediaRepetition(usages, policy, input.intentionalRepetition);
 
   const gateReasons: string[] = [];
+  if (rejectedUsages.length > 0) {
+    gateReasons.push(
+      `${rejectedUsages.length} clipe(s) na timeline referenciam mídia rejeitada/incompatível (${[...new Set(rejectedUsages.map((u) => u.mediaId))].join(', ')}).`,
+    );
+  }
   if (coverageRatio < policy.minCoverageRatio) {
     gateReasons.push(
       `Cobertura útil de mídia (${Math.round(coverageRatio * 100)}%) abaixo do mínimo (${Math.round(policy.minCoverageRatio * 100)}%). Faltam ${Math.round(totalExpectedDurationSec - usableMediaDurationSec)}s de material único.`,
