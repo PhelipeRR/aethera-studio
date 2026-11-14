@@ -113,6 +113,7 @@ import {
   createStoryboardStageAdapter,
   createSyncStageAdapter,
   createOllamaLocalVlmProvider,
+  createAntigravityCliVisionProvider,
   createTaskEngineVisionProvider,
   createVisionProviders,
   createVisualIndexStageAdapter,
@@ -1074,7 +1075,7 @@ export function registerAetheraDomainIpc(options: {
           adapterVersion: async () => (await ytDlpVersion(ytDlp)) ?? 'desconhecida',
         })
       : null;
-  const visualIndexPolicy: VisionPolicy = { schemaVersion: 1, task: 'classify', chain: ['codex', 'claude', 'local-siglip', 'local-vlm', 'ffmpeg-heuristics'], scope: 'project', thresholds: null, version: 'aethera-as05-v1', budgetUsd: 0, maxLatencyMs: 30_000 };
+  const visualIndexPolicy: VisionPolicy = { schemaVersion: 1, task: 'classify', chain: ['local-vlm', 'antigravity', 'claude', 'codex', 'local-siglip', 'ffmpeg-heuristics'], scope: 'project', thresholds: null, version: 'aethera-as05-v1', budgetUsd: 0, maxLatencyMs: 30_000 };
   const visualIndexAdapter =
     studioRepository && mediaLibrary && productionRepository
       ? createVisualIndexStageAdapter({
@@ -1717,6 +1718,58 @@ export function registerAetheraDomainIpc(options: {
   const editorialCalendar = new EditorialCalendarEngine(
     join(app.getPath('userData'), 'calendar', 'editorial-calendar-store.json'),
   );
+  const AETHERA_VISION_CHAIN = ['local-vlm', 'antigravity', 'claude', 'codex', 'local-siglip', 'ffmpeg-heuristics'] as const;
+  const buildAetheraVisionProviders = (rootDir: string, projectId: string) =>
+    createVisionProviders([
+      createOllamaLocalVlmProvider(),
+      createAntigravityCliVisionProvider({
+        root: rootDir,
+        detect: async () => {
+          const st = await detectAntigravityCli();
+          return st.installed
+            ? { available: true }
+            : { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) não encontrado.' };
+        },
+        runPrompt: ({ prompt, cwd, model, signal }) =>
+          runAntigravityPrompt({
+            prompt,
+            cwd,
+            mode: 'read-only',
+            ...(model ? { model } : {}),
+            ...(signal ? { signal } : {}),
+            timeoutMs: 45_000,
+          }),
+      }),
+      ...(taskEngine
+        ? [
+            createTaskEngineVisionProvider({
+              id: 'claude',
+              model: 'sonnet',
+              root: rootDir,
+              projectId,
+              enabled: true,
+              taskEngine,
+              checkAvailable: async () =>
+                findClientCli('claude')
+                  ? { available: true }
+                  : { available: false, reason: 'Claude CLI (claude.exe) não encontrado.' },
+            }),
+            createTaskEngineVisionProvider({
+              id: 'codex',
+              model: 'gpt-5-codex',
+              root: rootDir,
+              projectId,
+              enabled: true,
+              taskEngine,
+              checkAvailable: async () =>
+                findClientCli('codex')
+                  ? { available: true }
+                  : { available: false, reason: 'Codex CLI não encontrado.' },
+            }),
+          ]
+        : []),
+    ]);
+
   const visionProviderCooldowns = new Map<string, VisionCooldownEntry>();
   const stagedPipeline = new StagedCinemaPipeline({
     jobsDir: join(app.getPath('userData'), 'cinema-jobs'),
@@ -1769,39 +1822,8 @@ export function registerAetheraDomainIpc(options: {
         hash: createHash('sha256').update(readFileSync(framePath)).digest('hex'),
         atMs: Math.round((timestampsSec[idx] ?? 0) * 1000),
       }));
-      const configured = [
-        ...(taskEngine
-          ? [
-              createTaskEngineVisionProvider({
-                id: 'claude',
-                model: 'sonnet',
-                root: frameDir,
-                projectId: segment.segmentId,
-                enabled: true,
-                taskEngine,
-                checkAvailable: async () =>
-                  findClientCli('claude')
-                    ? { available: true }
-                    : { available: false, reason: 'Claude CLI (claude.exe) não encontrado.' },
-              }),
-              createTaskEngineVisionProvider({
-                id: 'codex',
-                model: 'gpt-5-codex',
-                root: frameDir,
-                projectId: segment.segmentId,
-                enabled: true,
-                taskEngine,
-                checkAvailable: async () =>
-                  findClientCli('codex')
-                    ? { available: true }
-                    : { available: false, reason: 'Codex CLI não encontrado.' },
-              }),
-            ]
-          : []),
-        createOllamaLocalVlmProvider(),
-      ];
       const router = new VisionRouter(
-        createVisionProviders(configured),
+        buildAetheraVisionProviders(frameDir, segment.segmentId),
         {
           get: (k) => visionCache.get(JSON.stringify(k)),
           put: (k, v) => {
@@ -1816,7 +1838,7 @@ export function registerAetheraDomainIpc(options: {
       const policy: VisionPolicy = {
         schemaVersion: 1,
         task: 'describe',
-        chain: ['claude', 'codex', 'local-siglip', 'local-vlm', 'ffmpeg-heuristics'],
+        chain: [...AETHERA_VISION_CHAIN],
         scope: 'project',
         thresholds: null,
         version: 'aethera-scene-grounding-v1',
@@ -2171,37 +2193,24 @@ export function registerAetheraDomainIpc(options: {
         const frameDir = dirname(framePath);
         const frameBytes = readFileSync(framePath);
         const frameHash = createHash('sha256').update(frameBytes).digest('hex');
-        const configured = taskEngine
-          ? [
-              createTaskEngineVisionProvider({
-                id: 'claude',
-                model: 'sonnet',
-                root: frameDir,
-                projectId: scene.sceneId,
-                enabled: true,
-                taskEngine,
-              }),
-              createTaskEngineVisionProvider({
-                id: 'codex',
-                model: 'gpt-5-codex',
-                root: frameDir,
-                projectId: scene.sceneId,
-                enabled: true,
-                taskEngine,
-              }),
-            ]
-          : [];
         const visionCache = new Map<string, unknown>();
-        const router = new VisionRouter(createVisionProviders(configured), {
-          get: (k) => visionCache.get(JSON.stringify(k)),
-          put: (k, v) => {
-            visionCache.set(JSON.stringify(k), v);
+        const router = new VisionRouter(
+          buildAetheraVisionProviders(frameDir, scene.sceneId),
+          {
+            get: (k) => visionCache.get(JSON.stringify(k)),
+            put: (k, v) => {
+              visionCache.set(JSON.stringify(k), v);
+            },
           },
-        });
+          [],
+          undefined,
+          undefined,
+          visionProviderCooldowns,
+        );
         const policy: VisionPolicy = {
           schemaVersion: 1,
           task: 'describe',
-          chain: ['claude', 'codex', 'local-siglip', 'local-vlm', 'ffmpeg-heuristics'],
+          chain: [...AETHERA_VISION_CHAIN],
           scope: 'project',
           thresholds: null,
           version: 'aethera-visual-critic-v1',

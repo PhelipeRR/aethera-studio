@@ -85,9 +85,10 @@ export async function detectAntigravityCli(options: {
   }
 
   try {
+    const winCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(cliPath);
     const [versionOut, helpOut] = await Promise.all([
-      execFileAsync(cliPath, ['--version'], { timeout: 10_000, windowsHide: true, env }),
-      execFileAsync(cliPath, ['--help'], { timeout: 10_000, windowsHide: true, env }),
+      execFileAsync(cliPath, ['--version'], { timeout: 10_000, windowsHide: true, shell: winCmd, env }),
+      execFileAsync(cliPath, ['--help'], { timeout: 10_000, windowsHide: true, shell: winCmd, env }),
     ]);
 
     const version = /(\d+\.\d+\.\d+)/.exec(versionOut.stdout)?.[1] ?? null;
@@ -142,8 +143,9 @@ export async function runAntigravityPrompt(options: {
   mode?: 'read-only' | 'edit';
   model?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
   env?: Record<string, string | undefined>;
-}): Promise<{ ok: boolean; output: string; error?: string }> {
+}): Promise<{ ok: boolean; output: string; error?: string; model?: string }> {
   const env = options.env ?? process.env;
   const cliPath = findAntigravityCli(env);
   if (!cliPath) {
@@ -162,11 +164,14 @@ export async function runAntigravityPrompt(options: {
   args.push('--print', options.prompt);
 
   try {
+    const winCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(cliPath);
     const { stdout, stderr } = await execFileAsync(cliPath, args, {
       cwd: options.cwd ?? process.cwd(),
       timeout: options.timeoutMs ?? 90_000,
       maxBuffer: 8 * 1024 * 1024,
       windowsHide: true,
+      shell: winCmd,
+      ...(options.signal ? { signal: options.signal } : {}),
       env,
     });
     const raw = stdout.trim();
@@ -174,11 +179,15 @@ export async function runAntigravityPrompt(options: {
       return { ok: false, output: '', error: stderr.trim() || 'Antigravity CLI retornou saída vazia.' };
     }
     try {
-      const parsed = JSON.parse(raw) as { status?: string; response?: string; error?: string };
+      const parsed = JSON.parse(raw) as { status?: string; response?: string; error?: string; model?: string };
       if (parsed.status && parsed.status !== 'SUCCESS') {
         return { ok: false, output: parsed.response ?? '', error: parsed.error ?? `Status ${parsed.status}` };
       }
-      return { ok: true, output: (parsed.response ?? raw).trim() };
+      return {
+        ok: true,
+        output: (parsed.response ?? raw).trim(),
+        ...(parsed.model ? { model: parsed.model } : {}),
+      };
     } catch {
       return { ok: true, output: raw };
     }

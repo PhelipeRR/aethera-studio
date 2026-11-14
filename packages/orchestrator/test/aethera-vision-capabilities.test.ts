@@ -55,7 +55,7 @@ describe('vision capabilities, batches and cache inputs (synthetic provider)', (
 
   it('exposes all planned identities truthfully and never claims heuristics embed or classify semantics', async () => {
     const providers = createVisionProviders();
-    expect(providers.map((provider) => provider.id)).toEqual(['ffmpeg-heuristics', 'codex', 'claude', 'local-siglip', 'local-vlm', 'openai', 'gemini']);
+    expect(providers.map((provider) => provider.id)).toEqual(['ffmpeg-heuristics', 'antigravity', 'codex', 'claude', 'local-siglip', 'local-vlm', 'openai', 'gemini']);
     expect(providers[0]?.capabilities).toEqual(['describe']);
     for (const provider of providers.slice(1)) expect(await provider.detect()).toMatchObject({ available: false, reason: expect.any(String) });
   });

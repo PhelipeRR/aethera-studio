@@ -29,9 +29,9 @@ export interface VisionCooldownEntry { untilMs: number; reason: string }
 export function isVisionQuotaError(message: string): boolean {
   return /usage limit|quota|rate[- ]limit|too many requests|\b429\b|try again at|insufficient[_ ]quota|credit balance/i.test(message);
 }
-type Attempt = { provider: string; outcome: VisionAttemptOutcome; detail?: string };
+type Attempt = { provider: string; outcome: VisionAttemptOutcome; detail?: string; durationMs?: number };
 export interface VisionRouting extends VisionClassification { provider: string | null; model: string | null; band: ConfidenceBand; calibratedConfidence: number | null; costUsd: number; attempts: Attempt[] }
-export interface VisionResult<T> { value: T | null; provider: string | null; model: string | null; costUsd: number; attempts: Attempt[]; refs: string[]; reportedModel?: string | null }
+export interface VisionResult<T> { value: T | null; provider: string | null; model: string | null; costUsd: number; attempts: Attempt[]; refs: string[]; reportedModel?: string | null; durationMs?: number }
 type Request = { frames?: readonly VisionFrame[]; texts?: readonly string[]; labels?: readonly SegmentKind[]; context?: string; policy: VisionPolicy; signal?: AbortSignal; budgetKey?: string };
 const classification = z.strictObject({ kind: z.enum(segmentKinds), confidence: z.number().min(0).max(1) });
 const description = z.strictObject({ description: z.string().min(1), tags: z.array(z.string().min(1)) });
@@ -115,6 +115,7 @@ export class VisionRouter {
       const controller = new AbortController();
       const abort = () => controller.abort(input.signal?.reason);
       input.signal?.addEventListener('abort', abort, { once: true });
+      const attemptStart = Date.now();
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const execute = async (): Promise<VisionResult<unknown>> => {
@@ -180,8 +181,9 @@ export class VisionRouter {
             value = { description: descriptions.map((result) => result.description).join('\n'), tags: [...new Set(descriptions.flatMap((result) => result.tags))] };
           } else if (capability === 'analyze') value = results[0];
           else value = results.flat();
-          attempts.push({ provider: id, outcome: allCached ? 'cached' : 'ok' });
-          return { value, provider: id, model: provider.model, costUsd, attempts, refs, ...(capability === 'analyze' && !allCached ? { reportedModel: provider.lastReportedModel?.() ?? null } : {}) };
+          const durationMs = Date.now() - attemptStart;
+          attempts.push({ provider: id, outcome: allCached ? 'cached' : 'ok', durationMs });
+          return { value, provider: id, model: provider.model, costUsd, attempts, refs, durationMs, ...(capability === 'analyze' && !allCached ? { reportedModel: provider.lastReportedModel?.() ?? null } : {}) };
         };
         const interrupted = new Promise<never>((_, reject) => {
           controller.signal.addEventListener('abort', () => reject(new Error(input.signal?.aborted ? 'cancelled: visual analysis interrupted.' : 'vision provider timeout')), { once: true });
@@ -190,14 +192,15 @@ export class VisionRouter {
         const result = await Promise.race([execute(), interrupted]);
         if (result.value !== null) return result;
       } catch (error) {
+        const durationMs = Date.now() - attemptStart;
         if (input.signal?.aborted) throw new Error('cancelled: visual analysis interrupted.', { cause: error });
-        if (error instanceof VisionOverBudgetError) attempts.push({ provider: id, outcome: 'over_budget' });
+        if (error instanceof VisionOverBudgetError) attempts.push({ provider: id, outcome: 'over_budget', durationMs });
         else {
           const detail = error instanceof Error ? error.message : 'provider error';
           if (isVisionQuotaError(detail)) {
             this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: detail.slice(-160) });
           }
-          attempts.push({ provider: id, outcome: 'error', detail });
+          attempts.push({ provider: id, outcome: 'error', detail, durationMs });
         }
       } finally { clearTimeout(timer); input.signal?.removeEventListener('abort', abort); }
     }
