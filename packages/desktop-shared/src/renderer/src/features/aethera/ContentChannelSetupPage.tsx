@@ -781,15 +781,24 @@ export function ContentChannelSetupPage() {
                 >
                   <div className="absolute inset-0 bg-gradient-to-t from-black/75 to-transparent" />
                   <div className="absolute bottom-3 left-4 flex items-center gap-3">
-                    <div
-                      className="flex size-11 items-center justify-center rounded-xl border-2 text-sm font-bold text-white"
-                      style={{
-                        borderColor: form.identity.brandKit.accentColor,
-                        backgroundColor: form.identity.brandKit.primaryColor,
-                      }}
-                    >
-                      {(form.name || 'AE').slice(0, 2).toUpperCase()}
-                    </div>
+                    {form.identity.avatarUrl ? (
+                      <img
+                        src={form.identity.avatarUrl}
+                        alt={form.name || 'Avatar do canal'}
+                        className="size-11 rounded-xl border-2 object-cover"
+                        style={{ borderColor: form.identity.brandKit.accentColor }}
+                      />
+                    ) : (
+                      <div
+                        className="flex size-11 items-center justify-center rounded-xl border-2 text-sm font-bold text-white"
+                        style={{
+                          borderColor: form.identity.brandKit.accentColor,
+                          backgroundColor: form.identity.brandKit.primaryColor,
+                        }}
+                      >
+                        {(form.name || 'AE').slice(0, 2).toUpperCase()}
+                      </div>
+                    )}
                     <div>
                       <p className="text-sm font-semibold text-white" style={{ fontFamily: form.identity.brandKit.headingFont }}>
                         {form.name || 'Seu Canal'}
