@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router';
 import { healthOf, useAgents } from '@/app/useAgents';
+import { notify } from '@/components/NotificationsOverlay';
 
 interface CinemaBridgeApi {
   cinemaCapabilities?: () => Promise<{
@@ -333,10 +334,17 @@ export function CinemaDirectorPanel() {
 
         if (finalJob.state === 'error') {
           setError(finalJob.error ?? finalJob.message);
+          notify({ title: 'Erro na produção IA', message: finalJob.error ?? finalJob.message, type: 'error' });
           return;
         }
-        if (finalJob.state === 'editor' && options?.autoOpenEditor !== false) {
-          navigate(`/video?projectId=${encodeURIComponent(finalJob.projectId)}`);
+        if (finalJob.state === 'paused_pending_media') {
+          notify({ title: 'Produção pausada', message: 'Aguardando seleção/autorização de mídia para continuar.', type: 'warning' });
+        }
+        if (finalJob.state === 'editor') {
+          notify({ title: 'Vídeo finalizado', message: 'Todas as etapas foram concluídas. Pronto para revisão no Editor!', type: 'success', native: true });
+          if (options?.autoOpenEditor !== false) {
+            navigate(`/video?projectId=${encodeURIComponent(finalJob.projectId)}`);
+          }
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));

@@ -16,6 +16,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { createHashRouter, Link, RouterProvider, useParams } from 'react-router';
 import { AetheraShell } from '@/app/AetheraShell';
+import { NotificationsOverlay } from '@/components/NotificationsOverlay';
 import type { AppRoute } from '@/app/routes';
 import { PageHeader } from '@/app/PageHeader';
 import { SettingsPage } from '@/pages/SettingsPage';
@@ -126,6 +127,7 @@ if (rootElement) {
     <React.StrictMode>
       <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />
+        <NotificationsOverlay />
       </QueryClientProvider>
     </React.StrictMode>,
   );

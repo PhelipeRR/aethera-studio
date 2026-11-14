@@ -25,6 +25,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router';
+import { notify } from '@/components/NotificationsOverlay';
 
 type LeftBinTab = 'media' | 'effects' | 'transitions' | 'titles' | 'sfx' | 'music';
 type InspectorTab = 'transform' | 'color' | 'audio' | 'subtitles' | 'speed';
@@ -237,7 +238,19 @@ export function AetheraStudioEditor() {
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
   const [exportingOtio, setExportingOtio] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [, setStatusMsgRaw] = useState<string | null>(null);
+  const setStatusMsg = useCallback((msg: string | null) => {
+    setStatusMsgRaw(msg);
+    if (!msg) return;
+    const isVideoDone = /renderizad|finalizad|concluíd/i.test(msg);
+    const isError = /erro|falha/i.test(msg);
+    notify({
+      title: isVideoDone ? 'Vídeo finalizado' : isError ? 'Atenção no Editor' : 'Aethera Studio',
+      message: msg,
+      type: isError ? 'error' : 'success',
+      native: isVideoDone,
+    });
+  }, []);
   const [playerVolume, setPlayerVolume] = useState(1);
   const [playerMuted, setPlayerMuted] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
@@ -1038,7 +1051,7 @@ export function AetheraStudioEditor() {
 
   return (
     <div
-      className="flex h-full flex-col gap-3 p-4 xl:p-5"
+      className="flex h-[calc(100vh-3.5rem)] flex-col gap-2 overflow-hidden p-2.5"
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
@@ -1046,7 +1059,7 @@ export function AetheraStudioEditor() {
         if (file?.path) void handleImportMedia(file.path);
       }}
     >
-      <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-2.5">
+      <header className="flex-none flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card px-3 py-1.5">
         <div className="flex flex-wrap items-center gap-3 text-xs">
           <span className="font-semibold text-foreground">Editor NLE Profissional</span>
           {projects.length > 0 && (
@@ -1134,15 +1147,9 @@ export function AetheraStudioEditor() {
         </div>
       )}
 
-      {statusMsg && (
-        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300">
-          {statusMsg}
-        </div>
-      )}
-
-      <div className="grid gap-3 lg:grid-cols-12">
+      <div className="grid flex-1 min-h-0 gap-2 lg:grid-cols-12">
         {/* Left: Media & Assets Bin */}
-        <aside className="flex flex-col rounded-2xl border border-border bg-card p-3 lg:col-span-3 space-y-3">
+        <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card p-2.5 lg:col-span-3 space-y-2">
           <div className="flex flex-wrap gap-1 text-[11px]">
             {(
               [
@@ -1167,7 +1174,7 @@ export function AetheraStudioEditor() {
             ))}
           </div>
 
-          <div className="flex-1 space-y-2 text-xs max-h-64 overflow-y-auto pr-1">
+          <div className="flex-1 min-h-0 space-y-1.5 text-xs overflow-y-auto pr-1">
             {leftTab === 'media' && (
               <>
                 <div className="sticky top-0 z-10 bg-[#12121e] pb-1.5">
@@ -1241,7 +1248,7 @@ export function AetheraStudioEditor() {
         </aside>
 
         {/* Center: Real Preview Stage (Live Canvas OR Rendered MP4 Video) */}
-        <section className="flex flex-col rounded-2xl border border-border bg-[#090910] p-3 lg:col-span-6 space-y-2.5">
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-[#090910] p-2.5 lg:col-span-6 space-y-1.5">
           <div className="flex items-center justify-between text-[11px]">
             <div className="flex gap-1">
               <button
@@ -1273,7 +1280,7 @@ export function AetheraStudioEditor() {
             <span className="font-mono text-amber-300">{formatTimecode(playheadSec)}</span>
           </div>
 
-          <div className="relative aspect-video overflow-hidden rounded-xl border border-border/70 bg-black">
+          <div className="relative flex-1 min-h-0 overflow-hidden rounded-lg border border-border/70 bg-black">
             {previewMode === 'mp4' && renderedMedia ? (
               <video
                 ref={videoRef}
@@ -1350,8 +1357,8 @@ export function AetheraStudioEditor() {
         </section>
 
         {/* Right: Inspector */}
-        <aside className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card p-3 lg:col-span-3 space-y-3">
-          <div className="flex flex-wrap gap-1 text-[11px]">
+        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card p-2.5 lg:col-span-3 space-y-2">
+          <div className="flex-none flex flex-wrap gap-1 text-[11px]">
             {(
               [
                 ['transform', 'Propriedades'],
@@ -1374,6 +1381,7 @@ export function AetheraStudioEditor() {
             ))}
           </div>
 
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-2">
           {inspectorTab === 'transform' && (
             <div className="space-y-2 text-xs">
               <p className="font-semibold text-foreground">Clipe: {selectedClip?.label ?? '—'}</p>
@@ -1814,12 +1822,13 @@ export function AetheraStudioEditor() {
               </div>
             </div>
           )}
+          </div>
         </aside>
       </div>
 
       {/* Bottom: Interactive Multi-track NLE Timeline + Collapsible AI Assistant */}
-      <div className="grid gap-3 lg:grid-cols-12">
-        <section className={`rounded-2xl border border-border bg-card p-3 space-y-2.5 ${assistantOpen ? 'lg:col-span-9' : 'lg:col-span-12'}`}>
+      <div className="grid flex-none h-[215px] gap-2 overflow-hidden lg:grid-cols-12">
+        <section className={`flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card p-2.5 space-y-1.5 ${assistantOpen ? 'lg:col-span-9' : 'lg:col-span-12'}`}>
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 pb-2 text-xs">
             <div className="flex items-center gap-2">
               <button type="button" onClick={handleUndo} disabled={history.length === 0} className="rounded-md border border-border p-1.5 hover:border-primary disabled:opacity-40" aria-label="Desfazer">
@@ -1876,7 +1885,7 @@ export function AetheraStudioEditor() {
             </button>
           </div>
 
-          <div className="overflow-x-auto pb-1">
+          <div className="flex-1 min-h-0 overflow-auto pb-1">
             <div className="flex gap-2" style={{ minWidth: timelineWidthPx + 152 }}>
               {/* Track headers */}
               <div className="w-36 shrink-0 space-y-1.5 pt-7 text-[11px]">
@@ -2063,7 +2072,7 @@ export function AetheraStudioEditor() {
         </section>
 
         {assistantOpen && (
-          <aside className="rounded-2xl border border-primary/30 bg-card p-3 lg:col-span-3 space-y-3">
+          <aside className="flex min-h-0 flex-col overflow-y-auto rounded-xl border border-primary/30 bg-card p-2.5 lg:col-span-3 space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="inline-flex items-center gap-1.5 text-xs font-semibold">
                 <Bot className="size-3.5 text-purple-400" /> Assistente de Edição IA
