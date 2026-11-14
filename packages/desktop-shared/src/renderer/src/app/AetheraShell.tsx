@@ -10,7 +10,10 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { MeterBar } from '@/components/ui/glass';
 import { Tooltip, TooltipProvider } from '@/components/ui/tooltip';
+import { share } from '@/features/monitoring/format';
+import { useMonitoring } from '@/features/monitoring/monitoring-store';
 import { usePersistentFlag } from '@/lib/use-persistent-flag';
 import { cn } from '@/lib/utils';
 import { CommandPalette } from './CommandPalette';
@@ -72,6 +75,13 @@ export function AetheraShell({ routes }: AetheraShellProps) {
 
   const ToggleIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
   const toggleLabel = collapsed ? 'Expandir menu' : 'Recolher menu';
+  const monitoring = useMonitoring();
+  const lastSample = monitoring.samples.at(-1);
+  const metricMissing = monitoring.state === 'unavailable' || monitoring.state === 'error' ? 'indisponível' : 'iniciando';
+  const cpuPct = lastSample?.cpu.utilization ?? null;
+  const ramPct = lastSample ? share(lastSample.memory.usedBytes, lastSample.memory.totalBytes) : null;
+  const gpuPct = lastSample?.gpu.utilization ?? null;
+  const fmtPct = (v: number | null) => (v == null ? '—' : `${Math.round(v)}%`);
 
   return (
     <TooltipProvider>
@@ -142,9 +152,9 @@ export function AetheraShell({ routes }: AetheraShellProps) {
           {/* Left Studio Navigation Sidebar */}
           <aside
             aria-label="Navegação do Aethera Studio"
-            className="flex min-h-0 flex-col border-r border-border/80 bg-[#090910]"
+            className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border/80 bg-[#090910]"
           >
-            <nav className={cn('flex-1 overflow-y-auto py-3', collapsed ? 'px-2' : 'px-3')}>
+            <nav className={cn('flex-1 overflow-x-hidden overflow-y-auto py-3', collapsed ? 'px-2' : 'px-3')}>
               <ul className="space-y-1">
                 {routes.map((route) => {
                   const Icon = route.icon;
@@ -154,11 +164,12 @@ export function AetheraShell({ routes }: AetheraShellProps) {
                         <NavLink
                           to={route.path}
                           end={route.path === '/aethera'}
+                          aria-label={collapsed ? route.label : undefined}
                           className={({ isActive }) =>
                             cn(
-                              'flex min-h-9 items-center gap-2.5 rounded-lg border border-transparent px-2.5 text-[13px] text-muted-foreground transition-all',
+                              'flex h-9 items-center rounded-lg border border-transparent text-[13px] text-muted-foreground transition-colors',
                               'hover:bg-[#151526] hover:text-foreground',
-                              collapsed && 'justify-center px-0',
+                              collapsed ? 'mx-auto w-9 justify-center px-0' : 'gap-2.5 px-2.5',
                               isActive &&
                                 'border-primary/40 bg-gradient-to-r from-primary/20 via-primary/10 to-transparent font-medium text-foreground shadow-[0_0_18px_rgba(139,92,246,0.16)]',
                             )
@@ -167,7 +178,7 @@ export function AetheraShell({ routes }: AetheraShellProps) {
                           {({ isActive }) => (
                             <>
                               <Icon className={cn('size-4 shrink-0', isActive && 'text-purple-400')} aria-hidden="true" />
-                              <span className={collapsed ? 'sr-only' : 'truncate'}>{route.label}</span>
+                              {!collapsed && <span className="truncate">{route.label}</span>}
                             </>
                           )}
                         </NavLink>
@@ -178,13 +189,35 @@ export function AetheraShell({ routes }: AetheraShellProps) {
               </ul>
             </nav>
 
-            {!collapsed && (
-              <div className="mx-3 mb-3 rounded-xl border border-border/80 bg-[#10101d] p-3 text-xs space-y-2">
+            {collapsed ? (
+              <div className="mx-2 mb-2">
+                <Tooltip label={`GPU: ${fmtPct(gpuPct)} · RAM: ${fmtPct(ramPct)} · CPU: ${fmtPct(cpuPct)}`}>
+                  <div
+                    aria-label="Monitoramento de hardware"
+                    className="flex flex-col items-center gap-1 rounded-lg border border-border/80 bg-[#10101d] px-1.5 py-2 text-[9px] font-mono tabular-nums text-muted-foreground"
+                  >
+                    <span className="text-purple-300">G {fmtPct(gpuPct)}</span>
+                    <span className="text-sky-300">R {fmtPct(ramPct)}</span>
+                    <span className="text-emerald-300">C {fmtPct(cpuPct)}</span>
+                  </div>
+                </Tooltip>
+              </div>
+            ) : (
+              <div className="mx-3 mb-3 space-y-2.5 rounded-xl border border-border/80 bg-[#10101d] p-3 text-xs">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold tracking-wide text-foreground">Aethera Cinema</span>
                   <span className="rounded bg-primary/20 px-1.5 py-0.5 font-mono text-[10px] text-purple-300">v1.1</span>
                 </div>
-                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <div data-live-metric className="space-y-1.5 border-t border-border/60 pt-2">
+                  <MeterBar
+                    label={lastSample?.gpu.temperatureC != null ? `GPU (${Math.round(lastSample.gpu.temperatureC)}°C)` : 'GPU'}
+                    value={gpuPct}
+                    missingLabel={metricMissing}
+                  />
+                  <MeterBar label="RAM" value={ramPct} missingLabel={metricMissing} />
+                  <MeterBar label="CPU" value={cpuPct} missingLabel={metricMissing} />
+                </div>
+                <div className="flex items-center justify-between border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
                   <span className="inline-flex items-center gap-1">
                     <Cpu className="size-3 text-emerald-400" /> Local-first
                   </span>
