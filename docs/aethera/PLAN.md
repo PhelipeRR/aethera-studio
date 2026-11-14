@@ -103,3 +103,15 @@ Matriz de maturidade após auditoria e correções de integração no pipeline p
   - Mídias reais: 4 trailers baixados via `yt-dlp` (com pausa em `paused_pending_media` quando faltou mídia e retomada via `resolvePendingMedia`).
   - AI Visual Critic (`claude-cli`): inspecionou os 6 frames PNG reais, identificando desalinhamentos reais entre trailer e narração (`clip_2`, `clip_4`, `clip_5`, `clip_6`); após reparo direcionado do Supervisor, `clip_2` e `clip_5` passaram (`cacheHits: 3`, `reRenderedScenes: 3`).
   - Problemas reais reportados para intervenção manual: `blackdetect` em `clip_3` (`124.43s–125.1s` e `126.47s–127.23s`), `loudness_drift` (`-19.5 LUFS` vs `-14.0 LUFS`) e falta de trailer específico de *Fable* em `clip_4`.
+
+### Hardening de Qualidade Editorial & Audiovisual (Antes vs. Depois) — 2026-11-14
+
+| Métrica / Critério | Antes (E2E v1) | Depois (Hardening E2E v2) |
+| --- | --- | --- |
+| **Loudness integrado (`probeRealMp4`)** | `-19.5 LUFS` (warning `real_qc_loudness_drift`) | **`-14.0 LUFS`** (alvo exato via `loudnorm` 2-pass medido; `0` warnings de loudness) |
+| **True Peak (`probeRealMp4`)** | `-3.8 dBTP` | **`-3.6 dBTP`** (dentro do limite `<= -1.0 dBTP`) |
+| **Amostragem de frames (`Visual Critic`)** | `6` frames (1 por cena) | **`18` frames** (amostragem adaptativa 1–3 frames/cena) |
+| **Mídias reais adquiridas** | `4` trailers | **`7` trailers** (recuperação automática via `retryResearchSceneIds`) |
+| **Bloqueio por mídia de outro jogo** | `warning` (podia passar se sem outros erros) | **`critical`** obrigatório em `retry_media_research` |
+| **Corte de entrada (`-ss` / `sourceRange.start`)** | Ignorado em `real-renderer.ts` | **`-ss` aplicado** + avanço automático `+4s` em `blackdetect` |
+| **Cache incremental pós-reparo** | `3/6` cacheHits | `2/6` cacheHits (4 cenas reparadas re-renderizadas, 2 aprovadas preservadas) |

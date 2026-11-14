@@ -190,7 +190,7 @@ describe('AI Visual Critic with real vision & targeted repairs', () => {
           : null,
     });
 
-    expect(critic.sampledFrames).toHaveLength(3);
+    expect(critic.sampledFrames.length).toBeGreaterThanOrEqual(3);
     expect(existsSync(critic.sampledFrames[0]!)).toBe(true);
     const sup = runAutonomousSupervisorPass(critic, { attempt: 1, maxAttempts: 2 });
     expect(sup.status).toBe('needs_repair');

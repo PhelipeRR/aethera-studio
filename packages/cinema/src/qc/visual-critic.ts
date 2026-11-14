@@ -93,11 +93,22 @@ export async function evaluateRenderedVisualCritic(input: {
       })
     : { avoidHudOverlap: false, preferDiscreteTypography: false, avoidActCards: false, appliedRuleIds: [] };
 
-  // 1. Sample 1 frame per scene midpoint if MP4 exists
+  // 1. Adaptive frame sampling per scene duration (1-3 frames per scene) if MP4 exists
   if (input.mp4Path && existsSync(input.mp4Path) && input.framesDir && input.scenes.length > 0) {
-    const timestamps = input.scenes.map((s) =>
-      Number((s.startSec + Math.max(0.2, s.durationSec / 2)).toFixed(2)),
-    );
+    const sampleEntries: Array<{ ts: number; sceneIdx: number }> = [];
+    for (let sIdx = 0; sIdx < input.scenes.length; sIdx += 1) {
+      const s = input.scenes[sIdx]!;
+      const ratios = s.durationSec > 15 ? [0.2, 0.5, 0.8] : s.durationSec > 5 ? [0.25, 0.75] : [0.5];
+      for (const r of ratios) {
+        if (sampleEntries.length >= 18) break;
+        sampleEntries.push({
+          ts: Number((s.startSec + Math.max(0.2, s.durationSec * r)).toFixed(2)),
+          sceneIdx: sIdx,
+        });
+      }
+      if (sampleEntries.length >= 18) break;
+    }
+    const timestamps = sampleEntries.map((e) => e.ts);
     try {
       const frames = await extractVerificationFrames(
         input.mp4Path,
@@ -107,13 +118,17 @@ export async function evaluateRenderedVisualCritic(input: {
       sampledFrames.push(...frames);
 
       if (input.analyzeFrameWithAI) {
+        const flaggedScenes = new Set<string>();
         for (let i = 0; i < frames.length; i += 1) {
           const framePath = frames[i];
-          const scene = input.scenes[i];
-          if (!framePath || !scene) continue;
+          const entry = sampleEntries[i];
+          const scene = entry ? input.scenes[entry.sceneIdx] : undefined;
+          if (!framePath || !scene || flaggedScenes.has(scene.sceneId)) continue;
           const aiRes = await input.analyzeFrameWithAI(framePath, scene).catch(() => null);
           if (aiRes?.issue) {
-            const sev = aiRes.severity ?? 'warning';
+            flaggedScenes.add(scene.sceneId);
+            // Incompatible media (wrong game/topic) is always critical to block auto-approval
+            const sev = aiRes.suggestedAction === 'retry_media_research' ? 'critical' : (aiRes.severity ?? 'warning');
             findings.push({
               issueId: `visual_critic_ai_${scene.sceneId}`,
               timeRange: {

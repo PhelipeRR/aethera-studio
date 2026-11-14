@@ -679,3 +679,14 @@ composição, ritmo e coerência.
   1. `clip_3` possui dois trechos pretos do trailer original (`124.43s–125.1s` e `126.47s–127.23s`).
   2. `clip_4` (Fable) ficou com trailer de *Tomb Raider* por haver 4 arquivos adquiridos para 5 jogos distintos.
   3. `integratedLufs` medido em `-19.5 LUFS` (abaixo do alvo `-14.0 LUFS`).
+
+### Hardening de Qualidade Editorial & Audiovisual (Antes vs. Depois) — 2026-11-14
+
+- [x] **Normalização EBU R128 2-pass (`packages/cinema/src/render/real-renderer.ts`)**: Loudness corrigido de `-19.5 LUFS` para **`-14.0 LUFS`** (`truePeakDbtp: -3.6 dBTP`, dentro de `<= -1.0 dBTP`), eliminando `real_qc_loudness_drift`.
+- [x] **Corte `-ss` e avanço de trechos pretos (`real-renderer.ts` + `cinema-pipeline.ts`)**: `real-renderer.ts` agora aplica `-ss` a partir de `sourceRange.start`, e o Supervisor avança `+4s` quando `blackdetect` aciona `rerender_scene` mantendo `timelineRange`, narração, SFX, VFX e música sincronizados.
+- [x] **Amostragem adaptativa & bloqueio editorial (`packages/cinema/src/qc/visual-critic.ts`)**: Amostragem ampliada de `6` para **`18` frames** por vídeo de 5 min; `retry_media_research` (mídia de outro jogo) sempre emite `severity: 'critical'`.
+- [x] **Recuperação automática de mídia (`cinema-pipeline.ts` + `e2e-production-top5-2027.mts`)**: Trailers salvos com slug verificável do jogo e `retryResearchSceneIds` aciona busca/download de trailer específico (`acquiredMediaCount` subiu de `4` para `7`).
+- [x] **Validação executada**:
+  - **Vitest** (`visual-critic-vision.test.ts`, `evolution-2.0.test.ts`, `nle-editor-integration.test.ts`, `waveform-extractor.test.ts`, `trend-radar.test.ts`): **5 arquivos / 23 testes passando**.
+  - **TypeScript (`typecheck`)**: **0 erros**.
+  - **E2E Real v2**: MP4 `298s` (`80.09 MB`), `-14.0 LUFS`, `-3.6 dBTP`, `18` frames amostrados, `cacheHits: 2 / reRenderedScenes: 4`. Fades escuros internos dos trailers originais continuam reportados honestamente no QC para avaliação manual na Sala de Revisão.

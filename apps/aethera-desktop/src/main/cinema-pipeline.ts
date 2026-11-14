@@ -925,6 +925,59 @@ export class StagedCinemaPipeline {
 
       if (sup1.status === 'needs_repair' && sup1.rerenderSceneIds.length > 0) {
         const repairIds = new Set(sup1.rerenderSceneIds);
+        const recoveredMediaByScene = new Map<string, string>();
+        if (
+          sup1.retryResearchSceneIds.length > 0 &&
+          this.deps.searchExternalMedia &&
+          this.deps.acquireExternalMedia
+        ) {
+          for (const [rIdx, sceneId] of sup1.retryResearchSceneIds.entries()) {
+            const clipIdx = v1Clips.findIndex((c) => c.clipId === sceneId);
+            const sceneBeat = clipIdx >= 0 ? pkg.direction.narrativeBeats[clipIdx] : undefined;
+            const recoveryQuery = (sceneBeat?.summary ?? job.prompt)
+              .replace(/[^\p{L}\p{N}\s:.-]/gu, ' ')
+              .trim()
+              .slice(0, 90);
+            try {
+              const candidates = await this.deps.searchExternalMedia(
+                `${recoveryQuery} gameplay trailer`,
+                10 + rIdx,
+                signal,
+              );
+              const pickedUrl = candidates[0]?.url;
+              const downloadedPath = await this.deps.acquireExternalMedia(
+                `${recoveryQuery} gameplay trailer`,
+                10 + rIdx,
+                projectPaths.mediaDir,
+                signal,
+                pickedUrl,
+              );
+              if (downloadedPath) {
+                const recoveredRecord = await buildSourceMediaFromFile(
+                  downloadedPath,
+                  `${job.projectId}_rec_${sceneId}`,
+                );
+                if (recoveredRecord) {
+                  job.acquiredMedia = [...job.acquiredMedia, recoveredRecord];
+                  pkg = {
+                    ...pkg,
+                    timeline: {
+                      ...pkg.timeline,
+                      sourceMedia: {
+                        ...pkg.timeline.sourceMedia,
+                        [recoveredRecord.mediaId]: recoveredRecord,
+                      },
+                    },
+                  };
+                  recoveredMediaByScene.set(sceneId, recoveredRecord.mediaId);
+                }
+              }
+            } catch {
+              // Non-fatal: falls back to existing alternate pool or escalates
+            }
+          }
+        }
+
         const altMediaPool = job.acquiredMedia.map((m) => m.mediaId);
         pkg = {
           ...pkg,
@@ -936,12 +989,26 @@ export class StagedCinemaPipeline {
               const needSwapClip = sup1.actions.some(
                 (a) => a.sceneId === c.clipId && (a.action === 'swap_duplicate_clip' || a.action === 'retry_media_research'),
               );
+              const needBlackTrim = sup1.actions.some(
+                (a) => a.sceneId === c.clipId && a.action === 'rerender_scene' && /frame preto|black/i.test(a.reason),
+              );
               const needAdjustVfx = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'adjust_vfx');
               const needAdjustTypo = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'adjust_typography');
-              const nextMediaId =
-                needSwapClip && altMediaPool.length > 1
+              const recoveredId = recoveredMediaByScene.get(c.clipId);
+              const nextMediaId = recoveredId
+                ? recoveredId
+                : needSwapClip && altMediaPool.length > 1
                   ? altMediaPool.find((id) => id !== c.mediaId) ?? c.mediaId
                   : c.mediaId;
+              const nextSourceRange = needBlackTrim
+                ? {
+                    ...c.sourceRange,
+                    start: {
+                      ...c.sourceRange.start,
+                      value: c.sourceRange.start.value + 4 * Math.max(1, c.sourceRange.start.rate),
+                    },
+                  }
+                : c.sourceRange;
               let nextEffects = c.effects.map((e) =>
                 needAdjustVfx && /blur|shake|glitch|glow/i.test(e.kind) ? { ...e, enabled: false } : e,
               );
@@ -974,6 +1041,7 @@ export class StagedCinemaPipeline {
               return {
                 ...c,
                 mediaId: nextMediaId,
+                sourceRange: nextSourceRange,
                 effects: nextEffects,
               };
             }),

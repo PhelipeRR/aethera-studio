@@ -481,10 +481,21 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       continue;
     }
 
+    const trimStartSec = spec.clip?.sourceRange?.start
+      ? Math.max(0, spec.clip.sourceRange.start.value / Math.max(1, spec.clip.sourceRange.start.rate))
+      : 0;
     const inputArgs = spec.sourceUri
       ? isImageSource
         ? ['-loop', '1', '-t', String(spec.effectiveDur), '-i', spec.sourceUri]
-        : ['-stream_loop', '-1', '-t', String(spec.effectiveDur * Math.max(0.25, spec.clip?.speed ?? 1) + 0.5), '-i', spec.sourceUri]
+        : [
+            ...(trimStartSec > 0 ? ['-ss', String(trimStartSec)] : []),
+            '-stream_loop',
+            '-1',
+            '-t',
+            String(spec.effectiveDur * Math.max(0.25, spec.clip?.speed ?? 1) + 0.5),
+            '-i',
+            spec.sourceUri,
+          ]
       : ['-f', 'lavfi', '-i', `color=c=${bgHex}:s=640x360:r=30:d=${spec.effectiveDur}`];
 
     await execFileAsync('ffmpeg', [
@@ -702,6 +713,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     `[nar_mix][ducked_music][amb][sfx_mix]amix=inputs=4:duration=longest:normalize=0,atrim=0:${totalDur},loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}[aout]`,
   ].join(';');
 
+  const rawAudioMixPath = join(workDir, 'audio_master_raw.wav');
   await execFileAsync('ffmpeg', [
     '-y',
     '-i',
@@ -714,7 +726,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     '48000',
     '-ac',
     '2',
-    audioMixPath,
+    rawAudioMixPath,
     '-map',
     '[ducked_music_stem]',
     '-ar',
@@ -737,6 +749,45 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     '1',
     ambienceStemPath,
   ]);
+
+  // 2-pass measured EBU R128 loudness normalization to hit exact targetLufs (-14.0 LUFS) and targetTp (-1.0 dBTP)
+  let twoPassApplied = false;
+  try {
+    const measureRes = await execFileAsync('ffmpeg', [
+      '-hide_banner',
+      '-i',
+      rawAudioMixPath,
+      '-af',
+      `loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}:print_format=json`,
+      '-f',
+      'null',
+      '-',
+    ]).catch((err: { stderr?: string }) => ({ stderr: err.stderr ?? '' }));
+    const jsonMatch = (measureRes.stderr ?? '').match(/\{[\s\S]*"input_i"[\s\S]*\}/);
+    if (jsonMatch) {
+      const m = JSON.parse(jsonMatch[0]) as Record<string, string>;
+      if (m['input_i'] && m['input_tp'] && m['input_lra'] && m['input_thresh'] && m['target_offset']) {
+        await execFileAsync('ffmpeg', [
+          '-y',
+          '-i',
+          rawAudioMixPath,
+          '-af',
+          `loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}:measured_I=${m['input_i']}:measured_TP=${m['input_tp']}:measured_LRA=${m['input_lra']}:measured_thresh=${m['input_thresh']}:offset=${m['target_offset']}:linear=true`,
+          '-ar',
+          '48000',
+          '-ac',
+          '2',
+          audioMixPath,
+        ]);
+        twoPassApplied = true;
+      }
+    }
+  } catch {
+    twoPassApplied = false;
+  }
+  if (!twoPassApplied) {
+    copyFileSync(rawAudioMixPath, audioMixPath);
+  }
 
   // 4. Mux final MP4 (prefer NVENC if requested and available, fallback libx264)
   let encoderUsed = 'libx264';

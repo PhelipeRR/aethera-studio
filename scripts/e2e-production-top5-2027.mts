@@ -19,11 +19,20 @@ const YT_DLP = 'C:\\Users\\Pheli\\AppData\\Roaming\\Python\\Python314\\Scripts\\
 const USER_DATA = join(process.env.APPDATA ?? 'C:\\Users\\Pheli\\AppData\\Roaming', 'AetheraStudio');
 const PROJECT_ID = 'cinema_top5_2027_e2e';
 
+const GAME_SLUGS = [
+  'fable_2027',
+  'tomb_raider_legacy_of_atlantis',
+  'exodus_sci_fi_rpg',
+  'final_fantasy_vii_revelation',
+  'kingdom_hearts_iv',
+  'games_2027_showcase',
+];
+
 const GAME_QUERIES = [
   'Fable Xbox official trailer gameplay 2027',
+  'Tomb Raider Legacy of Atlantis official trailer',
   'Exodus game official gameplay trailer Archetype',
   'Final Fantasy VII Rebirth Revelation trailer gameplay',
-  'Tomb Raider Legacy of Atlantis official trailer',
   'Kingdom Hearts IV official trailer gameplay',
   'Most anticipated games 2027 showcase trailer',
 ];
@@ -120,7 +129,8 @@ async function main() {
     },
     acquireExternalMedia: async (query, slotIndex, mediaDir, signal, preferredUrl) => {
       const targetUrl = preferredUrl ?? `ytsearch1:${GAME_QUERIES[slotIndex % GAME_QUERIES.length] ?? query}`;
-      const outTemplate = join(mediaDir, `trailer_slot_${slotIndex + 1}.%(ext)s`);
+      const slug = GAME_SLUGS[slotIndex] ?? `recovered_scene_${slotIndex}`;
+      const outTemplate = join(mediaDir, `${slug}.%(ext)s`);
       try {
         await execFileAsync(
           YT_DLP,
@@ -138,7 +148,7 @@ async function main() {
           { signal, timeout: 180_000 },
         );
         for (const ext of ['mp4', 'webm', 'mkv']) {
-          const candidate = join(mediaDir, `trailer_slot_${slotIndex + 1}.${ext}`);
+          const candidate = join(mediaDir, `${slug}.${ext}`);
           if (existsSync(candidate)) return candidate;
         }
         return null;
@@ -154,7 +164,8 @@ async function main() {
         const prompt = [
           `Inspecione a imagem do frame em "${framePath}" da cena ${scene.sceneId} (${scene.startSec}s).`,
           `Narração: "${scene.narrationText ?? ''}".`,
-          `Responda SOMENTE JSON: {"ok":true|false,"issue":"...","severity":"warning"|"critical","suggestedAction":"hide_lower_third"|"adjust_typography"|"adjust_vfx"|"swap_duplicate_clip"|"rerender_scene"|null}`,
+          `Se a imagem for claramente de outro jogo diferente da narração, use suggestedAction="retry_media_research" e severity="critical".`,
+          `Responda SOMENTE JSON: {"ok":true|false,"issue":"...","severity":"warning"|"critical","suggestedAction":"hide_lower_third"|"adjust_typography"|"adjust_vfx"|"retry_media_research"|"swap_duplicate_clip"|"rerender_scene"|null}`,
         ].join(' ');
         const { stdout } = await execFileAsync(
           'claude',
@@ -167,7 +178,7 @@ async function main() {
             ok?: boolean;
             issue?: string;
             severity?: 'warning' | 'critical';
-            suggestedAction?: 'hide_lower_third' | 'adjust_typography' | 'adjust_vfx' | 'swap_duplicate_clip' | 'rerender_scene' | null;
+            suggestedAction?: 'hide_lower_third' | 'adjust_typography' | 'adjust_vfx' | 'retry_media_research' | 'swap_duplicate_clip' | 'rerender_scene' | null;
           };
           visionFindingsLog.push({ sceneId: scene.sceneId, provider: 'claude-cli', issue: parsed.ok === false ? (parsed.issue ?? 'issue') : null });
           if (parsed.ok === false && parsed.issue && parsed.suggestedAction) {
