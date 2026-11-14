@@ -16,6 +16,7 @@ import {
   planTargetedSegmentRegeneration,
   recordApprovedPronunciationRule,
   recordSceneGroundingNegativeExample,
+  undoSceneGroundingNegativeExample,
   findMatchingSceneGroundingNegativeExample,
   runAutonomousMediaAcquisition,
   sampleDistributedFrameTimestamps,
@@ -779,7 +780,8 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(run2.funnelMetrics.conversionRates.downloadedToVerifiedRate).toBe(1);
   });
 
-  it('selects only the specific timestamp interval where the narrated event visibly occurs', async () => {
+  it('selects only the specific timestamp interval where the narrated event visibly occurs and refines densely', async () => {
+    const analyzeCalls: number[][] = [];
     const decision = await evaluateMediaRelevance(
       {
         mediaId: 'clip_ssj_transform',
@@ -797,50 +799,40 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
       },
       {
         requireVisualVerification: true,
-        analyzeFrames: async () => [
-          {
-            timestampSec: 4.5,
-            visualCategory: 'anime_animation',
-            detectedEntities: ['freeza'],
-            detectedActions: [],
-            description: 'Freeza parado em cenário rochoso observando ao longe.',
-            confidence: 0.9,
-          },
-          {
-            timestampSec: 15.75,
-            visualCategory: 'anime_animation',
-            detectedEntities: ['gohan'],
-            detectedActions: [],
-            description: 'Gohan olhando assustado para o céu nublado.',
-            confidence: 0.88,
-          },
-          {
-            timestampSec: 27.9,
-            visualCategory: 'anime_animation',
-            detectedEntities: ['freeza'],
-            detectedActions: [],
-            description: 'Raios verdes no céu escuro de Namekusei.',
-            confidence: 0.87,
-          },
-          {
-            timestampSec: 38.7,
-            visualCategory: 'anime_animation',
-            detectedEntities: ['goku', 'super saiyajin'],
-            detectedActions: ['transformacao'],
-            description: 'Goku gritando em fúria se transforma em Super Saiyajin com cabelo loiro e aura dourada.',
-            confidence: 0.96,
-          },
-        ],
+        analyzeFrames: async (_uri, timestampsSec) => {
+          analyzeCalls.push(timestampsSec);
+          return timestampsSec.map((t) => {
+            if (Math.abs(t - 38.7) <= 0.3 || Math.abs(t - 37.2) <= 0.3) {
+              return {
+                timestampSec: t,
+                visualCategory: 'anime_animation' as const,
+                detectedEntities: ['goku', 'super saiyajin'],
+                detectedActions: ['transformacao'],
+                description: 'Goku gritando em fúria se transforma em Super Saiyajin com cabelo loiro e aura dourada.',
+                confidence: 0.96,
+              };
+            }
+            return {
+              timestampSec: t,
+              visualCategory: 'anime_animation' as const,
+              detectedEntities: ['freeza'],
+              detectedActions: [],
+              description: 'Freeza parado em cenário rochoso observando ao longe.',
+              confidence: 0.9,
+            };
+          });
+        },
       },
     );
 
+    expect(analyzeCalls.length).toBe(2);
     expect(decision.accepted).toBe(true);
     expect(decision.correspondenceLevel).toBe('exact_match');
     expect(decision.eligibleSegmentIds).toEqual(['slot_ssj']);
     expect(decision.matchedIntervals).toBeDefined();
     expect(decision.matchedIntervals!.length).toBe(1);
-    expect(decision.matchedIntervals![0]!.startSec).toBeCloseTo(37.2, 1);
-    expect(decision.matchedIntervals![0]!.endSec).toBeCloseTo(41.2, 1);
+    expect(decision.matchedIntervals![0]!.startSec).toBeGreaterThanOrEqual(36.0);
+    expect(decision.matchedIntervals![0]!.endSec).toBeLessThan(40.2);
   });
 
   it('does not approve same-universe Dragon Ball clips when frames do not depict the required Raditz arrival event', async () => {
@@ -886,25 +878,46 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(decision.eligibleSegmentIds).toEqual([]);
   });
 
-  it('records Scene Grounding mismatches as Academy negative examples and blocks repeated false matches', async () => {
+  it('records Scene Grounding mismatches with confidence/scope guards, blocks false matches, and supports undo', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'aethera-sg-neg-'));
     const evolution = new AetheraEvolutionCore(join(dir, 'evolution.json'));
+
+    const lowConfSkipped = recordSceneGroundingNegativeExample(evolution, {
+      projectId: 'proj_dbz_1',
+      segmentId: 'slot_1',
+      mediaTitle: 'Clipe Ambíguo',
+      mediaSha256: 'lowconf123',
+      workScope: 'dragon ball z',
+      eventScope: 'raditz chegada_desembarque',
+      expectedContext: 'raditz, chegada_desembarque',
+      observedVisualSummary: 'Leitura incerta',
+      mismatchReason: 'Baixa confiança',
+      visualConfidence: 0.55,
+      genre: 'anime',
+    });
+    expect(lowConfSkipped.recorded).toBe(false);
 
     const recorded = recordSceneGroundingNegativeExample(evolution, {
       projectId: 'proj_dbz_1',
       segmentId: 'slot_1',
       mediaTitle: 'DRAGON BALL GT Vegeta mata nappa denovo dublado',
       mediaSha256: 'deadbeef1234',
+      workScope: 'dragon ball',
+      eventScope: 'raditz chegada_desembarque',
       expectedContext: 'raditz, chegada_desembarque',
       observedVisualSummary: 'Vegeta derrotando Nappa em Dragon Ball GT',
       mismatchReason: 'Cena de Dragon Ball GT com Vegeta e Nappa não corresponde à chegada de Raditz.',
+      visualConfidence: 0.92,
       genre: 'anime',
     });
+    expect(recorded.recorded).toBe(true);
     expect(recorded.memoryId).toBeTruthy();
 
     const lookup = findMatchingSceneGroundingNegativeExample(evolution, {
       mediaTitle: 'DRAGON BALL GT Vegeta mata nappa denovo dublado',
       mediaSha256: 'deadbeef1234',
+      workScope: 'dragon ball',
+      eventScope: 'raditz chegada_desembarque',
       expectedContext: 'raditz | ações: chegada_desembarque',
       genre: 'anime',
     });
@@ -938,5 +951,23 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(blocked.accepted).toBe(false);
     expect(blocked.rejectionCode).toBe('academy_negative_example');
     expect(blocked.correspondenceLevel).toBe('rejected');
+
+    const undone = undoSceneGroundingNegativeExample(evolution, {
+      memoryId: recorded.memoryId!,
+      projectId: 'proj_dbz_1',
+      reason: 'Auditoria reverteu bloqueio para reavaliar clipe.',
+    });
+    expect(undone.undone).toBe(true);
+    expect(undone.state).toBe('disabled');
+
+    const lookupAfterUndo = findMatchingSceneGroundingNegativeExample(evolution, {
+      mediaTitle: 'DRAGON BALL GT Vegeta mata nappa denovo dublado',
+      mediaSha256: 'deadbeef1234',
+      workScope: 'dragon ball',
+      eventScope: 'raditz chegada_desembarque',
+      expectedContext: 'raditz | ações: chegada_desembarque',
+      genre: 'anime',
+    });
+    expect(lookupAfterUndo.matched).toBe(false);
   });
 });

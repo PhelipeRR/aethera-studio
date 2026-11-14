@@ -305,10 +305,14 @@ export async function evaluateMediaRelevance(
   const expectedEntities = expectation.entities;
 
   // 0. Consult Academy negative examples before wasting vision or accepting repeated false matches
+  const workScope = extractTopicEntities(segment.prompt).slice(0, 3).join(' ');
+  const eventScope = `${expectation.entities.join(' ')} ${expectation.actionsAndEvents.join(' ')}`.trim();
   if (options?.evolution) {
     const negativeMatch = findMatchingSceneGroundingNegativeExample(options.evolution, {
       ...(candidate.title ? { mediaTitle: candidate.title } : {}),
       ...(candidate.sha256 ? { mediaSha256: candidate.sha256 } : {}),
+      ...(workScope ? { workScope } : {}),
+      ...(eventScope ? { eventScope } : {}),
       expectedContext: expectation.expectedVisualContext,
       ...(segment.genre ? { genre: segment.genre } : {}),
     });
@@ -342,7 +346,7 @@ export async function evaluateMediaRelevance(
     };
   }
 
-  // 2. Distributed frame analysis (VisionRouter / caller hook) or metadata inference
+  // 2. Distributed frame analysis (VisionRouter / caller hook) + 2nd dense pass on promising intervals
   let frameAnalyses: DistributedFrameAnalysis[] = [];
   let visualVerificationError: string | undefined;
   if (options?.analyzeFrames) {
@@ -351,6 +355,54 @@ export async function evaluateMediaRelevance(
     } catch (err) {
       frameAnalyses = [];
       visualVerificationError = (err as Error).message;
+    }
+
+    if (frameAnalyses.length > 0 && candidate.durationSec >= 5) {
+      const initialValid = frameAnalyses.filter((f) => f.confidence > 0.15);
+      const promisingAnchors = initialValid.filter((f) => {
+        const fText = expandNarrativeAliases(
+          `${f.description ?? ''} ${(f.detectedEntities ?? []).join(' ')} ${(f.detectedActions ?? []).join(' ')}`
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase(),
+        );
+        const hasEntity = expectedEntities.some((e) => fText.includes(e));
+        const hasAction = expectation.actionsAndEvents.some((ak) => {
+          const p = NARRATIVE_ACTION_PATTERNS.find((pat) => pat.key === ak);
+          return (f.detectedActions ?? []).includes(ak) || Boolean(p?.regex.test(fText));
+        });
+        return hasEntity || hasAction;
+      });
+
+      if (promisingAnchors.length > 0 && promisingAnchors.length < initialValid.length + 1) {
+        const denseSet: number[] = [];
+        for (const anchor of promisingAnchors.slice(0, 2)) {
+          for (const delta of [-1.5, 1.5, 3.0]) {
+            const t = Number(Math.max(0.4, Math.min(candidate.durationSec - 0.3, anchor.timestampSec + delta)).toFixed(2));
+            const alreadyNear = [...sampledTimestampsSec, ...denseSet].some((existing) => Math.abs(existing - t) < 0.7);
+            if (!alreadyNear && denseSet.length < 6) {
+              denseSet.push(t);
+            }
+          }
+        }
+        if (denseSet.length > 0) {
+          try {
+            const denseFrames = await options.analyzeFrames(candidate.uri, denseSet, segment);
+            if (Array.isArray(denseFrames) && denseFrames.length > 0) {
+              const merged = [...frameAnalyses];
+              for (const df of denseFrames) {
+                if (!merged.some((existing) => Math.abs(existing.timestampSec - df.timestampSec) < 0.4)) {
+                  merged.push(df);
+                }
+              }
+              merged.sort((a, b) => a.timestampSec - b.timestampSec);
+              frameAnalyses = merged;
+            }
+          } catch {
+            // Keep initial distributed frames if dense refinement fails
+          }
+        }
+      }
     }
   }
 
@@ -617,29 +669,50 @@ export async function evaluateMediaRelevance(
     };
   }
 
-  const activeFrameMatches = (
-    eventMatchingFrames.length > 0
-      ? eventMatchingFrames
-      : perFrameMatches.filter((m) => m.fEntities.length > 0 || m.fActions.length > 0)
-  )
+  const sortedPerFrame = perFrameMatches
     .slice()
     .sort((a, b) => a.frame.timestampSec - b.frame.timestampSec);
+  const useEventFilter = eventMatchingFrames.length > 0;
+  const isFrameRelevant = (m: (typeof sortedPerFrame)[number]) =>
+    useEventFilter ? m.isEventMatch : m.fEntities.length > 0 || m.fActions.length > 0;
 
-  const maxContiguousGapSec = Math.max(
-    8,
-    (candidate.durationSec / Math.max(1, sampledTimestampsSec.length)) * 1.4,
-  );
   const groupedIntervals: Array<{ startSec: number; endSec: number; segmentId: string; weight: number }> = [];
-  for (const m of activeFrameMatches) {
-    const prev = groupedIntervals[groupedIntervals.length - 1];
-    const startSec = Number(Math.max(0, m.frame.timestampSec - 1.5).toFixed(2));
-    const endSec = Number(Math.min(candidate.durationSec, m.frame.timestampSec + 2.5).toFixed(2));
-    if (prev && m.frame.timestampSec - (prev.endSec - 2.5) <= maxContiguousGapSec) {
-      prev.endSec = Math.max(prev.endSec, endSec);
-      prev.weight += m.matchWeight;
-    } else {
-      groupedIntervals.push({ startSec, endSec, segmentId: segment.segmentId, weight: m.matchWeight });
+  let activeRun: typeof sortedPerFrame = [];
+
+  const flushRun = (run: typeof sortedPerFrame, nextNonMatchingTs?: number, prevNonMatchingTs?: number) => {
+    if (run.length === 0) return;
+    const firstTs = run[0]!.frame.timestampSec;
+    const lastTs = run[run.length - 1]!.frame.timestampSec;
+    const rawStart = Math.max(0, firstTs - 1.2);
+    const rawEnd = Math.min(candidate.durationSec, lastTs + 1.5);
+    const boundedStart =
+      prevNonMatchingTs !== undefined ? Math.max(rawStart, (prevNonMatchingTs + firstTs) / 2) : rawStart;
+    const boundedEnd =
+      nextNonMatchingTs !== undefined ? Math.min(rawEnd, Math.max(lastTs + 0.25, nextNonMatchingTs - 0.25)) : rawEnd;
+    if (boundedEnd > boundedStart) {
+      groupedIntervals.push({
+        startSec: Number(boundedStart.toFixed(2)),
+        endSec: Number(boundedEnd.toFixed(2)),
+        segmentId: segment.segmentId,
+        weight: run.reduce((acc, item) => acc + item.matchWeight, 0),
+      });
     }
+  };
+
+  let prevNonMatchTs: number | undefined;
+  for (const m of sortedPerFrame) {
+    if (isFrameRelevant(m)) {
+      activeRun.push(m);
+    } else {
+      if (activeRun.length > 0) {
+        flushRun(activeRun, m.frame.timestampSec, prevNonMatchTs);
+        activeRun = [];
+      }
+      prevNonMatchTs = m.frame.timestampSec;
+    }
+  }
+  if (activeRun.length > 0) {
+    flushRun(activeRun, undefined, prevNonMatchTs);
   }
   groupedIntervals.sort((a, b) => b.weight - a.weight);
 

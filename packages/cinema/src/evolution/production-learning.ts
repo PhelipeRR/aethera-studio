@@ -109,14 +109,19 @@ export function resolveLearnedSceneConstraints(
   };
 }
 
+export const MIN_NEGATIVE_EXAMPLE_CONFIDENCE = 0.70;
+
 export interface SceneGroundingNegativeExampleInput {
   projectId: string;
   segmentId: string;
   mediaTitle: string;
   mediaSha256?: string;
+  workScope?: string;
+  eventScope?: string;
   expectedContext: string;
   observedVisualSummary: string;
   mismatchReason: string;
+  visualConfidence?: number;
   genre?: string;
 }
 
@@ -143,11 +148,21 @@ function negativeTokens(text: string): string[] {
 export function recordSceneGroundingNegativeExample(
   evolution: AetheraEvolutionCore,
   input: SceneGroundingNegativeExampleInput,
-): { memoryId: string; decisionId: string } {
+): { recorded: boolean; memoryId?: string; decisionId?: string; skippedReason?: string } {
+  const confidence = input.visualConfidence ?? 0.9;
+  if (confidence < MIN_NEGATIVE_EXAMPLE_CONFIDENCE) {
+    return {
+      recorded: false,
+      skippedReason: `Confiança visual (${confidence.toFixed(2)}) abaixo do mínimo (${MIN_NEGATIVE_EXAMPLE_CONFIDENCE}) para consolidar exemplo negativo.`,
+    };
+  }
+
   const normTitle = normalizeNegativeKeyText(input.mediaTitle);
   const normExpected = normalizeNegativeKeyText(input.expectedContext);
+  const normWork = normalizeNegativeKeyText(input.workScope ?? '');
+  const normEvent = normalizeNegativeKeyText(input.eventScope ?? input.expectedContext);
   const keyHash = createHash('sha256')
-    .update(`${input.mediaSha256 ?? normTitle}|${normExpected}`)
+    .update(`${input.mediaSha256 ?? normTitle}|${normWork}|${normEvent}`)
     .digest('hex')
     .slice(0, 16);
 
@@ -160,6 +175,8 @@ export function recordSceneGroundingNegativeExample(
     title: `Exemplo Negativo Scene Grounding: "${input.mediaTitle.slice(0, 50)}" ≠ "${input.expectedContext.slice(0, 40)}"`,
     content: [
       `MIDIA=${normTitle}`,
+      `OBRA=${normWork || 'geral'}`,
+      `EVENTO=${normEvent}`,
       `ESPERADO=${normExpected}`,
       `OBSERVADO=${input.observedVisualSummary.slice(0, 220)}`,
       `MOTIVO=${input.mismatchReason}`,
@@ -167,13 +184,14 @@ export function recordSceneGroundingNegativeExample(
     tags: [
       'scene_grounding_negative',
       'negative_example',
+      ...(normWork ? [`work:${normWork}`] : []),
       ...(input.mediaSha256 ? [`sha256:${input.mediaSha256}`] : []),
       ...(input.genre ? [input.genre] : []),
     ],
     scope: {
       ...(input.genre ? { genre: input.genre } : {}),
     },
-    confidence: 0.94,
+    confidence: Math.min(0.96, Math.max(MIN_NEGATIVE_EXAMPLE_CONFIDENCE, confidence)),
     evidence: {
       sourceType: 'production',
       sourceId: `${input.projectId}:${input.segmentId}`,
@@ -186,15 +204,41 @@ export function recordSceneGroundingNegativeExample(
     projectId: input.projectId,
     directorId: 'narrative_director',
     action: 'record_scene_grounding_negative_example',
-    rationale: `Registrado exemplo negativo de Scene Grounding (${input.segmentId}): "${input.mediaTitle}" não corresponde a "${input.expectedContext}" (${input.mismatchReason}).`,
+    rationale: `Registrado exemplo negativo de Scene Grounding (${input.segmentId}, obra=${normWork || 'geral'}, conf=${confidence.toFixed(2)}): "${input.mediaTitle}" não corresponde a "${input.expectedContext}" (${input.mismatchReason}).`,
     consultedMemoryIds: [memory.memoryId],
     consultedAcademyIds: ['scene_grounding'],
     outcome: 'blocked',
   });
 
   return {
+    recorded: true,
     memoryId: memory.memoryId,
     decisionId: decision.decisionId,
+  };
+}
+
+/**
+ * Reverts/disables a previously recorded Scene Grounding negative example so it no longer blocks media.
+ */
+export function undoSceneGroundingNegativeExample(
+  evolution: AetheraEvolutionCore,
+  input: { memoryId: string; projectId?: string; reason?: string },
+): { undone: boolean; memoryId: string; state: string } {
+  const reason = input.reason ?? 'Reversão manual/auditoria de exemplo negativo de Scene Grounding.';
+  const updated = evolution.disableMemory(input.memoryId, reason);
+  evolution.recordDecision({
+    projectId: input.projectId ?? 'academy_audit',
+    directorId: 'narrative_director',
+    action: 'undo_scene_grounding_negative_example',
+    rationale: `Exemplo negativo ${input.memoryId} revertido: ${reason}`,
+    consultedMemoryIds: [input.memoryId],
+    consultedAcademyIds: ['scene_grounding'],
+    outcome: 'overridden',
+  });
+  return {
+    undone: true,
+    memoryId: updated.memoryId,
+    state: updated.state,
   };
 }
 
@@ -207,6 +251,8 @@ export function findMatchingSceneGroundingNegativeExample(
   input: {
     mediaTitle?: string;
     mediaSha256?: string;
+    workScope?: string;
+    eventScope?: string;
     expectedContext: string;
     genre?: string;
   },
@@ -216,21 +262,35 @@ export function findMatchingSceneGroundingNegativeExample(
     (m) =>
       m.state !== 'disabled' &&
       m.state !== 'rejected' &&
+      m.confidence >= MIN_NEGATIVE_EXAMPLE_CONFIDENCE &&
       m.tags.includes('scene_grounding_negative'),
   );
   if (negMemories.length === 0) return { matched: false };
 
   const normTitle = normalizeNegativeKeyText(input.mediaTitle ?? '');
   const titleTokens = new Set(negativeTokens(input.mediaTitle ?? ''));
-  const expectedTokens = new Set(negativeTokens(input.expectedContext));
+  const normWork = normalizeNegativeKeyText(input.workScope ?? '');
+  const expectedTokens = new Set(negativeTokens(input.eventScope ?? input.expectedContext));
 
   for (const mem of negMemories) {
     const shaMatched = Boolean(input.mediaSha256 && mem.tags.includes(`sha256:${input.mediaSha256}`));
     const memMediaMatch = mem.content.match(/MIDIA=([^|]+)/);
+    const memWorkMatch = mem.content.match(/OBRA=([^|]+)/);
+    const memEventMatch = mem.content.match(/EVENTO=([^|]+)/);
     const memExpectedMatch = mem.content.match(/ESPERADO=([^|]+)/);
     const memMotivoMatch = mem.content.match(/MOTIVO=(.+)$/);
     const memMedia = (memMediaMatch?.[1] ?? '').trim();
-    const memExpected = (memExpectedMatch?.[1] ?? '').trim();
+    const memWork = (memWorkMatch?.[1] ?? '').trim();
+    const memEvent = (memEventMatch?.[1] ?? memExpectedMatch?.[1] ?? '').trim();
+
+    if (memWork && memWork !== 'geral' && normWork) {
+      const workTokens = new Set(negativeTokens(normWork));
+      const memWorkTokens = negativeTokens(memWork);
+      const workOverlap = memWorkTokens.filter((t) => workTokens.has(t)).length;
+      if (!normWork.includes(memWork) && !memWork.includes(normWork) && (memWorkTokens.length === 0 || workOverlap / memWorkTokens.length < 0.65)) {
+        continue;
+      }
+    }
 
     let mediaMatched = shaMatched;
     if (!mediaMatched && normTitle && memMedia) {
@@ -246,11 +306,11 @@ export function findMatchingSceneGroundingNegativeExample(
     }
     if (!mediaMatched) continue;
 
-    const memExpectedTokens = negativeTokens(memExpected);
-    const expectedOverlap = memExpectedTokens.filter((t) => expectedTokens.has(t)).length;
+    const memEventTokens = negativeTokens(memEvent);
+    const expectedOverlap = memEventTokens.filter((t) => expectedTokens.has(t)).length;
     if (
-      normalizeNegativeKeyText(input.expectedContext) === memExpected ||
-      (memExpectedTokens.length > 0 && expectedOverlap / memExpectedTokens.length >= 0.65)
+      normalizeNegativeKeyText(input.eventScope ?? input.expectedContext) === memEvent ||
+      (memEventTokens.length > 0 && expectedOverlap / memEventTokens.length >= 0.65)
     ) {
       return {
         matched: true,

@@ -1282,9 +1282,12 @@ export async function runAutonomousMediaAcquisition(input: {
               segmentId: seg.segmentId,
               mediaTitle: item.cand.title ?? item.filePath,
               ...(item.sha256 ? { mediaSha256: item.sha256 } : {}),
+              workScope: extractTopicEntities(input.prompt).slice(0, 3).join(' '),
+              eventScope: `${(seg.entities ?? extractTopicEntities(seg.narrationText)).join(' ')} ${seg.narrationText.slice(0, 80)}`,
               expectedContext: `${(seg.entities ?? extractTopicEntities(seg.narrationText)).join(', ')}${seg.narrationText ? ` (${seg.narrationText.slice(0, 80)})` : ''}`,
               observedVisualSummary: observedSummary || decision.reason,
               mismatchReason: decision.reason,
+              ...(decision.visualConfidence !== undefined ? { visualConfidence: decision.visualConfidence } : {}),
               ...(input.genre ? { genre: input.genre } : {}),
             });
           }
