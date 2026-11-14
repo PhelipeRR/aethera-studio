@@ -17,6 +17,14 @@ import {
 import {
   AetheraAcademyEngine,
   AetheraEvolutionCore,
+  EditorialCalendarEngine,
+  analyzeCalendarHealth,
+  suggestSmartSchedule,
+  type CalendarEventStatus,
+  type CalendarFormat,
+  type CalendarPlatform,
+  type EditorialCalendarEvent,
+  type RecurringSeriesRule,
   applyAudioMixerUpdates,
   applyColorGradingControls,
   applyPromptRevisionToPackage,
@@ -1683,6 +1691,9 @@ export function registerAetheraDomainIpc(options: {
     evolutionCore,
     join(evolutionDir, 'academy-store.json'),
   );
+  const editorialCalendar = new EditorialCalendarEngine(
+    join(app.getPath('userData'), 'calendar', 'editorial-calendar-store.json'),
+  );
   const stagedPipeline = new StagedCinemaPipeline({
     jobsDir: join(app.getPath('userData'), 'cinema-jobs'),
     mediaDir: join(app.getPath('userData'), 'cinema-media'),
@@ -2850,6 +2861,87 @@ export function registerAetheraDomainIpc(options: {
       evolution: evolutionSnap,
     };
   });
+
+  const buildCalendarPayload = (timezoneOverride?: string) => {
+    const snap = editorialCalendar.getSnapshot();
+    const tz = timezoneOverride || snap.defaultTimezone;
+    const projects = listPersistedCinemaProjects();
+    const health = analyzeCalendarHealth(snap.events);
+    const suggestions = suggestSmartSchedule({
+      events: snap.events,
+      defaultChannel: { channelId: 'main_yt', channelName: 'Canal Principal' },
+      timezone: tz,
+    });
+    return {
+      ...snap,
+      defaultTimezone: tz,
+      health,
+      suggestions,
+      projects,
+    };
+  };
+
+  ipcMain.handle('cinema:calendar-snapshot', async (event, input?: { timezone?: string }) => {
+    ensureTrusted(event.senderFrame);
+    return buildCalendarPayload(input?.timezone);
+  });
+
+  ipcMain.handle(
+    'cinema:calendar-upsert-event',
+    async (
+      event,
+      input: Omit<EditorialCalendarEvent, 'id' | 'rescheduleHistory' | 'createdAt' | 'updatedAt'> & { id?: string },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const saved = editorialCalendar.upsertEvent(input);
+      return { event: saved, calendar: buildCalendarPayload(saved.timezone) };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:calendar-move-event',
+    async (
+      event,
+      input: { id: string; targetDateIso: string; targetKind?: 'planned' | 'scheduled'; reason?: string },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const moved = editorialCalendar.moveEvent(input);
+      return { event: moved, calendar: buildCalendarPayload(moved.timezone) };
+    },
+  );
+
+  ipcMain.handle('cinema:calendar-delete-event', async (event, input: { id: string }) => {
+    ensureTrusted(event.senderFrame);
+    const deleted = editorialCalendar.deleteEvent(input.id);
+    return { deleted, calendar: buildCalendarPayload() };
+  });
+
+  ipcMain.handle(
+    'cinema:calendar-schedule-platform',
+    async (event, input: { id: string; publishAtIso: string }) => {
+      ensureTrusted(event.senderFrame);
+      const scheduled = editorialCalendar.schedulePlatformPublish(input);
+      return { event: scheduled, calendar: buildCalendarPayload(scheduled.timezone) };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:calendar-upsert-series',
+    async (event, input: Omit<RecurringSeriesRule, 'id' | 'createdAt'> & { id?: string }) => {
+      ensureTrusted(event.senderFrame);
+      const series = editorialCalendar.upsertSeries(input);
+      return { series, calendar: buildCalendarPayload(series.timezone) };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:calendar-generate-series',
+    async (event, input: { seriesId: string; weeksAhead?: number }) => {
+      ensureTrusted(event.senderFrame);
+      const created = editorialCalendar.generateSeriesOccurrences(input.seriesId, input.weeksAhead ?? 4);
+      return { created, calendar: buildCalendarPayload() };
+    },
+  );
 
   ipcMain.handle(
     'cinema:update-audio-mix',

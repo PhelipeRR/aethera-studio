@@ -71,6 +71,24 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
     ipcRenderer.invoke('cinema:academy-delete-material', input),
   cinemaAcademyExportBackup: () => ipcRenderer.invoke('cinema:academy-export-backup'),
   cinemaAcademyRestoreBackup: () => ipcRenderer.invoke('cinema:academy-restore-backup'),
+  cinemaCalendarSnapshot: (input?: { timezone?: string }) =>
+    ipcRenderer.invoke('cinema:calendar-snapshot', input),
+  cinemaCalendarUpsertEvent: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke('cinema:calendar-upsert-event', input),
+  cinemaCalendarMoveEvent: (input: {
+    id: string;
+    targetDateIso: string;
+    targetKind?: 'planned' | 'scheduled';
+    reason?: string;
+  }) => ipcRenderer.invoke('cinema:calendar-move-event', input),
+  cinemaCalendarDeleteEvent: (input: { id: string }) =>
+    ipcRenderer.invoke('cinema:calendar-delete-event', input),
+  cinemaCalendarSchedulePlatform: (input: { id: string; publishAtIso: string }) =>
+    ipcRenderer.invoke('cinema:calendar-schedule-platform', input),
+  cinemaCalendarUpsertSeries: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke('cinema:calendar-upsert-series', input),
+  cinemaCalendarGenerateSeries: (input: { seriesId: string; weeksAhead?: number }) =>
+    ipcRenderer.invoke('cinema:calendar-generate-series', input),
   cinemaUpdateAudioMix: (input: {
     projectId: string;
     stems: Array<{ stemRole: string; targetGainDb?: number; muted?: boolean; duckingUnderVoiceDb?: number }>;

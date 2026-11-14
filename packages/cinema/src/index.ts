@@ -20,6 +20,7 @@ export * from './evolution/production-learning.js';
 export * from './evolution/director-registry.js';
 export * from './evolution/director-orchestrator.js';
 export * from './evolution/academy-engine.js';
+export * from './calendar/editorial-calendar-engine.js';
 
 import {
   createEmptyCanonicalTimeline,
