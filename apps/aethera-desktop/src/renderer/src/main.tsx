@@ -19,7 +19,7 @@ import { AetheraShell } from '@/app/AetheraShell';
 import { NotificationsOverlay } from '@/components/NotificationsOverlay';
 import type { AppRoute } from '@/app/routes';
 import { PageHeader } from '@/app/PageHeader';
-import { SettingsPage } from '@/pages/SettingsPage';
+import { AetheraSettingsPage } from '@/features/aethera/AetheraSettingsPage';
 import { AetheraStudioHome } from '@/features/aethera/AetheraStudioHome';
 import { AetheraProjectsPage } from '@/features/aethera/AetheraProjectsPage';
 import { AetheraMediaLibraryPage } from '@/features/aethera/AetheraMediaLibraryPage';
@@ -116,7 +116,8 @@ const router = createHashRouter([
       { path: 'video', element: <AetheraStudioEditor /> },
       { path: 'video/remotion', element: <LazyRoute><VelixPage /></LazyRoute> },
       { path: 'agents', element: <AetheraAgentsPage /> },
-      { path: 'settings', element: <SettingsPage description="Aparência, APIs e preferências do Aethera Studio." /> },
+      { path: 'settings', element: <AetheraSettingsPage description="Aparência, APIs e preferências do Aethera Studio." /> },
+      { path: '*', element: <AetheraStudioHome /> },
     ],
   },
 ]);

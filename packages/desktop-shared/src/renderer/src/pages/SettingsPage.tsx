@@ -9,6 +9,8 @@ import { NeuraSettingsSection } from '@/features/neura/NeuraSettingsSection';
 import { SemanticSearchSection } from './SemanticSearchSection';
 import { AzureDevOpsSettingsSection } from '@/features/integrations/AzureDevOpsSettingsSection';
 import { AzureDevOpsReviewExtras } from '@/features/integrations/AzureDevOpsReviewExtras';
+import { resolveAppIdentity } from '@/app/app-settings-isolation';
+import { AetheraSettingsPage } from '@/features/aethera/AetheraSettingsPage';
 
 const THEME_OPTIONS: { value: ThemeSource; label: string; hint: string }[] = [
   { value: 'dark', label: 'Escuro', hint: 'Padrão do Singularity.' },
@@ -17,6 +19,9 @@ const THEME_OPTIONS: { value: ThemeSource; label: string; hint: string }[] = [
 ];
 
 export function SettingsPage({ description }: { description: string }) {
+  if (resolveAppIdentity() === 'aethera') {
+    return <AetheraSettingsPage description={description} />;
+  }
   const [theme, setTheme] = useState<ThemeSource | null>(null);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [status, setStatus] = useState<AppStatus | null>(null);

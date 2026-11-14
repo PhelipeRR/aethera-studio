@@ -186,6 +186,7 @@ const api: NeuralBridgeApi = {
     projects: (workspaceId) => ipcRenderer.invoke(IpcChannel.contentProjectsList, { workspaceId }),
     queue: (workspaceId) => ipcRenderer.invoke(IpcChannel.contentQueueList, { workspaceId }),
     createProject: (input) => ipcRenderer.invoke(IpcChannel.contentProjectCreate, input),
+    deleteProject: (projectId) => ipcRenderer.invoke(IpcChannel.contentProjectDelete, { projectId }),
     saveBrief: (input) => ipcRenderer.invoke(IpcChannel.contentProjectBriefSave, input),
     saveScript: (input) => ipcRenderer.invoke(IpcChannel.contentProjectScriptSave, input),
     generateScript: (input) => ipcRenderer.invoke(IpcChannel.contentProjectScriptGenerate, input),
