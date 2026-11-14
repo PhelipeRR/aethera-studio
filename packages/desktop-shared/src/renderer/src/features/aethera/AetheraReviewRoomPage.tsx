@@ -11,6 +11,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router';
 
 type ReviewTab = 'overview' | 'scenes' | 'checklist' | 'comments' | 'compare' | 'report';
 
@@ -73,6 +74,7 @@ interface RealRenderAuditView {
 interface CinemaBridge {
   cinemaProduce?: (input: Record<string, unknown>) => Promise<ReviewPackageView>;
   cinemaRepair?: (projectId: string) => Promise<ReviewPackageView>;
+  cinemaListProjects?: () => Promise<Array<{ projectId: string; title: string; durationSec: number; updatedAt: string }>>;
   cinemaLoadProject?: (projectId: string) => Promise<{ pkg: ReviewPackageView | null; lastRender: RealRenderAuditView | null }>;
   cinemaRenderRealMp4?: (input: { projectId: string; useNvenc?: boolean }) => Promise<RealRenderAuditView>;
 }
@@ -82,12 +84,15 @@ function getBridge(): CinemaBridge | undefined {
 }
 
 export function AetheraReviewRoomPage() {
+  const [searchParams] = useSearchParams();
   const [tab, setTab] = useState<ReviewTab>('overview');
   const [selectedShotIdx, setSelectedShotIdx] = useState(0);
   const [revisionPrompt, setRevisionPrompt] = useState('');
   const [commentInput, setCommentInput] = useState('');
   const [comments, setComments] = useState<TimestampComment[]>([]);
   const [approvedVersion, setApprovedVersion] = useState<string | null>(null);
+  const [cinemaProjects, setCinemaProjects] = useState<Array<{ projectId: string; title: string; durationSec: number; updatedAt: string }>>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(() => searchParams.get('projectId') ?? '');
   const [pkg, setPkg] = useState<ReviewPackageView | null>(null);
   const [realAudit, setRealAudit] = useState<RealRenderAuditView | null>(null);
   const [busy, setBusy] = useState(false);
@@ -97,32 +102,48 @@ export function AetheraReviewRoomPage() {
     queryFn: () => window.neuralbridge.content.projects('default'),
   });
 
-  const activeProject = projects.data?.[0] ?? null;
+  const manualProjects = (projects.data ?? []).filter(
+    (p) => !p.id.startsWith('gdc_') && !p.id.startsWith('cinema_'),
+  );
+  const activeManualProject = manualProjects[0] ?? null;
 
   useEffect(() => {
     const api = getBridge();
-    if (!api?.cinemaProduce) return;
+    if (!api?.cinemaListProjects) return;
+    void api.cinemaListProjects().then((list) => {
+      if (!Array.isArray(list)) return;
+      setCinemaProjects(list);
+      setSelectedProjectId((prev) => prev || list[0]?.projectId || '');
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const api = getBridge();
+    if (!api) return;
+    const pid = selectedProjectId || activeManualProject?.id || '__latest__';
     setBusy(true);
-    const pid = activeProject?.id ?? 'editor_session';
+    setSelectedShotIdx(0);
+    setRealAudit(null);
     void (async () => {
       const loaded = await api.cinemaLoadProject?.(pid);
       if (loaded?.pkg) {
         setPkg(loaded.pkg);
         if (loaded.lastRender) setRealAudit(loaded.lastRender);
+        setSelectedProjectId((prev) => prev || loaded.pkg?.timeline.projectId || '');
         return;
       }
       if (!api.cinemaProduce) return;
       const produced = await api.cinemaProduce({
-        projectId: pid,
+        projectId: pid === '__latest__' ? 'editor_session' : pid,
         prompt:
-          activeProject?.title ??
+          activeManualProject?.title ??
           'Produção cinematográfica de estúdio com ritmo equilibrado e humor pontual',
         targetDurationSec: 45,
         humorIntensity: 35,
       });
       setPkg(produced);
     })().finally(() => setBusy(false));
-  }, [activeProject?.id, activeProject?.title]);
+  }, [selectedProjectId, activeManualProject?.id, activeManualProject?.title]);
 
   async function handleRenderAndAuditRealMp4() {
     const api = getBridge();
@@ -203,9 +224,9 @@ export function AetheraReviewRoomPage() {
     <div className="space-y-5 p-6 xl:p-8">
       {/* Top Review Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-border bg-gradient-to-r from-[#19102c] via-[#10101b] to-[#0c0c15] p-5">
-        <div>
-          <p className="text-[11px] font-semibold tracking-[0.2em] text-purple-400 uppercase">
-            Produções / {activeProject?.title ?? 'Sessão de Revisão'} / Revisão e Qualidade
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[11px] font-semibold tracking-[0.2em] text-purple-400 uppercase">
+            Produções / {pkg?.direction.brief.prompt || cinemaProjects.find((p) => p.projectId === selectedProjectId)?.title || activeManualProject?.title || 'Sessão de Revisão'} / Revisão e Qualidade
           </p>
           <h1 className="mt-1 text-2xl font-semibold text-foreground">Revisão e Qualidade</h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
@@ -213,16 +234,36 @@ export function AetheraReviewRoomPage() {
           </p>
         </div>
 
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
-            pkg?.releaseGates.passed
-              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-              : 'border-amber-500/40 bg-amber-500/15 text-amber-300'
-          }`}
-        >
-          <ShieldCheck className="size-3.5" />
-          {pkg ? (pkg.releaseGates.passed ? 'Aprovável nos Release Gates' : 'Requer revisão / reparo') : 'Analisando...'}
-        </span>
+        <div className="flex flex-wrap items-center gap-3">
+          {cinemaProjects.length > 0 && (
+            <label className="inline-flex items-center gap-2 text-xs">
+              <span className="text-[11px] text-muted-foreground">Projeto em revisão:</span>
+              <select
+                aria-label="Selecionar projeto para revisão"
+                value={selectedProjectId || pkg?.timeline.projectId || cinemaProjects[0]?.projectId || ''}
+                onChange={(e) => setSelectedProjectId(e.target.value)}
+                className="max-w-[280px] rounded-xl border border-border bg-[#0d0d17] px-3 py-1.5 text-xs text-foreground"
+              >
+                {cinemaProjects.map((proj, idx) => (
+                  <option key={proj.projectId} value={proj.projectId}>
+                    {idx === 0 ? '★ Mais recente: ' : ''}
+                    {proj.title} ({proj.durationSec}s)
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
+              pkg?.releaseGates.passed
+                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                : 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+            }`}
+          >
+            <ShieldCheck className="size-3.5" />
+            {pkg ? (pkg.releaseGates.passed ? 'Aprovável nos Release Gates' : 'Requer revisão / reparo') : 'Analisando...'}
+          </span>
+        </div>
       </div>
 
       {/* Sub-navigation Tabs */}
