@@ -2778,6 +2778,79 @@ export function registerAetheraDomainIpc(options: {
     },
   );
 
+  ipcMain.handle('cinema:academy-export-backup', async (event) => {
+    ensureTrusted(event.senderFrame);
+    const stamp = new Date().toISOString().slice(0, 10);
+    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const saveOpts: Electron.SaveDialogOptions = {
+      title: 'Exportar Backup da Aethera Academy & Memória',
+      defaultPath: join(app.getPath('documents'), `aethera-academy-backup-${stamp}.json`),
+      filters: [{ name: 'Aethera Academy Backup (JSON)', extensions: ['json'] }],
+    };
+    const res = parentWin
+      ? await dialog.showSaveDialog(parentWin, saveOpts)
+      : await dialog.showSaveDialog(saveOpts);
+    if (res.canceled || !res.filePath) {
+      return { ok: false, canceled: true };
+    }
+    const academySnap = academyEngine.getSnapshot();
+    const evolutionSnap = evolutionCore.getSnapshot();
+    const bundle = {
+      schemaVersion: 1,
+      app: 'AetheraStudio',
+      exportedAt: new Date().toISOString(),
+      academy: academySnap,
+      evolution: evolutionSnap,
+    };
+    writeFileSync(res.filePath, JSON.stringify(bundle, null, 2), 'utf8');
+    return {
+      ok: true,
+      canceled: false,
+      filePath: res.filePath,
+      counts: {
+        materials: academySnap.materials.length,
+        knowledge: academySnap.knowledge.length,
+        exercises: academySnap.exercises.length,
+        memories: evolutionSnap.memories.length,
+      },
+    };
+  });
+
+  ipcMain.handle('cinema:academy-restore-backup', async (event) => {
+    ensureTrusted(event.senderFrame);
+    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const openOpts: Electron.OpenDialogOptions = {
+      title: 'Restaurar Backup da Aethera Academy & Memória',
+      properties: ['openFile'],
+      filters: [{ name: 'Aethera Academy Backup (JSON)', extensions: ['json'] }],
+    };
+    const res = parentWin
+      ? await dialog.showOpenDialog(parentWin, openOpts)
+      : await dialog.showOpenDialog(openOpts);
+    const chosenPath = res.filePaths[0];
+    if (res.canceled || !chosenPath) {
+      return { ok: false, canceled: true };
+    }
+    const raw = readFileSync(chosenPath, 'utf8');
+    const parsed = JSON.parse(raw) as {
+      schemaVersion?: number;
+      academy?: Parameters<AetheraAcademyEngine['replaceSnapshot']>[0];
+      evolution?: Parameters<AetheraEvolutionCore['replaceSnapshot']>[0];
+    };
+    if (!parsed || parsed.schemaVersion !== 1 || !parsed.academy || !parsed.evolution) {
+      throw new Error('Arquivo de backup inválido: esperado JSON de backup da Aethera Academy (schemaVersion 1).');
+    }
+    const evolutionSnap = evolutionCore.replaceSnapshot(parsed.evolution);
+    const academySnap = academyEngine.replaceSnapshot(parsed.academy);
+    return {
+      ok: true,
+      canceled: false,
+      filePath: chosenPath,
+      academy: academySnap,
+      evolution: evolutionSnap,
+    };
+  });
+
   ipcMain.handle(
     'cinema:update-audio-mix',
     async (

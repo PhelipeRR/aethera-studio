@@ -510,6 +510,20 @@ export class AetheraAcademyEngine {
     renameSync(tmp, this.storePath);
   }
 
+  replaceSnapshot(next: AcademyStoreSnapshot): AcademyStoreSnapshot {
+    if (!next || next.schemaVersion !== 1 || !Array.isArray(next.materials)) {
+      throw new Error('Snapshot da Academy inválido para restauração.');
+    }
+    this.snapshot = {
+      schemaVersion: 1,
+      materials: [...next.materials],
+      knowledge: Array.isArray(next.knowledge) ? [...next.knowledge] : [],
+      exercises: Array.isArray(next.exercises) ? [...next.exercises] : [],
+    };
+    this.persist();
+    return this.getSnapshot();
+  }
+
   async ingestMaterial(input: {
     title: string;
     kind: AcademyMaterialKind;

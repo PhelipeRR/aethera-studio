@@ -140,6 +140,19 @@ interface EvolutionBridge {
     academy: AcademySnapshotView;
     evolution: EvolutionSnapshotView;
   }>;
+  cinemaAcademyExportBackup?: () => Promise<{
+    ok: boolean;
+    canceled?: boolean;
+    filePath?: string;
+    counts?: { materials: number; knowledge: number; exercises: number; memories: number };
+  }>;
+  cinemaAcademyRestoreBackup?: () => Promise<{
+    ok: boolean;
+    canceled?: boolean;
+    filePath?: string;
+    academy?: AcademySnapshotView;
+    evolution?: EvolutionSnapshotView;
+  }>;
 }
 
 const FALLBACK_DIRECTORS: DirectorProfileView[] = [
@@ -342,6 +355,41 @@ export function AetheraAgentsPage() {
       setStatusMessage(
         `Acervo reprocessado: ${res.reprocessedCount} material(is), ${res.totalKnowledge} conceito(s) estruturado(s).`,
       );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleExportBackup = async () => {
+    const bridge = getBridge();
+    if (!bridge.cinemaAcademyExportBackup) return;
+    setBusy(true);
+    try {
+      const res = await bridge.cinemaAcademyExportBackup();
+      if (res.canceled || !res.ok) return;
+      const c = res.counts;
+      setStatusMessage(
+        `Backup salvo em ${res.filePath} (${c?.materials ?? 0} materiais, ${c?.knowledge ?? 0} técnicas, ${c?.memories ?? 0} memórias).`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRestoreBackup = async () => {
+    const bridge = getBridge();
+    if (!bridge.cinemaAcademyRestoreBackup) return;
+    setBusy(true);
+    try {
+      const res = await bridge.cinemaAcademyRestoreBackup();
+      if (res.canceled || !res.ok) return;
+      if (res.academy) setAcademy(res.academy);
+      if (res.evolution) setEvolution(res.evolution);
+      setStatusMessage(
+        `Backup restaurado de ${res.filePath}: ${res.academy?.materials.length ?? 0} material(is), ${res.academy?.knowledge.length ?? 0} técnica(s).`,
+      );
+    } catch (err) {
+      setStatusMessage(`Erro ao restaurar backup: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy(false);
     }
@@ -668,6 +716,8 @@ export function AetheraAgentsPage() {
           onRunExercise={handleRunExercise}
           onDeleteMaterial={handleDeleteMaterial}
           onReprocess={handleReprocess}
+          onExportBackup={handleExportBackup}
+          onRestoreBackup={handleRestoreBackup}
           onAsk={handleAsk}
         />
       )}

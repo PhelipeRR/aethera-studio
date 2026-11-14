@@ -249,6 +249,20 @@ export class AetheraEvolutionCore {
     renameSync(tmp, this.storePath);
   }
 
+  replaceSnapshot(next: EvolutionStoreSnapshot): EvolutionStoreSnapshot {
+    if (!next || next.schemaVersion !== 1 || !Array.isArray(next.memories)) {
+      throw new Error('Snapshot de evolução inválido para restauração.');
+    }
+    this.snapshot = {
+      schemaVersion: 1,
+      memories: [...next.memories],
+      decisions: Array.isArray(next.decisions) ? [...next.decisions] : [],
+      feedbackLog: Array.isArray(next.feedbackLog) ? [...next.feedbackLog] : [],
+    };
+    this.persist();
+    return this.getSnapshot();
+  }
+
   recordMemory(input: {
     techniqueKey: string;
     directorId: DirectorId;

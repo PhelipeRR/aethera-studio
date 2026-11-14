@@ -69,6 +69,8 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaAcademyReprocess: () => ipcRenderer.invoke('cinema:academy-reprocess'),
   cinemaAcademyDeleteMaterial: (input: { materialId: string }) =>
     ipcRenderer.invoke('cinema:academy-delete-material', input),
+  cinemaAcademyExportBackup: () => ipcRenderer.invoke('cinema:academy-export-backup'),
+  cinemaAcademyRestoreBackup: () => ipcRenderer.invoke('cinema:academy-restore-backup'),
   cinemaUpdateAudioMix: (input: {
     projectId: string;
     stems: Array<{ stemRole: string; targetGainDb?: number; muted?: boolean; duckingUnderVoiceDb?: number }>;

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BookOpen, CheckCircle2, GraduationCap, LoaderCircle, MessageSquare, Plus, Trash2 } from 'lucide-react';
+import { BookOpen, CheckCircle2, Download, GraduationCap, LoaderCircle, MessageSquare, Plus, Trash2, Upload } from 'lucide-react';
 
 function renderInlineMarkdown(text: string): React.ReactNode[] {
   const tokens = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*)/g);
@@ -141,6 +141,8 @@ interface AetheraAcademyPanelProps {
   onRunExercise: (knowledge: AcademyKnowledgeView) => Promise<void>;
   onDeleteMaterial: (materialId: string) => Promise<void>;
   onReprocess?: () => Promise<void>;
+  onExportBackup?: () => Promise<void>;
+  onRestoreBackup?: () => Promise<void>;
   onAsk: (question: string) => Promise<AcademyAskResultView | null>;
 }
 
@@ -157,6 +159,8 @@ export function AetheraAcademyPanel({
   onRunExercise,
   onDeleteMaterial,
   onReprocess,
+  onExportBackup,
+  onRestoreBackup,
   onAsk,
 }: AetheraAcademyPanelProps) {
   const [title, setTitle] = useState('');
@@ -372,24 +376,48 @@ export function AetheraAcademyPanel({
                 Materiais na Biblioteca de Estudo ({academy.materials.length})
               </h3>
             </div>
-            {onReprocess && academy.materials.length > 0 && (
-              <button
-                type="button"
-                disabled={busy || reprocessing}
-                onClick={async () => {
-                  setReprocessing(true);
-                  try {
-                    await onReprocess();
-                  } finally {
-                    setReprocessing(false);
-                  }
-                }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-[#121222] px-2.5 py-1 text-[11px] text-purple-200 hover:border-primary/50 disabled:opacity-50"
-              >
-                {reprocessing && <LoaderCircle className="size-3 animate-spin" />}
-                {reprocessing ? 'Reprocessando...' : 'Reprocessar Acervo'}
-              </button>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {onExportBackup && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void onExportBackup()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50"
+                >
+                  <Download className="size-3" />
+                  Fazer Backup
+                </button>
+              )}
+              {onRestoreBackup && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void onRestoreBackup()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-200 hover:bg-amber-500/20 disabled:opacity-50"
+                >
+                  <Upload className="size-3" />
+                  Restaurar Backup
+                </button>
+              )}
+              {onReprocess && academy.materials.length > 0 && (
+                <button
+                  type="button"
+                  disabled={busy || reprocessing}
+                  onClick={async () => {
+                    setReprocessing(true);
+                    try {
+                      await onReprocess();
+                    } finally {
+                      setReprocessing(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-[#121222] px-2.5 py-1 text-[11px] text-purple-200 hover:border-primary/50 disabled:opacity-50"
+                >
+                  {reprocessing && <LoaderCircle className="size-3 animate-spin" />}
+                  {reprocessing ? 'Reprocessando...' : 'Reprocessar Acervo'}
+                </button>
+              )}
+            </div>
           </div>
           {academy.materials.length === 0 ? (
             <p className="text-xs text-muted-foreground">
