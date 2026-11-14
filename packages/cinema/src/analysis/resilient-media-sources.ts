@@ -3,7 +3,11 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync,
 import { extname, join } from 'node:path';
 import {
   evaluateMediaRelevance,
+  type DistributedFrameAnalysis,
+  type MediaCorrespondenceLevel,
   type MediaRelevanceDecision,
+  type ScriptSegmentExpectation,
+  type VisualVerificationStatus,
 } from '../qc/media-relevance-gate.js';
 import {
   expandScriptOrientedQueries,
@@ -388,6 +392,10 @@ export interface ApprovedMediaAuditDetail {
   sha256: string;
   durationSec: number;
   relevanceTier: 'exact_segment_match' | 'same_universe_context' | 'rejected';
+  correspondenceLevel?: MediaCorrespondenceLevel;
+  visualVerificationStatus?: VisualVerificationStatus;
+  visualConfidence?: number;
+  visualEvidence?: MediaRelevanceDecision['visualEvidence'];
   matchedEntities: string[];
   sampledTimestampsSec: number[];
   coveredSegmentIds: string[];
@@ -437,6 +445,12 @@ export async function runAutonomousMediaAcquisition(input: {
   mediaDir: string;
   deps: ResilientAcquisitionDeps;
   probeDurationFn?: (filePath: string) => Promise<number>;
+  analyzeFrames?: (
+    uri: string,
+    timestampsSec: number[],
+    segment: ScriptSegmentExpectation,
+  ) => Promise<DistributedFrameAnalysis[]>;
+  requireVisualVerification?: boolean;
   limits?: {
     maxRounds?: number;
     maxDurationMs?: number;
@@ -683,6 +697,12 @@ export async function runAutonomousMediaAcquisition(input: {
             ...(input.genre ? { genre: input.genre } : {}),
             ...(item.segment.entities ? { expectedEntities: item.segment.entities } : {}),
           },
+          {
+            ...(input.analyzeFrames ? { analyzeFrames: input.analyzeFrames } : {}),
+            ...(input.requireVisualVerification !== undefined
+              ? { requireVisualVerification: input.requireVisualVerification }
+              : {}),
+          },
         );
         relevanceDecisions.push(decision);
 
@@ -774,6 +794,12 @@ export async function runAutonomousMediaAcquisition(input: {
       sha256: meta.sha256,
       durationSec: Number(meta.durationSec.toFixed(2)),
       relevanceTier: meta.decision.relevanceTier ?? 'exact_segment_match',
+      ...(meta.decision.correspondenceLevel ? { correspondenceLevel: meta.decision.correspondenceLevel } : {}),
+      ...(meta.decision.visualVerificationStatus
+        ? { visualVerificationStatus: meta.decision.visualVerificationStatus }
+        : {}),
+      ...(meta.decision.visualConfidence !== undefined ? { visualConfidence: meta.decision.visualConfidence } : {}),
+      ...(meta.decision.visualEvidence ? { visualEvidence: meta.decision.visualEvidence } : {}),
       matchedEntities: meta.decision.matchedEntities,
       sampledTimestampsSec: meta.decision.sampledTimestampsSec,
       coveredSegmentIds,

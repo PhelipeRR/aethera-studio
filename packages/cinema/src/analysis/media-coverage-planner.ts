@@ -1,4 +1,8 @@
-import { extractTopicEntities, type MediaRelevanceDecision } from '../qc/media-relevance-gate.js';
+import {
+  extractNarrativeVisualExpectation,
+  extractTopicEntities,
+  type MediaRelevanceDecision,
+} from '../qc/media-relevance-gate.js';
 
 export type CoverageFormat =
   | 'documentary'
@@ -319,15 +323,41 @@ export function planMediaCoverage(input: {
   for (const seg of input.segments) {
     const entities =
       seg.entities && seg.entities.length > 0 ? seg.entities : extractTopicEntities(`${seg.subject} ${seg.narrationText}`);
+    const expectation = extractNarrativeVisualExpectation({
+      segmentId: seg.segmentId,
+      prompt: seg.subject,
+      narrationText: seg.narrationText,
+      ...(seg.entities ? { expectedEntities: seg.entities } : {}),
+    });
 
     const candidates = validAssets.filter((asset) => {
+      const decision = decisionByMediaId.get(asset.mediaId);
+      if (
+        decision?.correspondenceLevel === 'universe_only_coincidence' ||
+        decision?.correspondenceLevel === 'unverified' ||
+        decision?.correspondenceLevel === 'rejected'
+      ) {
+        return false;
+      }
+      if (decision?.correspondenceLevel === 'contextual_support' && expectation.requiresSpecificEventVisual) {
+        return false;
+      }
+      if (decision?.eligibleSegmentIds && decision.eligibleSegmentIds.length > 0) {
+        if (decision.eligibleSegmentIds.includes(seg.segmentId)) {
+          return true;
+        }
+        return decision.correspondenceLevel === 'contextual_support' && !expectation.requiresSpecificEventVisual;
+      }
       if (!asset.relevantToEntities || asset.relevantToEntities.length === 0) {
         return !input.requireRelevanceApproval || entities.length === 0;
       }
       const hasDirectOverlap = entities.some((e) => asset.relevantToEntities!.includes(e));
       if (hasDirectOverlap) return true;
-      const decision = decisionByMediaId.get(asset.mediaId);
-      return decision?.accepted === true && decision.relevanceTier === 'same_universe_context';
+      return (
+        decision?.accepted === true &&
+        decision.relevanceTier === 'same_universe_context' &&
+        !expectation.requiresSpecificEventVisual
+      );
     });
 
     const segUsages = usages.filter((u) => u.segmentId === seg.segmentId);

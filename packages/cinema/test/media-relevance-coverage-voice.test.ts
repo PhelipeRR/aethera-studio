@@ -10,6 +10,7 @@ import {
   evaluateNarrationAudioQuality,
   evaluateRenderedVisualCritic,
   expandScriptOrientedQueries,
+  extractNarrativeVisualExpectation,
   isCacheEntryCompatibleWithProject,
   planMediaCoverage,
   planTargetedSegmentRegeneration,
@@ -499,5 +500,170 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(audit.stoppedReason).toBe('deadline_exceeded');
     expect(audit.duplicateFilesSkipped).toBe(1);
     expect(audit.approvedForAssemblyCount).toBe(1);
+  });
+
+  it('distinguishes exact_match, contextual_support, universe_only_coincidence, and unverified_metadata_only in DBZ scenes', async () => {
+    const dbzPrompt = 'Análise de Dragon Ball Z: Saga Namek';
+
+    const specificExpectation = extractNarrativeVisualExpectation({
+      segmentId: 'seg_kuririn',
+      narrationText: 'A morte de Kuririn desperta a primeira transformação de Goku em Super Saiyajin contra Freeza.',
+      expectedEntities: ['goku', 'kuririn', 'freeza', 'super saiyajin'],
+    });
+    expect(specificExpectation.requiresSpecificEventVisual).toBe(true);
+    expect(specificExpectation.actionsAndEvents.length).toBeGreaterThan(0);
+
+    // 1. Cena exata visualmente verificada (exact_match + visually_verified)
+    const exactDecision = await evaluateMediaRelevance(
+      {
+        mediaId: 'dbz_exact_ssj',
+        uri: 'file:///tmp/goku_ssj_namek.mp4',
+        title: 'Goku transforma em Super Saiyajin após Kuririn',
+        origin: 'local_library',
+        durationSec: 40,
+      },
+      {
+        segmentId: 'seg_kuririn',
+        prompt: dbzPrompt,
+        narrationText: 'A morte de Kuririn desperta a primeira transformação de Goku em Super Saiyajin.',
+        genre: 'anime',
+        expectedEntities: ['goku', 'kuririn', 'super saiyajin'],
+      },
+      {
+        analyzeFrames: async () => [
+          { timestampSec: 8, visualCategory: 'anime_animation', detectedEntities: ['goku', 'kuririn'], detectedActions: ['morte'], description: 'Kuririn cai em Namek', confidence: 0.91 },
+          { timestampSec: 22, visualCategory: 'anime_animation', detectedEntities: ['goku', 'super saiyajin'], detectedActions: ['transformacao'], description: 'Goku se transforma em Super Saiyajin', confidence: 0.94 },
+        ],
+      },
+    );
+    expect(exactDecision.accepted).toBe(true);
+    expect(exactDecision.correspondenceLevel).toBe('exact_match');
+    expect(exactDecision.visualVerificationStatus).toBe('visually_verified');
+    expect(exactDecision.eligibleSegmentIds).toEqual(['seg_kuririn']);
+    expect(exactDecision.matchedIntervals?.length).toBeGreaterThan(0);
+
+    // 2. Cena do mesmo anime, mas evento errado para segmento que exige acontecimento específico -> universe_only_coincidence (não satisfaz cobertura)
+    const wrongEventDecision = await evaluateMediaRelevance(
+      {
+        mediaId: 'dbz_vegeta_zarbon',
+        uri: 'file:///tmp/vegeta_zarbon.mp4',
+        title: 'Dragon Ball Z Vegeta vs Zarbon',
+        origin: 'local_library',
+        durationSec: 30,
+      },
+      {
+        segmentId: 'seg_kuririn',
+        prompt: dbzPrompt,
+        narrationText: 'A morte de Kuririn desperta a transformação de Goku em Super Saiyajin.',
+        genre: 'anime',
+        expectedEntities: ['goku', 'kuririn', 'super saiyajin'],
+      },
+      {
+        analyzeFrames: async () => [
+          { timestampSec: 6, visualCategory: 'anime_animation', detectedEntities: ['vegeta', 'zarbon'], detectedActions: ['batalha'], description: 'Vegeta enfrenta Zarbon', confidence: 0.89 },
+          { timestampSec: 18, visualCategory: 'anime_animation', detectedEntities: ['vegeta', 'zarbon'], detectedActions: ['batalha'], description: 'Vegeta ataca Zarbon', confidence: 0.87 },
+        ],
+      },
+    );
+    expect(wrongEventDecision.accepted).toBe(true);
+    expect(wrongEventDecision.relevanceTier).toBe('same_universe_context');
+    expect(wrongEventDecision.correspondenceLevel).toBe('universe_only_coincidence');
+    expect(wrongEventDecision.eligibleSegmentIds).toEqual([]);
+
+    // 3. Cena contextual do mesmo anime para segmento descritivo sem evento específico -> contextual_support
+    const contextualDecision = await evaluateMediaRelevance(
+      {
+        mediaId: 'dbz_namek_landscape',
+        uri: 'file:///tmp/namek_sky.mp4',
+        title: 'Dragon Ball Z Planeta Namek cenário',
+        origin: 'local_library',
+        durationSec: 25,
+      },
+      {
+        segmentId: 'seg_ambientacao',
+        prompt: dbzPrompt,
+        narrationText: 'Os guerreiros observam o horizonte em busca das esferas.',
+        genre: 'anime',
+        expectedEntities: ['gohan', 'kuririn'],
+      },
+      {
+        analyzeFrames: async () => [
+          { timestampSec: 5, visualCategory: 'anime_animation', detectedEntities: ['namek', 'dragon ball'], description: 'Paisagem de Namek com céu verde', confidence: 0.85 },
+        ],
+      },
+    );
+    expect(contextualDecision.accepted).toBe(true);
+    expect(contextualDecision.correspondenceLevel).toBe('contextual_support');
+    expect(contextualDecision.visualVerificationStatus).toBe('visually_verified');
+
+    // 4. Candidato apenas com metadados e sem frames analisados -> unverified_metadata_only (rejeitado se requireVisualVerification=true)
+    const metadataOnlyDecision = await evaluateMediaRelevance(
+      {
+        mediaId: 'dbz_metadata_only',
+        uri: 'file:///tmp/goku_namek_meta.mp4',
+        title: 'Dragon Ball Z Goku em Namek',
+        origin: 'youtube_data_api',
+        durationSec: 30,
+      },
+      {
+        segmentId: 'seg_kuririn',
+        prompt: dbzPrompt,
+        narrationText: 'Goku enfrenta Freeza em Namek.',
+        genre: 'anime',
+        expectedEntities: ['goku', 'freeza'],
+      },
+      {
+        requireVisualVerification: true,
+      },
+    );
+    expect(metadataOnlyDecision.accepted).toBe(false);
+    expect(metadataOnlyDecision.correspondenceLevel).toBe('unverified');
+    expect(metadataOnlyDecision.visualVerificationStatus).toBe('unverified_metadata_only');
+    expect(metadataOnlyDecision.rejectionCode).toBe('unverified_no_visual_evidence');
+
+    // Coverage Planner não deve cobrir seg_kuririn usando apenas wrongEventDecision (universe_only_coincidence)
+    const coverage = planMediaCoverage({
+      format: 'analysis',
+      requireRelevanceApproval: true,
+      relevanceDecisions: [wrongEventDecision, contextualDecision],
+      segments: [
+        {
+          segmentId: 'seg_kuririn',
+          subject: 'Morte de Kuririn e Super Saiyajin',
+          narrationText: 'A morte de Kuririn desperta a transformação de Goku em Super Saiyajin.',
+          entities: ['goku', 'kuririn', 'super saiyajin'],
+          expectedDurationSec: 20,
+        },
+        {
+          segmentId: 'seg_ambientacao',
+          subject: 'Ambientação de Namek',
+          narrationText: 'Os guerreiros observam o horizonte em busca das esferas.',
+          entities: ['gohan', 'kuririn'],
+          expectedDurationSec: 20,
+        },
+      ],
+      assets: [
+        {
+          mediaId: 'dbz_vegeta_zarbon',
+          uri: 'file:///tmp/vegeta_zarbon.mp4',
+          durationSec: 30,
+          compatible: true,
+          relevantToEntities: ['vegeta', 'zarbon'],
+        },
+        {
+          mediaId: 'dbz_namek_landscape',
+          uri: 'file:///tmp/namek_sky.mp4',
+          durationSec: 25,
+          compatible: true,
+          relevantToEntities: ['dragon ball', 'namek'],
+        },
+      ],
+    });
+
+    const segKuririnCov = coverage.segments.find((s) => s.segmentId === 'seg_kuririn');
+    const segAmbientCov = coverage.segments.find((s) => s.segmentId === 'seg_ambientacao');
+    expect(segKuririnCov?.covered).toBe(false);
+    expect(segKuririnCov?.usableDurationSec).toBe(0);
+    expect(segAmbientCov?.covered).toBe(true);
   });
 });

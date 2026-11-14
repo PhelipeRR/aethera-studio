@@ -40,8 +40,26 @@ export interface DistributedFrameAnalysis {
   timestampSec: number;
   visualCategory: VisualCategory;
   detectedEntities?: string[];
+  detectedActions?: string[];
   description?: string;
   confidence: number;
+}
+
+export type MediaCorrespondenceLevel =
+  | 'exact_match'
+  | 'contextual_support'
+  | 'universe_only_coincidence'
+  | 'unverified'
+  | 'rejected';
+
+export type VisualVerificationStatus = 'visually_verified' | 'unverified_metadata_only';
+
+export interface NarrativeVisualExpectation {
+  segmentId: string;
+  entities: string[];
+  actionsAndEvents: string[];
+  expectedVisualContext: string;
+  requiresSpecificEventVisual: boolean;
 }
 
 export interface MediaRelevanceDecision {
@@ -49,12 +67,27 @@ export interface MediaRelevanceDecision {
   accepted: boolean;
   score: number;
   relevanceTier?: 'exact_segment_match' | 'same_universe_context' | 'rejected';
+  correspondenceLevel?: MediaCorrespondenceLevel;
+  visualVerificationStatus?: VisualVerificationStatus;
+  visualConfidence?: number;
+  visualEvidence?: Array<{
+    timestampSec: number;
+    description: string;
+    detectedEntities: string[];
+    detectedActions: string[];
+    confidence: number;
+  }>;
+  matchedActions?: string[];
+  matchedIntervals?: Array<{ startSec: number; endSec: number; segmentId: string }>;
+  eligibleSegmentIds?: string[];
   rejectionCode?:
     | 'unrelated_real_person'
     | 'wrong_anime_or_entity'
+    | 'same_universe_wrong_event'
     | 'wrong_game_or_topic'
     | 'cross_project_cache_leak'
     | 'generic_anime_style_without_entity'
+    | 'unverified_no_visual_evidence'
     | 'insufficient_metadata_and_visual_match';
   reason: string;
   sampledTimestampsSec: number[];
@@ -116,6 +149,51 @@ export function extractTopicEntities(text: string): string[] {
     if (!unique.includes(token)) unique.push(token);
   }
   return unique.slice(0, 24);
+}
+
+const NARRATIVE_ACTION_PATTERNS: Array<{ key: string; regex: RegExp }> = [
+  { key: 'transformacao', regex: /\b(transforma\w*|despert\w*|super saiyajin|ssj|forma final)\b/i },
+  { key: 'fusao', regex: /\b(fusao|funde|fundir)\b/i },
+  { key: 'genki_dama', regex: /\b(genki dama|spirit bomb)\b/i },
+  { key: 'morte_sacrificio', regex: /\b(morte|morre\w*|sacrific\w*|cai diante)\b/i },
+  { key: 'batalha_confronto', regex: /\b(luta\w*|batalha\w*|enfrent\w*|confront\w*|derrot\w*|ataque|vs)\b/i },
+  { key: 'chegada_desembarque', regex: /\b(chegada|chegam|desembarc\w*|esconder)\b/i },
+  { key: 'explosao', regex: /\b(explos\w*|destruic\w*)\b/i },
+  { key: 'treinamento', regex: /\b(trein\w*|gravidade)\b/i },
+];
+
+/**
+ * Extracts entities, actions/events, and expected visual context from a narrative segment.
+ */
+export function extractNarrativeVisualExpectation(
+  segment: ScriptSegmentExpectation,
+): NarrativeVisualExpectation {
+  const normalized = expandNarrativeAliases(
+    segment.narrationText
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase(),
+  );
+  const entities =
+    segment.expectedEntities && segment.expectedEntities.length > 0
+      ? segment.expectedEntities.map((e) => e.toLowerCase())
+      : extractTopicEntities(segment.narrationText);
+  const actionsAndEvents = NARRATIVE_ACTION_PATTERNS
+    .filter((p) => p.regex.test(normalized))
+    .map((p) => p.key);
+  const requiresSpecificEventVisual =
+    actionsAndEvents.some((a) =>
+      ['transformacao', 'fusao', 'genki_dama', 'morte_sacrificio', 'explosao'].includes(a),
+    ) ||
+    (actionsAndEvents.length > 0 && entities.length >= 2);
+
+  return {
+    segmentId: segment.segmentId,
+    entities,
+    actionsAndEvents,
+    expectedVisualContext: `${entities.join(', ')}${actionsAndEvents.length ? ` | ações: ${actionsAndEvents.join(', ')}` : ''}`,
+    requiresSpecificEventVisual,
+  };
 }
 
 /**
@@ -214,13 +292,12 @@ export async function evaluateMediaRelevance(
       timestampsSec: number[],
       segment: ScriptSegmentExpectation,
     ) => Promise<DistributedFrameAnalysis[]>;
+    requireVisualVerification?: boolean;
   },
 ): Promise<MediaRelevanceDecision> {
   const sampledTimestampsSec = sampleDistributedFrameTimestamps(candidate.durationSec, 4);
-  const expectedEntities =
-    segment.expectedEntities && segment.expectedEntities.length > 0
-      ? segment.expectedEntities.map((e) => e.toLowerCase())
-      : extractTopicEntities(`${segment.prompt} ${segment.narrationText}`);
+  const expectation = extractNarrativeVisualExpectation(segment);
+  const expectedEntities = expectation.entities;
 
   // 1. Cross-project isolation check
   if (candidate.projectId && segment.segmentId && candidate.origin?.startsWith('project:') && candidate.origin !== `project:${candidate.projectId}`) {
@@ -266,7 +343,9 @@ export async function evaluateMediaRelevance(
       candidate.description ?? '',
       (candidate.tags ?? []).join(' '),
       candidate.transcriptExcerpt ?? '',
-      ...frameAnalyses.map((f) => `${f.description ?? ''} ${(f.detectedEntities ?? []).join(' ')}`),
+      ...frameAnalyses.map(
+        (f) => `${f.description ?? ''} ${(f.detectedEntities ?? []).join(' ')} ${(f.detectedActions ?? []).join(' ')}`,
+      ),
     ]
       .join(' ')
       .normalize('NFD')
@@ -274,10 +353,31 @@ export async function evaluateMediaRelevance(
       .toLowerCase(),
   );
 
+  const visualEvidence = frameAnalyses.map((f) => ({
+    timestampSec: f.timestampSec,
+    description: f.description ?? '',
+    detectedEntities: f.detectedEntities ?? [],
+    detectedActions: f.detectedActions ?? [],
+    confidence: f.confidence,
+  }));
+  const visualVerificationStatus: VisualVerificationStatus =
+    frameAnalyses.length > 0 ? 'visually_verified' : 'unverified_metadata_only';
+  const visualConfidence =
+    frameAnalyses.length > 0
+      ? Number(
+          (frameAnalyses.reduce((acc, f) => acc + f.confidence, 0) / frameAnalyses.length).toFixed(2),
+        )
+      : 0;
+
   const candidateEntities = extractTopicEntities(combinedText);
   const matchedEntities = expectedEntities.filter(
     (entity) => combinedText.includes(entity) || candidateEntities.includes(entity),
   );
+  const matchedActions = expectation.actionsAndEvents.filter((actionKey) => {
+    const pattern = NARRATIVE_ACTION_PATTERNS.find((p) => p.key === actionKey);
+    const inFrames = frameAnalyses.some((f) => f.detectedActions?.includes(actionKey));
+    return inFrames || Boolean(pattern?.regex.test(combinedText));
+  });
   const universeEntities = extractTopicEntities(segment.prompt);
   const matchedUniverseEntities = universeEntities.filter(
     (entity) => combinedText.includes(entity) || candidateEntities.includes(entity),
@@ -298,6 +398,10 @@ export async function evaluateMediaRelevance(
       accepted: false,
       score: 0.1,
       relevanceTier: 'rejected',
+      correspondenceLevel: 'rejected',
+      visualVerificationStatus,
+      visualConfidence,
+      visualEvidence,
       rejectionCode: 'unrelated_real_person',
       reason:
         'Mídia exibe pessoa real em câmera/vlog/react sem justificativa de entrevista, bastidores ou live-action para roteiro de anime.',
@@ -315,6 +419,10 @@ export async function evaluateMediaRelevance(
       accepted: false,
       score: isGenericAnime ? 0.25 : 0.05,
       relevanceTier: 'rejected',
+      correspondenceLevel: 'rejected',
+      visualVerificationStatus,
+      visualConfidence,
+      visualEvidence,
       rejectionCode: isGenericAnime ? 'generic_anime_style_without_entity' : 'wrong_anime_or_entity',
       reason: isGenericAnime
         ? `Estilo anime genérico sem comprovação da obra/personagem/contexto esperado (${expectedEntities.slice(0, 4).join(', ')}).`
@@ -338,6 +446,10 @@ export async function evaluateMediaRelevance(
       accepted: false,
       score: 0.15,
       relevanceTier: 'rejected',
+      correspondenceLevel: 'rejected',
+      visualVerificationStatus,
+      visualConfidence,
+      visualEvidence,
       rejectionCode: 'wrong_game_or_topic',
       reason: `Mídia incompatível com o tema/jogo esperado (${expectedEntities.slice(0, 4).join(', ')}).`,
       sampledTimestampsSec,
@@ -346,10 +458,54 @@ export async function evaluateMediaRelevance(
     };
   }
 
-  const isSameUniverseFallback = matchedEntities.length === 0 && matchedUniverseEntities.length > 0;
+  // 6. Strict visual verification gate when required (metadata alone is never visual proof)
+  if (options?.requireVisualVerification && visualVerificationStatus === 'unverified_metadata_only') {
+    return {
+      mediaId: candidate.mediaId,
+      accepted: false,
+      score: 0.3,
+      relevanceTier: 'rejected',
+      correspondenceLevel: 'unverified',
+      visualVerificationStatus,
+      visualConfidence: 0,
+      visualEvidence: [],
+      rejectionCode: 'unverified_no_visual_evidence',
+      reason: 'Não verificada visualmente: apenas metadados disponíveis sem análise de frames distribuídos.',
+      sampledTimestampsSec,
+      matchedEntities,
+      visualCategory: dominantVisualCategory,
+    };
+  }
+
+  const isSameUniverseOnly = matchedEntities.length === 0 && matchedUniverseEntities.length > 0;
+  // Same universe but wrong specific event/character when segment requires a specific event -> universe_only_coincidence (contextual candidate only, cannot satisfy coverage!)
+  if (isSameUniverseOnly && expectation.requiresSpecificEventVisual) {
+    return {
+      mediaId: candidate.mediaId,
+      accepted: true,
+      score: 0.42,
+      relevanceTier: 'same_universe_context',
+      correspondenceLevel: 'universe_only_coincidence',
+      visualVerificationStatus,
+      visualConfidence,
+      visualEvidence,
+      matchedActions,
+      eligibleSegmentIds: [],
+      reason: `Coincidência de universo (${matchedUniverseEntities.slice(0, 3).join(', ')}): candidata apenas contextual, não satisfaz acontecimento específico (${expectation.expectedVisualContext}).`,
+      sampledTimestampsSec,
+      matchedEntities: matchedUniverseEntities,
+      visualCategory: dominantVisualCategory,
+    };
+  }
+
   const effectiveMatched = matchedEntities.length > 0 ? matchedEntities : matchedUniverseEntities;
-  const entityScore = isSameUniverseFallback
-    ? 0.65
+  const correspondenceLevel: MediaCorrespondenceLevel =
+    matchedEntities.length > 0 && (!expectation.requiresSpecificEventVisual || matchedActions.length > 0)
+      ? 'exact_match'
+      : 'contextual_support';
+
+  const entityScore = isSameUniverseOnly
+    ? 0.6
     : expectedEntities.length > 0
       ? Math.min(1, matchedEntities.length / Math.min(3, expectedEntities.length))
       : 0.6;
@@ -367,6 +523,10 @@ export async function evaluateMediaRelevance(
       accepted: false,
       score,
       relevanceTier: 'rejected',
+      correspondenceLevel: 'rejected',
+      visualVerificationStatus,
+      visualConfidence,
+      visualEvidence,
       rejectionCode: 'insufficient_metadata_and_visual_match',
       reason: 'Evidência visual e de metadados insuficiente para confirmar relevância.',
       sampledTimestampsSec,
@@ -375,16 +535,40 @@ export async function evaluateMediaRelevance(
     };
   }
 
+  const matchingFrames = frameAnalyses.filter(
+    (f) =>
+      (f.detectedEntities ?? []).some((e) => effectiveMatched.includes(e.toLowerCase())) ||
+      (f.detectedActions ?? []).some((a) => matchedActions.includes(a)),
+  );
+  const matchedIntervals =
+    matchingFrames.length > 0
+      ? [
+          {
+            startSec: Number(Math.max(0, matchingFrames[0]!.timestampSec - 2).toFixed(2)),
+            endSec: Number(
+              Math.min(candidate.durationSec, matchingFrames[matchingFrames.length - 1]!.timestampSec + 4).toFixed(2),
+            ),
+            segmentId: segment.segmentId,
+          },
+        ]
+      : [{ startSec: 0, endSec: Number(candidate.durationSec.toFixed(2)), segmentId: segment.segmentId }];
+
   return {
     mediaId: candidate.mediaId,
     accepted: true,
     score,
-    relevanceTier: isSameUniverseFallback ? 'same_universe_context' : 'exact_segment_match',
-    reason: isSameUniverseFallback
-      ? `Pertence ao mesmo universo narrativo (${effectiveMatched.slice(0, 4).join(', ')}) do roteiro, embora destaque outro personagem/momento.`
-      : effectiveMatched.length > 0
-        ? `Relevância confirmada (${effectiveMatched.slice(0, 4).join(', ')}) em ${sampledTimestampsSec.length} frames distribuídos.`
-        : 'Relevância contextual compatível.',
+    relevanceTier: isSameUniverseOnly ? 'same_universe_context' : 'exact_segment_match',
+    correspondenceLevel,
+    visualVerificationStatus,
+    visualConfidence,
+    visualEvidence,
+    matchedActions,
+    matchedIntervals,
+    eligibleSegmentIds: [segment.segmentId],
+    reason:
+      correspondenceLevel === 'contextual_support'
+        ? `Apoio contextual do mesmo universo (${effectiveMatched.slice(0, 4).join(', ')}); verificação visual: ${visualVerificationStatus}.`
+        : `Correspondência exata (${effectiveMatched.slice(0, 4).join(', ')}) em ${sampledTimestampsSec.length} frames distribuídos (${visualVerificationStatus}).`,
     sampledTimestampsSec,
     matchedEntities: effectiveMatched,
     visualCategory: dominantVisualCategory,
