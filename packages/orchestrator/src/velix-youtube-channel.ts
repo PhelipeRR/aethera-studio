@@ -37,7 +37,18 @@ export async function youtubeFailure(response: Response, context = ''): Promise<
 /** YouTube requires chunks in multiples of 256 KiB; 8 MiB keeps the progress smooth without too many requests. */
 export const UPLOAD_CHUNK_BYTES = 32 * 256 * 1024;
 export type WatermarkCorner = 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight';
-export interface YouTubeChannelClient { getChannel(): Promise<{ id: string; title: string; handle: string | null; brandingSettings: unknown }>; researchNiche(query: string): Promise<{ query: string; quotaCost: number; titles: string[]; totalResults: number }>; listUploadedVideos(): Promise<Array<{ id: string; title: string; privacy: 'private' | 'unlisted' | 'public'; publishAt: string | null }>>; getVideoStatistics(videoId: string): Promise<{ videoId: string; views: number; likes: number; comments: number }>; updateVideo(videoId: string, status: { privacyStatus: 'private' | 'unlisted' | 'public'; publishAt?: string | null }): Promise<void>; updateBranding(body: unknown): Promise<void>; createUploadSession(metadata: unknown, totalBytes: number, signal?: AbortSignal): Promise<string>; resumeUpload(sessionUrl: string, bytes: Uint8Array, offset: number, signal?: AbortSignal, total?: number): Promise<{ id: string } | { offset: number }>; continueUpload(sessionUrl: string, file: Uint8Array, offset: number, signal?: AbortSignal, onCheckpoint?: (sessionUrl: string, offset: number) => void): Promise<{ id: string }>; uploadVideo(metadata: unknown, bytes: Uint8Array, signal?: AbortSignal, onCheckpoint?: (sessionUrl: string, offset: number) => void): Promise<{ id: string }>; uploadThumbnail(videoId: string, bytes: Uint8Array, contentType: 'image/png' | 'image/jpeg', signal?: AbortSignal): Promise<void>; uploadBanner(bytes: Uint8Array, contentType: 'image/png' | 'image/jpeg', signal?: AbortSignal): Promise<string>; setWatermark(channelId: string, bytes: Uint8Array, contentType: 'image/png' | 'image/jpeg', position: WatermarkCorner, signal?: AbortSignal): Promise<void>; }
+export interface YouTubeChannelProfile {
+  id: string;
+  title: string;
+  handle: string | null;
+  brandingSettings: unknown;
+  description?: string;
+  avatarUrl?: string;
+  bannerUrl?: string;
+  country?: string;
+  defaultLanguage?: string;
+}
+export interface YouTubeChannelClient { getChannel(): Promise<YouTubeChannelProfile>; researchNiche(query: string): Promise<{ query: string; quotaCost: number; titles: string[]; totalResults: number }>; listUploadedVideos(): Promise<Array<{ id: string; title: string; privacy: 'private' | 'unlisted' | 'public'; publishAt: string | null }>>; getVideoStatistics(videoId: string): Promise<{ videoId: string; views: number; likes: number; comments: number }>; updateVideo(videoId: string, status: { privacyStatus: 'private' | 'unlisted' | 'public'; publishAt?: string | null }): Promise<void>; updateBranding(body: unknown): Promise<void>; createUploadSession(metadata: unknown, totalBytes: number, signal?: AbortSignal): Promise<string>; resumeUpload(sessionUrl: string, bytes: Uint8Array, offset: number, signal?: AbortSignal, total?: number): Promise<{ id: string } | { offset: number }>; continueUpload(sessionUrl: string, file: Uint8Array, offset: number, signal?: AbortSignal, onCheckpoint?: (sessionUrl: string, offset: number) => void): Promise<{ id: string }>; uploadVideo(metadata: unknown, bytes: Uint8Array, signal?: AbortSignal, onCheckpoint?: (sessionUrl: string, offset: number) => void): Promise<{ id: string }>; uploadThumbnail(videoId: string, bytes: Uint8Array, contentType: 'image/png' | 'image/jpeg', signal?: AbortSignal): Promise<void>; uploadBanner(bytes: Uint8Array, contentType: 'image/png' | 'image/jpeg', signal?: AbortSignal): Promise<string>; setWatermark(channelId: string, bytes: Uint8Array, contentType: 'image/png' | 'image/jpeg', position: WatermarkCorner, signal?: AbortSignal): Promise<void>; }
 export function createYouTubeChannelClient(input: { accessToken: string; fetcher?: Fetcher; endpoints?: YouTubeEndpoints }): YouTubeChannelClient {
   if (!input.accessToken.trim()) throw new Error('auth_required: token do YouTube ausente.');
   const fetcher = input.fetcher ?? ((url, init) => fetch(url, init));
@@ -50,7 +61,28 @@ export function createYouTubeChannelClient(input: { accessToken: string; fetcher
   const call = async (url: string, init: RequestInit): Promise<Response> => { try { return await fetcher(url, init); } catch (error) { if (init.signal?.aborted) throw error; throw new Error('network: sem conexão com o YouTube. Verifique a internet e tente de novo.', { cause: error }); } };
   const request = async (path: string, init: RequestInit = {}, base: URL = api): Promise<Response> => { const url = within(base, path); const response = await call(url.toString(), { ...init, headers: { authorization: `Bearer ${input.accessToken}`, ...(init.headers ?? {}) }, redirect: 'error' }); if (!response.ok) throw await youtubeFailure(response); return response; };
   return {
-    async getChannel() { const parsed = channelResponse.parse(await (await request('/channels?part=snippet,brandingSettings&mine=true')).json()); const item = parsed.items[0]; if (!item) throw new Error('not_found: nenhum canal YouTube foi encontrado.'); return { id: item.id, title: item.snippet.title, handle: item.snippet.customUrl ?? null, brandingSettings: item.brandingSettings ?? {} }; },
+    async getChannel() {
+      const parsed = channelResponse.parse(await (await request('/channels?part=snippet,brandingSettings&mine=true')).json());
+      const item = parsed.items[0];
+      if (!item) throw new Error('not_found: nenhum canal YouTube foi encontrado.');
+      const snippet = item.snippet as Record<string, unknown>;
+      const thumbs = (snippet.thumbnails ?? {}) as Record<string, { url?: string } | undefined>;
+      const avatarUrl = thumbs.high?.url ?? thumbs.medium?.url ?? thumbs.default?.url;
+      const branding = (item.brandingSettings ?? {}) as Record<string, unknown>;
+      const imageObj = (branding.image ?? {}) as Record<string, unknown>;
+      const bannerUrl = typeof imageObj.bannerExternalUrl === 'string' ? imageObj.bannerExternalUrl : undefined;
+      return {
+        id: item.id,
+        title: item.snippet.title,
+        handle: item.snippet.customUrl ?? null,
+        brandingSettings: item.brandingSettings ?? {},
+        ...(typeof snippet.description === 'string' ? { description: snippet.description } : {}),
+        ...(typeof avatarUrl === 'string' ? { avatarUrl } : {}),
+        ...(bannerUrl ? { bannerUrl } : {}),
+        ...(typeof snippet.country === 'string' ? { country: snippet.country } : {}),
+        ...(typeof snippet.defaultLanguage === 'string' ? { defaultLanguage: snippet.defaultLanguage } : {}),
+      };
+    },
     async researchNiche(query) { if (!query.trim()) throw new Error('invalid: informe um nicho.'); const parsed = searchResponse.parse(await (await request(`/search?part=snippet&type=video&maxResults=50&q=${encodeURIComponent(query.trim())}&order=viewCount`)).json()); return { query: query.trim(), quotaCost: 100, titles: parsed.items.map((item) => item.snippet.title).slice(0, 50), totalResults: parsed.items.length }; },
     async listUploadedVideos() { const search = searchResponse.parse(await (await request('/search?part=snippet&forMine=true&type=video&maxResults=50')).json()); const ids = search.items.map((item) => item.id.videoId).join(','); if (!ids) return []; const parsed = videosResponse.parse(await (await request(`/videos?part=snippet,status&id=${encodeURIComponent(ids)}`)).json()); return parsed.items.map((item) => ({ id: item.id, title: item.snippet.title, privacy: item.status.privacyStatus, publishAt: item.status.publishAt ?? null })); },
     async getVideoStatistics(videoId) { if (!videoId.trim()) throw new Error('invalid: vídeo ausente.'); const parsed = videoStatisticsResponse.parse(await (await request(`/videos?part=statistics&id=${encodeURIComponent(videoId.trim())}`)).json()); const item = parsed.items[0]; if (!item) throw new Error('not_found: vídeo não encontrado no canal autorizado.'); return { videoId: item.id, views: Number(item.statistics.viewCount ?? '0'), likes: Number(item.statistics.likeCount ?? '0'), comments: Number(item.statistics.commentCount ?? '0') }; },

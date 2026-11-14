@@ -10,3 +10,6 @@
 - **Isolamento de Configurações & Tutoriais Interativos:**
   - `AetheraSettingsPage.tsx` com 10 categorias exclusivas do Aethera Studio (removendo Companion, Dispositivos e Azure DevOps do Aethera e mantendo-os no Singularity).
   - `SetupTutorialDrawer.tsx` + `settings-tutorials.ts` com tutoriais guiados e teste real de conexão (`apps/aethera-desktop/test/settings-isolation-and-tutorials.test.ts`).
+- **Channel Manager 2.0:**
+  - Gerenciador completo em abas (`ContentChannelSetupPage.tsx`), conexão OAuth real com YouTube + importação de metadados/avatar/banner, Brand Kit visual com prévia ao vivo, estratégia editorial, templates de publicação + prévia, matriz de autonomia por etapa e CRUD completo (`contentChannelsList`, `contentChannelCreate`, `contentChannelUpdate`, `contentChannelDelete`).
+  - Testes de migração de legado, isolamento entre canais, permissões de publicação automática e persistência (`packages/database/test/channel-manager-v2.test.ts`).

@@ -42,10 +42,53 @@ export class ContentOperatingSystemRepository {
     return row ? this.parseProject(row) : null;
   }
 
-  createChannel(input: Pick<ContentChannel, 'id' | 'workspaceId' | 'name' | 'autonomy'> & Partial<ContentChannel>): ContentChannel {
+  createChannel(input: Pick<ContentChannel, 'id' | 'workspaceId' | 'name' | 'autonomy'> & { [K in keyof ContentChannel]?: ContentChannel[K] | undefined }): ContentChannel {
     const timestamp = now();
     this.db.insert(contentChannels).values({ id: input.id, workspaceId: input.workspaceId, name: input.name, niche: input.niche ?? '', audience: input.audience ?? '', tone: input.tone ?? '', autonomy: input.autonomy, budgetUsd: input.budgetUsd ?? 0, concurrencyLimit: input.concurrencyLimit ?? 1, identityJson: jsonObject(input.identity), editorialStrategyJson: jsonObject(input.editorialStrategy), createdAt: timestamp, updatedAt: timestamp }).run();
     return contentChannelSchema.parse({ ...input, niche: input.niche ?? '', audience: input.audience ?? '', tone: input.tone ?? '', budgetUsd: input.budgetUsd ?? 0, concurrencyLimit: input.concurrencyLimit ?? 1, identity: input.identity ?? {}, editorialStrategy: input.editorialStrategy ?? {}, createdAt: timestamp, updatedAt: timestamp });
+  }
+
+  channel(id: string): ContentChannel | null {
+    const row = this.db.select().from(contentChannels).where(eq(contentChannels.id, id)).get();
+    if (!row) return null;
+    return contentChannelSchema.parse({ id: row.id, workspaceId: row.workspaceId, name: row.name, niche: row.niche, audience: row.audience, tone: row.tone, autonomy: row.autonomy, budgetUsd: row.budgetUsd, concurrencyLimit: row.concurrencyLimit, identity: parseObject(row.identityJson), editorialStrategy: parseObject(row.editorialStrategyJson), createdAt: row.createdAt, updatedAt: row.updatedAt });
+  }
+
+  updateChannel(input: { id: string } & { [K in 'name' | 'niche' | 'audience' | 'tone' | 'autonomy' | 'budgetUsd' | 'concurrencyLimit' | 'identity' | 'editorialStrategy']?: ContentChannel[K] | undefined }): ContentChannel {
+    const existing = this.channel(input.id);
+    if (!existing) throw new Error('not_found: canal não encontrado.');
+    const updatedAt = now();
+    const next = {
+      name: input.name ?? existing.name,
+      niche: input.niche ?? existing.niche,
+      audience: input.audience ?? existing.audience,
+      tone: input.tone ?? existing.tone,
+      autonomy: input.autonomy ?? existing.autonomy,
+      budgetUsd: input.budgetUsd ?? existing.budgetUsd,
+      concurrencyLimit: input.concurrencyLimit ?? existing.concurrencyLimit,
+      identity: input.identity ?? existing.identity,
+      editorialStrategy: input.editorialStrategy ?? existing.editorialStrategy,
+    };
+    this.db.update(contentChannels).set({
+      name: next.name,
+      niche: next.niche,
+      audience: next.audience,
+      tone: next.tone,
+      autonomy: next.autonomy,
+      budgetUsd: next.budgetUsd,
+      concurrencyLimit: next.concurrencyLimit,
+      identityJson: jsonObject(next.identity),
+      editorialStrategyJson: jsonObject(next.editorialStrategy),
+      updatedAt,
+    }).where(eq(contentChannels.id, input.id)).run();
+    return contentChannelSchema.parse({ ...existing, ...next, updatedAt });
+  }
+
+  deleteChannel(channelId: string): { deleted: boolean } {
+    const existing = this.channel(channelId);
+    if (!existing) return { deleted: false };
+    this.db.delete(contentChannels).where(eq(contentChannels.id, channelId)).run();
+    return { deleted: true };
   }
 
   createProject(input: Pick<ContentProject, 'id' | 'workspaceId' | 'channelId' | 'videoProjectId' | 'title' | 'autonomy'>): ContentProject {

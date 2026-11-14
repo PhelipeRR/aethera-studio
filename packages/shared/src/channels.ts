@@ -144,6 +144,8 @@ export const IpcChannel = {
   personalNotificationsList: 'personal:notifications:list',
   personalNotificationRead: 'personal:notifications:read',
   contentChannelsList: 'content:channels:list',
+  contentChannelUpdate: 'content:channels:update',
+  contentChannelDelete: 'content:channels:delete',
   contentIdeasList: 'content:ideas:list',
   contentIdeaCreate: 'content:ideas:create',
   contentIdeaConvert: 'content:ideas:convert',
@@ -712,6 +714,8 @@ export interface NeuralBridgeApi {
     createIdeaFromAnalytics(input: { id: string; projectId: string; title: string; angle: string }): Promise<ContentIdea>;
     library(projectId: string): Promise<ContentAsset[]>;
     createChannel(input: { id: string; workspaceId: string; name: string; autonomy: AutonomyMode; budgetUsd?: number; concurrencyLimit?: number; niche?: string; audience?: string; tone?: string; identity?: Record<string, unknown>; editorialStrategy?: Record<string, unknown> }): Promise<ContentChannel>;
+    updateChannel(input: { id: string; name?: string; niche?: string; audience?: string; tone?: string; autonomy?: AutonomyMode; budgetUsd?: number; concurrencyLimit?: number; identity?: Record<string, unknown>; editorialStrategy?: Record<string, unknown> }): Promise<ContentChannel>;
+    deleteChannel(channelId: string): Promise<{ deleted: boolean }>;
     projects(workspaceId: string): Promise<ContentProject[]>;
     queue(workspaceId: string): Promise<ContentQueueItem[]>;
     createProject(input: { id: string; workspaceId: string; channelId: string | null; videoProjectId: string | null; title: string; autonomy: AutonomyMode }): Promise<ContentProject>;
@@ -1100,7 +1104,7 @@ export interface NeuralBridgeApi {
     channelOAuthClear(): Promise<{ cleared: true }>;
     channelOAuthConnect(input?: { write?: boolean }): Promise<{ connected: true; scopes: string[] }>;
     channelOAuthDisconnect(): Promise<{ disconnected: true; revoked: boolean }>;
-    channelProfile(): Promise<{ id: string; title: string; handle: string | null; brandingSettings: unknown }>;
+    channelProfile(): Promise<{ id: string; title: string; handle: string | null; brandingSettings: unknown; description?: string; avatarUrl?: string; bannerUrl?: string; country?: string; defaultLanguage?: string }>;
     channelBrandingApply(input: { brandingSettings: Record<string, unknown>; confirmed: true }): Promise<{ applied: true }>;
     channelIdentitySave(input: { projectId: string; identity: BrandIdentity }): Promise<{ saved: true }>;
     channelIdentityLoad(projectId: string): Promise<BrandIdentity | null>;

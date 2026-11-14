@@ -13,3 +13,6 @@
 4. **Calendário Editorial Inteligente 2.0 & Escola de Storytelling:**
    - Calendário completo (`EditorialCalendarEngine`, `ContentCalendarPage.tsx`) integrado à Sala de Revisão, séries recorrentes e fuso horário IANA.
    - Escola de Storytelling Aethera (`storytelling-school.ts`) com currículo estruturado e backup/restauração da Academy.
+5. **Channel Manager 2.0 (`ContentChannelSetupPage.tsx` & `content-operating-system.ts`):**
+   - Separação entre configurações globais do estúdio, configurações por canal (`identityJson`, `editorialStrategyJson`, Brand Kit, estratégia editorial, templates de publicação, autonomia por etapa) e configurações por projeto.
+   - Reutilização da infraestrutura OAuth do YouTube (`videoChannelOAuth*`, `videoChannelProfile`) sem duplicação de credenciais.
