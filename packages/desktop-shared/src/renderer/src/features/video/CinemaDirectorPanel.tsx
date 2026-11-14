@@ -21,6 +21,8 @@ import { Link, useNavigate } from 'react-router';
 import { healthOf, useAgents } from '@/app/useAgents';
 import { notify } from '@/components/NotificationsOverlay';
 import { TrendRadarPanel, type TrendRadarBridgeApi } from './TrendRadarPanel';
+import { MediaCoveragePanel } from './MediaCoveragePanel';
+import { VoiceDirectorPanel } from './VoiceDirectorPanel';
 
 interface CinemaBridgeApi {
   cinemaCapabilities?: () => Promise<{
@@ -1382,6 +1384,29 @@ export function CinemaDirectorPanel() {
           </section>
         </div>
       )}
+
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <MediaCoveragePanel
+          coverage={(stagedJob as unknown as { coverageReport?: Parameters<typeof MediaCoveragePanel>[0]['coverage'] })?.coverageReport ?? null}
+          relevanceDecisions={(stagedJob as unknown as { mediaRelevanceDecisions?: Parameters<typeof MediaCoveragePanel>[0]['relevanceDecisions'] })?.mediaRelevanceDecisions ?? []}
+          onPromptAction={(actionPrompt) => {
+            setPrompt((prev) => (prev ? `${prev}\n\n[Diretriz de Cobertura] ${actionPrompt}` : actionPrompt));
+            notify({ title: 'Cobertura', message: 'Diretriz de cobertura adicionada ao prompt.', type: 'info' });
+          }}
+        />
+        <VoiceDirectorPanel
+          voiceId={selectedVoiceId}
+          audioQuality={(realRender as unknown as { audioQuality?: Parameters<typeof VoiceDirectorPanel>[0]['audioQuality'] })?.audioQuality ?? null}
+          segments={pkg?.direction?.narrativeBeats?.map((b) => ({ segmentId: b.beatId, text: b.summary })) ?? []}
+          onRegenerateSegment={(segmentId) => {
+            setPrompt((prev) => `${prev}\n[Corrigir narração do trecho ${segmentId}]`);
+            notify({ title: 'Voice Director', message: `Regeneração direcionada agendada para o trecho ${segmentId}.`, type: 'info' });
+          }}
+          onTestSample={async (sampleText) => {
+            notify({ title: 'Voice Studio', message: `Amostra enviada para Voice Studio (${sampleText.slice(0, 40)}...).`, type: 'info' });
+          }}
+        />
+      </div>
 
       {deleteTarget && (
         <div

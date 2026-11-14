@@ -13,9 +13,14 @@ import { basename, dirname, extname, join } from 'node:path';
 import {
   applyTargetedRepair,
   evaluateEnsemble,
+  evaluateMediaRelevance,
   evaluateReleaseGates,
   evaluateRenderedVisualCritic,
+  expandScriptOrientedQueries,
+  extractTopicEntities,
+  isCacheEntryCompatibleWithProject,
   matchNarrationSegmentsToMedia,
+  planMediaCoverage,
   probeRealMp4,
   produceCinemaPackage,
   renderRealCinemaMp4,
@@ -25,6 +30,8 @@ import {
   type CinemaGenre,
   type CinemaProductionPackage,
   type DeliveryFormat,
+  type MediaCoverageReport,
+  type MediaRelevanceDecision,
   type NarrativeBeat,
   type RealRenderResult,
   type RenderQualityProfile,
@@ -80,6 +87,8 @@ export interface StagedProductionJob {
   pendingMedia: PendingMediaSlot[];
   workspaceDir?: string;
   scriptValidation?: ScriptValidationReport;
+  mediaRelevanceDecisions?: MediaRelevanceDecision[];
+  coverageReport?: MediaCoverageReport;
   isTechnicalSample?: boolean;
   error?: string;
   startedAt?: string;
@@ -552,7 +561,10 @@ export class StagedCinemaPipeline {
     try {
       const projectPaths = this.ensureProjectWorkspace(job.projectId, job.prompt);
       job.workspaceDir = projectPaths.root;
-      const queries = extractSceneQueriesFromPrompt(job.prompt, 4);
+      const desiredQueryCount = Math.max(4, Math.min(16, Math.ceil((job.targetDurationSec ?? 90) / 45)));
+      const queries = extractSceneQueriesFromPrompt(job.prompt, desiredQueryCount);
+      const expectedEntities = extractTopicEntities(job.prompt);
+      const relevanceDecisions: MediaRelevanceDecision[] = [...(job.mediaRelevanceDecisions ?? [])];
 
       // PESQUISA & AQUISIÇÃO (sempre contextual e isolada por projeto; nunca reaproveita pasta global cegamente)
       if (!job.completedStages.includes('aquisicao')) {
@@ -596,7 +608,13 @@ export class StagedCinemaPipeline {
                   url: matchedCandidate.url,
                   topic: `${job.prompt} ${query}`,
                 });
-                if (cacheHit) {
+                const cacheCompat = cacheHit
+                  ? isCacheEntryCompatibleWithProject(
+                      { topic: cacheHit.topic, query: cacheHit.query, url: cacheHit.url },
+                      { projectId: job.projectId, prompt: job.prompt, expectedEntities },
+                    )
+                  : { compatible: false, reason: '' };
+                if (cacheHit && cacheCompat.compatible) {
                   const isolatedPath = join(
                     projectPaths.mediaDir,
                     `cached_${i + 1}${extname(cacheHit.filePath) || '.mp4'}`,
@@ -640,6 +658,39 @@ export class StagedCinemaPipeline {
             const media = await buildSourceMediaFromFile(acquiredUri, `${job.projectId}_acq_${i + 1}`);
             if (media) {
               const durationSec = media.duration.value / Math.max(1, media.duration.rate);
+              const relevance = await evaluateMediaRelevance(
+                {
+                  mediaId: media.mediaId,
+                  uri: media.uri,
+                  title: matchedCandidate?.title ?? query,
+                  origin: matchedCandidate?.origin ?? 'yt_dlp_search',
+                  ...(matchedCandidate?.url ? { url: matchedCandidate.url } : {}),
+                  projectId: job.projectId,
+                  durationSec,
+                },
+                {
+                  segmentId: `slot_${i + 1}`,
+                  prompt: job.prompt,
+                  narrationText: query,
+                  ...(job.genre ? { genre: job.genre } : {}),
+                  expectedEntities,
+                },
+              );
+              relevanceDecisions.push(relevance);
+              if (!relevance.accepted) {
+                try {
+                  if (existsSync(media.uri)) unlinkSync(media.uri);
+                } catch {
+                  // ignore cleanup failure
+                }
+                pending.push({
+                  slotIndex: i,
+                  clipId: `clip_${i + 1}`,
+                  query,
+                  reason: `Mídia rejeitada pelo Media Relevance Gate (${relevance.rejectionCode ?? 'incompatível'}): ${relevance.reason}`,
+                });
+                continue;
+              }
               this.cache.registerConsumer({
                 url: matchedCandidate?.url ?? `local://${job.projectId}/${i + 1}/${encodeURIComponent(query)}`,
                 origin: matchedCandidate?.origin ?? 'yt_dlp_or_external',
@@ -664,6 +715,7 @@ export class StagedCinemaPipeline {
           });
         }
 
+        job.mediaRelevanceDecisions = relevanceDecisions;
         if (pending.length > 0) {
           job.pendingMedia = pending;
           job.state = 'paused_pending_media';
@@ -883,6 +935,72 @@ export class StagedCinemaPipeline {
 
       job.completedStages = [...new Set([...job.completedStages, 'planejamento'])] as ProductionStageState[];
 
+      // COVERAGE & ANTI-REPETITION QUALITY GATE (antes da renderização)
+      const coverageSegments = pkg.editorialScript
+        ? pkg.editorialScript.segments.map((s) => ({
+            segmentId: s.segmentId,
+            subject: s.title || s.segmentId,
+            narrationText: s.spokenText,
+            expectedDurationSec: Math.max(
+              8,
+              Math.round((job.targetDurationSec ?? 90) / Math.max(1, pkg.editorialScript!.segments.length)),
+            ),
+          }))
+        : pkg.direction.narrativeBeats.map((b, i) => ({
+            segmentId: b.beatId || `seg_${i + 1}`,
+            subject: String(b.stage),
+            narrationText: b.summary,
+            expectedDurationSec: Math.max(
+              8,
+              Math.round((job.targetDurationSec ?? 90) / Math.max(1, pkg.direction.narrativeBeats.length)),
+            ),
+          }));
+      const coverageAssets = job.acquiredMedia.map((m) => ({
+        mediaId: m.mediaId,
+        uri: m.uri,
+        title: basename(m.uri),
+        origin: m.origin,
+        durationSec: m.duration.value / Math.max(1, m.duration.rate),
+        compatible: !relevanceDecisions.some((d) => d.mediaId === m.mediaId && !d.accepted),
+      }));
+      const coverageUsages = pkg.timeline.clips
+        .filter((c) => c.trackId === 'v1' && c.mediaId)
+        .map((c, idx) => ({
+          clipId: c.clipId,
+          segmentId: coverageSegments[idx % Math.max(1, coverageSegments.length)]?.segmentId ?? `seg_${idx + 1}`,
+          mediaId: c.mediaId!,
+          sourceStartSec: c.sourceRange.start.value / Math.max(1, c.sourceRange.start.rate),
+          sourceEndSec:
+            (c.sourceRange.start.value + c.sourceRange.duration.value) /
+            Math.max(1, c.sourceRange.start.rate),
+          timelineDurationSec: c.timelineRange.duration.value / Math.max(1, c.timelineRange.duration.rate),
+        }));
+      const coverageReport = planMediaCoverage({
+        segments: coverageSegments,
+        assets: coverageAssets,
+        plannedUsages: coverageUsages,
+        format: job.format === 'shorts_9_16' ? 'shorts' : 'analysis',
+      });
+      job.coverageReport = coverageReport;
+      if (!coverageReport.gatePassed && job.acquiredMedia.length > 0 && (job.targetDurationSec ?? 90) >= 180) {
+        const extraQueries = expandScriptOrientedQueries({
+          prompt: job.prompt,
+          segments: coverageSegments,
+          ...(job.genre ? { genre: job.genre } : {}),
+          uncoveredSegmentIds: coverageReport.segments.filter((s) => !s.covered).map((s) => s.segmentId),
+        });
+        job.pendingMedia = extraQueries.map((q, idx) => ({
+          slotIndex: idx,
+          clipId: `gap_${idx + 1}`,
+          query: q,
+          reason: coverageReport.gateReasons[0] ?? 'Cobertura audiovisual insuficiente para evitar repetição.',
+        }));
+        job.state = 'paused_pending_media';
+        job.progressPct = 68;
+        job.message = `Cobertura insuficiente (${Math.round(coverageReport.coverageRatio * 100)}%). Produção pausada para evitar repetição.`;
+        return this.saveJob(job);
+      }
+
       // MONTAGEM
       checkCancelled();
       job.state = 'montagem';
@@ -963,6 +1081,8 @@ export class StagedCinemaPipeline {
       const critic1 = await evaluateRenderedVisualCritic({
         projectId: job.projectId,
         mp4Path: render.mp4Path,
+        mediaRelevanceDecisions: relevanceDecisions,
+        coverageReport,
         framesDir: join(projectPaths.tempDir, 'visual-critic'),
         prompt: job.prompt,
         ...(job.genre ? { genre: job.genre } : {}),

@@ -24,6 +24,13 @@ import {
   type AudioTimelineEvent,
   type SoundDirectorAuditReport,
 } from '../audio/sound-director.js';
+import {
+  directNarrationSegments,
+  evaluateNarrationAudioQuality,
+  type AudioQualityGateReport,
+  type PronunciationDictionaryEntry,
+  type SynthesizedSegmentProbe,
+} from '../audio/voice-director.js';
 import type { AetheraEvolutionCore, ProductionDirectives } from '../evolution/evolution-core.js';
 
 const execFileAsync = promisify(execFile);
@@ -44,6 +51,10 @@ export interface RealRenderInput {
   technicalSampleMaxClips?: number;
   previewQuality?: 'fast_preview' | 'standard';
   segmentCacheDir?: string;
+  pronunciationDictionary?: PronunciationDictionaryEntry[];
+  voiceExpressiveness?: number;
+  voiceBaseWpm?: number;
+  channelId?: string;
 }
 
 export interface RealRenderResult {
@@ -76,6 +87,7 @@ export interface RealRenderResult {
   audioAudit: SoundDirectorAuditReport;
   narrationTextSent?: string;
   editorialConsistency?: EditorialConsistencyReport;
+  audioQuality?: AudioQualityGateReport;
 }
 
 async function synthesizeViaVoiceStudio(
@@ -603,28 +615,103 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     await execFileAsync('ffmpeg', ['-y', '-i', subVideoPath, '-c', 'copy', rawVideoPath]);
   }
 
-  // 3. Real Narration (VoiceStudio -> Windows SAPI PT-BR fallback -> procedural cue) + Sound Director Audit Gate + Bus Mix
+  // 3. Real Narration via AI Voice Director (segmented, punctuated, Pronunciation Dictionary, incremental cache)
   const narrationWav = join(workDir, 'narration.wav');
   const canonicalFullText = input.pkg.editorialScript?.fullSpokenText?.trim();
   const legacyBeatsText = (input.pkg.direction.narrativeBeats ?? [])
     .map((b) => b.summary.trim())
     .filter(Boolean)
     .join(' ');
-  const narrationTextToSpeak = (canonicalFullText || legacyBeatsText || input.pkg.direction.brief.prompt).slice(0, 3800);
+  const rawFullText = canonicalFullText || legacyBeatsText || input.pkg.direction.brief.prompt;
+  const rawSegments =
+    input.pkg.editorialScript?.segments && input.pkg.editorialScript.segments.length > 0
+      ? input.pkg.editorialScript.segments.map((s) => ({ segmentId: s.segmentId, text: s.spokenText }))
+      : (rawFullText.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [rawFullText]).reduce<Array<{ segmentId: string; text: string }>>(
+          (acc, sentence) => {
+            const trimmed = sentence.trim();
+            if (!trimmed) return acc;
+            const prev = acc.at(-1);
+            if (prev && prev.text.length + trimmed.length < 320) {
+              prev.text = `${prev.text} ${trimmed}`;
+            } else {
+              acc.push({ segmentId: `seg_${acc.length + 1}`, text: trimmed });
+            }
+            return acc;
+          },
+          [],
+        );
+
+  const voicePlan = directNarrationSegments({
+    segments: rawSegments,
+    voiceId: input.voiceStudioVoiceId || '9190edfa',
+    ...(input.voiceExpressiveness !== undefined ? { expressiveness: input.voiceExpressiveness } : {}),
+    ...(input.voiceBaseWpm !== undefined ? { baseWpm: input.voiceBaseWpm } : {}),
+    ...(input.pronunciationDictionary ? { dictionary: input.pronunciationDictionary } : {}),
+    ...(input.channelId ? { channelId: input.channelId } : {}),
+  });
+
+  const narrationTextToSpeak = voicePlan.segments.map((s) => s.editorialText).join(' ');
   const editorialConsistency = verifyEditorialConsistency({
     ...(input.pkg.editorialScript ? { editorialScript: input.pkg.editorialScript } : {}),
     ttsTextSent: narrationTextToSpeak,
     timelineClipCount: clipSpecs.length,
   });
-  const narrationMode = await synthesizeNarrationWav(
-    narrationTextToSpeak,
-    narrationWav,
-    {
+
+  const voiceCacheDir = input.segmentCacheDir ? join(input.segmentCacheDir, 'voice-segments') : join(workDir, 'voice-segments');
+  mkdirSync(voiceCacheDir, { recursive: true });
+  const segmentWavPaths: string[] = [];
+  const segmentProbes: SynthesizedSegmentProbe[] = [];
+  let narrationMode: 'voicestudio_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback' = 'voicestudio_tts';
+
+  for (const seg of voicePlan.segments) {
+    const cachedSegPath = join(voiceCacheDir, `voice_${seg.cacheKey}.wav`);
+    const segWorkPath = join(workDir, `nar_${seg.segmentId}.wav`);
+    if (existsSync(cachedSegPath) && statSync(cachedSegPath).size > 1024) {
+      copyFileSync(cachedSegPath, segWorkPath);
+    } else {
+      const mode = await synthesizeNarrationWav(seg.ttsInputText, segWorkPath, {
+        ...(input.voiceStudioUrl ? { voiceStudioUrl: input.voiceStudioUrl } : {}),
+        ...(input.voiceStudioModelId ? { voiceStudioModelId: input.voiceStudioModelId } : {}),
+        ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
+      });
+      if (mode !== 'voicestudio_tts') narrationMode = mode;
+      if (existsSync(segWorkPath) && statSync(segWorkPath).size > 1024) {
+        copyFileSync(segWorkPath, cachedSegPath);
+      }
+    }
+    segmentWavPaths.push(segWorkPath);
+    const durMs = await measureAudioDurationMs(segWorkPath);
+    segmentProbes.push({
+      segmentId: seg.segmentId,
+      editorialText: seg.editorialText,
+      wavPath: segWorkPath,
+      durationSec: durMs / 1000,
+    });
+  }
+
+  const audioQuality = evaluateNarrationAudioQuality(segmentProbes);
+
+  if (segmentWavPaths.length === 1 && segmentWavPaths[0]) {
+    copyFileSync(segmentWavPaths[0], narrationWav);
+  } else if (segmentWavPaths.length > 1) {
+    const concatListPath = join(workDir, 'narration-concat.txt');
+    writeFileSync(
+      concatListPath,
+      segmentWavPaths.map((p) => `file '${p.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'),
+      'utf8',
+    );
+    await execFileAsync(
+      'ffmpeg',
+      ['-y', '-f', 'concat', '-safe', '0', '-i', concatListPath, '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', narrationWav],
+      { windowsHide: true, timeout: 60_000 },
+    );
+  } else {
+    narrationMode = await synthesizeNarrationWav(narrationTextToSpeak.slice(0, 3800), narrationWav, {
       ...(input.voiceStudioUrl ? { voiceStudioUrl: input.voiceStudioUrl } : {}),
       ...(input.voiceStudioModelId ? { voiceStudioModelId: input.voiceStudioModelId } : {}),
       ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
-    },
-  );
+    });
+  }
 
   const totalDurMs = Math.round(totalDur * 1000);
   const measuredNarMs = await measureAudioDurationMs(narrationWav);
@@ -915,5 +1002,6 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     audioAudit,
     narrationTextSent: narrationTextToSpeak,
     editorialConsistency,
+    audioQuality,
   };
 }

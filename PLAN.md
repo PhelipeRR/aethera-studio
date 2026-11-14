@@ -16,3 +16,16 @@
 5. **Channel Manager 2.0 (`ContentChannelSetupPage.tsx` & `content-operating-system.ts`):**
    - Separação entre configurações globais do estúdio, configurações por canal (`identityJson`, `editorialStrategyJson`, Brand Kit, estratégia editorial, templates de publicação, autonomia por etapa) e configurações por projeto.
    - Reutilização da infraestrutura OAuth do YouTube (`videoChannelOAuth*`, `videoChannelProfile`) sem duplicação de credenciais.
+6. **Media Relevance Gate & Bloqueio Editorial (`media-relevance-gate.ts` & `visual-critic.ts`):**
+   - Validação de aderência temática por entidades (obra, personagem, jogo, contexto), avaliando frames distribuídos ao longo do clipe (`sampleDistributedFrameTimestamps`) + metadados + transcrição + procedência, sem bloquear pessoas reais quando justificadas por entrevista/live-action/bastidores.
+   - Isolamento de cache por projeto e entidades (`isCacheEntryCompatibleWithProject`) com fingerprints (`buildMediaFingerprint`).
+   - Separação explícita entre `technicalRenderCompleted` e `editorialQualityApproved` no `evaluateRenderedVisualCritic`, bloqueando aprovação automática em incompatibilidades graves ou falha de cobertura.
+7. **Media Coverage Planner & Anti-Repetition Engine (`media-coverage-planner.ts` & `MediaCoveragePanel.tsx`):**
+   - Planejamento de cobertura por segmento (`planMediaCoverage`), nunca confundindo duração bruta de arquivo com cobertura editorial útil.
+   - Expansão de consultas orientada ao roteiro (`expandScriptOrientedQueries`) e escalonamento dinâmico de buscas por duração (`cinema-pipeline.ts`).
+   - Motor anti-repetição (`detectMediaRepetition`) cobrindo reuso excessivo, intervalos sobrepostos, colisão de fingerprint perceptual, loops disfarçados (crop/zoom/velocidade/filtro) e segmentos estáticos longos, respeitando repetição intencional justificada.
+   - Gate pré-render pausando com `paused_pending_media` quando um vídeo longo não atinge cobertura mínima.
+8. **AI Voice Director, Pronunciation Dictionary & Audio Quality Gate (`voice-director.ts`, `real-renderer.ts` & `VoiceDirectorPanel.tsx`):**
+   - Direção de narração por segmento (`directNarrationSegments`) com preservação de pontuação, pausas naturais, intenção emocional e pré-processamento pt-BR sem truncamento em 3800 caracteres.
+   - Dicionário de pronúncia com escopos (`channel`, `project`, `voice`, `language`, `global`) aplicado apenas na entrada do TTS (`applyPronunciationDictionary`), preservando o texto editorial intacto.
+   - Cache por segmento (`voice_<cacheKey>.wav`), regeneração seletiva de trechos (`planTargetedSegmentRegeneration`), avaliação objetiva + marcação obrigatória de revisão auditiva humana (`AudioQualityGateReport.requiresHumanListeningCheck = true`) e registro de regras aprovadas na Academy (`recordApprovedPronunciationRule`).

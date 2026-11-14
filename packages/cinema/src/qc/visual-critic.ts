@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import type { QcFindingRecord } from '../ir/timeline-ir.js';
 import type { AetheraEvolutionCore } from '../evolution/evolution-core.js';
 import { resolveLearnedSceneConstraints } from '../evolution/production-learning.js';
+import type { MediaCoverageReport } from '../analysis/media-coverage-planner.js';
+import type { MediaRelevanceDecision } from './media-relevance-gate.js';
 import {
   extractVerificationFrames,
   type MediaAnomalyReport,
@@ -44,6 +46,8 @@ export interface VisualCriticSceneInput {
 
 export interface VisualCriticReport {
   passed: boolean;
+  technicalRenderCompleted: boolean;
+  editorialQualityApproved: boolean;
   score: number;
   sampledFrames: string[];
   findings: QcFindingRecord[];
@@ -75,6 +79,8 @@ export async function evaluateRenderedVisualCritic(input: {
   evolution?: AetheraEvolutionCore;
   genre?: string;
   prompt?: string;
+  mediaRelevanceDecisions?: MediaRelevanceDecision[];
+  coverageReport?: MediaCoverageReport;
   analyzeFrameWithAI?: (framePath: string, scene: VisualCriticSceneInput) => Promise<{
     issue?: string;
     severity?: 'critical' | 'warning';
@@ -332,21 +338,83 @@ export async function evaluateRenderedVisualCritic(input: {
     }
   }
 
+  // 4b. Media Relevance Gate & Coverage Gate integration — block automatic editorial approval on severe mismatch
+  if (input.mediaRelevanceDecisions) {
+    for (const decision of input.mediaRelevanceDecisions) {
+      if (decision.accepted) continue;
+      const hitScene =
+        input.scenes.find((s) => s.sourceMediaId === decision.mediaId) ?? input.scenes[0];
+      const sceneId = hitScene?.sceneId ?? 'shot_1';
+      const reason = `Incompatibilidade grave entre narração e imagem em ${sceneId} (${decision.mediaId}): ${decision.reason}`;
+      findings.push({
+        issueId: `visual_critic_relevance_${decision.mediaId}`,
+        timeRange: {
+          start: { value: Math.floor(hitScene?.startSec ?? 0), rate: 1 },
+          duration: { value: Math.max(1, Math.ceil(hitScene?.durationSec ?? 5)), rate: 1 },
+        },
+        category: 'visual',
+        severity: 'critical',
+        confidence: 0.98,
+        evidence: reason,
+        owner: 'director',
+        fixSuggestion: 'Rejeitar ativo incompatível e buscar mídia contextualizada ao roteiro.',
+        affectedDependencies: [sceneId],
+        status: 'open',
+      });
+      proposedRepairs.push({
+        sceneId,
+        action: 'retry_media_research',
+        reason,
+        severity: 'critical',
+      });
+    }
+  }
+
+  if (input.coverageReport && !input.coverageReport.gatePassed) {
+    for (const reason of input.coverageReport.gateReasons) {
+      const sceneId = input.scenes[0]?.sceneId ?? 'shot_1';
+      findings.push({
+        issueId: `visual_critic_coverage_${findings.length + 1}`,
+        timeRange: {
+          start: { value: 0, rate: 1 },
+          duration: { value: Math.max(1, Math.ceil(totalTimelineSec)), rate: 1 },
+        },
+        category: 'visual',
+        severity: 'critical',
+        confidence: 0.96,
+        evidence: reason,
+        owner: 'editor',
+        fixSuggestion: 'Expandir pesquisa de mídia por assunto ou pausar para curadoria.',
+        affectedDependencies: input.scenes.map((s) => s.sceneId),
+        status: 'open',
+      });
+      proposedRepairs.push({
+        sceneId,
+        action: 'retry_media_research',
+        reason,
+        severity: 'critical',
+      });
+    }
+  }
+
   const criticalCount = proposedRepairs.filter((r) => r.severity === 'critical').length;
   const warningCount = proposedRepairs.filter((r) => r.severity === 'warning').length;
   const score = Math.max(0, Math.min(100, 100 - criticalCount * 20 - warningCount * 7));
   const passed = criticalCount === 0 && score >= 75;
+  const technicalRenderCompleted = Boolean(input.mp4Path && existsSync(input.mp4Path));
 
   return {
     passed,
+    technicalRenderCompleted,
+    editorialQualityApproved: passed,
     score,
     sampledFrames,
     findings,
     proposedRepairs,
     appliedLearnedRuleIds: learned.appliedRuleIds,
     summary: passed
-      ? `AI Visual Critic aprovado (${score}/100, ${sampledFrames.length} frame(s) inspecionados).`
-      : `AI Visual Critic reprovou com ${criticalCount} erro(s) crítico(s) e ${warningCount} aviso(s).`,
+      ? `Qualidade editorial aprovada (${score}/100, ${sampledFrames.length} frame(s) inspecionados).`
+      : `Renderização técnica ${technicalRenderCompleted ? 'concluída' : 'pendente'}, mas qualidade editorial BLOQUEADA (${criticalCount} erro(s) crítico(s), ${warningCount} aviso(s)).`,
   };
 }
 
