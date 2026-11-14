@@ -378,9 +378,29 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void window.neuralbridge.video
+                          .channelOAuthImportClient()
+                          .then((res) =>
+                            setStatusMessage({
+                              kind: 'ok',
+                              text: `client_secret.json importado (${res.clientId.slice(0, 18)}…).`,
+                            }),
+                          )
+                          .catch((err) => {
+                            const msg = err instanceof Error ? err.message : 'Falha ao importar client_secret.json.';
+                            if (!msg.startsWith('cancelled:')) setStatusMessage({ kind: 'error', text: msg });
+                          })
+                      }
+                      className="rounded-lg bg-primary px-3 py-1.5 font-medium text-primary-foreground"
+                    >
+                      Importar client_secret.json
+                    </button>
                     <Link
                       to="/aethera/channels/new"
-                      className="rounded-lg bg-primary px-3 py-1.5 font-medium text-primary-foreground"
+                      className="rounded-lg border border-border px-3 py-1.5 text-foreground hover:border-primary/50"
                     >
                       Gerenciar Canais & OAuth
                     </Link>

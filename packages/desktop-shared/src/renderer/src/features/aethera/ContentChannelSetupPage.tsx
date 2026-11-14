@@ -194,6 +194,23 @@ export function ContentChannelSetupPage() {
     },
   });
 
+  const importClientSecretMutation = useMutation({
+    mutationFn: () => window.neuralbridge.video.channelOAuthImportClient(),
+    onSuccess: (res) => {
+      void queryClient.invalidateQueries({ queryKey: ['aethera-youtube-oauth-status'] });
+      setStatusMessage({
+        kind: 'ok',
+        text: `client_secret.json importado (${res.clientId.slice(0, 18)}…). Agora clique em "Conectar YouTube".`,
+      });
+    },
+    onError: (err) => {
+      const msg = err instanceof Error ? err.message : 'Falha ao importar client_secret.json.';
+      if (!msg.startsWith('cancelled:')) {
+        setStatusMessage({ kind: 'error', text: msg });
+      }
+    },
+  });
+
   const connectYouTubeMutation = useMutation({
     mutationFn: () => window.neuralbridge.video.channelOAuthConnect({ write: true }),
     onSuccess: () => {
@@ -485,15 +502,39 @@ export function ContentChannelSetupPage() {
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {!isOAuthConnected ? (
-                      <button
-                        type="button"
-                        onClick={() => connectYouTubeMutation.mutate()}
-                        disabled={connectYouTubeMutation.isPending || !oauthStatus.data?.configured}
-                        className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
-                      >
-                        <Link2 className="size-3.5" />
-                        {oauthStatus.data?.configured ? 'Conectar YouTube' : 'Importe client_secret.json em Configurações'}
-                      </button>
+                      <>
+                        {!oauthStatus.data?.configured ? (
+                          <button
+                            type="button"
+                            onClick={() => importClientSecretMutation.mutate()}
+                            disabled={importClientSecretMutation.isPending}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                          >
+                            <Link2 className="size-3.5" />
+                            {importClientSecretMutation.isPending ? 'Importando…' : 'Importar client_secret.json'}
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => connectYouTubeMutation.mutate()}
+                              disabled={connectYouTubeMutation.isPending}
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                            >
+                              <Link2 className="size-3.5" />
+                              {connectYouTubeMutation.isPending ? 'Conectando…' : 'Conectar YouTube'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => importClientSecretMutation.mutate()}
+                              disabled={importClientSecretMutation.isPending}
+                              className="inline-flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+                            >
+                              {importClientSecretMutation.isPending ? 'Importando…' : 'Trocar client_secret.json'}
+                            </button>
+                          </>
+                        )}
+                      </>
                     ) : (
                       <>
                         <button
