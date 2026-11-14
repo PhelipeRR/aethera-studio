@@ -214,6 +214,17 @@ interface CinemaBridge {
     completedStages: string[];
     acquiredMedia?: Array<{ mediaId: string; uri?: string; kind: string; width?: number; height?: number; license?: string }>;
     pendingMedia?: Array<{ slotIndex: number; query: string; reason: string }>;
+    scriptValidation?: {
+      valid: boolean;
+      targetDurationSec: number;
+      estimatedNarrationSec: number;
+      narrationWordCount: number;
+      beatCount: number;
+      shotCount: number;
+      coveredTimelineSec: number;
+      coverageRatio: number;
+      warnings: string[];
+    };
   } | null>;
   cinemaUpdateScript?: (input: {
     projectId: string;
@@ -352,6 +363,17 @@ export function AetheraStudioEditor() {
     completedStages: string[];
     acquiredMedia?: Array<{ mediaId: string; uri?: string; kind: string; width?: number; height?: number; license?: string }>;
     pendingMedia?: Array<{ slotIndex: number; query: string; reason: string }>;
+    scriptValidation?: {
+      valid: boolean;
+      targetDurationSec: number;
+      estimatedNarrationSec: number;
+      narrationWordCount: number;
+      beatCount: number;
+      shotCount: number;
+      coveredTimelineSec: number;
+      coverageRatio: number;
+      warnings: string[];
+    };
   } | null>(null);
   const [treatmentDraft, setTreatmentDraft] = useState('');
   const [beatsDraft, setBeatsDraft] = useState<Array<{ beatId: string; stage: string; summary: string; durationSec: number }>>([]);
@@ -3019,8 +3041,84 @@ export function AetheraStudioEditor() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 text-xs">
-              {auditTab === 'script' && (
+              {auditTab === 'script' && (() => {
+                const reviewBeatSpeech = (summary: string, durationSec: number) => {
+                  const trimmed = summary.trim();
+                  const words = trimmed ? trimmed.split(/\s+/).length : 0;
+                  const estSec = Math.round(words / 2.4);
+                  const isTemplate = /^(Abertura cinematográfica apresentando|Contextualização e promessa do episódio|Capítulo \d+ de \d+ sobre|Clímax principal de|Escalada de tensão em|Desenvolvimento narrativo)/i.test(
+                    trimmed,
+                  );
+                  if (words === 0) {
+                    return { words, estSec, status: 'empty' as const, label: 'Sem fala' };
+                  }
+                  if (isTemplate) {
+                    return { words, estSec, status: 'template' as const, label: 'Texto genérico (template)' };
+                  }
+                  if (durationSec > 0 && estSec < durationSec * 0.4) {
+                    return { words, estSec, status: 'short' as const, label: 'Fala curta para a cena' };
+                  }
+                  if (durationSec > 0 && estSec > durationSec * 1.35) {
+                    return { words, estSec, status: 'long' as const, label: 'Fala longa (pode cortar/acelerar)' };
+                  }
+                  return { words, estSec, status: 'ok' as const, label: 'Ritmo OK' };
+                };
+                const beatReviews = beatsDraft.map((b) => reviewBeatSpeech(b.summary, b.durationSec));
+                const totalWords = beatReviews.reduce((acc, r) => acc + r.words, 0);
+                const totalEstSec = beatReviews.reduce((acc, r) => acc + r.estSec, 0);
+                const totalBeatDuration = beatsDraft.reduce((acc, b) => acc + b.durationSec, 0);
+                const templateCount = beatReviews.filter((r) => r.status === 'template').length;
+                const pacingIssuesCount = beatReviews.filter((r) => r.status !== 'ok').length;
+                const coveragePct = totalBeatDuration > 0 ? Math.min(100, Math.round((totalEstSec / totalBeatDuration) * 100)) : 0;
+
+                return (
                 <div className="space-y-3">
+                  <div className="rounded-xl border border-purple-500/30 bg-card/70 p-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold text-purple-200">
+                        Revisão das Falas &amp; Ritmo de Narração
+                      </span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          pacingIssuesCount === 0 && (auditJob?.scriptValidation?.valid ?? true)
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'bg-amber-500/20 text-amber-300'
+                        }`}
+                      >
+                        {pacingIssuesCount === 0 && (auditJob?.scriptValidation?.valid ?? true)
+                          ? 'Falas aprovadas'
+                          : `${pacingIssuesCount} ponto(s) de revisão`}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 text-[11px]">
+                      <div className="rounded-lg border border-border/70 bg-background/60 px-2.5 py-1.5">
+                        <p className="text-[10px] text-muted-foreground">Palavras</p>
+                        <p className="font-mono font-semibold text-foreground">{totalWords}</p>
+                      </div>
+                      <div className="rounded-lg border border-border/70 bg-background/60 px-2.5 py-1.5">
+                        <p className="text-[10px] text-muted-foreground">Tempo falado est.</p>
+                        <p className="font-mono font-semibold text-foreground">~{totalEstSec}s / {totalBeatDuration}s</p>
+                      </div>
+                      <div className="rounded-lg border border-border/70 bg-background/60 px-2.5 py-1.5">
+                        <p className="text-[10px] text-muted-foreground">Cobertura vocal</p>
+                        <p className="font-mono font-semibold text-foreground">{coveragePct}%</p>
+                      </div>
+                      <div className="rounded-lg border border-border/70 bg-background/60 px-2.5 py-1.5">
+                        <p className="text-[10px] text-muted-foreground">Templates genéricos</p>
+                        <p className={`font-mono font-semibold ${templateCount > 0 ? 'text-amber-300' : 'text-emerald-300'}`}>
+                          {templateCount}
+                        </p>
+                      </div>
+                    </div>
+                    {(auditJob?.scriptValidation?.warnings ?? []).length > 0 && (
+                      <div className="space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                        {(auditJob?.scriptValidation?.warnings ?? []).map((w, wi) => (
+                          <p key={wi}>• {w}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-medium text-purple-200">
                       Roteiro / Falas por Beat Narrativo ({beatsDraft.length})
@@ -3035,18 +3133,29 @@ export function AetheraStudioEditor() {
                       Este projeto ainda não possui beats de roteiro estruturados.
                     </div>
                   ) : (
-                    beatsDraft.map((beat, idx) => (
+                    beatsDraft.map((beat, idx) => {
+                      const rev = beatReviews[idx] ?? reviewBeatSpeech(beat.summary, beat.durationSec);
+                      const badgeCls =
+                        rev.status === 'ok'
+                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                          : rev.status === 'template'
+                            ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                            : 'bg-amber-500/15 text-amber-300 border-amber-500/30';
+                      return (
                       <div
                         key={beat.beatId}
                         className="space-y-2 rounded-xl border border-border bg-card/60 p-3"
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <span className="rounded bg-purple-500/20 px-2 py-0.5 font-mono text-[10px] uppercase text-purple-200">
                               #{idx + 1} · {beat.stage}
                             </span>
                             <span className="font-mono text-[10px] text-muted-foreground">
-                              {beat.durationSec}s
+                              ~{rev.estSec}s fala / {beat.durationSec}s cena · {rev.words} palavras
+                            </span>
+                            <span className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${badgeCls}`}>
+                              {rev.label}
                             </span>
                           </div>
                           <span className="font-mono text-[10px] text-muted-foreground">{beat.beatId}</span>
@@ -3066,10 +3175,12 @@ export function AetheraStudioEditor() {
                           aria-label={`Roteiro do beat ${idx + 1}`}
                         />
                       </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
-              )}
+                );
+              })()}
 
               {auditTab === 'direction' && (
                 <div className="space-y-4">
