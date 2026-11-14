@@ -573,23 +573,15 @@ export function AetheraStudioEditor() {
     const init = async () => {
       await refreshProjects();
       const loadedOk = await loadProjectById(requestedId);
-      if (loadedOk) return;
-      if (api.cinemaProduce) {
-        const res = await api.cinemaProduce({
-          projectId: 'editor_session',
-          prompt: 'Edição cinematográfica Aethera Studio',
-          targetDurationSec: 36,
-          humorIntensity: 35,
-        });
-        setPkg(res);
-        const mapped = mapClipsFromPkg(res);
-        setClips(mapped);
-        setSelectedClipId(mapped[0]?.clipId ?? '');
-        await refreshProjects();
+      if (!loadedOk) {
+        setPkg(null);
+        setClips([]);
+        setSelectedClipId('');
+        setRenderedMedia(null);
       }
     };
     void init();
-  }, [loadProjectById, mapClipsFromPkg, refreshProjects, searchParams]);
+  }, [loadProjectById, refreshProjects, searchParams]);
 
   const totalDurationSec = useMemo(() => {
     const maxEnd = clips.reduce((acc, c) => Math.max(acc, c.startSec + c.durationSec / Math.max(0.25, c.speed)), 0);

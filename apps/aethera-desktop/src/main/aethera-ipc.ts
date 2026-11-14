@@ -2275,7 +2275,11 @@ export function registerAetheraDomainIpc(options: {
     let targetId = projectId;
     if (!targetId || targetId === '__latest__') {
       const listed = listPersistedCinemaProjects();
-      targetId = latestCinemaProjectId ?? listed[0]?.projectId ?? 'editor_session';
+      const resolvedLatest = latestCinemaProjectId ?? listed[0]?.projectId ?? null;
+      if (!resolvedLatest) {
+        return { pkg: null, lastRender: null };
+      }
+      targetId = resolvedLatest;
     }
     let pkg = cinemaPackages.get(targetId) ?? null;
     if (!pkg) {

@@ -132,16 +132,7 @@ export function AetheraReviewRoomPage() {
         setSelectedProjectId((prev) => prev || loaded.pkg?.timeline.projectId || '');
         return;
       }
-      if (!api.cinemaProduce) return;
-      const produced = await api.cinemaProduce({
-        projectId: pid === '__latest__' ? 'editor_session' : pid,
-        prompt:
-          activeManualProject?.title ??
-          'Produção cinematográfica de estúdio com ritmo equilibrado e humor pontual',
-        targetDurationSec: 45,
-        humorIntensity: 35,
-      });
-      setPkg(produced);
+      setPkg(null);
     })().finally(() => setBusy(false));
   }, [selectedProjectId, activeManualProject?.id, activeManualProject?.title]);
 
