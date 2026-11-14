@@ -1542,6 +1542,55 @@ export function AetheraStudioEditor() {
     }
   }, [renderedMedia, importedAssets, pkg, ensureWaveformLoaded]);
 
+  const projectAndLibraryAssets = useMemo<ImportedAsset[]>(() => {
+    const projectItems: ImportedAsset[] = [];
+    const seenPaths = new Set<string>();
+    const seenIds = new Set<string>();
+    if (pkg?.timeline?.sourceMedia) {
+      for (const sm of Object.values(pkg.timeline.sourceMedia)) {
+        const uri = sm.uri ?? '';
+        if (!uri || uri.startsWith('http://') || uri.startsWith('https://')) continue;
+        const cleanPath = uri.startsWith('aethera-media://')
+          ? decodeURIComponent(uri.split('path=')[1] ?? '')
+          : uri;
+        if (!cleanPath) continue;
+        const norm = cleanPath.toLowerCase();
+        if (seenPaths.has(norm) || seenIds.has(sm.mediaId)) continue;
+        seenPaths.add(norm);
+        seenIds.add(sm.mediaId);
+        const rawName = cleanPath.split(/[/\\]/).pop() || sm.mediaId;
+        const kind: 'video' | 'image' | 'audio' =
+          sm.kind === 'image' ? 'image' : sm.kind === 'audio' ? 'audio' : 'video';
+        const extMatch = cleanPath.match(/\.([a-z0-9]+)$/i);
+        const format = (extMatch?.[1] ?? kind).toUpperCase();
+        projectItems.push({
+          mediaId: sm.mediaId,
+          filePath: cleanPath,
+          name: rawName,
+          kind,
+          durationSec: (sm as { durationSec?: number }).durationSec ?? 6,
+          width: sm.width ?? (kind === 'audio' ? 0 : 1280),
+          height: sm.height ?? (kind === 'audio' ? 0 : 720),
+          mediaUrl: `aethera-media://local?path=${encodeURIComponent(cleanPath)}`,
+          thumbnailUrl: kind === 'image' ? `aethera-media://local?path=${encodeURIComponent(cleanPath)}` : null,
+          waveformPeaks: (waveformMap[cleanPath]?.data as { peaks?: number[] } | null)?.peaks ?? [],
+          category: kind === 'image' ? 'image' : kind === 'audio' ? 'music' : 'video',
+          format,
+          origin: 'Projeto Atual',
+        } as ImportedAsset);
+      }
+    }
+    const merged = [...projectItems];
+    for (const asset of importedAssets) {
+      const norm = (asset.filePath || '').toLowerCase();
+      if (seenIds.has(asset.mediaId) || (norm && seenPaths.has(norm))) continue;
+      seenIds.add(asset.mediaId);
+      if (norm) seenPaths.add(norm);
+      merged.push(asset);
+    }
+    return merged;
+  }, [pkg?.timeline?.sourceMedia, importedAssets, waveformMap]);
+
   const timelineWidthPx = Math.max(680, Math.ceil((totalDurationSec + 2) * pxPerSec));
   const ticks = Array.from({ length: Math.ceil(totalDurationSec) + 2 }, (_, s) => s).filter(
     (s) => s % (pxPerSec < 18 ? 5 : 2) === 0,
@@ -1717,7 +1766,7 @@ export function AetheraStudioEditor() {
           <div className="flex-1 min-h-0 overflow-hidden">
             {leftTab === 'media' && (
               <MediaLibraryPanel
-                assets={importedAssets}
+                assets={projectAndLibraryAssets}
                 waveformMap={waveformMap}
                 onInsertAsset={(asset) => handleAddAssetToTimeline(asset)}
                 onRequestWaveform={(fp) => ensureWaveformLoaded(fp)}

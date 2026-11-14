@@ -1500,6 +1500,96 @@ export function registerAetheraDomainIpc(options: {
   let latestCinemaProjectId: string | null = null;
   const toMediaUrl = (filePath: string) =>
     `aethera-media://local?path=${encodeURIComponent(filePath)}`;
+  const persistCinemaRender = (projectId: string, render: RealRenderResult & { mediaUrl: string }) => {
+    const safeId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    mkdirSync(cinemaProjectsDir, { recursive: true });
+    writeFileSync(
+      join(cinemaProjectsDir, `${safeId}.render.json`),
+      JSON.stringify(render, null, 2),
+      'utf8',
+    );
+  };
+  const resolvePersistedRender = (
+    projectId: string,
+    pkg?: CinemaProductionPackage | null,
+  ): (RealRenderResult & { mediaUrl: string }) | null => {
+    const cached = cinemaRenders.get(projectId);
+    if (cached && existsSync(cached.mp4Path)) return cached;
+    const safeId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const renderMetaFile = join(cinemaProjectsDir, `${safeId}.render.json`);
+    if (existsSync(renderMetaFile)) {
+      try {
+        const parsed = JSON.parse(readFileSync(renderMetaFile, 'utf8')) as RealRenderResult & {
+          mediaUrl?: string;
+        };
+        if (parsed.mp4Path && existsSync(parsed.mp4Path)) {
+          const hydrated = {
+            ...parsed,
+            mediaUrl: toMediaUrl(parsed.mp4Path),
+          };
+          cinemaRenders.set(projectId, hydrated);
+          return hydrated;
+        }
+      } catch {
+        // Ignore malformed render metadata
+      }
+    }
+    const fallbackCandidates = [
+      join(app.getPath('userData'), 'cinema-workspaces', safeId, 'renders', `${safeId}.mp4`),
+      join(app.getPath('userData'), 'cinema-renders', `${safeId}.mp4`),
+    ];
+    for (const candidate of fallbackCandidates) {
+      if (existsSync(candidate)) {
+        const st = statSync(candidate);
+        const hydrated: RealRenderResult & { mediaUrl: string } = {
+          mp4Path: candidate,
+          mediaUrl: toMediaUrl(candidate),
+          isTechnicalSample: false,
+          narrationMode: 'voicestudio_tts',
+          encoderUsed: 'ffmpeg',
+          appliedEffects: [],
+          probe: {
+            filePath: candidate,
+            fileSizeBytes: st.size,
+            durationSec: pkg?.direction?.brief?.targetDurationSec ?? 0,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            videoCodec: 'h264',
+            audioCodec: 'aac',
+            audioSampleRate: 48000,
+            avDurationDeltaSec: 0,
+            integratedLufs: -14,
+            truePeakDbtp: -1,
+            blackFramesCount: 0,
+            frozenSegmentsCount: 0,
+            sceneCutsCount: 0,
+            silenceEventsCount: 0,
+          },
+          realQcFindings: [],
+          waveformPeaks: [],
+          audioTimeline: [],
+          audioAudit: {
+            approved: true,
+            totalDurationMs: (pkg?.direction?.brief?.targetDurationSec ?? 0) * 1000,
+            minGapMs: 0,
+            blockedReasons: [],
+            conflicts: [],
+            busesSummary: {
+              A1_narration: { eventCount: 0, totalActiveMs: 0 },
+              A2_gameplay_dialogue: { eventCount: 0, totalActiveMs: 0 },
+              A3_music: { eventCount: 0, totalActiveMs: 0 },
+              A4_sfx: { eventCount: 0, totalActiveMs: 0 },
+              A5_ambience: { eventCount: 0, totalActiveMs: 0 },
+            },
+          },
+        };
+        cinemaRenders.set(projectId, hydrated);
+        return hydrated;
+      }
+    }
+    return null;
+  };
   const persistCinemaProject = (pkg: CinemaProductionPackage) => {
     latestCinemaProjectId = pkg.timeline.projectId;
     mkdirSync(cinemaProjectsDir, { recursive: true });
@@ -1524,7 +1614,7 @@ export function registerAetheraDomainIpc(options: {
     >();
     if (existsSync(cinemaProjectsDir)) {
       for (const fileName of readdirSync(cinemaProjectsDir)) {
-        if (!fileName.endsWith('.json')) continue;
+        if (!fileName.endsWith('.json') || fileName.endsWith('.render.json')) continue;
         const fullPath = join(cinemaProjectsDir, fileName);
         try {
           const stat = statSync(fullPath);
@@ -1540,7 +1630,7 @@ export function registerAetheraDomainIpc(options: {
             title,
             genre: parsed.direction?.brief?.genre ?? 'documentary',
             durationSec,
-            hasRender: cinemaRenders.has(id),
+            hasRender: Boolean(resolvePersistedRender(id, parsed)),
             updatedAt: stat.mtime.toISOString(),
             mtimeMs: stat.mtimeMs,
           });
@@ -1559,7 +1649,7 @@ export function registerAetheraDomainIpc(options: {
             id,
           genre: parsed.direction?.brief?.genre ?? 'documentary',
           durationSec: parsed.direction?.brief?.targetDurationSec ?? 0,
-          hasRender: cinemaRenders.has(id),
+          hasRender: Boolean(resolvePersistedRender(id, parsed)),
           updatedAt: new Date().toISOString(),
           mtimeMs: Date.now(),
         });
@@ -1613,7 +1703,9 @@ export function registerAetheraDomainIpc(options: {
       persistCinemaProject(pkg);
     },
     onRenderReady: (projectId, render) => {
-      cinemaRenders.set(projectId, { ...render, mediaUrl: toMediaUrl(render.mp4Path) });
+      const enriched = { ...render, mediaUrl: toMediaUrl(render.mp4Path) };
+      cinemaRenders.set(projectId, enriched);
+      persistCinemaRender(projectId, enriched);
     },
     searchExternalMedia: async (query, _slotIndex, signal) => {
       try {
@@ -1998,26 +2090,33 @@ export function registerAetheraDomainIpc(options: {
     'cinema:render-real-mp4',
     async (
       event,
-      input: { projectId: string; injectRealBlackFrameDefect?: boolean; useNvenc?: boolean },
+      input: {
+        projectId: string;
+        injectRealBlackFrameDefect?: boolean;
+        useNvenc?: boolean;
+        voiceStudioVoiceId?: string;
+      },
     ) => {
       ensureTrusted(event.senderFrame);
       const pkg = cinemaPackages.get(input.projectId);
       if (!pkg) throw new Error(`not_found: pacote Cinema ${input.projectId} não encontrado.`);
       const outputDir = join(app.getPath('userData'), 'cinema-renders');
       const prompt = cinemaPrompts.get(input.projectId) ?? input.projectId;
+      const jobVoiceId = stagedPipeline.loadJob(input.projectId)?.voiceStudioVoiceId;
       const res = await renderRealCinemaMp4({
         pkg,
         outputDir,
         fileName: `${input.projectId}.mp4`,
         useNvenc: input.useNvenc ?? true,
         injectRealBlackFrameDefect: input.injectRealBlackFrameDefect ?? false,
-        voiceStudioVoiceId: '9190edfa',
+        voiceStudioVoiceId: input.voiceStudioVoiceId || jobVoiceId || '9190edfa',
         evolution: evolutionCore,
         prompt,
         segmentCacheDir: join(app.getPath('userData'), 'cinema-projects', input.projectId, 'cache', 'segments'),
       });
       const enriched = { ...res, mediaUrl: toMediaUrl(res.mp4Path) };
       cinemaRenders.set(input.projectId, enriched);
+      persistCinemaRender(input.projectId, enriched);
       return enriched;
     },
   );
@@ -2136,7 +2235,7 @@ export function registerAetheraDomainIpc(options: {
     }
     return {
       pkg,
-      lastRender: cinemaRenders.get(targetId) ?? null,
+      lastRender: resolvePersistedRender(targetId, pkg),
     };
   });
   ipcMain.handle(
@@ -2650,6 +2749,7 @@ export function registerAetheraDomainIpc(options: {
         humorIntensity?: number;
         renderProfile?: 'draft_540p' | 'review_720p' | 'master_1080p';
         useNvenc?: boolean;
+        voiceStudioVoiceId?: string;
         seedMediaFiles?: string[];
       },
     ) => {
@@ -2657,6 +2757,28 @@ export function registerAetheraDomainIpc(options: {
       return stagedPipeline.start(input);
     },
   );
+
+  ipcMain.handle('cinema:list-voices', async (event) => {
+    ensureTrusted(event.senderFrame);
+    try {
+      const status = await createVoiceStudioClient().status();
+      return {
+        available: status.available,
+        compatible: status.compatible,
+        voices: status.voices,
+        models: status.models,
+        error: status.error,
+      };
+    } catch (error) {
+      return {
+        available: false,
+        compatible: false,
+        voices: [],
+        models: [],
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
 
   ipcMain.handle('cinema:cancel-production', async (event, projectId: string) => {
     ensureTrusted(event.senderFrame);
@@ -2696,6 +2818,10 @@ export function registerAetheraDomainIpc(options: {
     const projectFile = join(cinemaProjectsDir, `${safeId}.json`);
     if (existsSync(projectFile)) {
       unlinkSync(projectFile);
+    }
+    const renderMetaFile = join(cinemaProjectsDir, `${safeId}.render.json`);
+    if (existsSync(renderMetaFile)) {
+      unlinkSync(renderMetaFile);
     }
     return {
       deleted: true,

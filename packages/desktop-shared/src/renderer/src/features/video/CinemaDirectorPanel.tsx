@@ -44,7 +44,14 @@ interface CinemaBridgeApi {
     projectId: string;
     injectRealBlackFrameDefect?: boolean;
     useNvenc?: boolean;
+    voiceStudioVoiceId?: string;
   }) => Promise<RealRenderView>;
+  cinemaListVoices?: () => Promise<{
+    available: boolean;
+    compatible: boolean;
+    voices: Array<{ id: string; label: string; source?: string }>;
+    error?: string | null;
+  }>;
   cinemaStartStagedProduction?: (input: Record<string, unknown>) => Promise<StagedJobView>;
   cinemaCancelProduction?: (projectId: string) => Promise<StagedJobView | null>;
   cinemaResumeProduction?: (projectId: string) => Promise<StagedJobView>;
@@ -276,6 +283,9 @@ export function CinemaDirectorPanel() {
   const [durationSyncedFromPrompt, setDurationSyncedFromPrompt] = useState(true);
   const [humorIntensity, setHumorIntensity] = useState(35);
   const [renderProfile, setRenderProfile] = useState<'draft_540p' | 'review_720p' | 'master_1080p'>('review_720p');
+  const [voiceOptions, setVoiceOptions] = useState<Array<{ id: string; label: string; source?: string }>>([]);
+  const [voiceStudioAvailable, setVoiceStudioAvailable] = useState(false);
+  const [selectedVoiceId, setSelectedVoiceId] = useState('9190edfa');
   const [revisionNote, setRevisionNote] = useState('');
   const [planApproved, setPlanApproved] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<StagedJobView | null>(null);
@@ -377,9 +387,26 @@ export function CinemaDirectorPanel() {
   const [directorCount, setDirectorCount] = useState<number>(7);
   const [error, setError] = useState<string | null>(null);
 
+  const loadVoices = async () => {
+    const api = bridge();
+    if (!api?.cinemaListVoices) return;
+    try {
+      const res = await api.cinemaListVoices();
+      setVoiceStudioAvailable(Boolean(res?.available));
+      const list = Array.isArray(res?.voices) ? res.voices : [];
+      setVoiceOptions(list);
+      if (list.length > 0 && list[0] && !list.some((v) => v.id === selectedVoiceId)) {
+        setSelectedVoiceId(list[0].id);
+      }
+    } catch {
+      setVoiceStudioAvailable(false);
+    }
+  };
+
   useEffect(() => {
     const api = bridge();
     void api?.cinemaCapabilities?.().then(setCapabilities).catch(() => {});
+    void loadVoices();
     void api?.cinemaListStagedJobs?.().then((jobs) => {
       if (Array.isArray(jobs)) setStagedJobs(jobs);
     }).catch(() => {});
@@ -423,6 +450,7 @@ export function CinemaDirectorPanel() {
           humorIntensity,
           renderProfile,
           useNvenc: capabilities?.gpuNvenc ?? true,
+          voiceStudioVoiceId: selectedVoiceId,
         });
         setStagedJob(finalJob);
         setProgressPct(finalJob.progressPct);
@@ -759,16 +787,47 @@ export function CinemaDirectorPanel() {
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 lg:col-span-12">
-          <select
-            aria-label="Perfil de render"
-            value={renderProfile}
-            onChange={(e) => setRenderProfile(e.target.value as typeof renderProfile)}
-            className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
-          >
-            <option value="draft_540p">Draft 540p (1.4 GB VRAM)</option>
-            <option value="review_720p">Review 720p (2.4 GB VRAM)</option>
-            <option value="master_1080p">Master 1080p (4.8 GB VRAM)</option>
-          </select>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              aria-label="Perfil de render"
+              value={renderProfile}
+              onChange={(e) => setRenderProfile(e.target.value as typeof renderProfile)}
+              className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
+            >
+              <option value="draft_540p">Draft 540p (1.4 GB VRAM)</option>
+              <option value="review_720p">Review 720p (2.4 GB VRAM)</option>
+              <option value="master_1080p">Master 1080p (4.8 GB VRAM)</option>
+            </select>
+
+            <div className="flex items-center gap-1.5">
+              <select
+                aria-label="Voz (VoiceStudio)"
+                value={selectedVoiceId}
+                onChange={(e) => setSelectedVoiceId(e.target.value)}
+                className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
+              >
+                {voiceOptions.length > 0 ? (
+                  voiceOptions.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      Voz: {v.label} ({v.id})
+                    </option>
+                  ))
+                ) : (
+                  <option value="9190edfa">
+                    {voiceStudioAvailable ? 'Voz padrão (9190edfa)' : 'Voz: 9190edfa (VoiceStudio offline)'}
+                  </option>
+                )}
+              </select>
+              <button
+                type="button"
+                onClick={() => void loadVoices()}
+                title="Atualizar lista de vozes do VoiceStudio"
+                className="rounded-xl border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground hover:border-primary hover:text-foreground"
+              >
+                ↻
+              </button>
+            </div>
+          </div>
 
           <div className="flex flex-wrap gap-2">
             <button

@@ -66,6 +66,7 @@ export interface StagedProductionJob {
   humorIntensity: number;
   renderProfile: RenderQualityProfile;
   useNvenc: boolean;
+  voiceStudioVoiceId?: string;
   state: ProductionStageState;
   progressPct: number;
   message: string;
@@ -472,6 +473,7 @@ export class StagedCinemaPipeline {
     humorIntensity?: number;
     renderProfile?: RenderQualityProfile;
     useNvenc?: boolean;
+    voiceStudioVoiceId?: string;
     seedMediaFiles?: string[];
   }): Promise<StagedProductionJob> {
     const projectPaths = this.ensureProjectWorkspace(input.projectId, input.prompt);
@@ -484,6 +486,7 @@ export class StagedCinemaPipeline {
       humorIntensity: input.humorIntensity ?? 35,
       renderProfile: input.renderProfile ?? 'review_720p',
       useNvenc: input.useNvenc ?? true,
+      ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
       state: 'prompt',
       progressPct: 5,
       message: 'Analisando prompt e extraindo intenções de cena...',
@@ -873,7 +876,7 @@ export class StagedCinemaPipeline {
         fileName: `${job.projectId}.mp4`,
         useNvenc: job.useNvenc,
         requireRealMedia: job.acquiredMedia.length > 0,
-        voiceStudioVoiceId: '9190edfa',
+        voiceStudioVoiceId: job.voiceStudioVoiceId || '9190edfa',
         evolution: this.deps.evolutionCore,
         prompt: job.prompt,
         previewQuality: 'fast_preview',
@@ -1054,7 +1057,7 @@ export class StagedCinemaPipeline {
           fileName: `${job.projectId}.mp4`,
           useNvenc: job.useNvenc,
           requireRealMedia: job.acquiredMedia.length > 0,
-          voiceStudioVoiceId: '9190edfa',
+          voiceStudioVoiceId: job.voiceStudioVoiceId || '9190edfa',
           evolution: this.deps.evolutionCore,
           prompt: job.prompt,
           previewQuality: 'fast_preview',

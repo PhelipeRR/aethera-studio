@@ -88,6 +88,7 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   }) => ipcRenderer.invoke('cinema:update-script', input),
   cinemaStartStagedProduction: (input: Record<string, unknown>) =>
     ipcRenderer.invoke('cinema:start-staged-production', input),
+  cinemaListVoices: () => ipcRenderer.invoke('cinema:list-voices'),
   cinemaCancelProduction: (projectId: string) => ipcRenderer.invoke('cinema:cancel-production', projectId),
   cinemaResumeProduction: (projectId: string) => ipcRenderer.invoke('cinema:resume-production', projectId),
   cinemaGetProductionState: (projectId: string) => ipcRenderer.invoke('cinema:get-production-state', projectId),

@@ -96,9 +96,27 @@ async function main() {
     },
     onPackageReady: (pkg) => {
       capturedPkg = pkg;
+      const projectsDir = join(USER_DATA, 'cinema-projects');
+      mkdirSync(projectsDir, { recursive: true });
+      writeFileSync(
+        join(projectsDir, `${pkg.timeline.projectId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`),
+        JSON.stringify(pkg, null, 2),
+        'utf8',
+      );
     },
-    onRenderReady: (_projectId, render) => {
+    onRenderReady: (projectId, render) => {
       capturedRender = render;
+      const projectsDir = join(USER_DATA, 'cinema-projects');
+      mkdirSync(projectsDir, { recursive: true });
+      const enriched = {
+        ...render,
+        mediaUrl: `aethera-media://local?path=${encodeURIComponent(render.mp4Path)}`,
+      };
+      writeFileSync(
+        join(projectsDir, `${projectId.replace(/[^a-zA-Z0-9_-]/g, '_')}.render.json`),
+        JSON.stringify(enriched, null, 2),
+        'utf8',
+      );
     },
     searchExternalMedia: async (query, slotIndex, signal) => {
       const searchQ = GAME_QUERIES[slotIndex % GAME_QUERIES.length] ?? query;
