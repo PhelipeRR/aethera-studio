@@ -339,7 +339,13 @@ export function AetheraStudioEditor() {
   const [previewingBus, setPreviewingBus] = useState<string | null>(null);
   const [timelineTool, setTimelineTool] = useState<'select' | 'razor'>('select');
   const [auditOpen, setAuditOpen] = useState(false);
-  const [auditTab, setAuditTab] = useState<'script' | 'research' | 'quality'>('script');
+  const [auditTab, setAuditTab] = useState<'script' | 'direction' | 'research' | 'quality'>('script');
+  const [previewAuditMedia, setPreviewAuditMedia] = useState<{
+    mediaId: string;
+    kind: string;
+    uri: string;
+    mediaUrl: string;
+  } | null>(null);
   const [auditJob, setAuditJob] = useState<{
     state: string;
     progressPct: number;
@@ -2979,6 +2985,17 @@ export function AetheraStudioEditor() {
               </button>
               <button
                 type="button"
+                onClick={() => setAuditTab('direction')}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium transition-colors ${
+                  auditTab === 'direction'
+                    ? 'bg-purple-600/25 text-purple-200 border border-purple-500/40'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <Film className="size-3.5" /> Direção de Cenas ({pkg.direction?.shots?.length ?? 0})
+              </button>
+              <button
+                type="button"
                 onClick={() => setAuditTab('research')}
                 className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium transition-colors ${
                   auditTab === 'research'
@@ -2997,73 +3014,130 @@ export function AetheraStudioEditor() {
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
-                <ShieldCheck className="size-3.5" /> Direção &amp; Qualidade
+                <ShieldCheck className="size-3.5" /> Qualidade &amp; QC
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 text-xs">
               {auditTab === 'script' && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-medium text-purple-200">
+                      Roteiro / Falas por Beat Narrativo ({beatsDraft.length})
+                    </span>
+                    <span className="text-[11px] text-muted-foreground">
+                      Edite o texto narrado de cada cena e clique em Salvar Roteiro.
+                    </span>
+                  </div>
+
+                  {beatsDraft.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-border p-4 text-center text-muted-foreground">
+                      Este projeto ainda não possui beats de roteiro estruturados.
+                    </div>
+                  ) : (
+                    beatsDraft.map((beat, idx) => (
+                      <div
+                        key={beat.beatId}
+                        className="space-y-2 rounded-xl border border-border bg-card/60 p-3"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="rounded bg-purple-500/20 px-2 py-0.5 font-mono text-[10px] uppercase text-purple-200">
+                              #{idx + 1} · {beat.stage}
+                            </span>
+                            <span className="font-mono text-[10px] text-muted-foreground">
+                              {beat.durationSec}s
+                            </span>
+                          </div>
+                          <span className="font-mono text-[10px] text-muted-foreground">{beat.beatId}</span>
+                        </div>
+                        <textarea
+                          rows={3}
+                          value={beat.summary}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setBeatsDraft((prev) =>
+                              prev.map((item) =>
+                                item.beatId === beat.beatId ? { ...item, summary: val } : item
+                              )
+                            );
+                          }}
+                          className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground focus:border-purple-500 focus:outline-none"
+                          aria-label={`Roteiro do beat ${idx + 1}`}
+                        />
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+              {auditTab === 'direction' && (
                 <div className="space-y-4">
                   <div className="space-y-1.5">
                     <label className="block text-[11px] font-medium text-purple-200">
-                      Tratamento / Sinopse Geral
+                      Tratamento Cinematográfico &amp; Abordagem Geral
                     </label>
                     <textarea
                       rows={3}
                       value={treatmentDraft}
                       onChange={(e) => setTreatmentDraft(e.target.value)}
-                      placeholder="Resumo narrativo e abordagem do vídeo..."
+                      placeholder="Direção geral, tom, ritmo e estética..."
                       className="w-full rounded-xl border border-border bg-background px-3 py-2 text-xs text-foreground focus:border-purple-500 focus:outline-none"
                     />
                   </div>
 
-                  <div className="space-y-3">
+                  <div className="space-y-2.5">
                     <div className="flex items-center justify-between">
                       <span className="text-[11px] font-medium text-purple-200">
-                        Cenas / Beats Narrativos ({beatsDraft.length})
+                        Decupagem &amp; Direção de Cenas ({pkg.direction?.shots?.length ?? 0})
                       </span>
                       <span className="text-[11px] text-muted-foreground">
-                        Edite o roteiro de cada cena e clique em Salvar Roteiro.
+                        Enquadramento, movimento de câmera, justificativa visual e mídia vinculada.
                       </span>
                     </div>
-
-                    {beatsDraft.length === 0 ? (
+                    {(pkg.direction?.shots ?? []).length === 0 ? (
                       <div className="rounded-xl border border-dashed border-border p-4 text-center text-muted-foreground">
-                        Este projeto ainda não possui beats de roteiro estruturados.
+                        Nenhuma direção de cena registrada neste pacote.
                       </div>
                     ) : (
-                      beatsDraft.map((beat, idx) => (
-                        <div
-                          key={beat.beatId}
-                          className="space-y-2 rounded-xl border border-border bg-card/60 p-3"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
-                              <span className="rounded bg-purple-500/20 px-2 py-0.5 font-mono text-[10px] uppercase text-purple-200">
-                                #{idx + 1} · {beat.stage}
-                              </span>
+                      (pkg.direction?.shots ?? []).map((shot, idx) => {
+                        const linkedBeat = beatsDraft.find((b) => b.beatId === shot.beatId);
+                        const linkedClip = (pkg.timeline?.clips ?? []).filter((c) => !c.trackId || c.trackId === 'v1')[idx];
+                        return (
+                          <div key={shot.shotId} className="space-y-1.5 rounded-xl border border-border bg-card/60 p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded bg-amber-500/20 px-2 py-0.5 font-mono text-[10px] font-medium text-amber-200">
+                                  Cena #{idx + 1} · {shot.shotId}
+                                </span>
+                                <span className="rounded border border-border px-2 py-0.5 text-[10px] text-foreground">
+                                  Enquadramento: {shot.framing}
+                                </span>
+                                <span className="rounded border border-border px-2 py-0.5 text-[10px] text-foreground">
+                                  Câmera: {shot.cameraMotion}
+                                </span>
+                                {shot.mediaGap && (
+                                  <span className="rounded bg-rose-500/20 px-2 py-0.5 text-[10px] text-rose-300">
+                                    Lacuna de mídia
+                                  </span>
+                                )}
+                              </div>
                               <span className="font-mono text-[10px] text-muted-foreground">
-                                {beat.durationSec}s
+                                {linkedBeat ? `${linkedBeat.stage} · ${linkedBeat.durationSec}s` : shot.beatId}
                               </span>
                             </div>
-                            <span className="font-mono text-[10px] text-muted-foreground">{beat.beatId}</span>
+                            <p className="text-[11px] text-muted-foreground">
+                              <span className="font-medium text-foreground">Direção visual:</span> {shot.motionJustification}
+                            </p>
+                            {linkedClip && (
+                              <p className="text-[10px] text-purple-200/80">
+                                Clipe V1: <span className="font-mono">{linkedClip.label}</span>
+                                {linkedClip.sourceMediaId ? ` (${linkedClip.sourceMediaId})` : ''}
+                              </p>
+                            )}
                           </div>
-                          <textarea
-                            rows={3}
-                            value={beat.summary}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setBeatsDraft((prev) =>
-                                prev.map((item) =>
-                                  item.beatId === beat.beatId ? { ...item, summary: val } : item
-                                )
-                              );
-                            }}
-                            className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground focus:border-purple-500 focus:outline-none"
-                            aria-label={`Roteiro do beat ${idx + 1}`}
-                          />
-                        </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -3071,24 +3145,109 @@ export function AetheraStudioEditor() {
 
               {auditTab === 'research' && (
                 <div className="space-y-4">
+                  {previewAuditMedia && (
+                    <div className="rounded-xl border border-purple-500/40 bg-[#0d0d17] p-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-[11px] font-medium text-purple-200">
+                          Prévia da Mídia: <span className="font-mono text-foreground">{previewAuditMedia.mediaId}</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewAuditMedia(null)}
+                          className="rounded border border-border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                        >
+                          Fechar Prévia
+                        </button>
+                      </div>
+                      {previewAuditMedia.kind === 'image' ? (
+                        <img
+                          src={previewAuditMedia.mediaUrl}
+                          alt={previewAuditMedia.mediaId}
+                          className="max-h-64 w-full rounded-lg bg-black object-contain"
+                        />
+                      ) : previewAuditMedia.kind === 'audio' ? (
+                        <audio src={previewAuditMedia.mediaUrl} controls autoPlay className="w-full" />
+                      ) : (
+                        <video
+                          src={previewAuditMedia.mediaUrl}
+                          controls
+                          autoPlay
+                          className="max-h-64 w-full rounded-lg bg-black object-contain"
+                        />
+                      )}
+                    </div>
+                  )}
+
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="rounded-xl border border-border bg-card/60 p-3">
                       <p className="text-[11px] font-medium text-purple-200">Mídias no Projeto ({Object.keys(pkg.timeline.sourceMedia ?? {}).length})</p>
-                      <div className="mt-2 max-h-60 space-y-1.5 overflow-y-auto">
+                      <div className="mt-2 max-h-72 space-y-2 overflow-y-auto">
                         {Object.values(pkg.timeline.sourceMedia ?? {}).length === 0 ? (
                           <p className="text-muted-foreground">Nenhuma mídia vinculada ao projeto.</p>
                         ) : (
-                          Object.values(pkg.timeline.sourceMedia ?? {}).map((m) => (
-                            <div key={m.mediaId} className="rounded-lg border border-border/70 bg-background/60 p-2">
-                              <p className="truncate font-medium text-foreground">{m.mediaId}</p>
-                              <p className="truncate text-[10px] text-muted-foreground">
-                                {m.kind}{m.width && m.height ? ` · ${m.width}x${m.height}` : ''} · {m.license}
-                              </p>
-                              {m.uri && (
-                                <p className="truncate font-mono text-[10px] text-muted-foreground">{m.uri}</p>
-                              )}
-                            </div>
-                          ))
+                          Object.values(pkg.timeline.sourceMedia ?? {}).map((m) => {
+                            const uri = m.uri ?? '';
+                            const isLocalFile = Boolean(
+                              uri &&
+                              !uri.startsWith('/workspace/') &&
+                              !uri.startsWith('http://') &&
+                              !uri.startsWith('https://'),
+                            );
+                            const mediaUrl = isLocalFile
+                              ? uri.startsWith('aethera-media://')
+                                ? uri
+                                : `aethera-media://local?path=${encodeURIComponent(uri)}`
+                              : null;
+                            return (
+                              <div key={m.mediaId} className="flex items-center gap-2.5 rounded-lg border border-border/70 bg-background/60 p-2">
+                                {mediaUrl && m.kind === 'video' && (
+                                  <video
+                                    src={mediaUrl}
+                                    preload="metadata"
+                                    muted
+                                    className="h-12 w-20 shrink-0 rounded bg-black object-cover"
+                                  />
+                                )}
+                                {mediaUrl && m.kind === 'image' && (
+                                  <img
+                                    src={mediaUrl}
+                                    alt={m.mediaId}
+                                    className="h-12 w-20 shrink-0 rounded bg-black object-cover"
+                                  />
+                                )}
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate font-medium text-foreground">{m.mediaId}</p>
+                                  <p className="truncate text-[10px] text-muted-foreground">
+                                    {m.kind}{m.width && m.height ? ` · ${m.width}x${m.height}` : ''} · {m.license}
+                                  </p>
+                                  {m.uri && (
+                                    <p className="truncate font-mono text-[10px] text-muted-foreground">{m.uri}</p>
+                                  )}
+                                  {!isLocalFile && (
+                                    <span className="mt-0.5 inline-block rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] text-amber-300">
+                                      Sem arquivo local (caminho virtual)
+                                    </span>
+                                  )}
+                                </div>
+                                {mediaUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setPreviewAuditMedia({
+                                        mediaId: m.mediaId,
+                                        kind: m.kind,
+                                        uri,
+                                        mediaUrl,
+                                      })
+                                    }
+                                    className="shrink-0 rounded-lg border border-purple-500/40 bg-purple-500/15 px-2.5 py-1 text-[10px] font-medium text-purple-200 hover:bg-purple-500/25"
+                                  >
+                                    Prévia
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })
                         )}
                       </div>
                     </div>
@@ -3097,21 +3256,53 @@ export function AetheraStudioEditor() {
                       <p className="text-[11px] font-medium text-purple-200">
                         Aquisição &amp; Lacunas de Pesquisa
                       </p>
-                      <div className="mt-2 max-h-60 space-y-1.5 overflow-y-auto">
+                      <div className="mt-2 max-h-72 space-y-1.5 overflow-y-auto">
                         {auditJob ? (
                           <>
                             <p className="text-[11px] text-muted-foreground">
                               Estado: <span className="text-foreground">{auditJob.state}</span> ({auditJob.progressPct}%) · Etapas:{' '}
                               {auditJob.completedStages?.join(', ') || 'nenhuma'}
                             </p>
-                            {(auditJob.acquiredMedia ?? []).map((am) => (
-                              <div key={am.mediaId} className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2">
-                                <p className="truncate font-medium text-emerald-200">{am.mediaId}</p>
-                                <p className="truncate text-[10px] text-emerald-300/80">
-                                  {am.kind} {am.width && am.height ? `· ${am.width}x${am.height}` : ''} {am.license ? `· ${am.license}` : ''}
-                                </p>
-                              </div>
-                            ))}
+                            {(auditJob.acquiredMedia ?? []).map((am) => {
+                              const uri = am.uri ?? '';
+                              const isLocalFile = Boolean(
+                                uri &&
+                                !uri.startsWith('/workspace/') &&
+                                !uri.startsWith('http://') &&
+                                !uri.startsWith('https://'),
+                              );
+                              const mediaUrl = isLocalFile
+                                ? uri.startsWith('aethera-media://')
+                                  ? uri
+                                  : `aethera-media://local?path=${encodeURIComponent(uri)}`
+                                : null;
+                              return (
+                                <div key={am.mediaId} className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2">
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate font-medium text-emerald-200">{am.mediaId}</p>
+                                    <p className="truncate text-[10px] text-emerald-300/80">
+                                      {am.kind} {am.width && am.height ? `· ${am.width}x${am.height}` : ''} {am.license ? `· ${am.license}` : ''}
+                                    </p>
+                                  </div>
+                                  {mediaUrl && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setPreviewAuditMedia({
+                                          mediaId: am.mediaId,
+                                          kind: am.kind,
+                                          uri,
+                                          mediaUrl,
+                                        })
+                                      }
+                                      className="shrink-0 rounded border border-emerald-400/40 px-2 py-0.5 text-[10px] text-emerald-100 hover:bg-emerald-500/20"
+                                    >
+                                      Prévia
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
                             {(auditJob.pendingMedia ?? []).map((pm) => (
                               <div key={`${pm.slotIndex}-${pm.query}`} className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2">
                                 <p className="font-medium text-amber-200">Pendente (Slot {pm.slotIndex}): {pm.query}</p>
@@ -3219,7 +3410,7 @@ export function AetheraStudioEditor() {
                 >
                   Fechar
                 </button>
-                {auditTab === 'script' && (
+                {(auditTab === 'script' || auditTab === 'direction') && (
                   <button
                     type="button"
                     onClick={() => void handleSaveScript()}
