@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -665,5 +665,115 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(segKuririnCov?.covered).toBe(false);
     expect(segKuririnCov?.usableDurationSec).toBe(0);
     expect(segAmbientCov?.covered).toBe(true);
+  });
+
+  it('funnel audit: separates lifecycle states, classifies download failures, preserves pending_visual_verification on VisionRouter error, and resumes from checkpoint', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'nb-funnel-audit-'));
+    const mediaDir = join(dir, 'media');
+    mkdirSync(mediaDir, { recursive: true });
+    const okClip = join(mediaDir, 'goku_raditz.mp4');
+    writeFileSync(okClip, Buffer.alloc(2048, 7));
+
+    let searchCalls = 0;
+    let downloadCalls = 0;
+
+    // Run 1: 1 download succeeds, 1 download fails (timeout), VisionRouter throws infra error -> must NOT mark as rejected!
+    const run1 = await runAutonomousMediaAcquisition({
+      projectId: 'proj_funnel_1',
+      prompt: 'Dragon Ball Z Chegada de Raditz',
+      genre: 'anime',
+      mediaDir,
+      requireVisualVerification: true,
+      limits: { maxRounds: 1, maxDurationMs: 10_000 },
+      segments: [
+        {
+          segmentId: 'slot_1',
+          subject: 'Chegada de Raditz',
+          narrationText: 'Raditz chega à Terra enfrentando Goku e Piccolo.',
+          entities: ['raditz', 'goku', 'piccolo'],
+          expectedDurationSec: 20,
+        },
+      ],
+      deps: {
+        ytDlpSearchFn: async () => {
+          searchCalls += 1;
+          return [
+            { url: 'https://youtube.com/watch?v=ok_raditz', title: 'Dragon Ball Z Chegada de Raditz Goku e Piccolo', durationSec: 25 },
+            { url: 'https://youtube.com/watch?v=timeout_vid', title: 'Dragon Ball Z Raditz luta', durationSec: 30 },
+          ];
+        },
+        ytDlpAcquireFn: async (url) => {
+          downloadCalls += 1;
+          if (url.includes('timeout_vid')) {
+            throw new Error('network: Read timed out');
+          }
+          return okClip;
+        },
+      },
+      analyzeFrames: async () => {
+        throw new Error('VisionRouter sem provedor visual válido [claude:unavailable; codex:error(timeout)]');
+      },
+    });
+
+    expect(run1.acquiredFilesCount).toBe(1);
+    expect(run1.approvedForAssemblyCount).toBe(0);
+    // Crucial: downloaded file whose vision provider failed must stay pending_visual_verification, NOT rejected!
+    expect(run1.rejectedCandidates).toHaveLength(0);
+    expect(run1.funnelMetrics.pendingVerificationCount).toBe(1);
+    expect(run1.funnelMetrics.counts.pending_visual_verification).toBe(1);
+    expect(run1.funnelMetrics.counts.failed).toBe(1);
+    expect(run1.funnelMetrics.failureReasons.timeout).toBe(1);
+    expect(run1.funnelMetrics.visionDiagnostics.callsAttempted).toBe(1);
+    expect(run1.funnelMetrics.visionDiagnostics.callsFailed).toBe(1);
+
+    // Run 2: resume pending_visual_verification ONLY from checkpoint without re-searching or re-downloading
+    const searchBefore = searchCalls;
+    const downloadBefore = downloadCalls;
+    const run2 = await runAutonomousMediaAcquisition({
+      projectId: 'proj_funnel_1',
+      prompt: 'Dragon Ball Z Chegada de Raditz',
+      genre: 'anime',
+      mediaDir,
+      stageMode: 'verify_pending_only',
+      requireVisualVerification: true,
+      limits: { maxRounds: 1, maxDurationMs: 10_000 },
+      segments: [
+        {
+          segmentId: 'slot_1',
+          subject: 'Chegada de Raditz',
+          narrationText: 'Raditz chega à Terra enfrentando Goku e Piccolo.',
+          entities: ['raditz', 'goku', 'piccolo'],
+          expectedDurationSec: 20,
+        },
+      ],
+      deps: {
+        ytDlpSearchFn: async () => {
+          searchCalls += 1;
+          return [];
+        },
+        ytDlpAcquireFn: async () => {
+          downloadCalls += 1;
+          return null;
+        },
+      },
+      analyzeFrames: async () => [
+        {
+          timestampSec: 5,
+          visualCategory: 'anime_animation',
+          detectedEntities: ['raditz', 'goku', 'piccolo'],
+          detectedActions: ['luta'],
+          description: 'Anime Dragon Ball Z: Raditz enfrentando Goku e Piccolo',
+          confidence: 0.91,
+        },
+      ],
+    });
+
+    expect(searchCalls).toBe(searchBefore);
+    expect(downloadCalls).toBe(downloadBefore);
+    expect(run2.budgetBreakdown?.resumedFromCheckpoint).toBe(true);
+    expect(run2.approvedForAssemblyCount).toBe(1);
+    expect(run2.funnelMetrics.pendingVerificationCount).toBe(0);
+    expect(run2.funnelMetrics.counts.verified).toBe(1);
+    expect(run2.funnelMetrics.conversionRates.downloadedToVerifiedRate).toBe(1);
   });
 });

@@ -1710,7 +1710,11 @@ export function registerAetheraDomainIpc(options: {
     evolutionCore,
     requireVisualVerification: true,
     autonomousAcquisitionDeps: {
-      localMediaDirs: [join(app.getPath('userData'), 'cinema-media'), videoRoot()],
+      localMediaDirs: (() => {
+        const dirs = [join(app.getPath('userData'), 'cinema-media')];
+        try { dirs.push(videoRoot()); } catch { /* no video project configured yet */ }
+        return dirs;
+      })(),
       ytDlpSearchFn: (q, count, sig) => ytDlpSearch(ytDlp, q, count, sig),
       ytDlpAcquireFn: async (targetUrl, idx, dir, sig) => {
         const relativeDir = `acq_${idx + 1}`;
@@ -1721,6 +1725,9 @@ export function registerAetheraDomainIpc(options: {
           root: dir,
           relativeDir,
           fileStem: `slot_${idx + 1}`,
+          maxHeight: 720,
+          downloadSection: '*0:00-0:45',
+          maxFilesize: '60M',
           ...(sig ? { signal: sig } : {}),
           ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),
         });
@@ -1728,88 +1735,91 @@ export function registerAetheraDomainIpc(options: {
       },
     },
     analyzeFrames: async (uri, timestampsSec, segment) => {
-      try {
-        if (!existsSync(uri) || timestampsSec.length === 0) return [];
-        const framesOutDir = join(app.getPath('userData'), 'cinema-temp', 'relevance-frames', createHash('sha1').update(uri).digest('hex').slice(0, 12));
-        mkdirSync(framesOutDir, { recursive: true });
-        const extracted = await extractVerificationFrames(uri, framesOutDir, timestampsSec);
-        if (extracted.length === 0) return [];
-        const visionCache = new Map<string, unknown>();
-        const results: DistributedFrameAnalysis[] = [];
-        for (let i = 0; i < extracted.length; i += 1) {
-          const framePath = extracted[i]!;
-          const ts = timestampsSec[i] ?? 0;
-          const frameDir = dirname(framePath);
-          const frameHash = createHash('sha256').update(readFileSync(framePath)).digest('hex');
-          const configured = taskEngine
-            ? [
-                createTaskEngineVisionProvider({
-                  id: 'claude',
-                  model: 'sonnet',
-                  root: frameDir,
-                  projectId: segment.segmentId,
-                  enabled: true,
-                  taskEngine,
-                }),
-                createTaskEngineVisionProvider({
-                  id: 'codex',
-                  model: 'gpt-5-codex',
-                  root: frameDir,
-                  projectId: segment.segmentId,
-                  enabled: true,
-                  taskEngine,
-                }),
-              ]
-            : [];
-          const router = new VisionRouter(createVisionProviders(configured), {
-            get: (k) => visionCache.get(JSON.stringify(k)),
-            put: (k, v) => {
-              visionCache.set(JSON.stringify(k), v);
-            },
-          });
-          const policy: VisionPolicy = {
-            schemaVersion: 1,
-            task: 'describe',
-            chain: ['claude', 'codex', 'local-siglip', 'local-vlm', 'ffmpeg-heuristics'],
-            scope: 'project',
-            thresholds: null,
-            version: 'aethera-scene-grounding-v1',
-            budgetUsd: 0.25,
-            maxLatencyMs: 20_000,
-          };
-          const analyzed = await router.analyze({
-            frames: [{ path: framePath, hash: frameHash, atMs: Math.round(ts * 1000) }],
-            context: `Segmento "${segment.segmentId}": ${segment.narrationText.slice(0, 220)}`,
-            policy,
-          });
-          // Nunca inventar correspondência visual a partir de heurística FFmpeg sem visão semântica real
-          if (!analyzed.value || analyzed.provider === 'ffmpeg-heuristics') {
-            continue;
-          }
-          const segVal = analyzed.value;
-          const descLower = segVal.description.toLowerCase();
-          const natureToCat = (): VisualCategory => {
-            if (/\b(anime|animad|animac|desenho|cel[- ]shading|ilustra)/i.test(descLower)) return 'anime_animation';
-            if (segVal.nature === 'interface' || /\b(gameplay|hud)\b/i.test(descLower)) return 'gameplay';
-            if (segVal.overlays?.webcam || segVal.nature === 'portrait' || segVal.nature === 'speech') {
-              return 'real_person_camera';
-            }
-            if (segVal.nature === 'document') return 'motion_graphic';
-            return 'unknown';
-          };
-          results.push({
-            timestampSec: ts,
-            visualCategory: natureToCat(),
-            detectedEntities: segVal.entities.map((e) => e.name.toLowerCase()),
-            detectedActions: segVal.actions.map((a) => a.description.toLowerCase()),
-            description: segVal.description,
-            confidence: segVal.confidence,
-          });
-        }
-        return results;
-      } catch {
-        return [];
+      if (!existsSync(uri) || timestampsSec.length === 0) return [];
+      const isImage = /\.(jpe?g|png|webp)$/i.test(uri);
+      const framesOutDir = join(app.getPath('userData'), 'cinema-temp', 'relevance-frames', createHash('sha1').update(uri).digest('hex').slice(0, 12));
+      mkdirSync(framesOutDir, { recursive: true });
+      const extractedAll = isImage
+        ? [uri]
+        : await extractVerificationFrames(uri, framesOutDir, timestampsSec);
+      // TaskEngine VisionProviders suportam no máximo 3 imagens por chamada
+      const extracted = extractedAll.slice(0, 3);
+      if (extracted.length === 0) return [];
+      const visionCache = new Map<string, unknown>();
+      const frameDir = isImage ? dirname(uri) : framesOutDir;
+      const framesPayload = extracted.map((framePath, idx) => ({
+        path: framePath,
+        hash: createHash('sha256').update(readFileSync(framePath)).digest('hex'),
+        atMs: Math.round((timestampsSec[idx] ?? 0) * 1000),
+      }));
+      const configured = taskEngine
+        ? [
+            createTaskEngineVisionProvider({
+              id: 'claude',
+              model: 'sonnet',
+              root: frameDir,
+              projectId: segment.segmentId,
+              enabled: true,
+              taskEngine,
+            }),
+            createTaskEngineVisionProvider({
+              id: 'codex',
+              model: 'gpt-5-codex',
+              root: frameDir,
+              projectId: segment.segmentId,
+              enabled: true,
+              taskEngine,
+            }),
+          ]
+        : [];
+      const router = new VisionRouter(createVisionProviders(configured), {
+        get: (k) => visionCache.get(JSON.stringify(k)),
+        put: (k, v) => {
+          visionCache.set(JSON.stringify(k), v);
+        },
+      });
+      const policy: VisionPolicy = {
+        schemaVersion: 1,
+        task: 'describe',
+        chain: ['claude', 'codex', 'local-siglip', 'local-vlm', 'ffmpeg-heuristics'],
+        scope: 'project',
+        thresholds: null,
+        version: 'aethera-scene-grounding-v1',
+        budgetUsd: 0.25,
+        maxLatencyMs: 45_000,
+      };
+      const analyzed = await router.analyze({
+        frames: framesPayload,
+        context: `Segmento "${segment.segmentId}": ${segment.narrationText.slice(0, 220)}`,
+        policy,
+      });
+      // Nunca inventar correspondência visual a partir de heurística FFmpeg sem visão semântica real
+      if (!analyzed.value || analyzed.provider === 'ffmpeg-heuristics') {
+        const attemptsSummary = analyzed.attempts
+          .map((a) => `${a.provider}:${a.outcome}${a.detail ? `(${a.detail.slice(-120)})` : ''}`)
+          .join('; ');
+        throw new Error(`VisionRouter sem provedor visual válido [${attemptsSummary || 'sem tentativas'}]`);
       }
+      const segVal = analyzed.value;
+      const descLower = segVal.description.toLowerCase();
+      const natureToCat = (): VisualCategory => {
+        if (/\b(anime|animad|animac|desenho|cel[- ]shading|ilustra)/i.test(descLower)) return 'anime_animation';
+        if (segVal.nature === 'interface' || /\b(gameplay|hud)\b/i.test(descLower)) return 'gameplay';
+        if (segVal.overlays?.webcam || segVal.nature === 'portrait' || segVal.nature === 'speech') {
+          return 'real_person_camera';
+        }
+        if (segVal.nature === 'document') return 'motion_graphic';
+        return 'unknown';
+      };
+      const cat = natureToCat();
+      return framesPayload.map((f) => ({
+        timestampSec: f.atMs / 1000,
+        visualCategory: cat,
+        detectedEntities: segVal.entities.map((e) => e.name.toLowerCase()),
+        detectedActions: segVal.actions.map((a) => a.description.toLowerCase()),
+        description: segVal.description,
+        confidence: segVal.confidence,
+      }));
     },
     onProgress: (job: StagedProductionJob) => {
       for (const win of BrowserWindow.getAllWindows()) {

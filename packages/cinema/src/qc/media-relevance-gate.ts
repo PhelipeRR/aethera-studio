@@ -69,6 +69,7 @@ export interface MediaRelevanceDecision {
   relevanceTier?: 'exact_segment_match' | 'same_universe_context' | 'rejected';
   correspondenceLevel?: MediaCorrespondenceLevel;
   visualVerificationStatus?: VisualVerificationStatus;
+  visualVerificationError?: string;
   visualConfidence?: number;
   visualEvidence?: Array<{
     timestampSec: number;
@@ -315,11 +316,13 @@ export async function evaluateMediaRelevance(
 
   // 2. Distributed frame analysis (VisionRouter / caller hook) or metadata inference
   let frameAnalyses: DistributedFrameAnalysis[] = [];
+  let visualVerificationError: string | undefined;
   if (options?.analyzeFrames) {
     try {
       frameAnalyses = await options.analyzeFrames(candidate.uri, sampledTimestampsSec, segment);
-    } catch {
+    } catch (err) {
       frameAnalyses = [];
+      visualVerificationError = (err as Error).message;
     }
   }
 
@@ -474,10 +477,13 @@ export async function evaluateMediaRelevance(
       relevanceTier: 'rejected',
       correspondenceLevel: 'unverified',
       visualVerificationStatus,
+      ...(visualVerificationError ? { visualVerificationError } : {}),
       visualConfidence: 0,
       visualEvidence: [],
       rejectionCode: 'unverified_no_visual_evidence',
-      reason: 'Não verificada visualmente: apenas metadados disponíveis sem análise de frames distribuídos.',
+      reason: visualVerificationError
+        ? `Falha na verificação visual (${visualVerificationError.slice(0, 160)}): mídia mantida sem aprovação.`
+        : 'Não verificada visualmente: apenas metadados disponíveis sem análise de frames distribuídos.',
       sampledTimestampsSec,
       matchedEntities,
       visualCategory: dominantVisualCategory,

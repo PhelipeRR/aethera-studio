@@ -185,10 +185,15 @@ async function searchInternetArchive(
         signal: signal ?? AbortSignal.timeout(6000),
       });
       if (metaRes.ok) {
-        const metaJson = (await metaRes.json()) as { result?: Array<{ name?: string }> };
-        const mediaFile = (metaJson.result ?? []).find((f) =>
-          /\.(mp4|webm|jpg|jpeg|png)$/i.test(f.name ?? ''),
+        const metaJson = (await metaRes.json()) as { result?: Array<{ name?: string; size?: string; length?: string }> };
+        const files = metaJson.result ?? [];
+        const videoFile = files.find((f) => /\.(mp4|webm|mkv|mov)$/i.test(f.name ?? ''));
+        const imageFile = files.find(
+          (f) =>
+            /\.(jpe?g|png|webp)$/i.test(f.name ?? '') &&
+            !/(__ia_thumb|_thumb|thumb\.)/i.test(f.name ?? ''),
         );
+        const mediaFile = videoFile ?? imageFile;
         if (mediaFile?.name) {
           directUrl = `https://archive.org/download/${encodeURIComponent(id)}/${encodeURIComponent(mediaFile.name)}`;
           directDownloadable = true;
@@ -419,6 +424,83 @@ export interface SegmentAcquisitionMetrics {
   expectedDurationSec: number;
 }
 
+export type CandidateLifecycleState =
+  | 'discovered'
+  | 'downloading'
+  | 'downloaded'
+  | 'pending_visual_verification'
+  | 'verified'
+  | 'rejected'
+  | 'failed';
+
+export type DownloadFailureReasonCode =
+  | 'timeout'
+  | 'anti_bot'
+  | 'http_error'
+  | 'format_unavailable'
+  | 'invalid_file'
+  | 'cancelled'
+  | 'other';
+
+export type AcquisitionStageMode =
+  | 'full'
+  | 'discover_only'
+  | 'acquire_and_verify'
+  | 'verify_pending_only';
+
+export function classifyDownloadFailure(err: unknown): {
+  reasonCode: DownloadFailureReasonCode;
+  detail: string;
+} {
+  const msg = err instanceof Error ? err.message : String(err ?? 'unknown error');
+  if (/timed out|timeout|ETIMEDOUT|Read timed out|deadline/i.test(msg)) {
+    return { reasonCode: 'timeout', detail: msg.slice(0, 240) };
+  }
+  if (/not a bot|sign in|cookies|captcha|HTTP Error 429|too many requests|forbidden:.*sign in/i.test(msg)) {
+    return { reasonCode: 'anti_bot', detail: msg.slice(0, 240) };
+  }
+  if (/HTTP Error \d{3}|http_error|\bstatus\s*(4\d\d|5\d\d)\b/i.test(msg)) {
+    return { reasonCode: 'http_error', detail: msg.slice(0, 240) };
+  }
+  if (/Requested format is not available|format:|unsupported format/i.test(msg)) {
+    return { reasonCode: 'format_unavailable', detail: msg.slice(0, 240) };
+  }
+  if (/invalid|too small|empty|corrupt|sem gerar o arquivo|unavailable:/i.test(msg)) {
+    return { reasonCode: 'invalid_file', detail: msg.slice(0, 240) };
+  }
+  if (/cancelled|AbortError|aborted/i.test(msg)) {
+    return { reasonCode: 'cancelled', detail: msg.slice(0, 240) };
+  }
+  return { reasonCode: 'other', detail: msg.slice(0, 240) };
+}
+
+export interface AcquisitionFunnelMetrics {
+  counts: Record<CandidateLifecycleState, number>;
+  conversionRates: {
+    discoveryToDownloadAttemptRate: number;
+    downloadAttemptToDownloadedRate: number;
+    downloadedToVerifiedRate: number;
+    discoveredToVerifiedRate: number;
+  };
+  failureReasons: Record<DownloadFailureReasonCode, number>;
+  rejectionReasons: Record<string, number>;
+  failedDownloads: Array<{
+    segmentId: string;
+    url: string;
+    title: string;
+    origin: string;
+    reasonCode: DownloadFailureReasonCode;
+    detail: string;
+  }>;
+  pendingVerificationCount: number;
+  visionDiagnostics: {
+    callsAttempted: number;
+    callsSucceeded: number;
+    callsFailed: number;
+    providerErrors: string[];
+  };
+}
+
 export interface AutonomousAcquisitionAuditReport {
   roundsExecuted: number;
   elapsedMs: number;
@@ -450,6 +532,7 @@ export interface AutonomousAcquisitionAuditReport {
   unresolvedGapsForReview: Array<{ segmentId: string; subject: string; suggestedQuery: string; reason: string }>;
   providerStatuses: ProviderAttemptStatus[];
   segmentMetrics: SegmentAcquisitionMetrics[];
+  funnelMetrics: AcquisitionFunnelMetrics;
   coverageReport: MediaCoverageReport;
   approvedAssets: AcquiredMediaAsset[];
   approvedMediaDetails: ApprovedMediaAuditDetail[];
@@ -531,6 +614,7 @@ export async function runAutonomousMediaAcquisition(input: {
     segment: ScriptSegmentExpectation,
   ) => Promise<DistributedFrameAnalysis[]>;
   requireVisualVerification?: boolean;
+  stageMode?: AcquisitionStageMode;
   limits?: {
     maxRounds?: number;
     maxDurationMs?: number;
@@ -549,16 +633,17 @@ export async function runAutonomousMediaAcquisition(input: {
   signal?: AbortSignal;
 }): Promise<AutonomousAcquisitionAuditReport> {
   const startedAt = Date.now();
+  const stageMode: AcquisitionStageMode = input.stageMode ?? 'full';
   const maxRounds = Math.max(1, input.limits?.maxRounds ?? 3);
   const baseMaxDurationMs = Math.max(1_000, input.limits?.maxDurationMs ?? 120_000);
   const budgetMultiplier = Math.max(0.25, input.limits?.budgetMultiplier ?? 1);
   const maxDurationMs = Math.round(baseMaxDurationMs * budgetMultiplier);
-  const perOperationTimeoutMs = Math.max(1_000, input.limits?.perOperationTimeoutMs ?? 18_000);
+  const perOperationTimeoutMs = Math.max(1_000, input.limits?.perOperationTimeoutMs ?? 25_000);
   const maxQueriesTotal = Math.max(input.segments.length, input.limits?.maxQueriesTotal ?? Math.max(28, input.segments.length * 3));
   const maxCandidateDurationSec = input.limits?.maxCandidateDurationSec ?? 600;
   const discoveryConcurrency = Math.max(1, input.limits?.discoveryConcurrency ?? 3);
-  const acquisitionConcurrency = Math.max(1, input.limits?.acquisitionConcurrency ?? 2);
-  const verificationConcurrency = Math.max(1, input.limits?.verificationConcurrency ?? 2);
+  const acquisitionConcurrency = Math.max(1, input.limits?.acquisitionConcurrency ?? 1);
+  const verificationConcurrency = Math.max(1, input.limits?.verificationConcurrency ?? 1);
   const discoveryBudgetRatio = Math.min(0.6, Math.max(0.15, input.limits?.discoveryBudgetRatio ?? 0.3));
   const acquisitionBudgetRatio = Math.min(0.6, Math.max(0.2, input.limits?.acquisitionBudgetRatio ?? 0.4));
   const roundReserveRatio = Math.min(0.5, Math.max(0, input.limits?.roundReserveRatio ?? 0.25));
@@ -608,6 +693,29 @@ export async function runAutonomousMediaAcquisition(input: {
   let stoppedReason: AutonomousAcquisitionAuditReport['stoppedReason'] = 'max_rounds';
   let resumedFromCheckpoint = false;
   const completedQueryKeys = new Set<string>();
+  const candidateStates = new Map<string, CandidateLifecycleState>();
+  const discoveredPool = new Map<
+    string,
+    { segmentId: string; cand: MediaSourceCandidate; priorityScore: number }
+  >();
+  interface PendingVerificationAsset {
+    segmentId: string;
+    cand: MediaSourceCandidate;
+    filePath: string;
+    fileSizeBytes: number;
+    sha256: string;
+    durationSec: number;
+    mediaId: string;
+    round: number;
+  }
+  const pendingVerificationAssets = new Map<string, PendingVerificationAsset>();
+  const failedDownloads: AcquisitionFunnelMetrics['failedDownloads'] = [];
+  const visionDiagnostics: AcquisitionFunnelMetrics['visionDiagnostics'] = {
+    callsAttempted: 0,
+    callsSucceeded: 0,
+    callsFailed: 0,
+    providerErrors: [],
+  };
 
   const segMetricsMap = new Map<string, SegmentAcquisitionMetrics>();
   for (const s of input.segments) {
@@ -636,6 +744,10 @@ export async function runAutonomousMediaAcquisition(input: {
         completedQueryKeys?: string[];
         seenCandidateKeys?: string[];
         seenFileHashes?: string[];
+        candidateStateEntries?: Array<[string, CandidateLifecycleState]>;
+        discoveredPoolEntries?: Array<[string, { segmentId: string; cand: MediaSourceCandidate; priorityScore: number }]>;
+        pendingVerificationEntries?: Array<[string, PendingVerificationAsset]>;
+        failedDownloads?: AcquisitionFunnelMetrics['failedDownloads'];
         queriesExecuted?: AutonomousAcquisitionAuditReport['queriesExecuted'];
         candidatesFoundCount?: number;
         candidatesByProvider?: Record<string, number>;
@@ -661,6 +773,12 @@ export async function runAutonomousMediaAcquisition(input: {
         for (const k of saved.completedQueryKeys ?? []) completedQueryKeys.add(k);
         for (const k of saved.seenCandidateKeys ?? []) seenCandidateKeys.add(k);
         for (const h of saved.seenFileHashes ?? []) seenFileHashes.add(h);
+        for (const [k, st] of saved.candidateStateEntries ?? []) candidateStates.set(k, st);
+        for (const [k, d] of saved.discoveredPoolEntries ?? []) discoveredPool.set(k, d);
+        for (const [k, p] of saved.pendingVerificationEntries ?? []) {
+          if (existsSync(p.filePath)) pendingVerificationAssets.set(k, p);
+        }
+        if (saved.failedDownloads) failedDownloads.push(...saved.failedDownloads);
         if (saved.queriesExecuted) queriesExecuted.push(...saved.queriesExecuted);
         candidatesFoundCount = saved.candidatesFoundCount ?? 0;
         if (saved.candidatesByProvider) Object.assign(candidatesByProvider, saved.candidatesByProvider);
@@ -700,6 +818,10 @@ export async function runAutonomousMediaAcquisition(input: {
             completedQueryKeys: [...completedQueryKeys],
             seenCandidateKeys: [...seenCandidateKeys],
             seenFileHashes: [...seenFileHashes],
+            candidateStateEntries: [...candidateStates.entries()],
+            discoveredPoolEntries: [...discoveredPool.entries()],
+            pendingVerificationEntries: [...pendingVerificationAssets.entries()],
+            failedDownloads,
             queriesExecuted,
             candidatesFoundCount,
             candidatesByProvider,
@@ -783,21 +905,28 @@ export async function runAutonomousMediaAcquisition(input: {
               query: round === 3 ? `${q} anime scene` : q,
             }));
 
-      const roundQueries = rawRoundQueries
-        .filter((item) => !completedQueryKeys.has(`${item.segment.segmentId}:${item.query.toLowerCase()}`))
-        .slice(0, Math.max(0, maxQueriesTotal - queriesExecuted.length));
-
-      if (roundQueries.length === 0) {
-        if (queriesExecuted.length >= maxQueriesTotal) stoppedReason = 'max_queries';
-        continue;
-      }
+      const segmentById = new Map(input.segments.map((s) => [s.segmentId, s]));
+      const roundQueries =
+        stageMode === 'verify_pending_only'
+          ? []
+          : rawRoundQueries
+              .filter((item) => !completedQueryKeys.has(`${item.segment.segmentId}:${item.query.toLowerCase()}`))
+              .slice(0, Math.max(0, maxQueriesTotal - queriesExecuted.length));
 
       // Distribute time budget across segments with reserve for additional rounds
       const remTotal = remainingMs();
       const roundBudgetMs =
         round === 1 && maxRounds > 1 ? Math.round(remTotal * (1 - roundReserveRatio)) : remTotal;
-      const discoveryBudgetMs = Math.max(2_000, Math.round(roundBudgetMs * discoveryBudgetRatio));
-      const acquisitionBudgetMs = Math.max(2_000, Math.round(roundBudgetMs * acquisitionBudgetRatio));
+      const discoveryBudgetMs =
+        stageMode === 'discover_only'
+          ? roundBudgetMs
+          : stageMode === 'verify_pending_only'
+            ? 0
+            : Math.max(2_000, Math.round(roundBudgetMs * discoveryBudgetRatio));
+      const acquisitionBudgetMs =
+        stageMode === 'discover_only' || stageMode === 'verify_pending_only'
+          ? 0
+          : Math.max(2_000, Math.round(roundBudgetMs * acquisitionBudgetRatio));
       const discoveryStartedAt = Date.now();
       const perQueryTimeoutMs = Math.max(
         1_200,
@@ -813,201 +942,288 @@ export async function runAutonomousMediaAcquisition(input: {
         Array<{ segment: ScriptCoverageSegment; cand: MediaSourceCandidate; priorityScore: number }>
       >();
 
-      await runWithConcurrency(roundQueries, discoveryConcurrency, async (item) => {
-        if (
-          input.signal?.aborted ||
-          deadlineController.signal.aborted ||
-          remainingMs() <= 250 ||
-          Date.now() - discoveryStartedAt >= discoveryBudgetMs
-        ) {
-          return;
-        }
-        const qStart = Date.now();
-        const sm = segMetricsMap.get(item.segment.segmentId)!;
-        sm.queriesExecuted += 1;
-        queriesExecuted.push({
-          round,
-          segmentId: item.segment.segmentId,
-          subject: item.segment.subject,
-          query: item.query,
-        });
-        completedQueryKeys.add(`${item.segment.segmentId}:${item.query.toLowerCase()}`);
-
-        try {
-          const searchRes = await searchResilientMediaSources(
-            item.query,
-            effectiveDeps(),
-            createScopedSignal(perQueryTimeoutMs),
-          );
-          allStatuses.push(...searchRes.providerStatuses);
-          if (searchRes.providerStatuses.some((s) => s.provider === 'yt_dlp' && s.status === 'blocked_auth_or_antibot')) {
-            ytDlpBlocked = true;
-          }
-
-          for (const cand of searchRes.candidates) {
-            candidatesByProvider[cand.origin] = (candidatesByProvider[cand.origin] ?? 0) + 1;
-            const candKey = `${cand.origin}:${cand.url}`;
-            if (seenCandidateKeys.has(candKey)) continue;
-            seenCandidateKeys.add(candKey);
-            candidatesFoundCount += 1;
-            sm.candidatesFound += 1;
-
-            if (cand.durationSec && cand.durationSec > maxCandidateDurationSec) {
-              sm.rejectedCount += 1;
-              rejectedCandidates.push({
-                mediaId: `cand_${candidatesFoundCount}`,
-                title: cand.title ?? cand.url,
-                origin: cand.origin,
-                rejectionCode: 'duration_limit_exceeded',
-                reason: `Candidato excede limite de duração (${Math.round(cand.durationSec)}s > ${maxCandidateDurationSec}s), evitando download longo bloqueante.`,
-              });
-              continue;
-            }
-
-            const list = discoveredBySegment.get(item.segment.segmentId) ?? [];
-            list.push({
-              segment: item.segment,
-              cand,
-              priorityScore: scoreCandidateRelevancePriority(cand, item.segment, input.prompt),
-            });
-            discoveredBySegment.set(item.segment.segmentId, list);
-          }
-        } catch {
-          // non-fatal discovery timeout for this segment; others continue
-        } finally {
-          sm.timeConsumedMs += Date.now() - qStart;
-        }
-      });
-
-      // STAGE 2: Prioritized Breadth-First Acquisition Queue (round-robin top candidates across segments)
-      for (const list of discoveredBySegment.values()) {
-        list.sort((a, b) => b.priorityScore - a.priorityScore);
-      }
-      const acquisitionQueue: Array<{ segment: ScriptCoverageSegment; cand: MediaSourceCandidate }> = [];
-      const maxPerSegThisRound = 2;
-      for (let rank = 0; rank < maxPerSegThisRound; rank += 1) {
-        for (const s of targetSegments) {
-          const entry = discoveredBySegment.get(s.segmentId)?.[rank];
-          if (entry) acquisitionQueue.push({ segment: entry.segment, cand: entry.cand });
-        }
+      // Re-populate discoveredBySegment from checkpoint pool for uncovered segments that still have 'discovered' candidates
+      for (const [candKey, entry] of discoveredPool.entries()) {
+        if (candidateStates.get(candKey) !== 'discovered') continue;
+        const seg = segmentById.get(entry.segmentId);
+        if (!seg || !targetSegments.some((t) => t.segmentId === seg.segmentId)) continue;
+        const list = discoveredBySegment.get(seg.segmentId) ?? [];
+        list.push({ segment: seg, cand: entry.cand, priorityScore: entry.priorityScore });
+        discoveredBySegment.set(seg.segmentId, list);
       }
 
-      const acqStartedAt = Date.now();
-      const perDownloadTimeoutMs = Math.max(
-        1_500,
-        Math.min(
-          perOperationTimeoutMs,
-          Math.floor((acquisitionBudgetMs * acquisitionConcurrency) / Math.max(1, acquisitionQueue.length)),
-        ),
-      );
-      const acquiredForVerification: Array<{
-        segment: ScriptCoverageSegment;
-        cand: MediaSourceCandidate;
-        filePath: string;
-        fileSizeBytes: number;
-        sha256: string;
-        durationSec: number;
-        mediaId: string;
-      }> = [];
-
-      await runWithConcurrency(acquisitionQueue, acquisitionConcurrency, async (task) => {
-        if (
-          input.signal?.aborted ||
-          deadlineController.signal.aborted ||
-          remainingMs() <= 250 ||
-          Date.now() - acqStartedAt >= acquisitionBudgetMs
-        ) {
-          return;
-        }
-        const aStart = Date.now();
-        const sm = segMetricsMap.get(task.segment.segmentId)!;
-        sm.downloadsAttempted += 1;
-        const cand = task.cand;
-        const opSig = createScopedSignal(perDownloadTimeoutMs);
-        let filePath: string | null = null;
-        try {
-          if (cand.localPath && existsSync(cand.localPath)) {
-            filePath = cand.localPath;
-          } else if (cand.directDownloadable && /^https?:\/\//i.test(cand.url)) {
-            let candidateOutFile: string | null = null;
-            try {
-              const res = await fetchFn(cand.url, { signal: opSig });
-              if (res.ok) {
-                const buf = Buffer.from(await res.arrayBuffer());
-                if (buf.length >= 1024 && !deadlineController.signal.aborted) {
-                  const ext = extname(new URL(cand.url).pathname) || '.mp4';
-                  const slotNum = acquiredFilesCount + 1;
-                  const outDir = join(input.mediaDir, `auto_r${round}_${slotNum}`);
-                  mkdirSync(outDir, { recursive: true });
-                  candidateOutFile = join(outDir, `asset_${slotNum}${ext}`);
-                  writeFileSync(candidateOutFile, buf);
-                  filePath = candidateOutFile;
-                }
-              }
-            } catch {
-              if (candidateOutFile && existsSync(candidateOutFile)) {
-                try { unlinkSync(candidateOutFile); } catch { /* ignore */ }
-              }
-              filePath = null;
-            }
-          } else if (cand.origin === 'yt_dlp' && !ytDlpBlocked && input.deps.ytDlpAcquireFn) {
-            try {
-              filePath = await input.deps.ytDlpAcquireFn(cand.url, acquiredFilesCount, input.mediaDir, opSig);
-            } catch {
-              filePath = null;
-            }
-          }
-
-          if (!filePath || !existsSync(filePath)) return;
-
-          const fileSizeBytes = statSync(filePath).size;
-          const sha256 = createHash('sha256').update(readFileSync(filePath)).digest('hex');
-          if (seenFileHashes.has(sha256)) {
-            duplicateFilesSkipped += 1;
-            sm.rejectedCount += 1;
-            rejectedCandidates.push({
-              mediaId: `dup_${duplicateFilesSkipped}`,
-              title: cand.title ?? filePath,
-              origin: cand.origin,
-              rejectionCode: 'duplicate_file_hash',
-              reason: `Arquivo duplicado idêntico (SHA-256 ${sha256.slice(0, 12)}) descartado para não inflar cobertura.`,
-            });
+      if (stageMode !== 'verify_pending_only' && roundQueries.length > 0) {
+        await runWithConcurrency(roundQueries, discoveryConcurrency, async (item) => {
+          if (
+            input.signal?.aborted ||
+            deadlineController.signal.aborted ||
+            remainingMs() <= 250 ||
+            Date.now() - discoveryStartedAt >= discoveryBudgetMs
+          ) {
             return;
           }
-          seenFileHashes.add(sha256);
-          acquiredFilesCount += 1;
-          sm.downloadsSucceeded += 1;
-
-          const mediaId = `auto_${cand.origin}_${acquiredFilesCount}`;
-          let durationSec = cand.durationSec ?? 12;
-          if (input.probeDurationFn) {
-            try {
-              durationSec = await input.probeDurationFn(filePath);
-            } catch {
-              durationSec = cand.durationSec ?? 12;
-            }
-          }
-          acquiredForVerification.push({
-            segment: task.segment,
-            cand,
-            filePath,
-            fileSizeBytes,
-            sha256,
-            durationSec,
-            mediaId,
+          const qStart = Date.now();
+          const sm = segMetricsMap.get(item.segment.segmentId)!;
+          sm.queriesExecuted += 1;
+          queriesExecuted.push({
+            round,
+            segmentId: item.segment.segmentId,
+            subject: item.segment.subject,
+            query: item.query,
           });
-        } finally {
-          sm.timeConsumedMs += Date.now() - aStart;
-        }
-      });
+          completedQueryKeys.add(`${item.segment.segmentId}:${item.query.toLowerCase()}`);
 
-      // STAGE 3: Visual Verification Queue (Scene Grounding + strict unverified rejection)
-      await runWithConcurrency(acquiredForVerification, verificationConcurrency, async (item) => {
+          try {
+            const searchRes = await searchResilientMediaSources(
+              item.query,
+              effectiveDeps(),
+              createScopedSignal(perQueryTimeoutMs),
+            );
+            allStatuses.push(...searchRes.providerStatuses);
+            if (searchRes.providerStatuses.some((s) => s.provider === 'yt_dlp' && s.status === 'blocked_auth_or_antibot')) {
+              ytDlpBlocked = true;
+            }
+
+            for (const cand of searchRes.candidates) {
+              candidatesByProvider[cand.origin] = (candidatesByProvider[cand.origin] ?? 0) + 1;
+              const candKey = `${cand.origin}:${cand.url}`;
+              if (seenCandidateKeys.has(candKey)) continue;
+              seenCandidateKeys.add(candKey);
+              candidatesFoundCount += 1;
+              sm.candidatesFound += 1;
+
+              if (cand.durationSec && cand.durationSec > maxCandidateDurationSec) {
+                candidateStates.set(candKey, 'rejected');
+                sm.rejectedCount += 1;
+                rejectedCandidates.push({
+                  mediaId: `cand_${candidatesFoundCount}`,
+                  title: cand.title ?? cand.url,
+                  origin: cand.origin,
+                  rejectionCode: 'duration_limit_exceeded',
+                  reason: `Candidato excede limite de duração (${Math.round(cand.durationSec)}s > ${maxCandidateDurationSec}s), evitando download longo bloqueante.`,
+                });
+                continue;
+              }
+
+              const priorityScore = scoreCandidateRelevancePriority(cand, item.segment, input.prompt);
+              candidateStates.set(candKey, 'discovered');
+              discoveredPool.set(candKey, { segmentId: item.segment.segmentId, cand, priorityScore });
+              const list = discoveredBySegment.get(item.segment.segmentId) ?? [];
+              list.push({
+                segment: item.segment,
+                cand,
+                priorityScore,
+              });
+              discoveredBySegment.set(item.segment.segmentId, list);
+            }
+          } catch {
+            // non-fatal discovery timeout for this segment; others continue
+          } finally {
+            sm.timeConsumedMs += Date.now() - qStart;
+          }
+        });
+      }
+
+      if (stageMode === 'discover_only') {
+        saveCheckpoint();
+        continue;
+      }
+
+      // STAGE 2: Prioritized Breadth-First Acquisition Queue (round-robin top candidates across segments)
+      if (stageMode !== 'verify_pending_only') {
+        for (const list of discoveredBySegment.values()) {
+          list.sort((a, b) => b.priorityScore - a.priorityScore);
+        }
+        const acquisitionQueue: Array<{ segment: ScriptCoverageSegment; cand: MediaSourceCandidate }> = [];
+        const maxPerSegThisRound = 2;
+        for (let rank = 0; rank < maxPerSegThisRound; rank += 1) {
+          for (const s of targetSegments) {
+            const entry = discoveredBySegment.get(s.segmentId)?.[rank];
+            if (entry) acquisitionQueue.push({ segment: entry.segment, cand: entry.cand });
+          }
+        }
+
+        const acqStartedAt = Date.now();
+        let downloadAttemptSeq = acquiredFilesCount;
+        const perDownloadTimeoutMs = Math.min(
+          perOperationTimeoutMs,
+          Math.max(
+            Math.min(perOperationTimeoutMs, 25_000),
+            Math.floor((acquisitionBudgetMs * acquisitionConcurrency) / Math.max(1, acquisitionQueue.length)),
+          ),
+        );
+
+        await runWithConcurrency(acquisitionQueue, acquisitionConcurrency, async (task) => {
+          if (
+            input.signal?.aborted ||
+            deadlineController.signal.aborted ||
+            remainingMs() <= 250 ||
+            Date.now() - acqStartedAt >= acquisitionBudgetMs
+          ) {
+            return;
+          }
+          const aStart = Date.now();
+          const sm = segMetricsMap.get(task.segment.segmentId)!;
+          sm.downloadsAttempted += 1;
+          const cand = task.cand;
+          const candKey = `${cand.origin}:${cand.url}`;
+          const acqSeq = downloadAttemptSeq;
+          downloadAttemptSeq += 1;
+          candidateStates.set(candKey, 'downloading');
+          const opSig = createScopedSignal(perDownloadTimeoutMs);
+          let filePath: string | null = null;
+          let downloadFailure: { reasonCode: DownloadFailureReasonCode; detail: string } | null = null;
+          try {
+            if (cand.localPath && existsSync(cand.localPath)) {
+              filePath = cand.localPath;
+            } else if (cand.directDownloadable && /^https?:\/\//i.test(cand.url)) {
+              let candidateOutFile: string | null = null;
+              try {
+                const res = await fetchFn(cand.url, { signal: opSig });
+                if (!res.ok) {
+                  downloadFailure = {
+                    reasonCode: res.status === 429 ? 'anti_bot' : 'http_error',
+                    detail: `HTTP ${res.status} ${res.statusText || ''}`.trim(),
+                  };
+                } else {
+                  const buf = Buffer.from(await res.arrayBuffer());
+                  if (buf.length < 1024) {
+                    downloadFailure = {
+                      reasonCode: 'invalid_file',
+                      detail: `Arquivo muito pequeno (${buf.length} bytes)`,
+                    };
+                  } else if (deadlineController.signal.aborted) {
+                    downloadFailure = {
+                      reasonCode: 'cancelled',
+                      detail: 'Prazo total excedido durante escrita do arquivo',
+                    };
+                  } else {
+                    const ext = extname(new URL(cand.url).pathname) || '.mp4';
+                    const slotNum = acqSeq + 1;
+                    const outDir = join(input.mediaDir, `auto_r${round}_${slotNum}`);
+                    mkdirSync(outDir, { recursive: true });
+                    candidateOutFile = join(outDir, `asset_${slotNum}${ext}`);
+                    writeFileSync(candidateOutFile, buf);
+                    filePath = candidateOutFile;
+                  }
+                }
+              } catch (err) {
+                if (candidateOutFile && existsSync(candidateOutFile)) {
+                  try { unlinkSync(candidateOutFile); } catch { /* ignore */ }
+                }
+                downloadFailure = classifyDownloadFailure(err);
+                filePath = null;
+              }
+            } else if (cand.origin === 'yt_dlp' && !ytDlpBlocked && input.deps.ytDlpAcquireFn) {
+              try {
+                filePath = await input.deps.ytDlpAcquireFn(cand.url, acqSeq, input.mediaDir, opSig);
+                if (!filePath || !existsSync(filePath)) {
+                  downloadFailure = {
+                    reasonCode: 'invalid_file',
+                    detail: 'yt-dlp concluiu sem produzir arquivo válido',
+                  };
+                }
+              } catch (err) {
+                downloadFailure = classifyDownloadFailure(err);
+                if (downloadFailure.reasonCode === 'anti_bot') {
+                  ytDlpBlocked = true;
+                }
+                filePath = null;
+              }
+            } else {
+              downloadFailure = {
+                reasonCode: 'other',
+                detail: ytDlpBlocked ? 'yt-dlp bloqueado por anti-bot nesta execução' : 'Fonte sem método de download disponível',
+              };
+            }
+
+            if (!filePath || !existsSync(filePath)) {
+              const failure = downloadFailure ?? { reasonCode: 'other' as const, detail: 'Falha desconhecida no download' };
+              candidateStates.set(candKey, 'failed');
+              failedDownloads.push({
+                segmentId: task.segment.segmentId,
+                url: cand.url,
+                title: cand.title ?? cand.url,
+                origin: cand.origin,
+                reasonCode: failure.reasonCode,
+                detail: failure.detail,
+              });
+              return;
+            }
+
+            const fileSizeBytes = statSync(filePath).size;
+            if (fileSizeBytes < 1024) {
+              candidateStates.set(candKey, 'failed');
+              failedDownloads.push({
+                segmentId: task.segment.segmentId,
+                url: cand.url,
+                title: cand.title ?? filePath,
+                origin: cand.origin,
+                reasonCode: 'invalid_file',
+                detail: `Arquivo inválido (${fileSizeBytes} bytes)`,
+              });
+              return;
+            }
+
+            const sha256 = createHash('sha256').update(readFileSync(filePath)).digest('hex');
+            if (seenFileHashes.has(sha256)) {
+              duplicateFilesSkipped += 1;
+              candidateStates.set(candKey, 'rejected');
+              sm.rejectedCount += 1;
+              rejectedCandidates.push({
+                mediaId: `dup_${duplicateFilesSkipped}`,
+                title: cand.title ?? filePath,
+                origin: cand.origin,
+                rejectionCode: 'duplicate_file_hash',
+                reason: `Arquivo duplicado idêntico (SHA-256 ${sha256.slice(0, 12)}) descartado para não inflar cobertura.`,
+              });
+              return;
+            }
+            seenFileHashes.add(sha256);
+            acquiredFilesCount += 1;
+            sm.downloadsSucceeded += 1;
+            candidateStates.set(candKey, 'pending_visual_verification');
+
+            const mediaId = `auto_${cand.origin}_${acquiredFilesCount}`;
+            let durationSec = cand.durationSec ?? 12;
+            if (input.probeDurationFn) {
+              try {
+                durationSec = await input.probeDurationFn(filePath);
+              } catch {
+                durationSec = cand.durationSec ?? 12;
+              }
+            }
+            pendingVerificationAssets.set(candKey, {
+              segmentId: task.segment.segmentId,
+              cand,
+              filePath,
+              fileSizeBytes,
+              sha256,
+              durationSec,
+              mediaId,
+              round,
+            });
+          } finally {
+            sm.timeConsumedMs += Date.now() - aStart;
+          }
+        });
+      }
+
+      // STAGE 3: Visual Verification Queue (resumes pending_visual_verification assets FIRST)
+      const verificationQueue = [...pendingVerificationAssets.entries()].map(([candKey, item]) => ({
+        candKey,
+        item,
+      }));
+      await runWithConcurrency(verificationQueue, verificationConcurrency, async ({ candKey, item }) => {
         if (input.signal?.aborted || deadlineController.signal.aborted || remainingMs() <= 200) {
+          // Preserve file & keep state as pending_visual_verification (NEVER classify as editorial rejection!)
           return;
         }
+        const seg = segmentById.get(item.segmentId);
+        if (!seg) return;
         const vStart = Date.now();
-        const sm = segMetricsMap.get(item.segment.segmentId)!;
+        const sm = segMetricsMap.get(item.segmentId)!;
+        if (input.analyzeFrames) visionDiagnostics.callsAttempted += 1;
         try {
           const decision = await evaluateMediaRelevance(
             {
@@ -1021,11 +1237,11 @@ export async function runAutonomousMediaAcquisition(input: {
               sha256: item.sha256,
             },
             {
-              segmentId: item.segment.segmentId,
+              segmentId: seg.segmentId,
               prompt: input.prompt,
-              narrationText: item.segment.narrationText,
+              narrationText: seg.narrationText,
               ...(input.genre ? { genre: input.genre } : {}),
-              ...(item.segment.entities ? { expectedEntities: item.segment.entities } : {}),
+              ...(seg.entities ? { expectedEntities: seg.entities } : {}),
             },
             {
               ...(input.analyzeFrames ? { analyzeFrames: input.analyzeFrames } : {}),
@@ -1034,9 +1250,21 @@ export async function runAutonomousMediaAcquisition(input: {
                 : {}),
             },
           );
+
+          if (decision.visualVerificationError) {
+            if (input.analyzeFrames) visionDiagnostics.callsFailed += 1;
+            visionDiagnostics.providerErrors.push(decision.visualVerificationError.slice(0, 200));
+            // Infra/provider failure during verification: keep file in pending_visual_verification to resume later!
+            candidateStates.set(candKey, 'pending_visual_verification');
+            return;
+          }
+
+          if (input.analyzeFrames) visionDiagnostics.callsSucceeded += 1;
+          pendingVerificationAssets.delete(candKey);
           relevanceDecisions.push(decision);
 
           if (!decision.accepted) {
+            candidateStates.set(candKey, 'rejected');
             sm.rejectedCount += 1;
             rejectedCandidates.push({
               mediaId: item.mediaId,
@@ -1048,6 +1276,7 @@ export async function runAutonomousMediaAcquisition(input: {
             return;
           }
 
+          candidateStates.set(candKey, 'verified');
           sm.approvedCount += 1;
           approvedAssets.push({
             mediaId: item.mediaId,
@@ -1069,14 +1298,14 @@ export async function runAutonomousMediaAcquisition(input: {
             decision,
           });
 
-          if (round > 1 && uncoveredAfterRound1.has(item.segment.segmentId)) {
+          if (round > 1 && uncoveredAfterRound1.has(seg.segmentId)) {
             autoResolvedGaps.push({
-              segmentId: item.segment.segmentId,
-              subject: item.segment.subject,
+              segmentId: seg.segmentId,
+              subject: seg.subject,
               resolvedInRound: round,
               mediaId: item.mediaId,
             });
-            uncoveredAfterRound1.delete(item.segment.segmentId);
+            uncoveredAfterRound1.delete(seg.segmentId);
           }
         } finally {
           sm.timeConsumedMs += Date.now() - vStart;
@@ -1110,6 +1339,9 @@ export async function runAutonomousMediaAcquisition(input: {
 
       if (latestCoverage.gatePassed) {
         stoppedReason = 'coverage_satisfied';
+        break;
+      }
+      if (stageMode === 'verify_pending_only' && pendingVerificationAssets.size === 0) {
         break;
       }
     }
@@ -1166,6 +1398,42 @@ export async function runAutonomousMediaAcquisition(input: {
       reason: `Cobertura insuficiente após ${roundsExecuted} rodada(s) automática(s): ${s.usableDurationSec}s / ${s.expectedDurationSec}s.`,
     }));
 
+  const stateCounts: Record<CandidateLifecycleState, number> = {
+    discovered: 0,
+    downloading: 0,
+    downloaded: 0,
+    pending_visual_verification: 0,
+    verified: 0,
+    rejected: 0,
+    failed: 0,
+  };
+  for (const st of candidateStates.values()) {
+    stateCounts[st] = (stateCounts[st] ?? 0) + 1;
+  }
+  const failureReasons: Record<DownloadFailureReasonCode, number> = {
+    timeout: 0,
+    anti_bot: 0,
+    http_error: 0,
+    format_unavailable: 0,
+    invalid_file: 0,
+    cancelled: 0,
+    other: 0,
+  };
+  for (const f of failedDownloads) {
+    failureReasons[f.reasonCode] = (failureReasons[f.reasonCode] ?? 0) + 1;
+  }
+  const rejectionReasons: Record<string, number> = {};
+  for (const r of rejectedCandidates) {
+    const code = r.rejectionCode ?? 'other';
+    rejectionReasons[code] = (rejectionReasons[code] ?? 0) + 1;
+  }
+  const totalDownloadsAttempted = [...segMetricsMap.values()].reduce(
+    (acc, s) => acc + s.downloadsAttempted,
+    0,
+  );
+  const roundRate = (num: number, den: number): number =>
+    den > 0 ? Number((num / den).toFixed(3)) : 0;
+
   return {
     roundsExecuted,
     elapsedMs: Date.now() - startedAt,
@@ -1191,6 +1459,23 @@ export async function runAutonomousMediaAcquisition(input: {
     unresolvedGapsForReview,
     providerStatuses: allStatuses,
     segmentMetrics: [...segMetricsMap.values()],
+    funnelMetrics: {
+      counts: stateCounts,
+      conversionRates: {
+        discoveryToDownloadAttemptRate: roundRate(totalDownloadsAttempted, candidatesFoundCount),
+        downloadAttemptToDownloadedRate: roundRate(acquiredFilesCount, totalDownloadsAttempted),
+        downloadedToVerifiedRate: roundRate(approvedAssets.length, acquiredFilesCount),
+        discoveredToVerifiedRate: roundRate(approvedAssets.length, candidatesFoundCount),
+      },
+      failureReasons,
+      rejectionReasons,
+      failedDownloads: failedDownloads.slice(0, 60),
+      pendingVerificationCount: pendingVerificationAssets.size,
+      visionDiagnostics: {
+        ...visionDiagnostics,
+        providerErrors: [...new Set(visionDiagnostics.providerErrors)].slice(0, 15),
+      },
+    },
     coverageReport: latestCoverage,
     approvedAssets,
     approvedMediaDetails,

@@ -360,20 +360,30 @@ export async function extractVerificationFrames(
 ): Promise<string[]> {
   mkdirSync(framesDir, { recursive: true });
   const outputs: string[] = [];
+  let lastError: unknown = null;
   for (let i = 0; i < timestampsSec.length; i += 1) {
-    const ts = timestampsSec[i] ?? 0;
+    const ts = Math.max(0, timestampsSec[i] ?? 0);
     const outPath = join(framesDir, `frame_${String(i + 1).padStart(2, '0')}_${ts}s.png`);
-    await execFileAsync('ffmpeg', [
-      '-y',
-      '-ss',
-      String(ts),
-      '-i',
-      mp4Path,
-      '-frames:v',
-      '1',
-      outPath,
-    ]);
-    outputs.push(outPath);
+    try {
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-ss',
+        String(ts),
+        '-i',
+        mp4Path,
+        '-frames:v',
+        '1',
+        outPath,
+      ]);
+      if (existsSync(outPath)) {
+        outputs.push(outPath);
+      }
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (outputs.length === 0 && lastError) {
+    throw lastError;
   }
   return outputs;
 }

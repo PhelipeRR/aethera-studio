@@ -73,14 +73,32 @@ export const ACQUISITION_FORMAT = 'bv*[height>=1080][vcodec^=avc1]+ba[ext=m4a]/b
 export const ACQUISITION_FORMAT_ID = 'video-1080p-plus';
 const PROGRESS_TAG = 'NBPROG';
 
-export function buildAcquisitionArgs(input: { url: string; directory: string; fileStem: string; ffmpeg?: string }): string[] {
+export function buildAcquisitionFormat(maxHeight?: number): string {
+  if (!maxHeight || !Number.isFinite(maxHeight) || maxHeight <= 0) {
+    return ACQUISITION_FORMAT;
+  }
+  const h = Math.round(maxHeight);
+  return `bv*[height<=${h}][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=${h}]+ba/b[height<=${h}]/bv*[vcodec^=avc1]+ba[ext=m4a]/b`;
+}
+
+export function buildAcquisitionArgs(input: {
+  url: string;
+  directory: string;
+  fileStem: string;
+  ffmpeg?: string;
+  maxHeight?: number;
+  downloadSection?: string;
+  maxFilesize?: string;
+}): string[] {
   const url = new URL(input.url);
   if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('invalid: a origem precisa ser http(s).');
   if (!/^[a-z0-9._-]{1,80}$/i.test(input.fileStem)) throw new Error('invalid: nome de arquivo inválido.');
   return [
     '--no-playlist', '--continue', '--no-overwrites', '--restrict-filenames', '--no-warnings', '--newline',
     '--progress-template', `download:${PROGRESS_TAG} %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s`,
-    '--print', 'after_move:filepath', '-f', ACQUISITION_FORMAT, '--merge-output-format', 'mp4',
+    '--print', 'after_move:filepath', '-f', buildAcquisitionFormat(input.maxHeight), '--merge-output-format', 'mp4',
+    ...(input.downloadSection ? ['--download-sections', input.downloadSection] : []),
+    ...(input.maxFilesize ? ['--max-filesize', input.maxFilesize] : []),
     ...(input.ffmpeg ? ['--ffmpeg-location', input.ffmpeg] : []), '-P', input.directory, '-o', `${input.fileStem}.%(ext)s`, '--', url.href,
   ];
 }
@@ -109,7 +127,19 @@ export function classifyAcquisitionError(message: string): { code: AcquisitionEr
  * Downloads one source into `<root>/<relativeDir>/<fileStem>.mp4`. `--continue` keeps the `.part` file of an
  * interrupted download, so the next attempt resumes instead of starting over. Returns the path relative to root.
  */
-export async function acquireWithYtDlp(input: { ytDlp: YtDlpCommand; url: string; root: string; relativeDir: string; fileStem: string; ffmpeg?: string; signal?: AbortSignal; onProgress?: (progress: { bytesDone: number; bytesTotal: number | null }) => void }): Promise<{ relativePath: string }> {
+export async function acquireWithYtDlp(input: {
+  ytDlp: YtDlpCommand;
+  url: string;
+  root: string;
+  relativeDir: string;
+  fileStem: string;
+  ffmpeg?: string;
+  maxHeight?: number;
+  downloadSection?: string;
+  maxFilesize?: string;
+  signal?: AbortSignal;
+  onProgress?: (progress: { bytesDone: number; bytesTotal: number | null }) => void;
+}): Promise<{ relativePath: string }> {
   if (isAbsolute(input.relativeDir) || input.relativeDir.split(/[/\\]/).includes('..')) throw new Error('forbidden: a pasta de mídia precisa ficar dentro do projeto.');
   const base = realpathSync(input.root);
   const directory = resolve(base, input.relativeDir);
@@ -127,7 +157,22 @@ export async function acquireWithYtDlp(input: { ytDlp: YtDlpCommand; url: string
     }
   };
   try {
-    await runVelixCommand(input.ytDlp.command, [...input.ytDlp.prefix, ...buildAcquisitionArgs({ url: input.url, directory, fileStem: input.fileStem, ...(input.ffmpeg ? { ffmpeg: input.ffmpeg } : {}) })], { cwd: directory, ...(input.signal ? { signal: input.signal } : {}), onOutput });
+    await runVelixCommand(
+      input.ytDlp.command,
+      [
+        ...input.ytDlp.prefix,
+        ...buildAcquisitionArgs({
+          url: input.url,
+          directory,
+          fileStem: input.fileStem,
+          ...(input.ffmpeg ? { ffmpeg: input.ffmpeg } : {}),
+          ...(input.maxHeight !== undefined ? { maxHeight: input.maxHeight } : {}),
+          ...(input.downloadSection ? { downloadSection: input.downloadSection } : {}),
+          ...(input.maxFilesize ? { maxFilesize: input.maxFilesize } : {}),
+        }),
+      ],
+      { cwd: directory, ...(input.signal ? { signal: input.signal } : {}), onOutput },
+    );
   } catch (error) {
     throw new Error(classifyAcquisitionError(input.signal?.aborted ? 'cancelled:' : error instanceof Error ? error.message : String(error)).message, { cause: error });
   }
