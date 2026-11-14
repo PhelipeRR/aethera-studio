@@ -5,6 +5,10 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CinemaProductionPackage } from '../index.js';
 import {
+  verifyEditorialConsistency,
+  type EditorialConsistencyReport,
+} from '../editorial/editorial-integrity.js';
+import {
   detectMediaAnomalies,
   extractWaveformPeaks,
   probeRealMp4,
@@ -70,6 +74,8 @@ export interface RealRenderResult {
   };
   audioTimeline: AudioTimelineEvent[];
   audioAudit: SoundDirectorAuditReport;
+  narrationTextSent?: string;
+  editorialConsistency?: EditorialConsistencyReport;
 }
 
 async function synthesizeViaVoiceStudio(
@@ -599,12 +605,17 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
 
   // 3. Real Narration (VoiceStudio -> Windows SAPI PT-BR fallback -> procedural cue) + Sound Director Audit Gate + Bus Mix
   const narrationWav = join(workDir, 'narration.wav');
-  const scriptNarrationText = (input.pkg.direction.narrativeBeats ?? [])
+  const canonicalFullText = input.pkg.editorialScript?.fullSpokenText?.trim();
+  const legacyBeatsText = (input.pkg.direction.narrativeBeats ?? [])
     .map((b) => b.summary.trim())
     .filter(Boolean)
-    .join(' ')
-    .slice(0, 3800);
-  const narrationTextToSpeak = scriptNarrationText || input.pkg.direction.brief.prompt.slice(0, 500);
+    .join(' ');
+  const narrationTextToSpeak = (canonicalFullText || legacyBeatsText || input.pkg.direction.brief.prompt).slice(0, 3800);
+  const editorialConsistency = verifyEditorialConsistency({
+    ...(input.pkg.editorialScript ? { editorialScript: input.pkg.editorialScript } : {}),
+    ttsTextSent: narrationTextToSpeak,
+    timelineClipCount: clipSpecs.length,
+  });
   const narrationMode = await synthesizeNarrationWav(
     narrationTextToSpeak,
     narrationWav,
@@ -902,5 +913,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     },
     audioTimeline,
     audioAudit,
+    narrationTextSent: narrationTextToSpeak,
+    editorialConsistency,
   };
 }

@@ -1,6 +1,7 @@
 export * from './ir/timeline-ir.js';
 export * from './analysis/media-intelligence.js';
 export * from './director/cinematography-director.js';
+export * from './editorial/editorial-integrity.js';
 export * from './comedy/comedy-director.js';
 export * from './edit/editorial-engine.js';
 export * from './edit/prompt-revision.js';
@@ -55,7 +56,12 @@ import {
   type RenderQualityProfile,
   type SegmentRenderJob,
 } from './edit/editorial-engine.js';
-import { buildColorPipelinePlan, type ColorPipelinePlan } from './color/color-pipeline.js';
+import {
+  buildEditorialScript,
+  type EditorialScript,
+} from './editorial/editorial-integrity.js';
+import {
+  buildColorPipelinePlan, type ColorPipelinePlan } from './color/color-pipeline.js';
 import {
   buildSoundDesignPlan,
   type LoudnessPlatform,
@@ -92,10 +98,12 @@ export interface ProduceCinemaPackageInput {
     treatment?: string;
     beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
   };
+  editorialScript?: EditorialScript;
 }
 
 export interface CinemaProductionPackage {
   capabilities: CapabilityMatrix;
+  editorialScript?: EditorialScript;
   direction: CreativeDirectionPackage;
   scriptValidation: ScriptValidationReport;
   timeline: CanonicalTimeline;
@@ -257,8 +265,29 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
   const scorecard = evaluateEnsemble(timeline, findings);
   const releaseGates = evaluateReleaseGates(findings, scorecard);
 
+  const editorialScript: EditorialScript =
+    input.editorialScript ??
+    buildEditorialScript({
+      scriptId: `${input.projectId}_script`,
+      source: input.externalDirection ? 'agent' : 'deterministic_draft',
+      treatment: direction.treatment,
+      academyRulesApplied: (input.appliedMemories ?? []).map((m) => m.rule),
+      segments: direction.narrativeBeats.map((beat, idx) => ({
+        segmentId: `seg_${idx + 1}`,
+        beatId: beat.beatId,
+        stage: beat.stage,
+        title: `Cena ${idx + 1}`,
+        spokenText: beat.summary,
+        estimatedDurationSec: Math.round(
+          beat.timeRange.duration.value / Math.max(1, beat.timeRange.duration.rate),
+        ),
+        approved: true,
+      })),
+    });
+
   return {
     capabilities,
+    editorialScript,
     direction,
     scriptValidation,
     timeline,

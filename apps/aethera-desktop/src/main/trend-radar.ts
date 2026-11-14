@@ -450,7 +450,7 @@ export class TrendRadarEngine {
         variant === 2
           ? `Começar com a evidência mais recente (${idea.evidences[0]?.source ?? 'fonte verificada'}) nos primeiros 10 segundos antes de abrir o contexto.`
           : `Abrir com pergunta central provocativa ligada a "${idea.title}" e contraste visual imediato.`,
-      narrativeStructure: `Ato I: Gancho e promessa (${Math.max(1, Math.round(durationMin * 0.15))} min) -> Ato II: Fatos verificados e desenvolvimento em capítulos (${Math.max(2, Math.round(durationMin * 0.65))} min) -> Ato III: Clímax, síntese e fechamento (${Math.max(1, Math.round(durationMin * 0.2))} min).`,
+      narrativeStructure: `Abertura e gancho (${Math.max(1, Math.round(durationMin * 0.15))} min) -> Desenvolvimento em capítulos (${Math.max(2, Math.round(durationMin * 0.65))} min) -> Clímax e conclusão (${Math.max(1, Math.round(durationMin * 0.2))} min).`,
       factsAndTopics: idea.evidences.map((e) => `• ${e.title} (${e.source})`).join('\n'),
       verifiableReferences: refs,
       sceneProposal: `${idea.mediaAvailability} Alternar trechos contextuais com planos médios/fechados e quadros de apoio.`,

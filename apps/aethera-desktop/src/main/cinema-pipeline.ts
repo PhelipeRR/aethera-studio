@@ -30,6 +30,8 @@ import {
   type RenderQualityProfile,
   type ScriptValidationReport,
   type SourceMediaRecord,
+  buildEditorialScript,
+  type EditorialScript,
 } from '@neuralbridge/cinema';
 import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
 
@@ -45,6 +47,7 @@ export type ProductionStageState =
   | 'previa'
   | 'editor'
   | 'paused_pending_media'
+  | 'paused_pending_script'
   | 'cancelled'
   | 'error';
 
@@ -67,6 +70,8 @@ export interface StagedProductionJob {
   renderProfile: RenderQualityProfile;
   useNvenc: boolean;
   voiceStudioVoiceId?: string;
+  allowDeterministicScriptFallback?: boolean;
+  editorialScript?: EditorialScript;
   state: ProductionStageState;
   progressPct: number;
   message: string;
@@ -148,6 +153,8 @@ export interface StagedPipelineDeps {
   }) => Promise<{
     treatment?: string;
     beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
+    providerUsed?: string;
+    academyRulesApplied?: string[];
   } | null>;
 }
 
@@ -684,9 +691,14 @@ export class StagedCinemaPipeline {
         .map((m) => ({ memoryId: m.memoryId, rule: m.content, directorId: m.directorId }));
 
       let externalDirection:
-        | { treatment?: string; beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }> }
+        | {
+            treatment?: string;
+            beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
+            providerUsed?: string;
+            academyRulesApplied?: string[];
+          }
         | undefined;
-      if (this.deps.generateAgentScript) {
+      if (!job.editorialScript && this.deps.generateAgentScript) {
         try {
           const generated = await this.deps.generateAgentScript({
             projectId: job.projectId,
@@ -702,6 +714,37 @@ export class StagedCinemaPipeline {
         } catch {
           externalDirection = undefined;
         }
+        if (!externalDirection && !job.allowDeterministicScriptFallback) {
+          job.state = 'paused_pending_script';
+          job.progressPct = 52;
+          job.error = 'script_generation_failed';
+          job.message =
+            'Todos os agentes falharam ao gerar o roteiro. Nenhum template genérico foi usado silenciosamente — clique em Retomar Projeto para tentar novamente.';
+          this.saveJob(job);
+          return job;
+        }
+      }
+      if (externalDirection?.beats?.length) {
+        const beatDur = Math.max(
+          4,
+          Math.round(job.targetDurationSec / externalDirection.beats.length),
+        );
+        job.editorialScript = buildEditorialScript({
+          scriptId: `${job.projectId}_script`,
+          source: 'agent',
+          ...(externalDirection.providerUsed ? { providerUsed: externalDirection.providerUsed } : {}),
+          treatment: externalDirection.treatment ?? job.prompt,
+          academyRulesApplied: externalDirection.academyRulesApplied ?? [],
+          segments: externalDirection.beats.map((b, idx) => ({
+            segmentId: `seg_${idx + 1}`,
+            beatId: `nbeat_${idx + 1}_${b.stage ?? 'progression'}`,
+            stage: b.stage ?? 'progression',
+            title: `Cena ${idx + 1}`,
+            spokenText: b.summary,
+            estimatedDurationSec: beatDur,
+            approved: true,
+          })),
+        });
       }
       job.completedStages = [...new Set([...job.completedStages, 'roteiro'])] as ProductionStageState[];
 
@@ -740,6 +783,7 @@ export class StagedCinemaPipeline {
         mediaCatalog: fallbackCatalog,
         ...(activeMemories.length > 0 ? { appliedMemories: activeMemories } : {}),
         ...(externalDirection ? { externalDirection } : {}),
+        ...(job.editorialScript ? { editorialScript: job.editorialScript } : {}),
       });
       job.scriptValidation = pkg.scriptValidation;
 

@@ -1761,82 +1761,157 @@ export function registerAetheraDomainIpc(options: {
           limit: 8,
         });
         const academyMaterials = academyEngine.getSnapshot().materials.slice(0, 4);
-        const academyRulesBlock = [
-          ...learnedMemories.map((m) => `- [${m.kind}] ${m.title}: ${m.content}`),
-          ...academyMaterials.map((mat) => `- [Estudo: ${mat.title} (${mat.kind})]`),
+        const academyRulesApplied = [
+          ...learnedMemories.map((m) => `[${m.kind}] ${m.title}: ${m.content}`),
+          ...academyMaterials.map((mat) => `[Estudo: ${mat.title} (${mat.kind})]`),
         ]
           .filter(Boolean)
           .slice(0, 8);
 
-        const agentPrompt = [
-          `Você é o Diretor de Roteiro e Narração do Aethera Studio.`,
-          `Escreva um roteiro REAL, envolvente e natural em português do Brasil, pronto para ser lido em voz alta por um narrador humano em vídeo de ${input.targetDurationSec}s (${Math.round(input.targetDurationSec / 60)} min).`,
-          `Briefing/Tema: "${input.prompt}"`,
-          `Gênero: ${input.genre ?? 'gameplay_essay'} | Humor contextual: ${input.humorIntensity}% | Tópicos de pesquisa: ${input.queries.join(', ')}`,
-          `Meta de narração falada: ~${wordsTarget} palavras divididas em ${desiredBeats} cenas/beats proporcionais à duração.`,
-          ...(academyRulesBlock.length > 0
-            ? [`Regras aprendidas na Academy e Memória Evolutiva (aplique obrigatoriamente):`, ...academyRulesBlock]
-            : []),
-          `REGRAS OBRIGATÓRIAS DE QUALIDADE:`,
-          `- Escreva FALAS NATURAIS DE LOCUTOR (como um canal profissional do YouTube/documentário), NUNCA descrições de cena ou metalinguagem.`,
-          `- PROIBIDO usar frases de template ou burocráticas como: "Abertura cinematográfica apresentando", "Aethera Studio apresenta", "Ato I", "Ato 1", "Capítulo X de Y sobre", "Contextualização e promessa", ou repetir campos do briefing como "Título:", "Nicho:", "Duração alvo:".`,
-          `- Comece já prendendo a atenção do espectador com um fato forte, pergunta ou contraste real sobre o tema.`,
-          `Responda SOMENTE com JSON válido no formato: {"treatment":"resumo da abordagem editorial","beats":[{"stage":"hook|promise|progression|tension|climax|resolution|cta","summary":"fala exata que será narrada em voz alta nesta cena"}]}`,
-        ].join('\n');
+        const checkpointDir = join(
+          app.getPath('userData'),
+          'cinema-workspaces',
+          input.projectId.replace(/[^a-zA-Z0-9_-]/g, '_'),
+          'temp',
+        );
+        mkdirSync(checkpointDir, { recursive: true });
+        const checkpointFile = join(checkpointDir, 'script-checkpoint.json');
+
+        type BeatItem = {
+          stage?: 'hook' | 'promise' | 'progression' | 'tension' | 'climax' | 'resolution' | 'cta';
+          summary: string;
+        };
+        let checkpoint: {
+          treatment?: string;
+          providerUsed?: string;
+          blocks: BeatItem[][];
+        } = { blocks: [] };
+        if (existsSync(checkpointFile)) {
+          try {
+            const loaded = JSON.parse(readFileSync(checkpointFile, 'utf8')) as typeof checkpoint;
+            if (Array.isArray(loaded.blocks)) checkpoint = loaded;
+          } catch {
+            // ignore corrupted checkpoint
+          }
+        }
 
         const parseScriptOutput = (raw: string) => {
           const jsonMatch = raw.match(/\{[\s\S]*\}/);
           if (!jsonMatch) return null;
           const parsed = JSON.parse(jsonMatch[0]) as {
             treatment?: string;
-            beats?: Array<{ stage?: 'hook' | 'promise' | 'progression' | 'tension' | 'climax' | 'resolution' | 'cta'; summary?: string }>;
+            beats?: BeatItem[];
           };
-          if (!Array.isArray(parsed.beats) || parsed.beats.length < 6) return null;
+          if (!Array.isArray(parsed.beats) || parsed.beats.length === 0) return null;
           const cleanBeats = parsed.beats.filter(
-            (b): b is { stage?: 'hook' | 'promise' | 'progression' | 'tension' | 'climax' | 'resolution' | 'cta'; summary: string } =>
-              typeof b?.summary === 'string' && b.summary.trim().length > 0,
+            (b): b is BeatItem => typeof b?.summary === 'string' && b.summary.trim().length > 0,
           );
-          if (cleanBeats.length < 6) return null;
+          if (cleanBeats.length === 0) return null;
           return {
             ...(typeof parsed.treatment === 'string' ? { treatment: parsed.treatment } : {}),
             beats: cleanBeats,
           };
         };
 
-        const agy = await detectAntigravityCli();
-        if (agy.installed && agy.authenticated !== false) {
-          try {
-            const res = await runAntigravityPrompt({
-              prompt: agentPrompt,
-              cwd: app.getPath('userData'),
-              timeoutMs: 90_000,
-            });
-            const parsed = parseScriptOutput(res.output ?? '');
-            if (parsed) return parsed;
-          } catch {
-            // fallback to next agent
-          }
-        }
-
         const execFileAsync = promisify(execFile);
-        for (const [cmd, args] of [
-          ['claude', ['-p', '--output-format', 'text', agentPrompt]],
-          ['codex', ['exec', agentPrompt]],
-        ] as Array<[string, string[]]>) {
-          try {
-            const { stdout } = await execFileAsync(cmd, args, {
-              cwd: app.getPath('userData'),
-              timeout: 90_000,
-              maxBuffer: 4 * 1024 * 1024,
-            });
-            const parsed = parseScriptOutput(stdout);
-            if (parsed) return parsed;
-          } catch {
-            // try next provider
+        const agy = await detectAntigravityCli();
+
+        const runWithCascade = async (promptText: string, timeoutMs: number) => {
+          if (agy.installed && agy.authenticated !== false) {
+            try {
+              const res = await runAntigravityPrompt({
+                prompt: promptText,
+                cwd: app.getPath('userData'),
+                timeoutMs,
+              });
+              const parsed = parseScriptOutput(res.output ?? '');
+              if (parsed) return { ...parsed, providerUsed: 'antigravity-cli' };
+            } catch {
+              // fallback to claude/codex
+            }
           }
+          for (const [provider, cmd, args] of [
+            ['claude-cli', 'claude', ['-p', '--output-format', 'text', promptText]],
+            ['codex-cli', 'codex', ['exec', promptText]],
+          ] as Array<[string, string, string[]]>) {
+            try {
+              const { stdout } = await execFileAsync(cmd, args, {
+                cwd: app.getPath('userData'),
+                timeout: timeoutMs,
+                maxBuffer: 4 * 1024 * 1024,
+              });
+              const parsed = parseScriptOutput(stdout);
+              if (parsed) return { ...parsed, providerUsed: provider };
+            } catch {
+              // try next provider
+            }
+          }
+          return null;
+        };
+
+        // Adaptive block/chapter splitting for longer scripts (> 6 beats) with per-block checkpoints
+        const blockSize = desiredBeats > 6 ? 5 : desiredBeats;
+        const totalBlocks = Math.ceil(desiredBeats / blockSize);
+        let lastProviderUsed = checkpoint.providerUsed;
+
+        for (let blockIdx = 0; blockIdx < totalBlocks; blockIdx += 1) {
+          if (checkpoint.blocks[blockIdx] && checkpoint.blocks[blockIdx]!.length > 0) {
+            continue;
+          }
+          const remainingBeats = desiredBeats - blockIdx * blockSize;
+          const countInBlock = Math.min(blockSize, remainingBeats);
+          const blockWordsTarget = Math.max(80, Math.round((wordsTarget / desiredBeats) * countInBlock));
+          const adaptiveTimeoutMs = Math.max(45_000, countInBlock * 14_000);
+          const prevTail = checkpoint.blocks
+            .flat()
+            .slice(-2)
+            .map((b) => b.summary.slice(0, 140))
+            .join(' | ');
+
+          const blockRole =
+            blockIdx === 0
+              ? 'Bloco inicial (hook de abertura, promessa e primeiros capítulos)'
+              : blockIdx === totalBlocks - 1
+                ? 'Bloco final (tensão, clímax e conclusão natural)'
+                : `Bloco intermediário ${blockIdx + 1}/${totalBlocks} (capítulos de desenvolvimento)`;
+
+          const blockPrompt = [
+            `Você é o Diretor de Roteiro e Narração do Aethera Studio.`,
+            `Escreva ${blockRole} de um roteiro REAL e natural em português do Brasil, pronto para ser lido em voz alta.`,
+            `Briefing/Tema: "${input.prompt}"`,
+            `Gênero: ${input.genre ?? 'gameplay_essay'} | Humor contextual: ${input.humorIntensity}% | Tópicos: ${input.queries.join(', ')}`,
+            `Gere exatamente ${countInBlock} cenas/beats com ~${blockWordsTarget} palavras faladas no total.`,
+            ...(prevTail ? [`Continuação direta após: "${prevTail}"`] : []),
+            ...(academyRulesApplied.length > 0
+              ? [`Regras aprendidas na Academy (aplique obrigatoriamente):`, ...academyRulesApplied.map((r) => `- ${r}`)]
+              : []),
+            `REGRAS OBRIGATÓRIAS:`,
+            `- Escreva FALAS NATURAIS DE LOCUTOR, NUNCA descrições técnicas de cena.`,
+            `- PROIBIDO: "Abertura cinematográfica apresentando", "Aethera Studio apresenta", "Ato I", "Capítulo X de Y sobre", "Título:", "Nicho:", "Duração alvo:".`,
+            `Responda SOMENTE com JSON válido: {"treatment":"resumo editorial","beats":[{"stage":"hook|promise|progression|tension|climax|resolution|cta","summary":"fala exata narrada em voz alta"}]}`,
+          ].join('\n');
+
+          const res = await runWithCascade(blockPrompt, adaptiveTimeoutMs);
+          if (!res) {
+            return null;
+          }
+          if (!checkpoint.treatment && res.treatment) {
+            checkpoint.treatment = res.treatment;
+          }
+          lastProviderUsed = res.providerUsed;
+          checkpoint.providerUsed = res.providerUsed;
+          checkpoint.blocks[blockIdx] = res.beats;
+          writeFileSync(checkpointFile, JSON.stringify(checkpoint, null, 2), 'utf8');
         }
 
-        return null;
+        const allBeats = checkpoint.blocks.flat();
+        if (allBeats.length < 6) return null;
+        return {
+          ...(checkpoint.treatment ? { treatment: checkpoint.treatment } : {}),
+          ...(lastProviderUsed ? { providerUsed: lastProviderUsed } : {}),
+          academyRulesApplied,
+          beats: allBeats,
+        };
       } catch {
         return null;
       }

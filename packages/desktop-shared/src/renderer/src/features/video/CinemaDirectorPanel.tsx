@@ -110,7 +110,7 @@ function computeJobTiming(
   fallbackStartMs?: number,
 ): { elapsedLabel: string; etaLabel: string; isActive: boolean } {
   if (!job) return { elapsedLabel: '0s', etaLabel: 'Calculando...', isActive: false };
-  const terminal = ['editor', 'cancelled', 'error', 'paused_pending_media'].includes(job.state);
+  const terminal = ['editor', 'cancelled', 'error', 'paused_pending_media', 'paused_pending_script'].includes(job.state);
   const isActive = !terminal;
   let startMs = job.startedAt ? Date.parse(job.startedAt) : Number.NaN;
   if (!Number.isFinite(startMs)) {
@@ -129,8 +129,12 @@ function computeJobTiming(
   if (job.state === 'editor' || job.progressPct >= 100) {
     return { elapsedLabel, etaLabel: 'Concluído', isActive: false };
   }
-  if (job.state === 'paused_pending_media') {
-    return { elapsedLabel, etaLabel: 'Aguardando mídia', isActive: false };
+  if (job.state === 'paused_pending_media' || job.state === 'paused_pending_script') {
+    return {
+      elapsedLabel,
+      etaLabel: job.state === 'paused_pending_script' ? 'Aguardando roteiro' : 'Aguardando mídia',
+      isActive: false,
+    };
   }
   if (job.state === 'cancelled' || job.state === 'error') {
     return { elapsedLabel, etaLabel: job.state === 'cancelled' ? 'Cancelado' : 'Interrompido', isActive: false };
@@ -147,6 +151,7 @@ const STAGE_DISPLAY_LABELS: Record<string, string> = {
   pesquisa: 'Pesquisa',
   aquisicao: 'Aquisição de Mídia',
   paused_pending_media: 'Pausado (Mídia Pendente)',
+  paused_pending_script: 'Pausado (Roteiro Pendente)',
   roteiro: 'Roteiro',
   planejamento: 'Planejamento',
   montagem: 'Montagem',
@@ -941,7 +946,7 @@ export function CinemaDirectorPanel() {
                     Cancelar
                   </button>
                 )}
-                {!busy && stagedJob && (stagedJob.state === 'cancelled' || stagedJob.state === 'error') && (
+                {!busy && stagedJob && (stagedJob.state === 'cancelled' || stagedJob.state === 'error' || stagedJob.state === 'paused_pending_script') && (
                   <button
                     type="button"
                     onClick={handleResumeStaged}
