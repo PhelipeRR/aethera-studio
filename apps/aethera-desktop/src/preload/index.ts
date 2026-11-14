@@ -62,6 +62,10 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaGetProductionState: (projectId: string) => ipcRenderer.invoke('cinema:get-production-state', projectId),
   cinemaResolvePendingMedia: (input: Record<string, unknown>) =>
     ipcRenderer.invoke('cinema:resolve-pending-media', input),
+  cinemaUpdateColorGrade: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke('cinema:update-color-grade', input),
+  cinemaNleOp: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke('cinema:nle-op', input),
   onCinemaProductionProgress: (listener: (job: unknown) => void) => {
     const wrapped = (_event: unknown, job: unknown) => listener(job);
     ipcRenderer.on('cinema:production-progress', wrapped);

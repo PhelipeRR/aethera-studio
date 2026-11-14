@@ -27,10 +27,11 @@ import {
 import { Link, useSearchParams } from 'react-router';
 
 type LeftBinTab = 'media' | 'effects' | 'transitions' | 'titles' | 'sfx' | 'music';
-type InspectorTab = 'transform' | 'color' | 'audio' | 'speed';
+type InspectorTab = 'transform' | 'color' | 'audio' | 'subtitles' | 'speed';
 
 interface EditorClip {
   clipId: string;
+  trackId?: string;
   label: string;
   startSec: number;
   durationSec: number;
@@ -39,6 +40,8 @@ interface EditorClip {
   sourceUri?: string | undefined;
   sourceKind?: 'video' | 'image' | 'audio';
   thumbnailUrl?: string | null;
+  effects?: Array<{ effectId: string; kind: string; params: Record<string, number | string | boolean>; enabled: boolean }>;
+  keyframes?: Array<{ keyframeId: string; property: string; value: number | string; time: { value: number; rate: number } }>;
 }
 
 interface ImportedAsset {
@@ -88,16 +91,29 @@ interface EditorPackageView {
     resolution: { width: number; height: number };
     clips: Array<{
       clipId: string;
+      trackId?: string;
       label: string;
       speed: number;
       mediaId?: string;
       sourceMediaId?: string;
-      effects?: string[];
+      effects?: Array<{ effectId: string; kind: string; params: Record<string, number | string | boolean>; enabled: boolean }>;
+      keyframes?: Array<{ keyframeId: string; property: string; value: number | string; time: { value: number; rate: number } }>;
       timelineRange: { start: { value: number; rate: number }; duration: { value: number; rate: number } };
     }>;
     sourceMedia: Record<string, { mediaId: string; kind: string; uri?: string; width?: number; height?: number; license: string }>;
   };
-  colorPlan: { targetSpace: string; ffmpegColorFilterChain: string; grades: Array<{ skinToneProtected: boolean }> };
+  colorPlan: {
+    targetSpace: string;
+    ffmpegColorFilterChain: string;
+    grades: Array<{
+      skinToneProtected: boolean;
+      exposureCompensationEv?: number;
+      contrastGain?: number;
+      saturation?: number;
+      temperatureKelvinDelta?: number;
+      lut?: { lutId: string; name: string };
+    }>;
+  };
   soundPlan: {
     platformProfile: { integratedLufs: number };
     stems: AudioStemView[];
@@ -153,6 +169,19 @@ interface CinemaBridge {
     ffmpegColorFilterChain: string;
     targetSpace?: 'rec709' | 'rec2020_hdr' | 'srgb_web';
   }) => Promise<{ pkg: EditorPackageView }>;
+  cinemaUpdateColorGrade?: (input: {
+    projectId: string;
+    controls: {
+      targetSpace?: 'rec709' | 'rec2020_hdr' | 'srgb_web';
+      exposureCompensationEv: number;
+      contrastGain: number;
+      saturation: number;
+      temperatureKelvinDelta: number;
+      curves?: { shadows: number; midtones: number; highlights: number };
+      lutId?: string;
+    };
+  }) => Promise<{ pkg: EditorPackageView }>;
+  cinemaNleOp?: (input: Record<string, unknown>) => Promise<{ pkg: EditorPackageView }>;
   cinemaApplyPromptRevision?: (input: {
     projectId: string;
     instruction: string;
@@ -218,6 +247,31 @@ export function AetheraStudioEditor() {
   const [audioValidation, setAudioValidation] = useState<AudioMixValidationView | null>(null);
   const [savingAudio, setSavingAudio] = useState(false);
   const [previewingBus, setPreviewingBus] = useState<string | null>(null);
+  const [timelineTool, setTimelineTool] = useState<'select' | 'razor'>('select');
+  const [visualTransform, setVisualTransform] = useState({
+    blendMode: 'normal',
+    opacity: 1,
+    scale: 1,
+    rotationDeg: 0,
+    x: 0,
+    y: 0,
+  });
+  const [transitionDraft, setTransitionDraft] = useState({ kind: 'dissolve', durationSec: 0.5 });
+  const [colorControls, setColorControls] = useState({
+    exposureCompensationEv: 0,
+    contrastGain: 1.04,
+    saturation: 1.03,
+    temperatureKelvinDelta: 0,
+    shadows: 0,
+    midtones: 0,
+    highlights: 0,
+    lutId: 'rec709_clean_cinematic',
+  });
+  const [subtitleDraft, setSubtitleDraft] = useState({
+    text: '',
+    durationSec: 3.0,
+    animation: 'fade_up' as 'fade_up' | 'pop' | 'slide' | 'none',
+  });
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -230,12 +284,15 @@ export function AetheraStudioEditor() {
       const mId = c.mediaId ?? c.sourceMediaId ?? '';
       return {
         clipId: c.clipId,
+        trackId: c.trackId ?? 'v1',
         label: c.label,
         startSec: Number((c.timelineRange.start.value / c.timelineRange.start.rate).toFixed(2)),
         durationSec: Number((c.timelineRange.duration.value / c.timelineRange.duration.rate).toFixed(2)),
         speed: c.speed,
         sourceMediaId: mId,
         sourceUri: res.timeline.sourceMedia[mId]?.uri,
+        ...(c.effects ? { effects: c.effects } : {}),
+        ...(c.keyframes ? { keyframes: c.keyframes } : {}),
       };
     });
   }, []);
@@ -755,6 +812,118 @@ export function AetheraStudioEditor() {
     }
   }
 
+  async function handleSplitAtPlayhead(targetClipId?: string) {
+    const api = getBridge();
+    const target = clips.find((c) => c.clipId === (targetClipId ?? activeClipAtPlayhead?.clipId ?? selectedClipId));
+    if (!pkg || !target) return;
+    const splitFrame = Math.round(playheadSec * 30);
+    if (api?.cinemaNleOp) {
+      const res = await api.cinemaNleOp({
+        projectId: pkg.timeline.projectId,
+        op: 'split',
+        clipId: target.clipId,
+        splitFrame,
+      });
+      setPkg(res.pkg);
+      const mapped = mapClipsFromPkg(res.pkg);
+      setClips(mapped);
+      setPreviewStale(true);
+      setStatusMsg(`Clipe "${target.label}" cortado em ${playheadSec.toFixed(2)}s.`);
+    }
+  }
+
+  async function handleApplyVisualTransform() {
+    const api = getBridge();
+    if (!api?.cinemaNleOp || !pkg || !selectedClip) return;
+    const res = await api.cinemaNleOp({
+      projectId: pkg.timeline.projectId,
+      op: 'transform',
+      clipId: selectedClip.clipId,
+      patch: {
+        ...visualTransform,
+        keyframeAtFrame: Math.max(0, Math.round((playheadSec - selectedClip.startSec) * 30)),
+      },
+    });
+    setPkg(res.pkg);
+    setClips(mapClipsFromPkg(res.pkg));
+    setPreviewStale(true);
+    setStatusMsg(`Transformação/Keyframe salvo em ${selectedClip.label}.`);
+  }
+
+  async function handleApplyTransition() {
+    const api = getBridge();
+    if (!api?.cinemaNleOp || !pkg || !selectedClip) return;
+    const v1Clips = clips.filter((c) => (c.trackId ?? 'v1') === 'v1');
+    const idx = v1Clips.findIndex((c) => c.clipId === selectedClip.clipId);
+    const prevClip = idx > 0 ? v1Clips[idx - 1] : v1Clips[0];
+    if (!prevClip) return;
+    const res = await api.cinemaNleOp({
+      projectId: pkg.timeline.projectId,
+      op: 'transition',
+      fromClipId: prevClip.clipId,
+      toClipId: selectedClip.clipId,
+      kind: transitionDraft.kind,
+      durationFrames: Math.round(transitionDraft.durationSec * 30),
+    });
+    setPkg(res.pkg);
+    setClips(mapClipsFromPkg(res.pkg));
+    setPreviewStale(true);
+    setStatusMsg(`Transição "${transitionDraft.kind}" (${transitionDraft.durationSec}s) aplicada.`);
+  }
+
+  async function handleApplyVisualColor(nextControls: typeof colorControls) {
+    setColorControls(nextControls);
+    setPreviewStale(true);
+    const api = getBridge();
+    if (!api?.cinemaUpdateColorGrade || !pkg) return;
+    setSavingColor(true);
+    try {
+      const res = await api.cinemaUpdateColorGrade({
+        projectId: pkg.timeline.projectId,
+        controls: {
+          targetSpace: (pkg.colorPlan.targetSpace as 'rec709' | 'rec2020_hdr' | 'srgb_web') ?? 'rec709',
+          exposureCompensationEv: nextControls.exposureCompensationEv,
+          contrastGain: nextControls.contrastGain,
+          saturation: nextControls.saturation,
+          temperatureKelvinDelta: nextControls.temperatureKelvinDelta,
+          curves: {
+            shadows: nextControls.shadows,
+            midtones: nextControls.midtones,
+            highlights: nextControls.highlights,
+          },
+          lutId: nextControls.lutId,
+        },
+      });
+      setPkg(res.pkg);
+      setColorDraft(res.pkg.colorPlan.ffmpegColorFilterChain);
+      setStatusMsg(`Color grading aplicado (LUT ${nextControls.lutId} · v${res.pkg.timeline.version}).`);
+    } finally {
+      setSavingColor(false);
+    }
+  }
+
+  async function handleAddSubtitle(e: React.FormEvent) {
+    e.preventDefault();
+    const api = getBridge();
+    if (!api?.cinemaNleOp || !pkg || !subtitleDraft.text.trim()) return;
+    const res = await api.cinemaNleOp({
+      projectId: pkg.timeline.projectId,
+      op: 'subtitle',
+      clip: {
+        trackId: 'sub1',
+        text: subtitleDraft.text.trim(),
+        startFrames: Math.round(playheadSec * 30),
+        durationFrames: Math.round(subtitleDraft.durationSec * 30),
+        animation: subtitleDraft.animation,
+      },
+    });
+    setPkg(res.pkg);
+    setClips(mapClipsFromPkg(res.pkg));
+    setSubtitleDraft((s) => ({ ...s, text: '' }));
+    setPreviewStale(true);
+    setStatusMsg(`Legenda adicionada em ${playheadSec.toFixed(2)}s.`);
+  }
+
   async function handleApplyRevisionAndLearn(e: React.FormEvent) {
     e.preventDefault();
     const api = getBridge();
@@ -987,7 +1156,14 @@ export function AetheraStudioEditor() {
             {leftTab === 'media' && (
               <>
                 {importedAssets.map((asset) => (
-                  <div key={asset.mediaId} className="rounded-xl border border-amber-500/40 bg-[#0d0d17] p-2 space-y-1.5">
+                  <div
+                    key={asset.mediaId}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('application/aethera-asset', JSON.stringify(asset));
+                    }}
+                    className="cursor-grab rounded-xl border border-amber-500/40 bg-[#0d0d17] p-2 space-y-1.5 active:cursor-grabbing"
+                  >
                     <div className="flex items-center gap-2">
                       {asset.thumbnailUrl && (
                         <img src={asset.thumbnailUrl} alt={asset.name} className="h-9 w-16 rounded object-cover" />
@@ -1144,12 +1320,13 @@ export function AetheraStudioEditor() {
 
         {/* Right: Inspector */}
         <aside className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card p-3 lg:col-span-3 space-y-3">
-          <div className="flex gap-1 text-[11px]">
+          <div className="flex flex-wrap gap-1 text-[11px]">
             {(
               [
                 ['transform', 'Propriedades'],
                 ['color', 'Cor'],
                 ['audio', 'Áudio'],
+                ['subtitles', 'Legendas'],
                 ['speed', 'Velocidade'],
               ] as const
             ).map(([id, label]) => (
@@ -1197,13 +1374,214 @@ export function AetheraStudioEditor() {
               >
                 Ripple Delete Clipe
               </button>
+
+              {selectedClip && (
+                <div className="space-y-2 border-t border-border/70 pt-2">
+                  <p className="font-semibold text-foreground">Edição Visual &amp; Keyframes</p>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <label className="space-y-0.5">
+                      <span className="text-muted-foreground">Blend Mode</span>
+                      <select
+                        value={visualTransform.blendMode}
+                        onChange={(e) => setVisualTransform((v) => ({ ...v, blendMode: e.target.value }))}
+                        className="w-full rounded border border-border bg-[#0d0d17] px-1.5 py-1 text-[11px]"
+                      >
+                        <option value="normal">Normal</option>
+                        <option value="screen">Screen</option>
+                        <option value="multiply">Multiply</option>
+                        <option value="overlay">Overlay</option>
+                        <option value="darken">Darken</option>
+                        <option value="lighten">Lighten</option>
+                      </select>
+                    </label>
+                    <label className="space-y-0.5">
+                      <span className="text-muted-foreground">Opacidade ({Math.round(visualTransform.opacity * 100)}%)</span>
+                      <input
+                        type="range"
+                        min={0.1}
+                        max={1}
+                        step={0.05}
+                        value={visualTransform.opacity}
+                        onChange={(e) => setVisualTransform((v) => ({ ...v, opacity: Number(e.target.value) }))}
+                        className="w-full accent-purple-500"
+                      />
+                    </label>
+                    <label className="space-y-0.5">
+                      <span className="text-muted-foreground">Escala ({visualTransform.scale.toFixed(2)}x)</span>
+                      <input
+                        type="range"
+                        min={0.5}
+                        max={2}
+                        step={0.05}
+                        value={visualTransform.scale}
+                        onChange={(e) => setVisualTransform((v) => ({ ...v, scale: Number(e.target.value) }))}
+                        className="w-full accent-purple-500"
+                      />
+                    </label>
+                    <label className="space-y-0.5">
+                      <span className="text-muted-foreground">Rotação ({visualTransform.rotationDeg}°)</span>
+                      <input
+                        type="range"
+                        min={-45}
+                        max={45}
+                        step={1}
+                        value={visualTransform.rotationDeg}
+                        onChange={(e) => setVisualTransform((v) => ({ ...v, rotationDeg: Number(e.target.value) }))}
+                        className="w-full accent-purple-500"
+                      />
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleApplyVisualTransform}
+                    className="w-full rounded-lg border border-primary/40 bg-primary/20 py-1 text-[11px] font-medium text-purple-100 hover:bg-primary/30"
+                  >
+                    Salvar Keyframe no Playhead
+                  </button>
+
+                  <div className="space-y-1.5 border-t border-border/70 pt-2">
+                    <p className="font-semibold text-foreground">Transição de Entrada</p>
+                    <div className="flex gap-1.5">
+                      <select
+                        value={transitionDraft.kind}
+                        onChange={(e) => setTransitionDraft((t) => ({ ...t, kind: e.target.value }))}
+                        className="flex-1 rounded border border-border bg-[#0d0d17] px-2 py-1 text-[11px]"
+                      >
+                        <option value="dissolve">Dissolve</option>
+                        <option value="wipe">Wipe</option>
+                        <option value="match_cut">Smooth / Match</option>
+                        <option value="cut">Corte Seco</option>
+                      </select>
+                      <input
+                        type="number"
+                        min={0.15}
+                        max={1.2}
+                        step={0.05}
+                        value={transitionDraft.durationSec}
+                        onChange={(e) => setTransitionDraft((t) => ({ ...t, durationSec: Number(e.target.value) }))}
+                        className="w-16 rounded border border-border bg-[#0d0d17] px-1.5 py-1 text-right font-mono text-[11px]"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleApplyTransition}
+                      className="w-full rounded-lg border border-border bg-[#0d0d17] py-1 text-[11px] hover:border-primary"
+                    >
+                      Aplicar Transição
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           {inspectorTab === 'color' && pkg && (
-            <div className="min-w-0 space-y-2 text-xs">
+            <div className="min-w-0 space-y-2.5 text-xs">
               <div className="flex flex-wrap items-center justify-between gap-1.5">
-                <p className="font-semibold text-foreground">Target: {pkg.colorPlan.targetSpace}</p>
+                <p className="font-semibold text-foreground">Color Grading ({pkg.colorPlan.targetSpace})</p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleApplyVisualColor({
+                      exposureCompensationEv: 0,
+                      contrastGain: 1.04,
+                      saturation: 1.03,
+                      temperatureKelvinDelta: 0,
+                      shadows: 0,
+                      midtones: 0,
+                      highlights: 0,
+                      lutId: 'rec709_clean_cinematic',
+                    })
+                  }
+                  className="rounded border border-border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                >
+                  Resetar
+                </button>
+              </div>
+              <div className="space-y-1.5 rounded-lg border border-border/70 bg-[#0d0d17] p-2 text-[11px]">
+                <label className="block space-y-0.5">
+                  <span className="flex justify-between text-muted-foreground">
+                    <span>Exposição</span>
+                    <span className="font-mono text-foreground">{colorControls.exposureCompensationEv} EV</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={-1.5}
+                    max={1.5}
+                    step={0.1}
+                    value={colorControls.exposureCompensationEv}
+                    onChange={(e) =>
+                      void handleApplyVisualColor({ ...colorControls, exposureCompensationEv: Number(e.target.value) })
+                    }
+                    className="w-full accent-amber-400"
+                  />
+                </label>
+                <label className="block space-y-0.5">
+                  <span className="flex justify-between text-muted-foreground">
+                    <span>Contraste</span>
+                    <span className="font-mono text-foreground">{colorControls.contrastGain}</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={0.6}
+                    max={1.6}
+                    step={0.02}
+                    value={colorControls.contrastGain}
+                    onChange={(e) =>
+                      void handleApplyVisualColor({ ...colorControls, contrastGain: Number(e.target.value) })
+                    }
+                    className="w-full accent-purple-500"
+                  />
+                </label>
+                <label className="block space-y-0.5">
+                  <span className="flex justify-between text-muted-foreground">
+                    <span>Saturação</span>
+                    <span className="font-mono text-foreground">{colorControls.saturation}</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1.8}
+                    step={0.02}
+                    value={colorControls.saturation}
+                    onChange={(e) =>
+                      void handleApplyVisualColor({ ...colorControls, saturation: Number(e.target.value) })
+                    }
+                    className="w-full accent-purple-500"
+                  />
+                </label>
+                <label className="block space-y-0.5">
+                  <span className="flex justify-between text-muted-foreground">
+                    <span>Temperatura</span>
+                    <span className="font-mono text-foreground">{colorControls.temperatureKelvinDelta} K</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={-1200}
+                    max={1200}
+                    step={50}
+                    value={colorControls.temperatureKelvinDelta}
+                    onChange={(e) =>
+                      void handleApplyVisualColor({ ...colorControls, temperatureKelvinDelta: Number(e.target.value) })
+                    }
+                    className="w-full accent-amber-400"
+                  />
+                </label>
+                <label className="block space-y-0.5">
+                  <span className="text-muted-foreground">LUT / Perfil</span>
+                  <select
+                    value={colorControls.lutId}
+                    onChange={(e) => void handleApplyVisualColor({ ...colorControls, lutId: e.target.value })}
+                    className="w-full rounded border border-border bg-background px-2 py-1 text-[11px]"
+                  >
+                    <option value="rec709_clean_cinematic">Rec.709 Clean Cinematic</option>
+                    <option value="rec709_vibrant_gaming">Rec.709 Vibrant Gaming</option>
+                    <option value="rec709_neutral_doc">Rec.709 Neutral Doc</option>
+                  </select>
+                </label>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                <span className="text-[10px] text-muted-foreground">Cadeia FFmpeg (Avançado)</span>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
@@ -1223,7 +1601,7 @@ export function AetheraStudioEditor() {
               </div>
               <textarea
                 aria-label="Cadeia de filtro de cor FFmpeg"
-                rows={colorExpanded ? 6 : 3}
+                rows={colorExpanded ? 5 : 2}
                 value={colorDraft}
                 onChange={(e) => setColorDraft(e.target.value)}
                 className="w-full min-w-0 max-w-full resize-y break-all whitespace-pre-wrap rounded-lg border border-border bg-[#0d0d17] p-2 font-mono text-[10px] leading-relaxed text-purple-200 focus:border-primary focus:outline-none"
@@ -1234,7 +1612,7 @@ export function AetheraStudioEditor() {
                 onClick={handleSaveColorChain}
                 className="w-full rounded-lg border border-primary/40 bg-primary/20 py-1.5 text-[11px] font-medium text-purple-100 hover:bg-primary/30 disabled:opacity-50"
               >
-                {savingColor ? 'Salvando cor...' : 'Aplicar Filtro de Cor'}
+                {savingColor ? 'Salvando cor...' : 'Aplicar Filtro FFmpeg'}
               </button>
             </div>
           )}
@@ -1343,6 +1721,49 @@ export function AetheraStudioEditor() {
             </div>
           )}
 
+          {inspectorTab === 'subtitles' && (
+            <form onSubmit={handleAddSubtitle} className="space-y-2 text-xs">
+              <p className="font-semibold text-foreground">Nova Legenda em {playheadSec.toFixed(2)}s</p>
+              <textarea
+                rows={2}
+                value={subtitleDraft.text}
+                onChange={(e) => setSubtitleDraft((s) => ({ ...s, text: e.target.value }))}
+                placeholder="Texto da legenda sincronizada..."
+                className="w-full rounded-lg border border-border bg-[#0d0d17] p-2 text-xs text-foreground"
+              />
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  min={0.5}
+                  max={15}
+                  step={0.5}
+                  value={subtitleDraft.durationSec}
+                  onChange={(e) => setSubtitleDraft((s) => ({ ...s, durationSec: Number(e.target.value) }))}
+                  className="w-20 rounded border border-border bg-[#0d0d17] px-2 py-1 font-mono text-[11px]"
+                />
+                <select
+                  value={subtitleDraft.animation}
+                  onChange={(e) =>
+                    setSubtitleDraft((s) => ({ ...s, animation: e.target.value as typeof subtitleDraft.animation }))
+                  }
+                  className="flex-1 rounded border border-border bg-[#0d0d17] px-2 py-1 text-[11px]"
+                >
+                  <option value="fade_up">Fade Up</option>
+                  <option value="pop">Pop</option>
+                  <option value="slide">Slide</option>
+                  <option value="none">Sem animação</option>
+                </select>
+              </div>
+              <button
+                type="submit"
+                disabled={!subtitleDraft.text.trim()}
+                className="w-full rounded-lg border border-primary/40 bg-primary/20 py-1.5 text-[11px] font-medium text-purple-100 hover:bg-primary/30 disabled:opacity-50"
+              >
+                Inserir Legenda na Trilha
+              </button>
+            </form>
+          )}
+
           {inspectorTab === 'speed' && (
             <div className="space-y-2 text-xs">
               <p className="font-semibold text-foreground">Speed Ramp ({selectedClip?.speed ?? 1}x)</p>
@@ -1375,6 +1796,23 @@ export function AetheraStudioEditor() {
               </button>
               <button type="button" onClick={handleRedo} disabled={future.length === 0} className="rounded-md border border-border p-1.5 hover:border-primary disabled:opacity-40" aria-label="Refazer">
                 <Redo2 className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setTimelineTool((t) => (t === 'select' ? 'razor' : 'select'))}
+                className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] ${
+                  timelineTool === 'razor' ? 'border-purple-400 bg-purple-500/20 text-purple-200' : 'border-border text-muted-foreground'
+                }`}
+              >
+                <Scissors className="size-3" /> {timelineTool === 'razor' ? 'Lâmina (C)' : 'Selecionar (V)'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSplitAtPlayhead()}
+                disabled={!pkg || clips.length === 0}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:border-primary hover:text-foreground disabled:opacity-40"
+              >
+                Cortar no Playhead
               </button>
               <button
                 type="button"
@@ -1481,9 +1919,24 @@ export function AetheraStudioEditor() {
                   ))}
                 </div>
 
-                {/* V1 Main Video Track (Draggable + Thumbnails) */}
-                <div className="relative h-10 rounded-lg bg-[#090910]" style={{ width: timelineWidthPx }}>
-                  {clips.map((clip) => {
+                {/* V1 Main Video Track (Draggable + Drop from Library + Razor + Thumbnails) */}
+                <div
+                  className="relative h-10 rounded-lg bg-[#090910]"
+                  style={{ width: timelineWidthPx }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const raw = e.dataTransfer.getData('application/aethera-asset');
+                    if (!raw) return;
+                    try {
+                      const asset = JSON.parse(raw) as ImportedAsset;
+                      handleAddAssetToTimeline(asset);
+                    } catch {
+                      // ignore malformed drag payload
+                    }
+                  }}
+                >
+                  {clips.filter((c) => (c.trackId ?? 'v1') !== 'sub1').map((clip) => {
                     const widthPx = Math.max(44, (clip.durationSec / Math.max(0.25, clip.speed)) * pxPerSec - 2);
                     return (
                       <div
@@ -1492,6 +1945,10 @@ export function AetheraStudioEditor() {
                         tabIndex={0}
                         onPointerDown={(e) => {
                           setSelectedClipId(clip.clipId);
+                          if (timelineTool === 'razor') {
+                            void handleSplitAtPlayhead(clip.clipId);
+                            return;
+                          }
                           dragClipRef.current = {
                             clipId: clip.clipId,
                             startX: e.clientX,

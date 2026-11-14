@@ -11,6 +11,7 @@ import {
   AetheraAcademyEngine,
   AetheraEvolutionCore,
   applyAudioMixerUpdates,
+  applyColorGradingControls,
   applyPromptRevisionToPackage,
   applyTargetedRepair,
   evaluateEnsemble,
@@ -18,22 +19,33 @@ import {
   exportToOtioJson,
   extractSingleThumbnail,
   extractWaveformPeaks,
+  groupClips,
   listAllDirectors,
+  moveClip,
   probeCapabilities,
   probeRealMp4,
   produceCinemaPackage,
+  recomputeTimelineFingerprints,
   renderRealCinemaMp4,
   runBenchmarkSuite,
   runDirectorOrchestrationDag,
   runRealMediaQc,
+  setClipAudioFades,
+  setClipTransformAndBlend,
+  splitClipAtFrame,
+  ungroupClips,
+  upsertClipTransition,
+  upsertSubtitleClip,
   type AcademyLearningMode,
   type AcademyMaterialKind,
   type AcademyRightsScope,
   type AudioStemRole,
   type CinemaProductionPackage,
+  type ColorGradingControls,
   type DirectorId,
   type ProduceCinemaPackageInput,
   type RealRenderResult,
+  type VideoBlendMode,
 } from '@neuralbridge/cinema';
 import { CORE_TIMING } from '@neuralbridge/core/protocol';
 import {
@@ -2213,6 +2225,129 @@ export function registerAetheraDomainIpc(options: {
     ensureTrusted(event.senderFrame);
     return stagedPipeline.loadJob(projectId);
   });
+
+  ipcMain.handle(
+    'cinema:update-color-grade',
+    async (
+      event,
+      input: {
+        projectId: string;
+        controls: ColorGradingControls;
+        clipId?: string;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const pkg = cinemaPackages.get(input.projectId);
+      if (!pkg) throw new Error(`not_found: pacote Cinema ${input.projectId} não encontrado.`);
+      const colorPlan = applyColorGradingControls(pkg.colorPlan, input.controls, input.clipId);
+      const colorHash = createHash('sha256')
+        .update(colorPlan.ffmpegColorFilterChain)
+        .digest('hex')
+        .slice(0, 8);
+      const updated: CinemaProductionPackage = {
+        ...pkg,
+        colorPlan,
+        timeline: {
+          ...pkg.timeline,
+          version: pkg.timeline.version + 1,
+          renderFingerprint: `${pkg.timeline.renderFingerprint.slice(0, 8)}_${colorHash}`,
+        },
+      };
+      cinemaPackages.set(input.projectId, updated);
+      persistCinemaProject(updated);
+      return { pkg: updated };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:nle-op',
+    async (
+      event,
+      input:
+        | { projectId: string; op: 'split'; clipId: string; splitFrame: number }
+        | { projectId: string; op: 'move'; clipId: string; targetTrackId: string; newStartFrame: number }
+        | { projectId: string; op: 'group'; clipIds: string[] }
+        | { projectId: string; op: 'ungroup'; clipIds: string[] }
+        | {
+            projectId: string;
+            op: 'transform';
+            clipId: string;
+            patch: {
+              blendMode?: VideoBlendMode;
+              opacity?: number;
+              scale?: number;
+              rotationDeg?: number;
+              x?: number;
+              y?: number;
+              keyframeAtFrame?: number;
+            };
+          }
+        | {
+            projectId: string;
+            op: 'audio_fades';
+            clipId: string;
+            patch: { fadeInSec?: number; fadeOutSec?: number; gainDb?: number };
+          }
+        | {
+            projectId: string;
+            op: 'transition';
+            fromClipId: string;
+            toClipId: string;
+            kind: 'cut' | 'dissolve' | 'j_cut' | 'l_cut' | 'match_cut' | 'wipe';
+            durationFrames: number;
+          }
+        | {
+            projectId: string;
+            op: 'subtitle';
+            clip: {
+              clipId?: string;
+              trackId?: string;
+              text: string;
+              startFrames: number;
+              durationFrames: number;
+              animation?: 'fade_up' | 'pop' | 'slide' | 'none';
+            };
+          },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const pkg = cinemaPackages.get(input.projectId);
+      if (!pkg) throw new Error(`not_found: pacote Cinema ${input.projectId} não encontrado.`);
+
+      let nextTimeline = pkg.timeline;
+      if (input.op === 'split') {
+        nextTimeline = splitClipAtFrame(nextTimeline, input.clipId, input.splitFrame);
+      } else if (input.op === 'move') {
+        nextTimeline = moveClip(nextTimeline, input.clipId, input.targetTrackId, input.newStartFrame);
+      } else if (input.op === 'group') {
+        nextTimeline = groupClips(nextTimeline, input.clipIds);
+      } else if (input.op === 'ungroup') {
+        nextTimeline = ungroupClips(nextTimeline, input.clipIds);
+      } else if (input.op === 'transform') {
+        nextTimeline = setClipTransformAndBlend(nextTimeline, input.clipId, input.patch);
+      } else if (input.op === 'audio_fades') {
+        nextTimeline = setClipAudioFades(nextTimeline, input.clipId, input.patch);
+      } else if (input.op === 'transition') {
+        nextTimeline = upsertClipTransition(
+          nextTimeline,
+          input.fromClipId,
+          input.toClipId,
+          input.kind,
+          input.durationFrames,
+        );
+      } else if (input.op === 'subtitle') {
+        nextTimeline = upsertSubtitleClip(nextTimeline, input.clip);
+      }
+
+      nextTimeline = recomputeTimelineFingerprints({
+        ...nextTimeline,
+        version: nextTimeline.version + 1,
+      });
+      const updated: CinemaProductionPackage = { ...pkg, timeline: nextTimeline };
+      cinemaPackages.set(input.projectId, updated);
+      persistCinemaProject(updated);
+      return { pkg: updated };
+    },
+  );
 
   ipcMain.handle(
     'cinema:resolve-pending-media',

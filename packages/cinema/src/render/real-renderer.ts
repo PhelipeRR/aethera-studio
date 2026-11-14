@@ -194,7 +194,13 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const workDir = join(input.outputDir, '_work');
   mkdirSync(workDir, { recursive: true });
 
-  const orderedClips = [...input.pkg.timeline.clips]
+  const primaryVideoClips = input.pkg.timeline.clips.filter(
+    (c) => c.trackId === 'v1' || (!c.trackId.startsWith('a') && c.trackId !== 'sub1' && c.trackId !== 'v2' && c.trackId !== 'vfx1'),
+  );
+  const subtitleClips = input.pkg.timeline.clips.filter(
+    (c) => c.trackId === 'sub1' || c.effects.some((e) => e.kind === 'subtitle_style' && e.enabled),
+  );
+  const orderedClips = [...primaryVideoClips]
     .sort((a, b) => a.timelineRange.start.value / a.timelineRange.start.rate - b.timelineRange.start.value / b.timelineRange.start.rate)
     .slice(0, 8);
   const shots = input.pkg.direction.shots;
@@ -326,9 +332,36 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       input.pkg.colorPlan?.ffmpegColorFilterChain?.trim() ||
       'colorspace=all=bt709:iall=bt709:fast=1,eq=contrast=1.06:saturation=1.12,limiter=min=16:max=235';
 
-    // Real source or procedural texture + motion graphics + safe-zone typography + project color grading + vignette VFX
+    // Apply clip keyframes (scale, rotation, opacity) if set
+    const getKf = (prop: string, fallback: number): number => {
+      const k = spec.clip?.keyframes?.find((kf) => kf.property === prop);
+      return k && typeof k.value === 'number' && Number.isFinite(k.value) ? k.value : fallback;
+    };
+    const kfScale = Math.max(0.25, Math.min(3.0, getKf('scale', 1)));
+    const kfRotDeg = getKf('rotation', 0);
+    const kfOpacity = Math.max(0, Math.min(1, getKf('opacity', 1)));
+    const transformFilters: string[] = [];
+    if (Math.abs(kfScale - 1) > 0.02) {
+      const sw = Math.max(64, Math.round(1280 * kfScale));
+      const sh = Math.max(36, Math.round(720 * kfScale));
+      transformFilters.push(
+        kfScale > 1
+          ? `scale=${sw}:${sh},crop=1280:720`
+          : `scale=${sw}:${sh},pad=1280:720:(ow-iw)/2:(oh-ih)/2`,
+      );
+    }
+    if (Math.abs(kfRotDeg) > 0.5) {
+      const rad = Number(((kfRotDeg * Math.PI) / 180).toFixed(4));
+      transformFilters.push(`rotate=${rad}:ow=1280:oh=720:fillcolor=black`);
+    }
+    if (kfOpacity < 0.99) {
+      transformFilters.push(`eq=brightness=${Number(((kfOpacity - 1) * 0.45).toFixed(3))}`);
+    }
+
+    // Real source or procedural texture + keyframes + motion graphics + safe-zone typography + project color grading + vignette VFX
     const vf = [
       baseFilter,
+      ...transformFilters,
       motionBar,
       lowerBox,
       ...(hideTitle
@@ -414,6 +447,35 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       'veryfast',
       rawVideoPath,
     ]);
+  }
+
+  // 2b. Burn timed subtitle track clips if present
+  if (subtitleClips.length > 0) {
+    const subVideoPath = join(workDir, 'video_subtitled.mp4');
+    const subFilters = subtitleClips.map((sc) => {
+      const startSec = Number((sc.timelineRange.start.value / sc.timelineRange.start.rate).toFixed(2));
+      const endSec = Number(
+        (startSec + sc.timelineRange.duration.value / sc.timelineRange.duration.rate).toFixed(2),
+      );
+      const textParam = sc.effects.find((e) => e.kind === 'subtitle_style')?.params['text'];
+      const txt = escapeDrawtext(typeof textParam === 'string' ? textParam : sc.label);
+      return `drawtext=text='${txt}'${resolveFontOption()}:expansion=none:x=(w-text_w)/2:y=h-76:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.65:boxborderw=10:enable='between(t,${startSec},${endSec})'`;
+    });
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-i',
+      rawVideoPath,
+      '-vf',
+      subFilters.join(','),
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      '-preset',
+      'veryfast',
+      subVideoPath,
+    ]);
+    await execFileAsync('ffmpeg', ['-y', '-i', subVideoPath, '-c', 'copy', rawVideoPath]);
   }
 
   // 3. Real Narration (VoiceStudio -> Windows SAPI PT-BR fallback -> procedural cue) + Sound Director Audit Gate + Bus Mix
