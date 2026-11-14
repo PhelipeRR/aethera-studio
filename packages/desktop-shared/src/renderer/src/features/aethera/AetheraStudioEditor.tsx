@@ -33,6 +33,12 @@ import {
 import { Link, useSearchParams } from 'react-router';
 import { notify } from '@/components/NotificationsOverlay';
 import { WaveformCanvas, type WaveformDataView } from './WaveformCanvas';
+import { MediaLibraryPanel, type LibraryMediaAsset } from './MediaLibraryPanel';
+import {
+  resolveLivePreviewState,
+  resolveMediaPlayUrl,
+  resolveSelectedElementKind,
+} from './editor-composition';
 
 type LeftBinTab = 'media' | 'effects' | 'transitions' | 'titles' | 'sfx' | 'music';
 type InspectorTab = 'transform' | 'color' | 'audio' | 'subtitles' | 'speed';
@@ -45,9 +51,12 @@ interface EditorClip {
   durationSec: number;
   speed: number;
   sourceMediaId?: string | undefined;
+  mediaId?: string | undefined;
+  mediaUrl?: string | null | undefined;
   sourceUri?: string | undefined;
   sourceKind?: 'video' | 'image' | 'audio';
   thumbnailUrl?: string | null;
+  transitionIn?: string | undefined;
   effects?: Array<{ effectId: string; kind: string; params: Record<string, number | string | boolean>; enabled: boolean }>;
   keyframes?: Array<{ keyframeId: string; property: string; value: number | string; time: { value: number; rate: number } }>;
 }
@@ -242,6 +251,12 @@ interface CinemaBridge {
   cinemaExtractWaveform?: (input: { filePath: string; buckets?: number }) => Promise<{
     ok: boolean;
     data?: WaveformDataView;
+    error?: string;
+  }>;
+  cinemaExtractThumbnail?: (input: { filePath: string; timeSec?: number }) => Promise<{
+    ok: boolean;
+    thumbnailUrl?: string;
+    cached?: boolean;
     error?: string;
   }>;
   cinemaApplyPromptRevision?: (input: {
@@ -563,7 +578,76 @@ export function AetheraStudioEditor() {
     [clips, playheadSec],
   );
 
-  // Synced live canvas preview when in timeline preview mode
+  const mediaElementsRef = useRef<Map<string, HTMLVideoElement | HTMLImageElement>>(new Map());
+  const liveAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [mediaLoadTick, setMediaLoadTick] = useState(0);
+
+  const resolveClipMediaUrl = useCallback(
+    (clip?: EditorClip | null): string | null => {
+      if (!clip) return null;
+      if (clip.mediaUrl) return resolveMediaPlayUrl(clip.mediaUrl);
+      const sm =
+        (clip.sourceMediaId && pkg?.timeline.sourceMedia[clip.sourceMediaId]) ||
+        (clip.mediaId && pkg?.timeline.sourceMedia[clip.mediaId]) ||
+        undefined;
+      if (sm?.uri) return resolveMediaPlayUrl(sm.uri);
+      const matchedAsset = importedAssets.find(
+        (a) => a.mediaId === clip.mediaId || a.mediaId === clip.sourceMediaId || a.name === clip.label,
+      );
+      if (matchedAsset) return resolveMediaPlayUrl(matchedAsset.mediaUrl || matchedAsset.filePath);
+      return null;
+    },
+    [importedAssets, pkg?.timeline.sourceMedia],
+  );
+
+  const activeClipMediaUrl = useMemo(
+    () => resolveClipMediaUrl(activeClipAtPlayhead),
+    [activeClipAtPlayhead, resolveClipMediaUrl],
+  );
+
+  const livePreviewStatus = useMemo(
+    () =>
+      resolveLivePreviewState({
+        rendering,
+        previewMode,
+        hasRenderedMp4: Boolean(renderedMedia),
+        activeClip: activeClipAtPlayhead ?? null,
+        resolvedMediaUrl: activeClipMediaUrl,
+      }),
+    [rendering, previewMode, renderedMedia, activeClipAtPlayhead, activeClipMediaUrl],
+  );
+
+  // Sync audio stem/master during live timeline playback
+  useEffect(() => {
+    const audioEl = liveAudioRef.current;
+    if (!audioEl) return;
+    if (previewMode !== 'timeline') {
+      audioEl.pause();
+      return;
+    }
+    const audioUrl = resolveMediaPlayUrl(
+      renderedMedia?.stemPaths?.master ?? renderedMedia?.stemPaths?.voiceover ?? null,
+    );
+    if (!audioUrl) {
+      audioEl.pause();
+      return;
+    }
+    if (audioEl.src !== audioUrl) {
+      audioEl.src = audioUrl;
+    }
+    audioEl.volume = playerMuted ? 0 : playerVolume;
+    audioEl.muted = playerMuted;
+    if (Math.abs(audioEl.currentTime - playheadSec) > 0.25) {
+      audioEl.currentTime = Math.max(0, playheadSec);
+    }
+    if (playing) {
+      void audioEl.play().catch(() => undefined);
+    } else {
+      audioEl.pause();
+    }
+  }, [previewMode, playing, playheadSec, playerMuted, playerVolume, renderedMedia]);
+
+  // Synced live canvas preview when in timeline preview mode (real video/image frames + overlays)
   useEffect(() => {
     if (previewMode !== 'timeline') return;
     const canvas = canvasRef.current;
@@ -574,47 +658,132 @@ export function AetheraStudioEditor() {
     const w = canvas.width;
     const h = canvas.height;
     const clip = activeClipAtPlayhead;
-    const t = playheadSec;
 
-    const grad = ctx.createLinearGradient(0, 0, w, h);
-    grad.addColorStop(0, '#1a1033');
-    grad.addColorStop(0.5 + 0.15 * Math.sin(t * 1.1), '#2a164c');
-    grad.addColorStop(1, '#0d1424');
-    ctx.fillStyle = grad;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#05050a';
     ctx.fillRect(0, 0, w, h);
 
-    // Animated motion bar
-    const barX = ((t * 160) % (w - 180));
-    ctx.fillStyle = 'rgba(139, 92, 246, 0.85)';
-    ctx.fillRect(barX, 64, 160, 5);
+    if (!clip || !activeClipMediaUrl) {
+      ctx.fillStyle = 'rgba(24, 20, 36, 0.9)';
+      ctx.fillRect(w / 2 - 180, h / 2 - 44, 360, 88);
+      ctx.strokeStyle = 'rgba(244, 63, 94, 0.6)';
+      ctx.strokeRect(w / 2 - 180, h / 2 - 44, 360, 88);
+      ctx.fillStyle = '#fda4af';
+      ctx.font = '600 16px Inter, Segoe UI, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Mídia Indisponível', w / 2, h / 2 - 8);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '12px Inter, Segoe UI, sans-serif';
+      ctx.fillText(
+        clip ? `${clip.label} — arquivo de vídeo/imagem ausente` : 'Nenhum clipe na posição do playhead',
+        w / 2,
+        h / 2 + 18,
+      );
+      ctx.textAlign = 'left';
+      return;
+    }
 
-    // Vignette
-    const vig = ctx.createRadialGradient(w / 2, h / 2, w * 0.25, w / 2, h / 2, w * 0.7);
-    vig.addColorStop(0, 'rgba(0,0,0,0)');
-    vig.addColorStop(1, 'rgba(0,0,0,0.55)');
-    ctx.fillStyle = vig;
-    ctx.fillRect(0, 0, w, h);
+    const isImg = /\.(png|jpe?g|webp|gif|svg)(\?|$)/i.test(activeClipMediaUrl);
+    let mediaEl = mediaElementsRef.current.get(activeClipMediaUrl);
+    if (!mediaEl) {
+      if (isImg) {
+        const img = new Image();
+        img.onload = () => setMediaLoadTick((n) => n + 1);
+        img.onerror = () => setMediaLoadTick((n) => n + 1);
+        img.src = activeClipMediaUrl;
+        mediaEl = img;
+      } else {
+        const vid = document.createElement('video');
+        vid.preload = 'auto';
+        vid.playsInline = true;
+        vid.muted = true;
+        vid.onloadeddata = () => setMediaLoadTick((n) => n + 1);
+        vid.onseeked = () => setMediaLoadTick((n) => n + 1);
+        vid.onerror = () => setMediaLoadTick((n) => n + 1);
+        vid.src = activeClipMediaUrl;
+        mediaEl = vid;
+      }
+      mediaElementsRef.current.set(activeClipMediaUrl, mediaEl);
+    }
 
-    // Safe-zone lower third
-    ctx.fillStyle = 'rgba(9, 9, 16, 0.82)';
-    ctx.fillRect(48, h - 108, w - 96, 76);
-    ctx.strokeStyle = 'rgba(245, 158, 11, 0.45)';
-    ctx.strokeRect(48, h - 108, w - 96, 76);
+    const isSelected = clip.clipId === selectedClipId;
+    const scale = isSelected ? visualTransform.scale : 1;
+    const opacity = isSelected ? visualTransform.opacity : 1;
+    const rotRad = isSelected ? (visualTransform.rotationDeg * Math.PI) / 180 : 0;
 
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '600 22px Inter, Segoe UI, sans-serif';
-    ctx.fillText(clip ? clip.label : 'Aethera Studio Timeline', 66, h - 72);
+    let drawn = false;
+    if (mediaEl instanceof HTMLVideoElement) {
+      const localSec = Math.max(0, (playheadSec - clip.startSec) * Math.max(0.25, clip.speed));
+      if (Math.abs(mediaEl.currentTime - localSec) > 0.12 && mediaEl.readyState >= 1) {
+        mediaEl.currentTime = localSec;
+      }
+      if (playing && mediaEl.paused && mediaEl.readyState >= 2) {
+        void mediaEl.play().catch(() => undefined);
+      } else if (!playing && !mediaEl.paused) {
+        mediaEl.pause();
+      }
+      if (mediaEl.readyState >= 2 && mediaEl.videoWidth > 0) {
+        const ratio = Math.min(w / mediaEl.videoWidth, h / mediaEl.videoHeight);
+        const dw = mediaEl.videoWidth * ratio;
+        const dh = mediaEl.videoHeight * ratio;
+        ctx.save();
+        ctx.globalAlpha = opacity;
+        ctx.translate(w / 2, h / 2);
+        ctx.rotate(rotRad);
+        ctx.scale(scale, scale);
+        ctx.drawImage(mediaEl, -dw / 2, -dh / 2, dw, dh);
+        ctx.restore();
+        drawn = true;
+      }
+    } else if (mediaEl instanceof HTMLImageElement && mediaEl.complete && mediaEl.naturalWidth > 0) {
+      const ratio = Math.min(w / mediaEl.naturalWidth, h / mediaEl.naturalHeight);
+      const dw = mediaEl.naturalWidth * ratio;
+      const dh = mediaEl.naturalHeight * ratio;
+      ctx.save();
+      ctx.globalAlpha = opacity;
+      ctx.translate(w / 2, h / 2);
+      ctx.rotate(rotRad);
+      ctx.scale(scale, scale);
+      ctx.drawImage(mediaEl, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+      drawn = true;
+    }
 
-    ctx.fillStyle = '#f59e0b';
-    ctx.font = '13px monospace';
-    ctx.fillText(
-      clip
-        ? `${clip.clipId} · ${clip.speed}x · ${formatTimecode(playheadSec)} / ${formatTimecode(totalDurationSec)}`
-        : formatTimecode(playheadSec),
-      66,
-      h - 48,
+    if (!drawn) {
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '13px Inter, Segoe UI, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`Carregando mídia real: ${clip.label}...`, w / 2, h / 2);
+      ctx.textAlign = 'left';
+    }
+
+    // Active V3 HUD / Title overlay synced to playhead
+    const activeOverlay = clips.find(
+      (c) =>
+        (c.trackId === 'vfx1' || c.trackId === 'sub1') &&
+        playheadSec >= c.startSec &&
+        playheadSec <= c.startSec + c.durationSec / Math.max(0.25, c.speed),
     );
-  }, [activeClipAtPlayhead, playheadSec, previewMode, totalDurationSec]);
+    if (activeOverlay) {
+      ctx.fillStyle = 'rgba(9, 9, 16, 0.72)';
+      ctx.fillRect(36, h - 68, w - 72, 42);
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = '600 15px Inter, Segoe UI, sans-serif';
+      ctx.fillText(activeOverlay.label, 52, h - 42);
+    }
+  }, [
+    activeClipAtPlayhead,
+    activeClipMediaUrl,
+    clips,
+    mediaLoadTick,
+    playheadSec,
+    playing,
+    previewMode,
+    selectedClipId,
+    visualTransform.opacity,
+    visualTransform.rotationDeg,
+    visualTransform.scale,
+  ]);
 
   // Real-time playback loop in timeline mode
   useEffect(() => {
@@ -1329,6 +1498,25 @@ export function AetheraStudioEditor() {
     });
   }, []);
 
+  const requestedThumbsRef = useRef<Set<string>>(new Set());
+  const handleRequestThumbnail = useCallback((asset: LibraryMediaAsset) => {
+    if (asset.thumbnailUrl || requestedThumbsRef.current.has(asset.mediaId)) return;
+    const api = getBridge();
+    if (!api?.cinemaExtractThumbnail) return;
+    requestedThumbsRef.current.add(asset.mediaId);
+    void api
+      .cinemaExtractThumbnail({ filePath: asset.filePath, timeSec: 1 })
+      .then((res) => {
+        if (!res.ok || !res.thumbnailUrl) return;
+        setImportedAssets((prev) =>
+          prev.map((item) =>
+            item.mediaId === asset.mediaId ? { ...item, thumbnailUrl: res.thumbnailUrl ?? null } : item,
+          ),
+        );
+      })
+      .catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     const paths = new Set<string>();
     if (renderedMedia?.stemPaths?.voiceover) paths.add(renderedMedia.stemPaths.voiceover);
@@ -1526,75 +1714,32 @@ export function AetheraStudioEditor() {
             ))}
           </div>
 
-          <div className="flex-1 min-h-0 space-y-1.5 text-xs overflow-y-auto pr-1">
+          <div className="flex-1 min-h-0 overflow-hidden">
             {leftTab === 'media' && (
-              <>
-                <div className="sticky top-0 z-10 bg-[#12121e] pb-1.5">
-                  <input
-                    type="text"
-                    value={librarySearch}
-                    onChange={(e) => setLibrarySearch(e.target.value)}
-                    placeholder={`Buscar na biblioteca (${importedAssets.length})...`}
-                    className="w-full rounded-lg border border-border/50 bg-[#0d0d17] px-2.5 py-1.5 text-[11px] text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
-                  />
-                </div>
-                {importedAssets
-                  .filter((asset) => {
-                    const q = librarySearch.trim().toLowerCase();
-                    if (!q) return true;
-                    return asset.name.toLowerCase().includes(q) || asset.filePath.toLowerCase().includes(q) || asset.kind.toLowerCase().includes(q);
-                  })
-                  .slice(0, 80)
-                  .map((asset) => (
-                  <div
-                    key={asset.mediaId}
-                    draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData('application/aethera-asset', JSON.stringify(asset));
-                    }}
-                    className="cursor-grab rounded-xl border border-amber-500/40 bg-[#0d0d17] p-2 space-y-1.5 active:cursor-grabbing"
-                  >
-                    <div className="flex items-center gap-2">
-                      {asset.thumbnailUrl && (
-                        <img src={asset.thumbnailUrl} alt={asset.name} className="h-9 w-16 rounded object-cover" />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-medium text-foreground">{asset.name}</p>
-                        <p className="text-[10px] text-muted-foreground">
-                          {asset.kind} · {asset.durationSec}s · {asset.width}x{asset.height}
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleAddAssetToTimeline(asset)}
-                      className="inline-flex w-full items-center justify-center gap-1 rounded-lg bg-primary/25 py-1 text-[11px] font-medium text-purple-200 hover:bg-primary/40"
-                    >
-                      <Plus className="size-3" /> Inserir na Timeline
-                    </button>
-                  </div>
-                ))}
-                {Object.values(pkg?.timeline.sourceMedia ?? {}).map((m) => (
-                  <div key={m.mediaId} className="rounded-xl border border-border/80 bg-[#0d0d17] p-2.5">
-                    <p className="truncate font-medium text-foreground">{m.mediaId}</p>
-                    <p className="text-[10px] text-muted-foreground">
-                      {m.kind} · {m.width}x{m.height} · {m.license}
-                    </p>
-                  </div>
-                ))}
-              </>
+              <MediaLibraryPanel
+                assets={importedAssets}
+                waveformMap={waveformMap}
+                onInsertAsset={(asset) => handleAddAssetToTimeline(asset)}
+                onRequestWaveform={(fp) => ensureWaveformLoaded(fp)}
+                onRequestThumbnail={handleRequestThumbnail}
+              />
             )}
-            {leftTab === 'sfx' &&
-              (pkg?.soundPlan.sfxEvents ?? []).map((ev) => (
-                <div key={ev.cueId} className="rounded-xl border border-border/80 bg-[#0d0d17] p-2">
-                  <p className="font-medium text-foreground">{ev.sfxName}</p>
-                  <p className="text-[10px] text-muted-foreground">{ev.timeSeconds}s · {ev.reason}</p>
-                </div>
-              ))}
+            {leftTab === 'sfx' && (
+              <div className="h-full space-y-1.5 overflow-y-auto pr-1 text-xs">
+                {(pkg?.soundPlan.sfxEvents ?? []).map((ev) => (
+                  <div key={ev.cueId} className="rounded-xl border border-border/80 bg-[#0d0d17] p-2">
+                    <p className="font-medium text-foreground">{ev.sfxName}</p>
+                    <p className="text-[10px] text-muted-foreground">{ev.timeSeconds}s · {ev.reason}</p>
+                  </div>
+                ))}
+              </div>
+            )}
             {leftTab !== 'media' && leftTab !== 'sfx' && (
-              <p className="rounded-xl border border-dashed border-border p-3 text-[11px] text-muted-foreground">
-                Arraste arquivos de vídeo, imagem ou áudio para esta janela para importar com thumbnail e waveform reais.
-              </p>
+              <div className="h-full space-y-2 overflow-y-auto pr-1 text-xs">
+                <p className="rounded-xl border border-dashed border-border p-3 text-[11px] text-muted-foreground">
+                  Arraste arquivos de vídeo, imagem, áudio, VFX ou templates para esta janela para importar com thumbnail e waveform reais.
+                </p>
+              </div>
             )}
           </div>
         </aside>
@@ -1640,9 +1785,25 @@ export function AetheraStudioEditor() {
                 MP4 Renderizado {renderedMedia ? `(${renderedMedia.encoderUsed})` : '(Não gerado)'}
               </button>
             </div>
-            <span className="font-mono text-amber-300">{formatTimecode(playheadSec)}</span>
+            <div className="flex items-center gap-2">
+              <span
+                className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+                  livePreviewStatus.state === 'rendering'
+                    ? 'border-amber-400/50 bg-amber-500/20 text-amber-200 animate-pulse'
+                    : livePreviewStatus.state === 'media_unavailable'
+                      ? 'border-rose-400/50 bg-rose-500/20 text-rose-200'
+                      : livePreviewStatus.state === 'rendered_mp4'
+                        ? 'border-emerald-400/50 bg-emerald-500/20 text-emerald-200'
+                        : 'border-purple-400/50 bg-purple-500/20 text-purple-200'
+                }`}
+              >
+                {livePreviewStatus.badgeLabel}
+              </span>
+              <span className="font-mono text-amber-300">{formatTimecode(playheadSec)}</span>
+            </div>
           </div>
 
+          <audio ref={liveAudioRef} className="hidden" />
           <div className="relative flex-1 min-h-0 overflow-hidden rounded-lg border border-border/70 bg-black">
             {previewMode === 'mp4' && renderedMedia ? (
               <video
@@ -1756,9 +1917,25 @@ export function AetheraStudioEditor() {
           </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-2">
-          {inspectorTab === 'transform' && (
+          {inspectorTab === 'transform' && (() => {
+            const elementKind = resolveSelectedElementKind(selectedClip ?? null, pkg?.timeline.sourceMedia);
+            const kindLabels: Record<typeof elementKind, string> = {
+              video: 'Vídeo',
+              audio: 'Áudio',
+              image: 'Imagem',
+              text: 'Texto / Título',
+              vfx: 'VFX / Composição',
+            };
+            return (
             <div className="space-y-2 text-xs">
-              <p className="font-semibold text-foreground">Clipe: {selectedClip?.label ?? '—'}</p>
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <p className="truncate font-semibold text-foreground" title={selectedClip?.label ?? '—'}>
+                  Clipe: {selectedClip?.label ?? '—'}
+                </p>
+                <span className="shrink-0 rounded-full border border-purple-400/40 bg-purple-500/15 px-2 py-0.5 text-[10px] font-medium text-purple-200">
+                  {kindLabels[elementKind]}
+                </span>
+              </div>
               {selectedClip && (
                 <p className="font-mono text-[11px] text-muted-foreground">
                   Início {selectedClip.startSec}s · Duração {selectedClip.durationSec}s · {selectedClip.speed}x
@@ -1885,8 +2062,40 @@ export function AetheraStudioEditor() {
                   </div>
                 </div>
               )}
+              {(elementKind === 'audio' || elementKind === 'text' || elementKind === 'video') && (
+                <div className="flex flex-wrap gap-1.5 border-t border-border/70 pt-2 text-[10px]">
+                  {elementKind === 'audio' && (
+                    <button
+                      type="button"
+                      onClick={() => setInspectorTab('audio')}
+                      className="rounded-md border border-emerald-400/40 bg-emerald-500/15 px-2 py-1 text-emerald-200"
+                    >
+                      Abrir Mixer &amp; Fades de Áudio
+                    </button>
+                  )}
+                  {elementKind === 'text' && (
+                    <button
+                      type="button"
+                      onClick={() => setInspectorTab('subtitles')}
+                      className="rounded-md border border-purple-400/40 bg-purple-500/15 px-2 py-1 text-purple-200"
+                    >
+                      Abrir Tipografia &amp; Animação
+                    </button>
+                  )}
+                  {elementKind === 'video' && (
+                    <button
+                      type="button"
+                      onClick={() => setInspectorTab('color')}
+                      className="rounded-md border border-sky-400/40 bg-sky-500/15 px-2 py-1 text-sky-200"
+                    >
+                      Abrir Cor &amp; Grading
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
-          )}
+            );
+          })()}
 
           {inspectorTab === 'color' && pkg && (
             <div className="min-w-0 space-y-2.5 text-xs">
@@ -2371,6 +2580,11 @@ export function AetheraStudioEditor() {
                 >
                   {clips.filter((c) => (c.trackId ?? 'v1') !== 'sub1').map((clip) => {
                     const widthPx = Math.max(44, (clip.durationSec / Math.max(0.25, clip.speed)) * pxPerSec - 2);
+                    const matchedAsset = importedAssets.find(
+                      (a) => a.mediaId === clip.mediaId || a.mediaId === clip.sourceMediaId || a.name === clip.label,
+                    );
+                    const thumbUrl = clip.thumbnailUrl ?? matchedAsset?.thumbnailUrl ?? null;
+                    const frameCount = Math.max(1, Math.min(12, Math.floor(widthPx / 56)));
                     return (
                       <div
                         key={clip.clipId}
@@ -2388,18 +2602,34 @@ export function AetheraStudioEditor() {
                             initialStartSec: clip.startSec,
                           };
                         }}
-                        className={`absolute top-1 bottom-1 flex cursor-grab items-center gap-1.5 overflow-hidden rounded-md border px-2 text-left text-[11px] font-medium active:cursor-grabbing ${
+                        className={`absolute top-0.5 bottom-0.5 flex cursor-grab items-end overflow-hidden rounded-md border text-left text-[11px] font-medium active:cursor-grabbing ${
                           clip.clipId === selectedClipId
-                            ? 'border-amber-400 bg-amber-500/20 text-foreground'
+                            ? 'border-amber-400 ring-1 ring-amber-400/70 bg-amber-500/20 text-foreground'
                             : 'border-violet-400/50 bg-violet-600/25 text-foreground/90'
                         }`}
                         style={{ left: clip.startSec * pxPerSec, width: widthPx }}
                       >
-                        {clip.thumbnailUrl && (
-                          <img src={clip.thumbnailUrl} alt="" className="h-6 w-10 shrink-0 rounded object-cover" />
+                        {thumbUrl && (
+                          <div className="pointer-events-none absolute inset-0 flex overflow-hidden opacity-85">
+                            {Array.from({ length: frameCount }).map((_, idx) => (
+                              <img
+                                key={idx}
+                                src={thumbUrl}
+                                alt=""
+                                className="h-full flex-1 object-cover border-r border-black/30 last:border-r-0"
+                              />
+                            ))}
+                          </div>
                         )}
-                        <span className="truncate">{clip.label}</span>
-                        <span className="ml-auto shrink-0 font-mono text-[9px] text-muted-foreground">{clip.durationSec}s</span>
+                        <div className="relative z-10 flex w-full items-center gap-1 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-1.5 py-0.5">
+                          <span className="truncate text-[10px] font-medium text-white drop-shadow">{clip.label}</span>
+                          {clip.transitionIn && clip.transitionIn !== 'cut' && (
+                            <span className="shrink-0 rounded bg-purple-600/80 px-1 text-[8px] uppercase text-white">
+                              {clip.transitionIn}
+                            </span>
+                          )}
+                          <span className="ml-auto shrink-0 font-mono text-[9px] text-amber-200">{clip.durationSec}s</span>
+                        </div>
                       </div>
                     );
                   })}

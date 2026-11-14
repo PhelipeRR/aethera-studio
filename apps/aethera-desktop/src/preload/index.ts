@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaListStagedJobs: () => ipcRenderer.invoke('cinema:list-staged-jobs'),
   cinemaExtractWaveform: (input: { filePath: string; buckets?: number }) =>
     ipcRenderer.invoke('cinema:extract-waveform', input),
+  cinemaExtractThumbnail: (input: { filePath: string; timeSec?: number }) =>
+    ipcRenderer.invoke('cinema:extract-thumbnail', input),
   trendRadarSearch: (input: {
     config: unknown;
     sessionId?: string;

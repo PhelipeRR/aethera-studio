@@ -2140,24 +2140,100 @@ export function registerAetheraDomainIpc(options: {
     },
   );
 
+  ipcMain.handle(
+    'cinema:extract-thumbnail',
+    async (
+      event,
+      input: {
+        filePath: string;
+        timeSec?: number;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      try {
+        if (!existsSync(input.filePath)) {
+          return { ok: false as const, error: 'Arquivo não encontrado' };
+        }
+        if (/\.(png|jpe?g|webp|gif|svg)$/i.test(input.filePath)) {
+          return { ok: true as const, thumbnailUrl: toMediaUrl(input.filePath), cached: true };
+        }
+        const st = statSync(input.filePath);
+        const timeSec = Math.max(0, Number((input.timeSec ?? 1).toFixed(2)));
+        const key = createHash('sha1')
+          .update(`${input.filePath}|${st.size}|${Math.floor(st.mtimeMs)}|${timeSec}`)
+          .digest('hex');
+        mkdirSync(cinemaThumbsDir, { recursive: true });
+        const thumbPath = join(cinemaThumbsDir, `thumb_${key}.png`);
+        if (existsSync(thumbPath)) {
+          return { ok: true as const, thumbnailUrl: toMediaUrl(thumbPath), cached: true };
+        }
+        await extractSingleThumbnail(input.filePath, thumbPath, timeSec);
+        return { ok: true as const, thumbnailUrl: toMediaUrl(thumbPath), cached: false };
+      } catch (err) {
+        return {
+          ok: false as const,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
   ipcMain.handle('cinema:list-library', async (event) => {
     ensureTrusted(event.senderFrame);
     if (!database.handle) return [];
     const rows = database.handle.db.select().from(velixLocalAssets).all();
     return rows.map((row) => {
-      const isImage = /\.(png|jpe?g|webp)$/i.test(row.path);
-      const isAudio = /\.(wav|mp3|ogg|flac)$/i.test(row.path);
+      const lower = row.path.toLowerCase();
+      const isImage = /\.(png|jpe?g|webp|gif|svg)$/i.test(lower);
+      const isAudio = /\.(wav|mp3|ogg|flac|aac|m4a)$/i.test(lower);
       const kind: 'video' | 'image' | 'audio' = isImage ? 'image' : isAudio ? 'audio' : 'video';
+      const category =
+        /template|preset/i.test(lower)
+          ? 'template'
+          : /motion|mogrt|hud|lower_third/i.test(lower)
+            ? 'motion_graphics'
+            : /vfx|overlay|alpha|matte|particle/i.test(lower)
+              ? 'vfx'
+              : isAudio && /music|bgm|soundtrack|beat|lofi|ost/i.test(lower)
+                ? 'music'
+                : isAudio
+                  ? 'sfx'
+                  : isImage
+                    ? 'image'
+                    : 'video';
+      const extMatch = row.path.match(/\.([a-z0-9]+)$/i);
+      const format = (extMatch?.[1] ?? kind).toUpperCase();
+      const origin = basename(dirname(row.path)) || 'local';
+      let cachedThumbUrl: string | null = isImage ? toMediaUrl(row.path) : null;
+      if (!cachedThumbUrl && kind === 'video') {
+        try {
+          if (existsSync(row.path)) {
+            const st = statSync(row.path);
+            const key = createHash('sha1')
+              .update(`${row.path}|${st.size}|${Math.floor(st.mtimeMs)}|1`)
+              .digest('hex');
+            const thumbPath = join(cinemaThumbsDir, `thumb_${key}.png`);
+            if (existsSync(thumbPath)) {
+              cachedThumbUrl = toMediaUrl(thumbPath);
+            }
+          }
+        } catch {
+          // ignore stat errors
+        }
+      }
       return {
         mediaId: row.id,
         filePath: row.path,
         name: basename(row.path),
         kind,
+        category,
+        format,
+        origin,
         durationSec: isAudio ? 4 : isImage ? 5 : 6,
         width: isAudio ? 0 : 1280,
         height: isAudio ? 0 : 720,
         mediaUrl: toMediaUrl(row.path),
-        thumbnailUrl: isImage ? toMediaUrl(row.path) : null,
+        thumbnailUrl: cachedThumbUrl,
         waveformPeaks: [],
       };
     });
