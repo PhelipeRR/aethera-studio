@@ -49,6 +49,13 @@ interface CinemaBridgeApi {
   cinemaResumeProduction?: (projectId: string) => Promise<StagedJobView>;
   cinemaResolvePendingMedia?: (input: Record<string, unknown>) => Promise<StagedJobView>;
   cinemaListStagedJobs?: () => Promise<StagedJobView[]>;
+  cinemaInspectDeleteProject?: (projectId: string) => Promise<{
+    projectId: string;
+    workspaceDir: string;
+    itemsToRemove: string[];
+    preservedGlobalLibrary: boolean;
+    sharedCacheEntriesPreserved: number;
+  }>;
   cinemaDeleteProject?: (projectId: string) => Promise<{ deleted: boolean; projectId: string }>;
   cinemaEvolutionSnapshot?: (input?: { refresh?: boolean }) => Promise<{
     directors?: Array<{ directorId: string; displayName: string }>;
@@ -73,6 +80,7 @@ interface StagedJobView {
   message: string;
   completedStages: string[];
   pendingMedia: PendingMediaSlotView[];
+  isTechnicalSample?: boolean;
   error?: string;
 }
 
@@ -96,6 +104,7 @@ function isJobReadyForEditor(job: StagedJobView): boolean {
   return (
     job.state === 'editor' &&
     job.progressPct >= 100 &&
+    !job.isTechnicalSample &&
     requiredStages.every((s) => job.completedStages?.includes(s))
   );
 }
@@ -244,7 +253,37 @@ export function CinemaDirectorPanel() {
   const [revisionNote, setRevisionNote] = useState('');
   const [planApproved, setPlanApproved] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<StagedJobView | null>(null);
+  const [deleteInspection, setDeleteInspection] = useState<{
+    itemsToRemove: string[];
+    sharedCacheEntriesPreserved: number;
+  } | null>(null);
   const [deletingProject, setDeletingProject] = useState(false);
+
+  async function openDeleteModal(job: StagedJobView) {
+    setDeleteTarget(job);
+    setDeleteInspection({
+      itemsToRemove: [
+        'Mídias adquiridas exclusivas do projeto',
+        'Narrações, renders MP4, thumbnails e arquivos temporários',
+        'Roteiro, timeline, metadados e histórico de produção',
+      ],
+      sharedCacheEntriesPreserved: 0,
+    });
+    const api = bridge();
+    if (api?.cinemaInspectDeleteProject) {
+      try {
+        const info = await api.cinemaInspectDeleteProject(job.projectId);
+        if (info?.itemsToRemove) {
+          setDeleteInspection({
+            itemsToRemove: info.itemsToRemove,
+            sharedCacheEntriesPreserved: info.sharedCacheEntriesPreserved ?? 0,
+          });
+        }
+      } catch {
+        // keep fallback list
+      }
+    }
+  }
 
   async function handleConfirmDeleteJob() {
     if (!deleteTarget) return;
@@ -891,7 +930,7 @@ export function CinemaDirectorPanel() {
                       <div className="flex items-center gap-1.5">
                         <button
                           type="button"
-                          onClick={() => setDeleteTarget(job)}
+                          onClick={() => void openDeleteModal(job)}
                           title="Excluir projeto"
                           aria-label={`Excluir projeto ${job.prompt || job.projectId}`}
                           className="inline-flex items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-300 hover:border-rose-400 hover:bg-rose-500/20"
@@ -1152,8 +1191,21 @@ export function CinemaDirectorPanel() {
               <div>
                 <h2 className="text-sm font-semibold text-foreground">Excluir Projeto com IA</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Tem certeza que deseja excluir <span className="font-semibold text-foreground">"{deleteTarget.prompt || deleteTarget.projectId}"</span>? Essa ação removerá o projeto e seu histórico de produção.
+                  Tem certeza que deseja excluir <span className="font-semibold text-foreground">"{deleteTarget.prompt || deleteTarget.projectId}"</span>?
                 </p>
+                {deleteInspection && (
+                  <div className="mt-3 space-y-1.5 rounded-xl border border-border/70 bg-background/60 p-3 text-[11px]">
+                    <p className="font-medium text-rose-300">Dados exclusivos que serão removidos:</p>
+                    <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground">
+                      {deleteInspection.itemsToRemove.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                    <p className="pt-1 text-[10px] text-emerald-300/90">
+                      Biblioteca global (SFX/VFX/músicas/templates) e {deleteInspection.sharedCacheEntriesPreserved} referência(s) compartilhada(s) com outros projetos serão preservadas.
+                    </p>
+                  </div>
+                )}
               </div>
               <button
                 type="button"

@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, extname, join } from 'node:path';
 import {
   applyTargetedRepair,
   evaluateEnsemble,
@@ -12,10 +21,13 @@ import {
   type CinemaGenre,
   type CinemaProductionPackage,
   type DeliveryFormat,
+  type NarrativeBeat,
   type RealRenderResult,
   type RenderQualityProfile,
+  type ScriptValidationReport,
   type SourceMediaRecord,
 } from '@neuralbridge/cinema';
+import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
 
 export type ProductionStageState =
   | 'idle'
@@ -56,24 +68,55 @@ export interface StagedProductionJob {
   completedStages: ProductionStageState[];
   acquiredMedia: SourceMediaRecord[];
   pendingMedia: PendingMediaSlot[];
+  workspaceDir?: string;
+  scriptValidation?: ScriptValidationReport;
+  isTechnicalSample?: boolean;
   error?: string;
   updatedAt: string;
+}
+
+export interface SearchCandidate {
+  url: string;
+  title?: string;
+  origin?: string;
+  license?: string;
 }
 
 export interface StagedPipelineDeps {
   jobsDir: string;
   mediaDir: string;
   outputDir: string;
+  workspacesDir?: string;
+  cacheDir?: string;
+  libraryDir?: string;
+  cinemaProjectsDir?: string;
   evolutionCore: AetheraEvolutionCore;
   onProgress?: (job: StagedProductionJob) => void;
   onPackageReady: (pkg: CinemaProductionPackage, prompt: string) => void;
   onRenderReady: (projectId: string, render: RealRenderResult) => void;
+  searchExternalMedia?: (
+    query: string,
+    slotIndex: number,
+    signal: AbortSignal,
+  ) => Promise<SearchCandidate[]>;
   acquireExternalMedia?: (
     query: string,
     slotIndex: number,
     mediaDir: string,
     signal: AbortSignal,
+    preferredUrl?: string,
   ) => Promise<string | null>;
+  generateAgentScript?: (input: {
+    projectId: string;
+    prompt: string;
+    genre?: CinemaGenre;
+    targetDurationSec: number;
+    humorIntensity: number;
+    queries: string[];
+  }) => Promise<{
+    treatment?: string;
+    beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
+  } | null>;
 }
 
 const LOCAL_MEDIA_EXT_RE = /\.(mp4|mov|webm|mkv|png|jpe?g|webp)$/i;
@@ -165,10 +208,58 @@ export async function buildSourceMediaFromFile(
 
 export class StagedCinemaPipeline {
   private readonly controllers = new Map<string, AbortController>();
+  readonly workspacesDir: string;
+  readonly cacheDir: string;
+  readonly cache: CinemaSmartCache;
 
   constructor(private readonly deps: StagedPipelineDeps) {
     mkdirSync(deps.jobsDir, { recursive: true });
     mkdirSync(deps.mediaDir, { recursive: true });
+    const baseDir = dirname(deps.jobsDir);
+    this.workspacesDir = deps.workspacesDir ?? join(baseDir, 'cinema-workspaces');
+    this.cacheDir = deps.cacheDir ?? join(baseDir, 'cinema-cache');
+    mkdirSync(this.workspacesDir, { recursive: true });
+    this.cache = new CinemaSmartCache(this.cacheDir);
+  }
+
+  getProjectPaths(projectId: string) {
+    const safeId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const root = join(this.workspacesDir, safeId);
+    return {
+      safeId,
+      root,
+      mediaDir: join(root, 'media'),
+      narrationDir: join(root, 'narration'),
+      rendersDir: join(root, 'renders'),
+      thumbsDir: join(root, 'thumbs'),
+      tempDir: join(root, 'temp'),
+      metadataFile: join(root, 'metadata.json'),
+    };
+  }
+
+  private ensureProjectWorkspace(projectId: string, prompt: string) {
+    const paths = this.getProjectPaths(projectId);
+    mkdirSync(paths.mediaDir, { recursive: true });
+    mkdirSync(paths.narrationDir, { recursive: true });
+    mkdirSync(paths.rendersDir, { recursive: true });
+    mkdirSync(paths.thumbsDir, { recursive: true });
+    mkdirSync(paths.tempDir, { recursive: true });
+    if (!existsSync(paths.metadataFile)) {
+      writeFileSync(
+        paths.metadataFile,
+        JSON.stringify(
+          {
+            projectId,
+            prompt,
+            createdAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      );
+    }
+    return paths;
   }
 
   private jobFile(projectId: string): string {
@@ -220,18 +311,92 @@ export class StagedCinemaPipeline {
     return this.saveJob(existing);
   }
 
-  deleteJob(projectId: string): boolean {
+  inspectProjectDeletion(projectId: string): {
+    projectId: string;
+    workspaceDir: string;
+    itemsToRemove: string[];
+    preservedGlobalLibrary: boolean;
+    sharedCacheEntriesPreserved: number;
+  } {
+    const paths = this.getProjectPaths(projectId);
+    const itemsToRemove: string[] = [];
+    if (existsSync(paths.mediaDir) && readdirSync(paths.mediaDir).length > 0) {
+      itemsToRemove.push(`Mídias adquiridas exclusivas (${readdirSync(paths.mediaDir).length} arquivo(s))`);
+    } else {
+      itemsToRemove.push('Mídias adquiridas exclusivas do projeto');
+    }
+    itemsToRemove.push('Narrações, renders MP4, thumbnails e arquivos temporários');
+    itemsToRemove.push('Roteiro, timeline, metadados e histórico de produção');
+
+    const cacheEntries = this.cache.listEntries();
+    const sharedCacheEntriesPreserved = cacheEntries.filter(
+      (e) => e.consumers.includes(projectId) && e.consumers.some((id) => id !== projectId),
+    ).length;
+
+    return {
+      projectId,
+      workspaceDir: paths.root,
+      itemsToRemove,
+      preservedGlobalLibrary: true,
+      sharedCacheEntriesPreserved,
+    };
+  }
+
+  deleteJob(projectId: string): {
+    deleted: boolean;
+    removedPaths: string[];
+    preservedSharedEntries: number;
+  } {
     const ctrl = this.controllers.get(projectId);
     if (ctrl) {
       ctrl.abort();
       this.controllers.delete(projectId);
     }
-    const file = this.jobFile(projectId);
-    if (existsSync(file)) {
-      unlinkSync(file);
-      return true;
+
+    const removedPaths: string[] = [];
+    const safeId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const paths = this.getProjectPaths(projectId);
+
+    const isProtectedLibrary = (p: string) =>
+      Boolean(this.deps.libraryDir && (isPathStrictlyInside(p, this.deps.libraryDir) || p === this.deps.libraryDir));
+
+    if (
+      existsSync(paths.root) &&
+      isPathStrictlyInside(paths.root, this.workspacesDir) &&
+      !isProtectedLibrary(paths.root)
+    ) {
+      rmSync(paths.root, { recursive: true, force: true });
+      removedPaths.push(paths.root);
     }
-    return false;
+
+    const jobFile = this.jobFile(projectId);
+    if (existsSync(jobFile) && isPathStrictlyInside(jobFile, this.deps.jobsDir)) {
+      unlinkSync(jobFile);
+      removedPaths.push(jobFile);
+    }
+
+    const legacyRenderFile = join(this.deps.outputDir, `${safeId}.mp4`);
+    if (existsSync(legacyRenderFile) && isPathStrictlyInside(legacyRenderFile, this.deps.outputDir)) {
+      unlinkSync(legacyRenderFile);
+      removedPaths.push(legacyRenderFile);
+    }
+
+    if (this.deps.cinemaProjectsDir) {
+      const projectJson = join(this.deps.cinemaProjectsDir, `${safeId}.json`);
+      if (existsSync(projectJson) && isPathStrictlyInside(projectJson, this.deps.cinemaProjectsDir)) {
+        unlinkSync(projectJson);
+        removedPaths.push(projectJson);
+      }
+    }
+
+    const cacheRelease = this.cache.releaseConsumer(projectId);
+    removedPaths.push(...cacheRelease.removedCacheFiles);
+
+    return {
+      deleted: removedPaths.length > 0,
+      removedPaths,
+      preservedSharedEntries: cacheRelease.preservedSharedEntries,
+    };
   }
 
   async resolvePendingMedia(
@@ -279,6 +444,7 @@ export class StagedCinemaPipeline {
     useNvenc?: boolean;
     seedMediaFiles?: string[];
   }): Promise<StagedProductionJob> {
+    const projectPaths = this.ensureProjectWorkspace(input.projectId, input.prompt);
     const job: StagedProductionJob = {
       projectId: input.projectId,
       prompt: input.prompt,
@@ -294,6 +460,7 @@ export class StagedCinemaPipeline {
       completedStages: ['prompt'],
       acquiredMedia: [],
       pendingMedia: [],
+      workspaceDir: projectPaths.root,
       updatedAt: new Date().toISOString(),
     };
 
@@ -301,7 +468,11 @@ export class StagedCinemaPipeline {
       for (let i = 0; i < input.seedMediaFiles.length; i += 1) {
         const f = input.seedMediaFiles[i];
         if (!f) continue;
-        const m = await buildSourceMediaFromFile(f, `${input.projectId}_seed_${i + 1}`);
+        const dest = join(projectPaths.mediaDir, `seed_${i + 1}${extname(f) || '.mp4'}`);
+        if (existsSync(f) && f !== dest) {
+          copyFileSync(f, dest);
+        }
+        const m = await buildSourceMediaFromFile(existsSync(dest) ? dest : f, `${input.projectId}_seed_${i + 1}`);
         if (m) job.acquiredMedia.push(m);
       }
     }
@@ -332,22 +503,25 @@ export class StagedCinemaPipeline {
     };
 
     try {
+      const projectPaths = this.ensureProjectWorkspace(job.projectId, job.prompt);
+      job.workspaceDir = projectPaths.root;
       const queries = extractSceneQueriesFromPrompt(job.prompt, 4);
 
-      // PESQUISA & AQUISIÇÃO
+      // PESQUISA & AQUISIÇÃO (sempre contextual e isolada por projeto; nunca reaproveita pasta global cegamente)
       if (!job.completedStages.includes('aquisicao')) {
         checkCancelled();
         job.state = 'pesquisa';
         job.progressPct = 15;
-        job.message = 'Pesquisando referências e inventário local de mídias...';
+        job.message = 'Executando pesquisa contextual e verificando cache inteligente para o projeto...';
         this.saveJob(job);
 
-        const localFiles = scanLocalMediaDir(this.deps.mediaDir);
-        for (let i = 0; i < localFiles.length && job.acquiredMedia.length < queries.length; i += 1) {
-          const f = localFiles[i];
+        // Apenas arquivos já pertencentes ao diretório exclusivo DESTE projeto (em caso de retomada)
+        const ownProjectFiles = scanLocalMediaDir(projectPaths.mediaDir);
+        for (let i = 0; i < ownProjectFiles.length && job.acquiredMedia.length < queries.length; i += 1) {
+          const f = ownProjectFiles[i];
           if (!f) continue;
           if (job.acquiredMedia.some((m) => m.uri === f)) continue;
-          const media = await buildSourceMediaFromFile(f, `${job.projectId}_local_${i + 1}`);
+          const media = await buildSourceMediaFromFile(f, `${job.projectId}_own_${i + 1}`);
           if (media) job.acquiredMedia.push(media);
         }
         job.completedStages = [...new Set([...job.completedStages, 'pesquisa'])] as ProductionStageState[];
@@ -355,7 +529,7 @@ export class StagedCinemaPipeline {
         checkCancelled();
         job.state = 'aquisicao';
         job.progressPct = 32;
-        job.message = 'Adquirindo e validando mídias reais via FFprobe...';
+        job.message = 'Adquirindo mídias contextuais no workspace isolado do projeto...';
         this.saveJob(job);
 
         const pending: PendingMediaSlot[] = [];
@@ -364,16 +538,73 @@ export class StagedCinemaPipeline {
           if (job.acquiredMedia[i]) continue;
           const query = queries[i] ?? `Cena ${i + 1}`;
           let acquiredUri: string | null = null;
-          if (this.deps.acquireExternalMedia) {
+          let matchedCandidate: SearchCandidate | undefined;
+
+          if (this.deps.searchExternalMedia) {
             try {
-              acquiredUri = await this.deps.acquireExternalMedia(query, i, this.deps.mediaDir, signal);
+              const candidates = await this.deps.searchExternalMedia(query, i, signal);
+              matchedCandidate = candidates[i % Math.max(1, candidates.length)] ?? candidates[0];
+              if (matchedCandidate?.url) {
+                const cacheHit = this.cache.findVerifiedMatch({
+                  url: matchedCandidate.url,
+                  topic: `${job.prompt} ${query}`,
+                });
+                if (cacheHit) {
+                  const isolatedPath = join(
+                    projectPaths.mediaDir,
+                    `cached_${i + 1}${extname(cacheHit.filePath) || '.mp4'}`,
+                  );
+                  copyFileSync(cacheHit.filePath, isolatedPath);
+                  this.cache.registerConsumer({
+                    url: cacheHit.url,
+                    origin: cacheHit.origin,
+                    license: cacheHit.license,
+                    topic: cacheHit.topic,
+                    query,
+                    sourceFilePath: isolatedPath,
+                    width: cacheHit.width,
+                    height: cacheHit.height,
+                    durationSec: cacheHit.durationSec,
+                    projectId: job.projectId,
+                  });
+                  acquiredUri = isolatedPath;
+                }
+              }
+            } catch {
+              matchedCandidate = undefined;
+            }
+          }
+
+          if (!acquiredUri && this.deps.acquireExternalMedia) {
+            try {
+              acquiredUri = await this.deps.acquireExternalMedia(
+                query,
+                i,
+                projectPaths.mediaDir,
+                signal,
+                matchedCandidate?.url,
+              );
             } catch {
               acquiredUri = null;
             }
           }
+
           if (acquiredUri) {
             const media = await buildSourceMediaFromFile(acquiredUri, `${job.projectId}_acq_${i + 1}`);
             if (media) {
+              const durationSec = media.duration.value / Math.max(1, media.duration.rate);
+              this.cache.registerConsumer({
+                url: matchedCandidate?.url ?? `local://${job.projectId}/${i + 1}/${encodeURIComponent(query)}`,
+                origin: matchedCandidate?.origin ?? 'yt_dlp_or_external',
+                license: matchedCandidate?.license ?? media.license,
+                topic: job.prompt,
+                query,
+                sourceFilePath: media.uri,
+                width: media.width ?? 1280,
+                height: media.height ?? 720,
+                durationSec,
+                projectId: job.projectId,
+              });
               job.acquiredMedia.push(media);
               continue;
             }
@@ -398,11 +629,11 @@ export class StagedCinemaPipeline {
         job.completedStages = [...new Set([...job.completedStages, 'aquisicao'])] as ProductionStageState[];
       }
 
-      // ROTEIRO
+      // ROTEIRO (agentes RF-07 + diretores + validação proporcional à duração)
       checkCancelled();
       job.state = 'roteiro';
       job.progressPct = 50;
-      job.message = 'Estruturando roteiro e recuperando memórias dos diretores...';
+      job.message = 'Desenvolvendo roteiro proporcional e recuperando memórias dos diretores RF-07...';
       this.saveJob(job);
       const activeMemories = this.deps.evolutionCore
         .retrieveRelevantMemories({
@@ -411,6 +642,27 @@ export class StagedCinemaPipeline {
           projectId: job.projectId,
         })
         .map((m) => ({ memoryId: m.memoryId, rule: m.content, directorId: m.directorId }));
+
+      let externalDirection:
+        | { treatment?: string; beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }> }
+        | undefined;
+      if (this.deps.generateAgentScript) {
+        try {
+          const generated = await this.deps.generateAgentScript({
+            projectId: job.projectId,
+            prompt: job.prompt,
+            ...(job.genre ? { genre: job.genre } : {}),
+            targetDurationSec: job.targetDurationSec,
+            humorIntensity: job.humorIntensity,
+            queries,
+          });
+          if (generated && (generated.beats?.length || generated.treatment)) {
+            externalDirection = generated;
+          }
+        } catch {
+          externalDirection = undefined;
+        }
+      }
       job.completedStages = [...new Set([...job.completedStages, 'roteiro'])] as ProductionStageState[];
 
       // PLANEJAMENTO
@@ -447,7 +699,9 @@ export class StagedCinemaPipeline {
         renderProfile: job.renderProfile,
         mediaCatalog: fallbackCatalog,
         ...(activeMemories.length > 0 ? { appliedMemories: activeMemories } : {}),
+        ...(externalDirection ? { externalDirection } : {}),
       });
+      job.scriptValidation = pkg.scriptValidation;
 
       // Mark explicitly authorized procedural slots if no real media was provided
       if (job.acquiredMedia.length === 0) {
@@ -515,15 +769,17 @@ export class StagedCinemaPipeline {
 
       const render = await renderRealCinemaMp4({
         pkg,
-        outputDir: this.deps.outputDir,
+        outputDir: projectPaths.rendersDir,
         fileName: `${job.projectId}.mp4`,
         useNvenc: job.useNvenc,
         requireRealMedia: job.acquiredMedia.length > 0,
         voiceStudioVoiceId: '9190edfa',
         evolution: this.deps.evolutionCore,
         prompt: job.prompt,
+        previewQuality: 'fast_preview',
         ...(job.genre ? { genre: job.genre } : {}),
       });
+      job.isTechnicalSample = render.isTechnicalSample;
       this.deps.onRenderReady(job.projectId, render);
       job.completedStages = [...new Set([...job.completedStages, 'previa', 'editor'])] as ProductionStageState[];
 

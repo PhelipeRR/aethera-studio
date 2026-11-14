@@ -90,6 +90,18 @@ export interface CreativeDirectionPackage {
   mediaGaps: Array<{ shotId: string; reason: string }>;
 }
 
+export interface ScriptValidationReport {
+  valid: boolean;
+  targetDurationSec: number;
+  estimatedNarrationSec: number;
+  narrationWordCount: number;
+  beatCount: number;
+  shotCount: number;
+  coveredTimelineSec: number;
+  coverageRatio: number;
+  warnings: string[];
+}
+
 export function compileCreativeBrief(input: {
   prompt: string;
   genre?: CinemaGenre;
@@ -181,30 +193,196 @@ export function buildStyleBible(brief: CreativeBrief): StyleBible {
   };
 }
 
+function buildContextualBeatNarration(params: {
+  prompt: string;
+  stage: NarrativeBeat['stage'];
+  beatIndex: number;
+  totalBeats: number;
+  durationSec: number;
+  itemNumber?: number;
+  itemTotal?: number;
+  humorIntensity: number;
+}): string {
+  const cleanTopic = params.prompt
+    .replace(/^(?:crie|fa[çc]a|gere|produza)\s+(?:um\s+)?(?:v[ií]deo(?:\s+cinematogr[áa]fico)?\s+(?:sobre|de)?\s*)/i, '')
+    .replace(/,?\s*com\s+narrativa.*$/i, '')
+    .trim() || params.prompt.trim();
+
+  const humorLine =
+    params.humorIntensity > 0
+      ? ' Um comentário irônico pontua a transição sem quebrar o ritmo cinematográfico.'
+      : '';
+
+  const baseParagraphs: Record<NarrativeBeat['stage'], string> = {
+    hook: `Abertura cinematográfica apresentando ${cleanTopic}. Logo nos primeiros segundos, estabelecemos o peso dramático, os riscos envolvidos e o motivo pelo qual este recorte exige atenção imediata do espectador.${humorLine}`,
+    promise: `Contextualização e promessa do episódio sobre ${cleanTopic}: explicamos os critérios de avaliação, o que torna cada momento memorável e como a jornada evolui em intensidade até o desfecho.`,
+    progression: params.itemNumber
+      ? `Capítulo ${params.itemNumber} de ${params.itemTotal ?? params.totalBeats} sobre ${cleanTopic}: analisamos os padrões de comportamento, decisões táticas, leitura de cenário, erros comuns e os momentos decisivos que definem esta etapa.${humorLine}`
+      : `Desenvolvimento narrativo (bloco ${params.beatIndex + 1} de ${params.totalBeats}) explorando ${cleanTopic} com evidências visuais, ritmo alternado, leitura de detalhes e aprofundamento técnico.${humorLine}`,
+    tension: `Escalada de tensão em ${cleanTopic}: o nível de exigência sobe drasticamente, as margens de erro desaparecem e cada movimento passa a ter consequência direta no resultado final.${humorLine}`,
+    climax: `Clímax principal de ${cleanTopic}: convergência máxima entre trilha sonora, ritmo de montagem e execução visual, destacando o momento mais intenso e memorável de toda a obra.`,
+    resolution: `Fechamento e síntese sobre ${cleanTopic}: consolidamos os aprendizados da jornada, conectamos os pontos altos do roteiro e entregamos uma conclusão marcante.`,
+    cta: `Encerramento convidando o público a comentar suas próprias experiências sobre ${cleanTopic} e acompanhar os próximos episódios do canal.`,
+  };
+
+  let text = baseParagraphs[params.stage];
+  const targetWords = Math.max(18, Math.round(params.durationSec * 2.1));
+  const detailExtensions = [
+    `Nesta janela de ${Math.round(params.durationSec)} segundos, a decupagem alterna planos fechados para destacar reações e planos abertos para situar a escala do desafio.`,
+    `A narração mantém cadência firme, explicando o porquê de cada escolha visual, o impacto da trilha com ducking controlado e os contrastes entre expectativa e execução real.`,
+    `Observamos também os pequenos sinais que costumam passar despercebidos na primeira visualização, conectando ritmo, atmosfera e leitura estratégica do contexto apresentado.`,
+    `Com base nas referências pesquisadas para "${cleanTopic.slice(0, 80)}", reforçamos a coerência documental entre imagem em tela, comentário editorial e pontuação sonora.`,
+  ];
+
+  let extIdx = 0;
+  while (text.split(/\s+/).filter(Boolean).length < targetWords && extIdx < 6) {
+    text = `${text} ${detailExtensions[(params.beatIndex + extIdx) % detailExtensions.length]}`;
+    extIdx += 1;
+  }
+  return text;
+}
+
+export function validateScriptAndBreakdown(
+  direction: CreativeDirectionPackage,
+  totalTimelineSec?: number,
+): ScriptValidationReport {
+  const warnings: string[] = [];
+  const targetDurationSec = Math.max(1, direction.brief.targetDurationSec);
+  const allText = [
+    direction.treatment ?? '',
+    ...direction.narrativeBeats.map((b) => b.summary ?? ''),
+  ]
+    .join(' ')
+    .trim();
+  const narrationWordCount = allText ? allText.split(/\s+/).filter(Boolean).length : 0;
+  const estimatedNarrationSec = Math.round(narrationWordCount / 2.3);
+  const coveredTimelineSec = Number(
+    direction.shots
+      .reduce((acc, s) => acc + s.timeRange.duration.value / Math.max(1, s.timeRange.duration.rate), 0)
+      .toFixed(2),
+  );
+  const refSec = totalTimelineSec && totalTimelineSec > 0 ? totalTimelineSec : targetDurationSec;
+  const coverageRatio = Number((coveredTimelineSec / Math.max(1, refSec)).toFixed(3));
+
+  if (direction.narrativeBeats.length < 6) {
+    warnings.push(`Quantidade insuficiente de beats narrativos (${direction.narrativeBeats.length} < 6).`);
+  }
+  if (coverageRatio < 0.9) {
+    warnings.push(`Cobertura audiovisual abaixo de 90% da duração alvo (${coveredTimelineSec}s / ${refSec}s).`);
+  }
+  if (targetDurationSec >= 180) {
+    const minExpectedBeats = Math.max(8, Math.floor(targetDurationSec / 60));
+    if (direction.narrativeBeats.length < minExpectedBeats) {
+      warnings.push(
+        `Roteiro curto demais para ${targetDurationSec}s: ${direction.narrativeBeats.length} beats (mínimo recomendado: ${minExpectedBeats}).`,
+      );
+    }
+    if (estimatedNarrationSec < targetDurationSec * 0.55) {
+      warnings.push(
+        `Narração estimada (${estimatedNarrationSec}s / ${narrationWordCount} palavras) insuficiente para vídeo de ${targetDurationSec}s.`,
+      );
+    }
+  }
+
+  return {
+    valid: warnings.length === 0,
+    targetDurationSec,
+    estimatedNarrationSec,
+    narrationWordCount,
+    beatCount: direction.narrativeBeats.length,
+    shotCount: direction.shots.length,
+    coveredTimelineSec,
+    coverageRatio,
+    warnings,
+  };
+}
+
 export function directNarrativeAndShots(input: {
   brief: CreativeBrief;
   styleBible: StyleBible;
   mediaCatalog: SourceMediaRecord[];
   intelligence?: MediaIntelligenceReport[];
   fps?: RationalTime;
+  externalDirection?: {
+    treatment?: string;
+    beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
+  };
 }): CreativeDirectionPackage {
   const fps = input.fps ?? rationalTime(30, 1);
   const totalFrames = Math.round(input.brief.targetDurationSec * (fps.value / fps.rate));
+  const targetDurationSec = input.brief.targetDurationSec;
 
-  const stages: Array<{
+  const listMatch = input.brief.prompt.match(/\b(\d{1,2})\s+(?:chefes|bosses|itens|momentos|jogos|filmes|segredos|dicas|melhores|piores|curiosidades)\b/i)
+    ?? input.brief.prompt.match(/\btop\s*(\d{1,2})\b/i);
+  const requestedItemCount = listMatch?.[1] ? Math.min(20, Math.max(3, Number(listMatch[1]))) : 0;
+
+  let stages: Array<{
     stage: NarrativeBeat['stage'];
     pct: number;
     intensity: number;
     sensitive: boolean;
     summary: string;
-  }> = [
-    { stage: 'hook', pct: 0.12, intensity: 0.85, sensitive: false, summary: 'Abertura de impacto com gancho visual' },
-    { stage: 'promise', pct: 0.13, intensity: 0.65, sensitive: false, summary: 'Promessa clara do tema e conflito central' },
-    { stage: 'progression', pct: 0.3, intensity: 0.72, sensitive: false, summary: 'Desenvolvimento com evidências e ritmo alternado' },
-    { stage: 'tension', pct: 0.2, intensity: 0.88, sensitive: /luto|tragédia|sensível/i.test(input.brief.prompt), summary: 'Escalada dramática e contraste narrativo' },
-    { stage: 'climax', pct: 0.15, intensity: 0.95, sensitive: true, summary: 'Clímax principal sem dispersão visual' },
-    { stage: 'resolution', pct: 0.1, intensity: 0.55, sensitive: false, summary: 'Fechamento e síntese memorável' },
-  ];
+    itemNumber?: number;
+    itemTotal?: number;
+  }>;
+
+  if (input.externalDirection?.beats && input.externalDirection.beats.length >= 6) {
+    const extBeats = input.externalDirection.beats;
+    const pctEach = 1 / extBeats.length;
+    stages = extBeats.map((b, idx) => ({
+      stage: b.stage ?? (idx === 0 ? 'hook' : idx === extBeats.length - 1 ? 'resolution' : 'progression'),
+      pct: pctEach,
+      intensity: idx === extBeats.length - 2 ? 0.92 : 0.72,
+      sensitive: /luto|tragédia|sensível/i.test(input.brief.prompt),
+      summary: b.summary,
+    }));
+  } else if (targetDurationSec > 90) {
+    const desiredTotalBeats = Math.max(
+      requestedItemCount > 0 ? requestedItemCount + 5 : 8,
+      Math.min(32, Math.round(targetDurationSec / 36)),
+    );
+    const progressionCount = Math.max(3, desiredTotalBeats - 5);
+    const introPct = 0.08;
+    const promisePct = 0.08;
+    const tensionPct = 0.12;
+    const climaxPct = 0.1;
+    const resolutionPct = 0.08;
+    const progTotalPct = 1 - (introPct + promisePct + tensionPct + climaxPct + resolutionPct);
+    const eachProgPct = progTotalPct / progressionCount;
+
+    stages = [
+      { stage: 'hook', pct: introPct, intensity: 0.85, sensitive: false, summary: '' },
+      { stage: 'promise', pct: promisePct, intensity: 0.68, sensitive: false, summary: '' },
+      ...Array.from({ length: progressionCount }, (_, idx) => ({
+        stage: 'progression' as const,
+        pct: eachProgPct,
+        intensity: Number((0.68 + (idx / Math.max(1, progressionCount)) * 0.16).toFixed(2)),
+        sensitive: false,
+        summary: '',
+        ...(requestedItemCount > 0
+          ? { itemNumber: Math.min(requestedItemCount, idx + 1), itemTotal: requestedItemCount }
+          : {}),
+      })),
+      {
+        stage: 'tension',
+        pct: tensionPct,
+        intensity: 0.88,
+        sensitive: /luto|tragédia|sensível/i.test(input.brief.prompt),
+        summary: '',
+      },
+      { stage: 'climax', pct: climaxPct, intensity: 0.95, sensitive: true, summary: '' },
+      { stage: 'resolution', pct: resolutionPct, intensity: 0.58, sensitive: false, summary: '' },
+    ];
+  } else {
+    stages = [
+      { stage: 'hook', pct: 0.12, intensity: 0.85, sensitive: false, summary: '' },
+      { stage: 'promise', pct: 0.13, intensity: 0.65, sensitive: false, summary: '' },
+      { stage: 'progression', pct: 0.3, intensity: 0.72, sensitive: false, summary: '' },
+      { stage: 'tension', pct: 0.2, intensity: 0.88, sensitive: /luto|tragédia|sensível/i.test(input.brief.prompt), summary: '' },
+      { stage: 'climax', pct: 0.15, intensity: 0.95, sensitive: true, summary: '' },
+      { stage: 'resolution', pct: 0.1, intensity: 0.55, sensitive: false, summary: '' },
+    ];
+  }
 
   const narrativeBeats: NarrativeBeat[] = [];
   const shots: ShotPlan[] = [];
@@ -214,16 +392,34 @@ export function directNarrativeAndShots(input: {
   const verifiedMedia = input.mediaCatalog.filter((m) => m.kind === 'video' || m.kind === 'image');
 
   stages.forEach((s, idx) => {
-    const durFrames = Math.max(30, Math.round(totalFrames * s.pct));
+    const isLast = idx === stages.length - 1;
+    const durFrames = isLast
+      ? Math.max(30, totalFrames - cursorFrames)
+      : Math.max(30, Math.round(totalFrames * s.pct));
     const beatId = `nbeat_${idx + 1}_${s.stage}`;
     const beatRange: TimeRange = {
       start: fromFrames(cursorFrames, fps),
       duration: fromFrames(durFrames, fps),
     };
+    const beatDurSec = durFrames / (fps.value / fps.rate);
+    const summaryText =
+      s.summary.trim().length > 0
+        ? s.summary
+        : buildContextualBeatNarration({
+            prompt: input.brief.prompt,
+            stage: s.stage,
+            beatIndex: idx,
+            totalBeats: stages.length,
+            durationSec: beatDurSec,
+            ...(s.itemNumber !== undefined ? { itemNumber: s.itemNumber } : {}),
+            ...(s.itemTotal !== undefined ? { itemTotal: s.itemTotal } : {}),
+            humorIntensity: input.brief.humorProfile.humorIntensity,
+          });
+
     narrativeBeats.push({
       beatId,
       stage: s.stage,
-      summary: s.summary,
+      summary: summaryText,
       intensity: s.intensity,
       timeRange: beatRange,
       sensitiveContext: s.sensitive,
@@ -232,7 +428,7 @@ export function directNarrativeAndShots(input: {
     const chosenMedia = verifiedMedia.length > 0 ? verifiedMedia[idx % verifiedMedia.length] : undefined;
     const shotId = `shot_${idx + 1}`;
     const framing: ShotPlan['framing'] =
-      idx === 0 ? 'wide' : idx === 4 ? 'detail' : idx % 2 === 0 ? 'medium' : 'closeup';
+      idx === 0 ? 'wide' : s.stage === 'climax' ? 'detail' : idx % 2 === 0 ? 'medium' : 'closeup';
 
     const mediaGap = !chosenMedia || Boolean(chosenMedia.offline);
     if (mediaGap) {
@@ -249,11 +445,11 @@ export function directNarrativeAndShots(input: {
       shotId,
       beatId,
       framing,
-      cameraMotion: idx === 0 || idx === 4 ? 'slow_push' : 'static',
+      cameraMotion: idx === 0 || s.stage === 'climax' ? 'slow_push' : 'static',
       motionJustification:
         idx === 0
           ? 'Aproximação gradual reforça o gancho de abertura'
-          : idx === 4
+          : s.stage === 'climax'
             ? 'Ênfase dramática controlada no clímax'
             : 'Plano estável para preservar legibilidade e respiração',
       transitionIn: idx === 0 ? 'cut' : idx === 2 ? 'j_cut' : 'cut',
@@ -278,7 +474,9 @@ export function directNarrativeAndShots(input: {
   return {
     brief: input.brief,
     styleBible: input.styleBible,
-    treatment: `Tratamento (${input.brief.genre}, ${input.brief.format}): ${input.brief.prompt} | Humor: ${input.brief.humorProfile.label} (${input.brief.humorProfile.humorIntensity}%)`,
+    treatment:
+      input.externalDirection?.treatment?.trim() ||
+      `Tratamento (${input.brief.genre}, ${input.brief.format}, ${targetDurationSec}s): ${input.brief.prompt} | Humor: ${input.brief.humorProfile.label} (${input.brief.humorProfile.humorIntensity}%)`,
     narrativeBeats,
     shots,
     mediaGaps,

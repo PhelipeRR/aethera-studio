@@ -1585,6 +1585,10 @@ export function registerAetheraDomainIpc(options: {
     jobsDir: join(app.getPath('userData'), 'cinema-jobs'),
     mediaDir: join(app.getPath('userData'), 'cinema-media'),
     outputDir: join(app.getPath('userData'), 'cinema-renders'),
+    workspacesDir: join(app.getPath('userData'), 'cinema-workspaces'),
+    cacheDir: join(app.getPath('userData'), 'cinema-cache'),
+    libraryDir: join(app.getPath('userData'), 'cinema-library'),
+    cinemaProjectsDir,
     evolutionCore,
     onProgress: (job: StagedProductionJob) => {
       for (const win of BrowserWindow.getAllWindows()) {
@@ -1601,17 +1605,35 @@ export function registerAetheraDomainIpc(options: {
     onRenderReady: (projectId, render) => {
       cinemaRenders.set(projectId, { ...render, mediaUrl: toMediaUrl(render.mp4Path) });
     },
-    acquireExternalMedia: async (query, slotIndex, mediaDir, signal) => {
+    searchExternalMedia: async (query, _slotIndex, signal) => {
       try {
         const results = await ytDlpSearch(ytDlp, query, 5, signal);
-        const picked = results[slotIndex % Math.max(1, results.length)] ?? results[0];
-        const firstUrl = picked?.url;
-        if (!firstUrl) return null;
+        return results
+          .filter((r) => Boolean(r.url))
+          .map((r) => ({
+            url: r.url,
+            ...(r.title ? { title: r.title } : {}),
+            origin: 'yt_dlp_search',
+            license: 'external_reference',
+          }));
+      } catch {
+        return [];
+      }
+    },
+    acquireExternalMedia: async (query, slotIndex, mediaDir, signal, preferredUrl) => {
+      try {
+        let targetUrl = preferredUrl;
+        if (!targetUrl) {
+          const results = await ytDlpSearch(ytDlp, query, 5, signal);
+          const picked = results[slotIndex % Math.max(1, results.length)] ?? results[0];
+          targetUrl = picked?.url;
+        }
+        if (!targetUrl) return null;
         const relativeDir = `acq_${slotIndex + 1}`;
         mkdirSync(join(mediaDir, relativeDir), { recursive: true });
         const acq = await acquireWithYtDlp({
           ytDlp,
-          url: firstUrl,
+          url: targetUrl,
           root: mediaDir,
           relativeDir,
           fileStem: `slot_${slotIndex + 1}`,
@@ -1619,6 +1641,48 @@ export function registerAetheraDomainIpc(options: {
           ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),
         });
         return acq.relativePath ? join(mediaDir, acq.relativePath) : null;
+      } catch {
+        return null;
+      }
+    },
+    generateAgentScript: async (input) => {
+      try {
+        const agy = await detectAntigravityCli();
+        if (!agy.installed || agy.authenticated === false) return null;
+        const desiredBeats = input.targetDurationSec > 90
+          ? Math.max(8, Math.min(28, Math.round(input.targetDurationSec / 36)))
+          : 6;
+        const wordsTarget = Math.max(120, Math.round(input.targetDurationSec * 2.1));
+        const agentPrompt = [
+          `Você é a equipe de Diretores Cinematográficos RF-07 do Aethera Studio.`,
+          `Crie um roteiro completo em português para um vídeo de ${input.targetDurationSec}s (${Math.round(input.targetDurationSec / 60)} min).`,
+          `Tema: "${input.prompt}"`,
+          `Gênero: ${input.genre ?? 'gameplay_essay'} | Humor contextual: ${input.humorIntensity}% | Consultas de pesquisa: ${input.queries.join(', ')}`,
+          `Meta de narração falada: ~${wordsTarget} palavras divididas em ${desiredBeats} cenas/beats proporcionais à duração.`,
+          `Responda SOMENTE com JSON válido no formato: {"treatment":"...","beats":[{"stage":"hook|promise|progression|tension|climax|resolution","summary":"texto completo de narração e direção da cena"}]}`,
+        ].join('\n');
+        const res = await runAntigravityPrompt({
+          prompt: agentPrompt,
+          cwd: app.getPath('userData'),
+          timeoutMs: 25_000,
+        });
+        const raw = res.output ?? '';
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) return null;
+        const parsed = JSON.parse(jsonMatch[0]) as {
+          treatment?: string;
+          beats?: Array<{ stage?: 'hook' | 'promise' | 'progression' | 'tension' | 'climax' | 'resolution' | 'cta'; summary?: string }>;
+        };
+        if (!Array.isArray(parsed.beats) || parsed.beats.length < 6) return null;
+        const cleanBeats = parsed.beats
+          .filter((b): b is { stage?: 'hook' | 'promise' | 'progression' | 'tension' | 'climax' | 'resolution' | 'cta'; summary: string } =>
+            typeof b?.summary === 'string' && b.summary.trim().length > 0,
+          );
+        if (cleanBeats.length < 6) return null;
+        return {
+          ...(typeof parsed.treatment === 'string' ? { treatment: parsed.treatment } : {}),
+          beats: cleanBeats,
+        };
       } catch {
         return null;
       }
@@ -2256,9 +2320,14 @@ export function registerAetheraDomainIpc(options: {
     return stagedPipeline.listJobs();
   });
 
+  ipcMain.handle('cinema:inspect-delete-project', async (event, projectId: string) => {
+    ensureTrusted(event.senderFrame);
+    return stagedPipeline.inspectProjectDeletion(projectId);
+  });
+
   ipcMain.handle('cinema:delete-project', async (event, projectId: string) => {
     ensureTrusted(event.senderFrame);
-    stagedPipeline.deleteJob(projectId);
+    const result = stagedPipeline.deleteJob(projectId);
     cinemaPackages.delete(projectId);
     cinemaPrompts.delete(projectId);
     cinemaRenders.delete(projectId);
@@ -2270,7 +2339,12 @@ export function registerAetheraDomainIpc(options: {
     if (existsSync(projectFile)) {
       unlinkSync(projectFile);
     }
-    return { deleted: true, projectId };
+    return {
+      deleted: true,
+      projectId,
+      removedPaths: result.removedPaths,
+      preservedSharedEntries: result.preservedSharedEntries,
+    };
   });
 
   ipcMain.handle(

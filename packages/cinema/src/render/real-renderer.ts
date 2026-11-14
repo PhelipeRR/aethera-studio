@@ -34,10 +34,14 @@ export interface RealRenderInput {
   evolution?: AetheraEvolutionCore;
   genre?: string;
   prompt?: string;
+  technicalSampleMaxClips?: number;
+  previewQuality?: 'fast_preview' | 'standard';
 }
 
 export interface RealRenderResult {
   mp4Path: string;
+  isTechnicalSample: boolean;
+  sampleLabel?: string;
   appliedDirectives?: ProductionDirectives;
   renderedHeadlines?: string[];
   narrationMode: 'voicestudio_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback';
@@ -200,9 +204,18 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const subtitleClips = input.pkg.timeline.clips.filter(
     (c) => c.trackId === 'sub1' || c.effects.some((e) => e.kind === 'subtitle_style' && e.enabled),
   );
-  const orderedClips = [...primaryVideoClips]
-    .sort((a, b) => a.timelineRange.start.value / a.timelineRange.start.rate - b.timelineRange.start.value / b.timelineRange.start.rate)
-    .slice(0, 8);
+  const sortedClips = [...primaryVideoClips]
+    .sort((a, b) => a.timelineRange.start.value / a.timelineRange.start.rate - b.timelineRange.start.value / b.timelineRange.start.rate);
+  const isTechnicalSample =
+    typeof input.technicalSampleMaxClips === 'number' &&
+    input.technicalSampleMaxClips > 0 &&
+    input.technicalSampleMaxClips < sortedClips.length;
+  const orderedClips = isTechnicalSample
+    ? sortedClips.slice(0, input.technicalSampleMaxClips)
+    : sortedClips;
+  const sampleLabel = isTechnicalSample
+    ? `AMOSTRA TÉCNICA (${orderedClips.length} de ${sortedClips.length} cenas — não é o vídeo completo)`
+    : undefined;
   const shots = input.pkg.direction.shots;
   const sceneCount = Math.max(orderedClips.length, 1);
   const clipSpecs = Array.from({ length: sceneCount }, (_, i) => {
@@ -622,13 +635,13 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
         '-c:v',
         'h264_nvenc',
         '-preset',
-        'p4',
+        input.previewQuality === 'fast_preview' ? 'p1' : 'p4',
         '-b:v',
-        '5M',
+        input.previewQuality === 'fast_preview' ? '2M' : '5M',
         '-c:a',
         'aac',
         '-b:a',
-        '192k',
+        input.previewQuality === 'fast_preview' ? '128k' : '192k',
         '-shortest',
         mp4Path,
       ]);
@@ -647,12 +660,16 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       audioMixPath,
       '-c:v',
       'libx264',
+      '-preset',
+      input.previewQuality === 'fast_preview' ? 'ultrafast' : 'veryfast',
+      '-crf',
+      input.previewQuality === 'fast_preview' ? '27' : '22',
       '-pix_fmt',
       'yuv420p',
       '-c:a',
       'aac',
       '-b:a',
-      '192k',
+      input.previewQuality === 'fast_preview' ? '128k' : '192k',
       '-shortest',
       mp4Path,
     ]);
@@ -664,6 +681,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
 
   return {
     mp4Path,
+    isTechnicalSample,
+    ...(sampleLabel ? { sampleLabel } : {}),
     ...(directives ? { appliedDirectives: directives } : {}),
     renderedHeadlines,
     narrationMode,

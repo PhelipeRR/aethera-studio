@@ -36,9 +36,12 @@ import {
   buildStyleBible,
   compileCreativeBrief,
   directNarrativeAndShots,
+  validateScriptAndBreakdown,
   type CinemaGenre,
   type CreativeDirectionPackage,
   type DeliveryFormat,
+  type NarrativeBeat,
+  type ScriptValidationReport,
 } from './director/cinematography-director.js';
 import { planComedyBeats } from './comedy/comedy-director.js';
 import {
@@ -82,11 +85,16 @@ export interface ProduceCinemaPackageInput {
   autoRepair?: boolean;
   seed?: number;
   appliedMemories?: Array<{ memoryId: string; rule: string; directorId: string }>;
+  externalDirection?: {
+    treatment?: string;
+    beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
+  };
 }
 
 export interface CinemaProductionPackage {
   capabilities: CapabilityMatrix;
   direction: CreativeDirectionPackage;
+  scriptValidation: ScriptValidationReport;
   timeline: CanonicalTimeline;
   colorPlan: ColorPipelinePlan;
   soundPlan: SoundDesignPlan;
@@ -167,7 +175,9 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
     styleBible,
     mediaCatalog: catalog,
     fps,
+    ...(input.externalDirection ? { externalDirection: input.externalDirection } : {}),
   });
+  const scriptValidation = validateScriptAndBreakdown(direction, targetDur);
 
   let timeline = createEmptyCanonicalTimeline({
     projectId: input.projectId,
@@ -247,6 +257,7 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
   return {
     capabilities,
     direction,
+    scriptValidation,
     timeline,
     colorPlan,
     soundPlan,
