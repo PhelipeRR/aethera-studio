@@ -1,0 +1,1 @@
+CREATE INDEX `velix_derivatives_parent_idx` ON `velix_derivatives` (`parent_run_id`,`start_ms`)

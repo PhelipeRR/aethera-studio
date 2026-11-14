@@ -1,0 +1,103 @@
+{
+  "defective": {
+    "mp4Path": "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\demo-output\\aethera-cinema-defective.mp4",
+    "encoderUsed": "h264_nvenc",
+    "narrationMode": "windows_sapi_tts",
+    "realQcFindings": [
+      {
+        "issueId": "real_qc_black_frames",
+        "timeRange": {
+          "start": {
+            "value": 0,
+            "rate": 1
+          },
+          "duration": {
+            "value": 34,
+            "rate": 1
+          }
+        },
+        "category": "technical",
+        "severity": "critical",
+        "confidence": 1,
+        "evidence": "FFmpeg blackdetect encontrou 1 segmento(s) preto(s) no MP4 final.",
+        "owner": "editor",
+        "fixSuggestion": "Remover ou substituir quadros pretos nas transições.",
+        "affectedDependencies": [
+          "v1"
+        ],
+        "status": "open"
+      }
+    ]
+  },
+  "clean": {
+    "mp4Path": "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\demo-output\\aethera-cinema-demo.mp4",
+    "encoderUsed": "h264_nvenc",
+    "narrationMode": "windows_sapi_tts",
+    "appliedEffects": [
+      "6 cenas com xfade transitions (fade, wipeleft, smoothleft, slideright, dissolve)",
+      "Motion graphics (barra animada + box safe-zone)",
+      "Tipografia drawtext legível em safe zone",
+      "VFX vignette=PI/4.5",
+      "Color grading Rec.709 (colorspace=bt709, eq, limiter 16..235)",
+      "Narração (windows_sapi_tts) + música + SFX sincronizados + sidechain ducking + loudnorm -14 LUFS"
+    ],
+    "probe": {
+      "filePath": "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\demo-output\\aethera-cinema-demo.mp4",
+      "fileSizeBytes": 19253196,
+      "durationSec": 34,
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "videoCodec": "h264",
+      "audioCodec": "aac",
+      "audioSampleRate": 48000,
+      "avDurationDeltaSec": 0,
+      "integratedLufs": -16,
+      "truePeakDbtp": -3.9,
+      "blackFramesCount": 0,
+      "frozenSegmentsCount": 0
+    },
+    "realQcFindings": [],
+    "framePaths": [
+      "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\demo-output\\frames\\frame_01_2s.png",
+      "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\demo-output\\frames\\frame_02_8s.png",
+      "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\demo-output\\frames\\frame_03_12s.png",
+      "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\demo-output\\frames\\frame_04_20s.png",
+      "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\demo-output\\frames\\frame_05_30s.png"
+    ]
+  },
+  "comedyBeats": [
+    {
+      "beatId": "cbeat_1_nbeat_3_progression",
+      "timeRange": {
+        "start": {
+          "value": 272,
+          "rate": 30
+        },
+        "duration": {
+          "value": 45,
+          "rate": 30
+        }
+      },
+      "setupEvidence": "Contraste visual verificado na tomada shot_3 (medium)",
+      "humorMechanism": "epic_mundane",
+      "punchline": "Corte seco de contraste editorial em progression",
+      "pauseFrames": 8,
+      "deliveryStyle": "deadpan",
+      "editActions": [
+        "hard_cut",
+        "intentional_silence"
+      ],
+      "sfxCues": [
+        "sfx_subtle_record_stop"
+      ],
+      "vfxCues": [
+        "caption_emphasis_clean"
+      ],
+      "confidence": 0.84,
+      "contextRisk": "low",
+      "fallbackWithoutHumor": "Manter corte contínuo padrão do shot shot_3 sem pausa cômica",
+      "reviewStatus": "proposed"
+    }
+  ]
+}

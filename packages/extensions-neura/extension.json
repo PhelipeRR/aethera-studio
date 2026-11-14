@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "neura",
+  "name": "Neura",
+  "version": "1.0.0",
+  "minCoreVersion": "0.1.0",
+  "capabilities": ["navigation", "commands", "diagnostics"],
+  "permissions": ["tasks.read", "tasks.write", "navigation", "diagnostics"],
+  "entrypoints": { "main": "src/index.ts" },
+  "checksum": "sha256:78f81bffd1084e6a98581945f849c4e26a0e9748041f1703f472bab446537edd",
+  "signature": { "algorithm": "sha256", "value": "78f81bffd1084e6a98581945f849c4e26a0e9748041f1703f472bab446537edd" },
+  "updateChannel": "local"
+}

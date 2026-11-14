@@ -1,0 +1,5 @@
+[
+  {"query":"postgres schema migration","relevant":["database.md"]},
+  {"query":"OAuth login credentials","relevant":["authentication.md"]},
+  {"query":"React interface layout","relevant":["ui.ts"]}
+]

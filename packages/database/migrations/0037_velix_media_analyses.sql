@@ -1,0 +1,1 @@
+CREATE TABLE `velix_media_analyses` (`id` text PRIMARY KEY NOT NULL, `project_id` text NOT NULL REFERENCES `video_projects`(`id`) ON DELETE CASCADE, `asset_id` text NOT NULL REFERENCES `velix_local_assets`(`id`) ON DELETE CASCADE, `metadata` text NOT NULL, `scene_cuts` text NOT NULL, `silences` text NOT NULL, `created_at` text NOT NULL DEFAULT (datetime('now')));

@@ -1,0 +1,16 @@
+{
+  "name": "@neuralbridge/core",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./protocol": "./src/protocol.ts"
+  },
+  "dependencies": {
+    "@neuralbridge/agents": "0.1.0",
+    "@neuralbridge/database": "0.1.0",
+    "@neuralbridge/shared": "0.1.0",
+    "zod": "4.6.7"
+  }
+}

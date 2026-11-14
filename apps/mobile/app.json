@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "Singularity Mobile",
+    "slug": "singularity-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "singularity",
+    "android": { "package": "com.neuralbridge.mobile" },
+    "ios": { "bundleIdentifier": "com.neuralbridge.mobile" }
+  }
+}

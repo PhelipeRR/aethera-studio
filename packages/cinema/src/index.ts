@@ -1,0 +1,260 @@
+export * from './ir/timeline-ir.js';
+export * from './analysis/media-intelligence.js';
+export * from './director/cinematography-director.js';
+export * from './comedy/comedy-director.js';
+export * from './edit/editorial-engine.js';
+export * from './vfx/vfx-typography.js';
+export * from './color/color-pipeline.js';
+export * from './audio/sound-engine.js';
+export * from './audio/sound-director.js';
+export * from './qc/qc-engine.js';
+export * from './qc/real-media-probe.js';
+export * from './render/real-renderer.js';
+export * from './benchmarks/benchmark-suite.js';
+export * from './evolution/evolution-core.js';
+export * from './evolution/director-registry.js';
+export * from './evolution/director-orchestrator.js';
+export * from './evolution/academy-engine.js';
+
+import {
+  createEmptyCanonicalTimeline,
+  fromFrames,
+  recomputeTimelineFingerprints,
+  toFrames,
+  type CanonicalTimeline,
+  type QcFindingRecord,
+  type SourceMediaRecord,
+} from './ir/timeline-ir.js';
+import {
+  analyzeMediaAsset,
+  probeCapabilities,
+  type CapabilityMatrix,
+  type MediaIntelligenceReport,
+} from './analysis/media-intelligence.js';
+import {
+  buildStyleBible,
+  compileCreativeBrief,
+  directNarrativeAndShots,
+  type CinemaGenre,
+  type CreativeDirectionPackage,
+  type DeliveryFormat,
+} from './director/cinematography-director.js';
+import { planComedyBeats } from './comedy/comedy-director.js';
+import {
+  buildClipFromShot,
+  planIncrementalSegmentRenders,
+  RENDER_PROFILES,
+  type RenderProfileConfig,
+  type RenderQualityProfile,
+  type SegmentRenderJob,
+} from './edit/editorial-engine.js';
+import { buildColorPipelinePlan, type ColorPipelinePlan } from './color/color-pipeline.js';
+import {
+  buildSoundDesignPlan,
+  type LoudnessPlatform,
+  type SoundDesignPlan,
+} from './audio/sound-engine.js';
+import {
+  applyTargetedRepair,
+  evaluateEnsemble,
+  evaluateReleaseGates,
+  runComedyAndNarrativeQc,
+  runDeterministicTechnicalQc,
+  type EnsembleScorecard,
+  type ReleaseGateResult,
+  type SyntheticMediaSignals,
+  type TargetedRepairResult,
+} from './qc/qc-engine.js';
+
+export interface ProduceCinemaPackageInput {
+  projectId: string;
+  prompt: string;
+  genre?: CinemaGenre;
+  format?: DeliveryFormat;
+  platform?: LoudnessPlatform;
+  targetDurationSec?: number;
+  humorIntensity?: number;
+  restrictions?: string[];
+  mediaCatalog?: SourceMediaRecord[];
+  renderProfile?: RenderQualityProfile;
+  signals?: SyntheticMediaSignals;
+  autoRepair?: boolean;
+  seed?: number;
+  appliedMemories?: Array<{ memoryId: string; rule: string; directorId: string }>;
+}
+
+export interface CinemaProductionPackage {
+  capabilities: CapabilityMatrix;
+  direction: CreativeDirectionPackage;
+  timeline: CanonicalTimeline;
+  colorPlan: ColorPipelinePlan;
+  soundPlan: SoundDesignPlan;
+  renderProfile: RenderProfileConfig;
+  segmentPlan: SegmentRenderJob[];
+  findings: QcFindingRecord[];
+  scorecard: EnsembleScorecard;
+  releaseGates: ReleaseGateResult;
+  repairSummary?: TargetedRepairResult;
+  appliedLearningRules?: Array<{ memoryId: string; rule: string; directorId: string }>;
+}
+
+export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaProductionPackage {
+  const capabilities = probeCapabilities();
+  const fps = { value: 30, rate: 1 };
+  const format: DeliveryFormat =
+    input.format ?? (input.platform === 'tiktok_shorts' ? 'shorts_9_16' : 'youtube_16_9');
+  const platform: LoudnessPlatform =
+    input.platform ?? (format === 'shorts_9_16' ? 'tiktok_shorts' : 'youtube');
+  const targetDur = input.targetDurationSec ?? 45;
+
+  const catalog: SourceMediaRecord[] =
+    input.mediaCatalog && input.mediaCatalog.length > 0
+      ? input.mediaCatalog
+      : [
+          {
+            mediaId: `${input.projectId}_src_main`,
+            uri: `/workspace/media/${input.projectId}_main.mp4`,
+            sha256: `sha_${input.projectId}_main`,
+            kind: 'video',
+            origin: 'local',
+            license: 'user_owned',
+            duration: fromFrames(Math.max(450, targetDur * 15), fps),
+            width: format === 'shorts_9_16' ? 1080 : 1920,
+            height: format === 'shorts_9_16' ? 1920 : 1080,
+            fps,
+            hasAudio: true,
+          },
+          {
+            mediaId: `${input.projectId}_src_broll`,
+            uri: `/workspace/media/${input.projectId}_broll.mp4`,
+            sha256: `sha_${input.projectId}_broll`,
+            kind: 'video',
+            origin: 'licensed_stock',
+            license: 'royalty_free',
+            duration: fromFrames(Math.max(450, targetDur * 15), fps),
+            width: 1920,
+            height: 1080,
+            fps,
+            hasAudio: false,
+          },
+        ];
+
+  const intelligence: MediaIntelligenceReport[] = catalog.map((media) =>
+    analyzeMediaAsset({
+      media,
+      titleHint: input.prompt,
+      hasGameplayHud: input.genre === 'gameplay_essay' || /gameplay|boss/i.test(input.prompt),
+    }),
+  );
+
+  const mergedRestrictions = [
+    ...(input.restrictions ?? []),
+    ...(input.appliedMemories?.map((m) => m.rule) ?? []),
+  ];
+
+  const brief = compileCreativeBrief({
+    prompt: input.prompt,
+    format,
+    targetDurationSec: targetDur,
+    ...(input.genre ? { genre: input.genre } : {}),
+    ...(input.humorIntensity !== undefined ? { humorIntensity: input.humorIntensity } : {}),
+    ...(mergedRestrictions.length > 0 ? { restrictions: mergedRestrictions } : {}),
+  });
+  const styleBible = buildStyleBible(brief);
+  const direction = directNarrativeAndShots({
+    brief,
+    styleBible,
+    mediaCatalog: catalog,
+    fps,
+  });
+
+  let timeline = createEmptyCanonicalTimeline({
+    projectId: input.projectId,
+    fps,
+    resolution:
+      format === 'shorts_9_16' ? { width: 1080, height: 1920 } : { width: 1920, height: 1080 },
+    humorProfile: brief.humorProfile,
+  });
+
+  for (const m of catalog) {
+    timeline.sourceMedia[m.mediaId] = m;
+    timeline.provenance.push({
+      mediaId: m.mediaId,
+      sha256: m.sha256,
+      license: m.license,
+      origin: m.origin,
+    });
+  }
+
+  const fallbackMediaId = catalog[0]?.mediaId ?? `${input.projectId}_src_main`;
+  timeline.clips = direction.shots.map((shot, idx) =>
+    buildClipFromShot({
+      clipId: `clip_${idx + 1}`,
+      trackId: 'v1',
+      mediaId: shot.mediaId ?? fallbackMediaId,
+      label: shot.shotId,
+      startFrames: toFrames(shot.timeRange.start, fps),
+      durationFrames: toFrames(shot.timeRange.duration, fps),
+      fps,
+      shotId: shot.shotId,
+    }),
+  );
+
+  const comedyBeats = planComedyBeats({
+    brief,
+    narrativeBeats: direction.narrativeBeats,
+    shots: direction.shots,
+    intelligence,
+    fps,
+    ...(input.seed !== undefined ? { seed: input.seed } : {}),
+  });
+  timeline.comedyBeats = comedyBeats;
+  timeline = recomputeTimelineFingerprints(timeline);
+
+  const colorPlan = buildColorPipelinePlan(timeline);
+  const soundPlan = buildSoundDesignPlan(timeline, { platform, comedyBeats });
+  const renderProfileKey = input.renderProfile ?? 'review_720p';
+  const renderProfile = RENDER_PROFILES[renderProfileKey];
+  const segmentPlan = planIncrementalSegmentRenders({
+    previous: null,
+    next: timeline,
+    cachedFingerprints: new Set(),
+    profile: renderProfileKey,
+  });
+
+  let findings = [
+    ...runDeterministicTechnicalQc(timeline, {
+      ...(input.signals ? { signals: input.signals } : {}),
+      colorPlan,
+      soundPlan,
+    }),
+    ...runComedyAndNarrativeQc(timeline),
+  ];
+
+  let repairSummary: TargetedRepairResult | undefined;
+  if (input.autoRepair && findings.some((f) => f.status === 'open')) {
+    repairSummary = applyTargetedRepair(timeline, findings, { maxBudget: 3 });
+    timeline = repairSummary.timeline;
+    findings = timeline.qcFindings;
+  } else {
+    timeline.qcFindings = findings;
+  }
+
+  const scorecard = evaluateEnsemble(timeline, findings);
+  const releaseGates = evaluateReleaseGates(findings, scorecard);
+
+  return {
+    capabilities,
+    direction,
+    timeline,
+    colorPlan,
+    soundPlan,
+    renderProfile,
+    segmentPlan,
+    findings,
+    scorecard,
+    releaseGates,
+    ...(repairSummary ? { repairSummary } : {}),
+    ...(input.appliedMemories?.length ? { appliedLearningRules: input.appliedMemories } : {}),
+  };
+}

@@ -1,0 +1,1 @@
+CREATE TABLE `velix_research_cache` (`project_id` text NOT NULL REFERENCES `video_projects`(`id`) ON DELETE CASCADE, `segment_hash` text NOT NULL, `sources_hash` text NOT NULL, `answer` text NOT NULL, `created_at` text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), PRIMARY KEY(`project_id`, `segment_hash`, `sources_hash`))

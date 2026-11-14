@@ -1,0 +1,8 @@
+{
+  "name": "@neuralbridge/extension-neura",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@neuralbridge/shared": "0.1.0" }
+}

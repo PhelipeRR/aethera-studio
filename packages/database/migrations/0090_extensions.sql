@@ -1,0 +1,1 @@
+CREATE TABLE `extensions` (`id` text PRIMARY KEY NOT NULL, `manifest` text NOT NULL, `state` text NOT NULL DEFAULT 'enabled', `installed_at` text NOT NULL, `updated_at` text NOT NULL, `previous_manifest` text);

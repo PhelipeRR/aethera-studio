@@ -1,0 +1,1 @@
+CREATE TABLE `velix_production_approvals` (`id` text PRIMARY KEY NOT NULL, `run_id` text NOT NULL REFERENCES `velix_production_runs`(`id`) ON DELETE CASCADE, `stage_id` text, `decision` text NOT NULL, `note` text, `created_at` text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))

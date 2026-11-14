@@ -1,0 +1,861 @@
+{
+  "projectId": "aethera_real_gameplay_showcase",
+  "scenes": [
+    {
+      "id": "scene_01_hook",
+      "game": "Elden Ring",
+      "title": "ATO I · O CONVITE DO HORIZONTE",
+      "subtitle": "Elden Ring · Terras Intermédias | Wide · Slow Push",
+      "clipPath": "C:/dev/neuralbridge-studio/renders/aethera-e3/root/media/cena-2.mp4",
+      "trimStart": 0.5,
+      "durationSec": 9,
+      "camera": "slow_push",
+      "transitionIn": "fade",
+      "narration": "Todo grande jogo começa com um convite silencioso: um horizonte impossível.",
+      "provenance": "Press/Official gameplay clip (renders/aethera-e3/root/media/cena-2.mp4)",
+      "startSec": 0
+    },
+    {
+      "id": "scene_02_silksong_world",
+      "game": "Hollow Knight: Silksong",
+      "title": "ATO II · ATMOSFERA & ESCALA",
+      "subtitle": "Hollow Knight: Silksong · Cavernas Verticais",
+      "clipPath": "C:/dev/neuralbridge-studio/renders/aethera-e3/root/media/cena-1.mp4",
+      "trimStart": 0.4,
+      "durationSec": 9,
+      "camera": "steady",
+      "transitionIn": "dissolve",
+      "narration": "De mundos abertos a cavernas desenhadas à mão, cada quadro conta uma história.",
+      "provenance": "Official trailer gameplay segment (renders/aethera-e3/root/media/cena-1.mp4)",
+      "startSec": 9
+    },
+    {
+      "id": "scene_03_duel",
+      "game": "Elden Ring",
+      "title": "ATO III · O PRIMEIRO CONFRONTO",
+      "subtitle": "Elden Ring · Duelo na Ponte | Push-In",
+      "clipPath": "C:/dev/neuralbridge-studio/renders/aethera-e3/v2/render-root/media/video_1a85487d-44cb-4f5e-a51f-6df97ba3517b_2_0.mp4",
+      "trimStart": 0.2,
+      "durationSec": 5.2,
+      "camera": "slow_push",
+      "transitionIn": "wipeleft",
+      "narration": "A paz acaba na primeira ponte.",
+      "provenance": "Official gameplay segment (video_1a85487d_2_0.mp4)",
+      "startSec": 17.75
+    },
+    {
+      "id": "scene_04_comedy_35",
+      "game": "Elden Ring",
+      "title": "HUMOR (35%) · PLANO B: CORRER",
+      "subtitle": "Contraste Editorial · Pausa Cômica + SFX",
+      "clipPath": "C:/dev/neuralbridge-studio/renders/aethera-e3/v2/render-root/media/video_6ae094db-c337-4fe4-b646-e85e573a4acd_1_0.mp4",
+      "trimStart": 0,
+      "durationSec": 2.5,
+      "camera": "steady",
+      "transitionIn": "fade",
+      "narration": "Plano B: só correr!",
+      "isComedyBeat": true,
+      "provenance": "Gameplay capture (video_6ae094db_1_0.mp4)",
+      "startSec": 22.7
+    },
+    {
+      "id": "scene_05_silksong_threads",
+      "game": "Hollow Knight: Silksong",
+      "title": "ATO IV · PRECISÃO & RITMO",
+      "subtitle": "Hollow Knight: Silksong · Fios Dourados",
+      "clipPath": "C:/dev/neuralbridge-studio/renders/aethera-e3/root/media/cena-4.mp4",
+      "trimStart": 0.4,
+      "durationSec": 9.5,
+      "camera": "steady",
+      "transitionIn": "smoothleft",
+      "narration": "Quando o ritmo acelera, silhueta limpa e contraste claro decidem tudo.",
+      "provenance": "Official gameplay segment (renders/aethera-e3/root/media/cena-4.mp4)",
+      "startSec": 24.95
+    },
+    {
+      "id": "scene_06_silksong_combat",
+      "game": "Hollow Knight: Silksong",
+      "title": "ATO IV · COMBATE AÉREO",
+      "subtitle": "Silksong · Velocidade & Reflexo",
+      "clipPath": "C:/dev/neuralbridge-studio/renders/aethera-e3/v2/render-root/media/video_581c72f3-37fb-469c-a2f1-f1110d30a382_1_0.mp4",
+      "trimStart": 0,
+      "durationSec": 4.3,
+      "camera": "slow_push",
+      "transitionIn": "slideright",
+      "narration": "Cada golpe responde ao som da arena.",
+      "provenance": "Official gameplay segment (video_581c72f3_1_0.mp4)",
+      "startSec": 34.2
+    },
+    {
+      "id": "scene_07_tension",
+      "game": "Elden Ring",
+      "title": "ATO V · TENSÃO & ESCALADA",
+      "subtitle": "Elden Ring · Close Dramático",
+      "clipPath": "C:/dev/neuralbridge-studio/renders/aethera-e3/root/media/cena-3.mp4",
+      "trimStart": 0.4,
+      "durationSec": 8.5,
+      "camera": "slow_push",
+      "transitionIn": "dissolve",
+      "narration": "Cada derrota ensina o peso exato de um corte.",
+      "provenance": "Official gameplay segment (renders/aethera-e3/root/media/cena-3.mp4)",
+      "startSec": 38.25
+    },
+    {
+      "id": "scene_08_magma",
+      "game": "Hollow Knight: Silksong",
+      "title": "ATO V · PRESSÃO CONSTANTE",
+      "subtitle": "Silksong · Cavernas de Magma",
+      "clipPath": "C:/dev/neuralbridge-studio/renders/aethera-e3/v2/render-root/media/video_4d6ee2ad-a1a7-4614-8e8d-6afe82bd74bd_0_0.mp4",
+      "trimStart": 0,
+      "durationSec": 2.8,
+      "camera": "steady",
+      "transitionIn": "wipeleft",
+      "narration": "Sem erro.",
+      "provenance": "Official gameplay segment (video_4d6ee2ad_0_0.mp4)",
+      "startSec": 46.5
+    },
+    {
+      "id": "scene_09_climax",
+      "game": "Elden Ring",
+      "title": "ATO VI · CLÍMAX ÉPICO",
+      "subtitle": "Elden Ring · Dragão Ancestral & Térvore",
+      "clipPath": "C:/dev/neuralbridge-studio/renders/aethera-e3/root/media/cena-5.mp4",
+      "trimStart": 0.3,
+      "durationSec": 7.9,
+      "camera": "climax_zoom",
+      "transitionIn": "dissolve",
+      "narration": "Quando imagem, som e ritmo se alinham... vira cinema.",
+      "isClimax": true,
+      "provenance": "Official gameplay segment (renders/aethera-e3/root/media/cena-5.mp4)",
+      "startSec": 49.05
+    },
+    {
+      "id": "scene_10_outro",
+      "game": "Aethera Studio",
+      "title": "AETHERA STUDIO · DIREÇÃO CINEMATOGRÁFICA",
+      "subtitle": "Montagem Real · Rec.709 · EBU R128 -14 LUFS",
+      "clipPath": "C:/dev/neuralbridge-studio/renders/aethera-e3/v2/render-root/media/video_581c72f3-37fb-469c-a2f1-f1110d30a382_2_0.mp4",
+      "trimStart": 0.1,
+      "durationSec": 4.15,
+      "camera": "steady",
+      "transitionIn": "fade",
+      "narration": "Aethera Studio: do corte ao master.",
+      "provenance": "Official gameplay segment (video_581c72f3_2_0.mp4) + Aethera lower-third",
+      "startSec": 56.7
+    }
+  ],
+  "v1Before": {
+    "outMp4": "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\showcase-v1-before.mp4",
+    "probe": {
+      "filePath": "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\showcase-v1-before.mp4",
+      "fileSizeBytes": 48698299,
+      "durationSec": 60.6,
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "videoCodec": "h264",
+      "audioCodec": "aac",
+      "audioSampleRate": 48000,
+      "avDurationDeltaSec": 0,
+      "integratedLufs": -14.6,
+      "truePeakDbtp": -1.5,
+      "blackFramesCount": 5,
+      "frozenSegmentsCount": 0,
+      "sceneCutsCount": 18,
+      "silenceEventsCount": 0
+    },
+    "qcFindings": [
+      {
+        "issueId": "real_qc_black_frames",
+        "timeRange": {
+          "start": {
+            "value": 0,
+            "rate": 1
+          },
+          "duration": {
+            "value": 61,
+            "rate": 1
+          }
+        },
+        "category": "technical",
+        "severity": "critical",
+        "confidence": 1,
+        "evidence": "FFmpeg blackdetect encontrou 5 segmento(s) preto(s) no MP4 final.",
+        "owner": "editor",
+        "fixSuggestion": "Remover ou substituir quadros pretos nas transições.",
+        "affectedDependencies": [
+          "v1"
+        ],
+        "status": "open"
+      }
+    ],
+    "sceneStartSec": [
+      0,
+      9,
+      17.75,
+      22.7,
+      24.95,
+      34.2,
+      38.25,
+      46.5,
+      49.05,
+      56.7
+    ],
+    "audioEvents": [
+      {
+        "sourceId": "nar_1",
+        "sceneId": "scene_01_hook",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 250,
+        "endMs": 6683,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_2",
+        "sceneId": "scene_02_silksong_world",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 9250,
+        "endMs": 17658,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_3",
+        "sceneId": "scene_03_duel",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 18000,
+        "endMs": 21029,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_4",
+        "sceneId": "scene_04_comedy_35",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 22950,
+        "endMs": 26939,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_5",
+        "sceneId": "scene_05_silksong_threads",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 25200,
+        "endMs": 31403,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_6",
+        "sceneId": "scene_06_silksong_combat",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 34450,
+        "endMs": 37809,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_7",
+        "sceneId": "scene_07_tension",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 38500,
+        "endMs": 42634,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_8",
+        "sceneId": "scene_08_magma",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 46750,
+        "endMs": 48329,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_9",
+        "sceneId": "scene_09_climax",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 49300,
+        "endMs": 54109,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_10",
+        "sceneId": "scene_10_outro",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 56950,
+        "endMs": 60429,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "music_pad_01",
+        "sceneId": "global",
+        "bus": "A3_music",
+        "role": "music",
+        "startMs": 0,
+        "endMs": 60600,
+        "gainDb": -16,
+        "priority": 40,
+        "duckedUnderSpeech": false
+      },
+      {
+        "sourceId": "sfx_whoosh_01",
+        "sceneId": "scene_02_silksong_world",
+        "bus": "A4_sfx",
+        "role": "sfx",
+        "startMs": 8800,
+        "endMs": 9020,
+        "gainDb": -11,
+        "priority": 70
+      },
+      {
+        "sourceId": "sfx_humor_02",
+        "sceneId": "scene_04_comedy_35",
+        "bus": "A4_sfx",
+        "role": "sfx",
+        "startMs": 22700,
+        "endMs": 22980,
+        "gainDb": -40,
+        "priority": 70
+      },
+      {
+        "sourceId": "sfx_climax_03",
+        "sceneId": "scene_09_climax",
+        "bus": "A4_sfx",
+        "role": "sfx",
+        "startMs": 49050,
+        "endMs": 49500,
+        "gainDb": -8,
+        "priority": 70
+      }
+    ],
+    "audioAudit": {
+      "approved": false,
+      "totalDurationMs": 60600,
+      "minGapMs": 200,
+      "blockedReasons": [
+        "Sobreposição de falas entre \"nar_4\" e \"nar_5\" (25200ms–26939ms, 1739ms)."
+      ],
+      "conflicts": [
+        {
+          "conflictId": "mus_unducked_music_pad_01_nar_1",
+          "severity": "warning",
+          "type": "music_unducked_over_speech",
+          "startMs": 250,
+          "endMs": 6683,
+          "sources": [
+            "music_pad_01",
+            "nar_1"
+          ],
+          "sceneIds": [
+            "global",
+            "scene_01_hook"
+          ],
+          "origin": "A3_music",
+          "description": "Trilha musical \"music_pad_01\" está sem sidechain ducking sob a narração \"nar_1\".",
+          "correctiveAction": "Ativar sidechaincompress na trilha A3 controlado pelo bus A1."
+        },
+        {
+          "conflictId": "mus_unducked_music_pad_01_nar_2",
+          "severity": "warning",
+          "type": "music_unducked_over_speech",
+          "startMs": 9250,
+          "endMs": 17658,
+          "sources": [
+            "music_pad_01",
+            "nar_2"
+          ],
+          "sceneIds": [
+            "global",
+            "scene_02_silksong_world"
+          ],
+          "origin": "A3_music",
+          "description": "Trilha musical \"music_pad_01\" está sem sidechain ducking sob a narração \"nar_2\".",
+          "correctiveAction": "Ativar sidechaincompress na trilha A3 controlado pelo bus A1."
+        },
+        {
+          "conflictId": "mus_unducked_music_pad_01_nar_3",
+          "severity": "warning",
+          "type": "music_unducked_over_speech",
+          "startMs": 18000,
+          "endMs": 21029,
+          "sources": [
+            "music_pad_01",
+            "nar_3"
+          ],
+          "sceneIds": [
+            "global",
+            "scene_03_duel"
+          ],
+          "origin": "A3_music",
+          "description": "Trilha musical \"music_pad_01\" está sem sidechain ducking sob a narração \"nar_3\".",
+          "correctiveAction": "Ativar sidechaincompress na trilha A3 controlado pelo bus A1."
+        },
+        {
+          "conflictId": "nar_overlap_4_5",
+          "severity": "critical",
+          "type": "narration_overlap",
+          "startMs": 25200,
+          "endMs": 26939,
+          "sources": [
+            "nar_4",
+            "nar_5"
+          ],
+          "sceneIds": [
+            "scene_04_comedy_35",
+            "scene_05_silksong_threads"
+          ],
+          "origin": "A1_narration",
+          "description": "Sobreposição de falas entre \"nar_4\" e \"nar_5\" (25200ms–26939ms, 1739ms).",
+          "correctiveAction": "Ajustar roteiro, antecipar início ou ampliar duração da cena anterior até zerar sobreposição."
+        },
+        {
+          "conflictId": "mus_unducked_music_pad_01_nar_4",
+          "severity": "warning",
+          "type": "music_unducked_over_speech",
+          "startMs": 22950,
+          "endMs": 26939,
+          "sources": [
+            "music_pad_01",
+            "nar_4"
+          ],
+          "sceneIds": [
+            "global",
+            "scene_04_comedy_35"
+          ],
+          "origin": "A3_music",
+          "description": "Trilha musical \"music_pad_01\" está sem sidechain ducking sob a narração \"nar_4\".",
+          "correctiveAction": "Ativar sidechaincompress na trilha A3 controlado pelo bus A1."
+        },
+        {
+          "conflictId": "mus_unducked_music_pad_01_nar_5",
+          "severity": "warning",
+          "type": "music_unducked_over_speech",
+          "startMs": 25200,
+          "endMs": 31403,
+          "sources": [
+            "music_pad_01",
+            "nar_5"
+          ],
+          "sceneIds": [
+            "global",
+            "scene_05_silksong_threads"
+          ],
+          "origin": "A3_music",
+          "description": "Trilha musical \"music_pad_01\" está sem sidechain ducking sob a narração \"nar_5\".",
+          "correctiveAction": "Ativar sidechaincompress na trilha A3 controlado pelo bus A1."
+        },
+        {
+          "conflictId": "mus_unducked_music_pad_01_nar_6",
+          "severity": "warning",
+          "type": "music_unducked_over_speech",
+          "startMs": 34450,
+          "endMs": 37809,
+          "sources": [
+            "music_pad_01",
+            "nar_6"
+          ],
+          "sceneIds": [
+            "global",
+            "scene_06_silksong_combat"
+          ],
+          "origin": "A3_music",
+          "description": "Trilha musical \"music_pad_01\" está sem sidechain ducking sob a narração \"nar_6\".",
+          "correctiveAction": "Ativar sidechaincompress na trilha A3 controlado pelo bus A1."
+        },
+        {
+          "conflictId": "mus_unducked_music_pad_01_nar_7",
+          "severity": "warning",
+          "type": "music_unducked_over_speech",
+          "startMs": 38500,
+          "endMs": 42634,
+          "sources": [
+            "music_pad_01",
+            "nar_7"
+          ],
+          "sceneIds": [
+            "global",
+            "scene_07_tension"
+          ],
+          "origin": "A3_music",
+          "description": "Trilha musical \"music_pad_01\" está sem sidechain ducking sob a narração \"nar_7\".",
+          "correctiveAction": "Ativar sidechaincompress na trilha A3 controlado pelo bus A1."
+        },
+        {
+          "conflictId": "mus_unducked_music_pad_01_nar_8",
+          "severity": "warning",
+          "type": "music_unducked_over_speech",
+          "startMs": 46750,
+          "endMs": 48329,
+          "sources": [
+            "music_pad_01",
+            "nar_8"
+          ],
+          "sceneIds": [
+            "global",
+            "scene_08_magma"
+          ],
+          "origin": "A3_music",
+          "description": "Trilha musical \"music_pad_01\" está sem sidechain ducking sob a narração \"nar_8\".",
+          "correctiveAction": "Ativar sidechaincompress na trilha A3 controlado pelo bus A1."
+        },
+        {
+          "conflictId": "mus_unducked_music_pad_01_nar_9",
+          "severity": "warning",
+          "type": "music_unducked_over_speech",
+          "startMs": 49300,
+          "endMs": 54109,
+          "sources": [
+            "music_pad_01",
+            "nar_9"
+          ],
+          "sceneIds": [
+            "global",
+            "scene_09_climax"
+          ],
+          "origin": "A3_music",
+          "description": "Trilha musical \"music_pad_01\" está sem sidechain ducking sob a narração \"nar_9\".",
+          "correctiveAction": "Ativar sidechaincompress na trilha A3 controlado pelo bus A1."
+        },
+        {
+          "conflictId": "mus_unducked_music_pad_01_nar_10",
+          "severity": "warning",
+          "type": "music_unducked_over_speech",
+          "startMs": 56950,
+          "endMs": 60429,
+          "sources": [
+            "music_pad_01",
+            "nar_10"
+          ],
+          "sceneIds": [
+            "global",
+            "scene_10_outro"
+          ],
+          "origin": "A3_music",
+          "description": "Trilha musical \"music_pad_01\" está sem sidechain ducking sob a narração \"nar_10\".",
+          "correctiveAction": "Ativar sidechaincompress na trilha A3 controlado pelo bus A1."
+        }
+      ],
+      "busesSummary": {
+        "A1_narration": {
+          "eventCount": 10,
+          "totalActiveMs": 45422
+        },
+        "A2_gameplay_dialogue": {
+          "eventCount": 0,
+          "totalActiveMs": 0
+        },
+        "A3_music": {
+          "eventCount": 1,
+          "totalActiveMs": 60600
+        },
+        "A4_sfx": {
+          "eventCount": 3,
+          "totalActiveMs": 950
+        },
+        "A5_ambience": {
+          "eventCount": 0,
+          "totalActiveMs": 0
+        }
+      }
+    }
+  },
+  "v2After": {
+    "outMp4": "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\showcase-v2-final.mp4",
+    "probe": {
+      "filePath": "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\showcase-v2-final.mp4",
+      "fileSizeBytes": 48709484,
+      "durationSec": 60.6,
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "videoCodec": "h264",
+      "audioCodec": "aac",
+      "audioSampleRate": 48000,
+      "avDurationDeltaSec": 0,
+      "integratedLufs": -16.2,
+      "truePeakDbtp": -1.3,
+      "blackFramesCount": 4,
+      "frozenSegmentsCount": 0,
+      "sceneCutsCount": 18,
+      "silenceEventsCount": 0
+    },
+    "qcFindings": [
+      {
+        "issueId": "real_qc_black_frames",
+        "timeRange": {
+          "start": {
+            "value": 0,
+            "rate": 1
+          },
+          "duration": {
+            "value": 61,
+            "rate": 1
+          }
+        },
+        "category": "technical",
+        "severity": "critical",
+        "confidence": 1,
+        "evidence": "FFmpeg blackdetect encontrou 4 segmento(s) preto(s) no MP4 final.",
+        "owner": "editor",
+        "fixSuggestion": "Remover ou substituir quadros pretos nas transições.",
+        "affectedDependencies": [
+          "v1"
+        ],
+        "status": "open"
+      }
+    ],
+    "sceneStartSec": [
+      0,
+      9,
+      17.75,
+      22.7,
+      24.95,
+      34.2,
+      38.25,
+      46.5,
+      49.05,
+      56.7
+    ],
+    "audioEvents": [
+      {
+        "sourceId": "nar_1",
+        "sceneId": "scene_01_hook",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 250,
+        "endMs": 6044,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_2",
+        "sceneId": "scene_02_silksong_world",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 9250,
+        "endMs": 15194,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_3",
+        "sceneId": "scene_03_duel",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 18000,
+        "endMs": 20216,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_4",
+        "sceneId": "scene_04_comedy_35",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 22950,
+        "endMs": 24761,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_5",
+        "sceneId": "scene_05_silksong_threads",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 25200,
+        "endMs": 30571,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_6",
+        "sceneId": "scene_06_silksong_combat",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 34450,
+        "endMs": 37182,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_7",
+        "sceneId": "scene_07_tension",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 38500,
+        "endMs": 41867,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_8",
+        "sceneId": "scene_08_magma",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 46750,
+        "endMs": 48135,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_9",
+        "sceneId": "scene_09_climax",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 49300,
+        "endMs": 53202,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "nar_10",
+        "sceneId": "scene_10_outro",
+        "bus": "A1_narration",
+        "role": "narration",
+        "startMs": 56950,
+        "endMs": 59617,
+        "gainDb": 0,
+        "priority": 100,
+        "fadeInMs": 25,
+        "fadeOutMs": 60
+      },
+      {
+        "sourceId": "music_pad_01",
+        "sceneId": "global",
+        "bus": "A3_music",
+        "role": "music",
+        "startMs": 0,
+        "endMs": 60600,
+        "gainDb": -16,
+        "priority": 40,
+        "duckedUnderSpeech": true
+      },
+      {
+        "sourceId": "sfx_whoosh_01",
+        "sceneId": "scene_02_silksong_world",
+        "bus": "A4_sfx",
+        "role": "sfx",
+        "startMs": 8800,
+        "endMs": 9020,
+        "gainDb": -11,
+        "priority": 70
+      },
+      {
+        "sourceId": "sfx_humor_02",
+        "sceneId": "scene_04_comedy_35",
+        "bus": "A4_sfx",
+        "role": "sfx",
+        "startMs": 22700,
+        "endMs": 22980,
+        "gainDb": -9,
+        "priority": 70
+      },
+      {
+        "sourceId": "sfx_climax_03",
+        "sceneId": "scene_09_climax",
+        "bus": "A4_sfx",
+        "role": "sfx",
+        "startMs": 49050,
+        "endMs": 49500,
+        "gainDb": -8,
+        "priority": 70
+      }
+    ],
+    "audioAudit": {
+      "approved": true,
+      "totalDurationMs": 60600,
+      "minGapMs": 200,
+      "blockedReasons": [],
+      "conflicts": [],
+      "busesSummary": {
+        "A1_narration": {
+          "eventCount": 10,
+          "totalActiveMs": 35189
+        },
+        "A2_gameplay_dialogue": {
+          "eventCount": 0,
+          "totalActiveMs": 0
+        },
+        "A3_music": {
+          "eventCount": 1,
+          "totalActiveMs": 60600
+        },
+        "A4_sfx": {
+          "eventCount": 3,
+          "totalActiveMs": 950
+        },
+        "A5_ambience": {
+          "eventCount": 0,
+          "totalActiveMs": 0
+        }
+      }
+    }
+  },
+  "v1Frames": [
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\frames_v1\\frame_01_21s.png"
+  ],
+  "v2Frames": [
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\frames_v2\\frame_01_3s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\frames_v2\\frame_02_11s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\frames_v2\\frame_03_17s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\frames_v2\\frame_04_21s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\frames_v2\\frame_05_26s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\frames_v2\\frame_06_36s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\frames_v2\\frame_07_47s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\real-showcase\\frames_v2\\frame_08_57s.png"
+  ]
+}

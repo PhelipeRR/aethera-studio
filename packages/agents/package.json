@@ -1,0 +1,14 @@
+{
+  "name": "@neuralbridge/agents",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./redact": "./src/redact.ts"
+  },
+  "dependencies": {
+    "@neuralbridge/shared": "0.1.0",
+    "@neuralbridge/workspace": "0.1.0"
+  }
+}

@@ -1,0 +1,1 @@
+CREATE TABLE `velix_editorial_decisions` (`id` text PRIMARY KEY NOT NULL, `project_id` text NOT NULL REFERENCES `video_projects`(`id`) ON DELETE CASCADE, `version_id` text NOT NULL REFERENCES `velix_editorial_versions`(`id`) ON DELETE CASCADE, `decision` text NOT NULL, `note` text, `created_at` text NOT NULL DEFAULT (datetime('now')));

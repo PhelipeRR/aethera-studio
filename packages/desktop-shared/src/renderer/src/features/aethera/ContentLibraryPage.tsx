@@ -1,0 +1,11 @@
+import { useQuery } from '@tanstack/react-query';
+import { FolderOpen } from 'lucide-react';
+import { Link } from 'react-router';
+import { PageHeader } from '@/app/PageHeader';
+
+export function ContentLibraryPage() {
+  const projects = useQuery({ queryKey: ['aethera-content-projects', 'default'], queryFn: () => window.neuralbridge.content.projects('default') });
+  const library = useQuery({ queryKey: ['aethera-content-library', 'workspace', projects.data?.map((project) => project.id).join(',')], enabled: Boolean(projects.data), queryFn: async () => Promise.all((projects.data ?? []).map(async (project) => ({ project, assets: await window.neuralbridge.content.library(project.id) }))) });
+  const assets = (library.data ?? []).flatMap(({ project, assets: projectAssets }) => projectAssets.map((asset) => ({ project, asset })));
+  return <><PageHeader title="Biblioteca" description="Ativos reutilizáveis com origem, integridade e restrições de direitos preservadas." /><main className="space-y-6 px-6 py-6 xl:px-8"><section className="sg-panel rounded-2xl p-5"><div className="flex items-center gap-2"><FolderOpen className="size-5 text-primary" /><h2 className="text-lg font-medium">Ativos do workspace</h2></div>{projects.isLoading || library.isLoading ? <p className="mt-5 text-sm text-muted-foreground">Inventariando ativos…</p> : assets.length ? <ul className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{assets.map(({ project, asset }) => <li key={`${project.id}:${asset.id}`} className="rounded-xl border p-4"><p className="break-all text-sm font-medium">{asset.path}</p><Link to={`/aethera/projects/${project.id}`} className="mt-1 block truncate text-xs text-primary hover:underline">{project.title}</Link><div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground"><span className="rounded-full bg-muted px-2 py-1">{asset.rightsStatus}</span><span className="rounded-full bg-muted px-2 py-1">{asset.bytes.toLocaleString('pt-BR')} bytes</span><span className="rounded-full bg-muted px-2 py-1">SHA-256 {asset.sha256.slice(0, 12)}…</span></div></li>)}</ul> : <p className="mt-5 rounded-lg border border-dashed p-5 text-sm text-muted-foreground">Nenhum ativo inventariado nos projetos deste workspace.</p>}</section></main></>;
+}

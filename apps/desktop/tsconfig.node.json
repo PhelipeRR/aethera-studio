@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/main", "src/core-host", "src/preload", "test", "electron.vite.config.ts"],
+  "exclude": ["test/neura-speech-level.test.ts", "test/aethera-mark.test.ts", "test/production-phases.test.ts", "test/aethera-agent-line.test.ts"]
+}

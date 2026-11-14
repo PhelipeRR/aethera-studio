@@ -1,0 +1,31 @@
+{
+  "name": "@neuralbridge/orchestrator-desktop",
+  "private": true,
+  "version": "0.1.65",
+  "description": "Singularity Orchestrator — standalone AI agent & workflow orchestrator",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json"
+  },
+  "dependencies": {
+    "@neuralbridge/agents": "0.1.0",
+    "@neuralbridge/brain": "0.1.0",
+    "@neuralbridge/core": "0.1.0",
+    "@neuralbridge/database": "0.1.0",
+    "@neuralbridge/integration-contracts": "0.1.0",
+    "@neuralbridge/mcp-server": "0.1.0",
+    "@neuralbridge/orchestrator": "0.1.0",
+    "@neuralbridge/shared": "0.1.0",
+    "@neuralbridge/workspace": "0.1.0",
+    "better-sqlite3": "13.0.3",
+    "drizzle-orm": "0.45.4",
+    "lucide-react": "1.56.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "electron": "44.9.3"
+  }
+}

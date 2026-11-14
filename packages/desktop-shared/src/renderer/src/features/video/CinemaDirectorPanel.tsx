@@ -1,0 +1,737 @@
+import React, { useEffect, useState } from 'react';
+import {
+  Activity,
+  Bot,
+  Camera,
+  CheckCircle2,
+  Clapperboard,
+  Download,
+  Film,
+  Laugh,
+  LoaderCircle,
+  Send,
+  ShieldAlert,
+  Sparkles,
+  Volume2,
+  Wrench,
+} from 'lucide-react';
+import { Link, useNavigate } from 'react-router';
+import { healthOf, useAgents } from '@/app/useAgents';
+
+interface CinemaBridgeApi {
+  cinemaCapabilities?: () => Promise<{
+    ffmpeg: boolean;
+    ffprobe: boolean;
+    whisper: boolean;
+    visionModel: boolean;
+    remotion: boolean;
+    gpuNvenc: boolean;
+    degradedReasons: string[];
+  }>;
+  cinemaProduce?: (input: Record<string, unknown>) => Promise<CinemaPackageView>;
+  cinemaExportOtio?: (projectId: string) => Promise<{
+    projectId: string;
+    otioJson: string;
+    renderFingerprint: string;
+  }>;
+  cinemaRepair?: (projectId: string) => Promise<CinemaPackageView>;
+  cinemaRunBenchmark?: () => Promise<BenchmarkView>;
+  cinemaRenderRealMp4?: (input: {
+    projectId: string;
+    injectRealBlackFrameDefect?: boolean;
+    useNvenc?: boolean;
+  }) => Promise<RealRenderView>;
+}
+
+interface RealRenderView {
+  mp4Path: string;
+  narrationMode: string;
+  encoderUsed: string;
+  appliedEffects: string[];
+  probe: {
+    durationSec: number;
+    width: number;
+    height: number;
+    videoCodec: string;
+    audioCodec: string;
+    integratedLufs: number | null;
+    truePeakDbtp: number | null;
+    blackFrames: Array<{ startSec: number; endSec: number; durationSec: number }>;
+    freezeEvents: Array<{ startSec: number; endSec: number; durationSec: number }>;
+  };
+  realQcFindings: Array<{
+    issueId: string;
+    category: string;
+    severity: 'info' | 'warning' | 'critical';
+    evidence: string;
+    fixSuggestion: string;
+  }>;
+}
+
+interface CinemaPackageView {
+  direction: {
+    treatment: string;
+    brief: {
+      genre: string;
+      format: string;
+      targetDurationSec: number;
+      humorProfile: { label: string; humorIntensity: number };
+    };
+    narrativeBeats: Array<{
+      beatId: string;
+      stage: string;
+      summary: string;
+      sensitiveContext: boolean;
+    }>;
+    shots: Array<{
+      shotId: string;
+      framing: string;
+      cameraMotion: string;
+      transitionIn: string;
+      mediaGap: boolean;
+      alternativePlanB: { framing: string; transitionIn: string };
+    }>;
+    mediaGaps: Array<{ shotId: string; reason: string }>;
+  };
+  timeline: {
+    projectId: string;
+    version: number;
+    renderFingerprint: string;
+    comedyBeats: Array<{
+      beatId: string;
+      humorMechanism: string;
+      setupEvidence: string;
+      punchline: string;
+      pauseFrames: number;
+      fallbackWithoutHumor: string;
+      contextRisk: string;
+    }>;
+  };
+  renderProfile: {
+    profile: string;
+    width: number;
+    height: number;
+    estimatedVramMb: number;
+    fits8GbVram: boolean;
+  };
+  findings: Array<{
+    issueId: string;
+    category: string;
+    severity: 'info' | 'warning' | 'critical';
+    evidence: string;
+    fixSuggestion: string;
+    status: string;
+  }>;
+  scorecard: {
+    independentFromProducer: boolean;
+    technicalScore: number;
+    visualScore: number;
+    audioScore: number;
+    narrativeScore: number;
+    comedyScore: number;
+    compositeScore: number;
+  };
+  releaseGates: {
+    passed: boolean;
+    blockingReasons: string[];
+    criticalCount: number;
+    warningCount: number;
+    ensembleScore: number;
+    requiresHumanReview: boolean;
+  };
+}
+
+interface BenchmarkView {
+  totalScenarios: number;
+  devCount: number;
+  holdoutCount: number;
+  criticalDefectRecall: number;
+  falsePositiveRate: number;
+  sensitiveBlockAccuracy: number;
+  meanDirectedScore: number;
+  meanBaselineScore: number;
+  abHumor35ActiveRate: number;
+  abHumor0ActiveRate: number;
+}
+
+function bridge(): CinemaBridgeApi | undefined {
+  return (window as unknown as { aetheraBridge?: CinemaBridgeApi }).aetheraBridge;
+}
+
+export function CinemaDirectorPanel() {
+  const navigate = useNavigate();
+  const { agents } = useAgents();
+  const readyAgents = (agents ?? []).filter((a) => healthOf(a) === 'ready');
+
+  const [prompt, setPrompt] = useState(
+    'Crie um vídeo cinematográfico sobre os 10 chefes mais difíceis de Elden Ring, com narrativa épica, humor pontual e duração de 12 minutos.',
+  );
+  const [genre, setGenre] = useState<'documentary' | 'gameplay_essay' | 'top_list' | 'trailer'>('gameplay_essay');
+  const [format, setFormat] = useState<'youtube_16_9' | 'shorts_9_16'>('youtube_16_9');
+  const [targetDurationSec, setTargetDurationSec] = useState(720);
+  const [durationSyncedFromPrompt, setDurationSyncedFromPrompt] = useState(true);
+  const [humorIntensity, setHumorIntensity] = useState(35);
+  const [renderProfile, setRenderProfile] = useState<'draft_540p' | 'review_720p' | 'master_1080p'>('review_720p');
+  const [revisionNote, setRevisionNote] = useState('');
+  const [planApproved, setPlanApproved] = useState(false);
+
+  function parsePromptDurationSec(text: string): number | null {
+    const minMatch = text.match(/(\d+(?:[.,]\d+)?)\s*(?:minuto|minutos|min)\b/i);
+    if (minMatch?.[1]) {
+      const mins = Number(minMatch[1].replace(',', '.'));
+      if (Number.isFinite(mins) && mins > 0) return Math.round(mins * 60);
+    }
+    const secMatch = text.match(/(\d+)\s*(?:segundo|segundos|seg|s)\b/i);
+    if (secMatch?.[1]) {
+      const secs = Number(secMatch[1]);
+      if (Number.isFinite(secs) && secs >= 5) return secs;
+    }
+    return null;
+  }
+
+  function handlePromptChange(next: string) {
+    setPrompt(next);
+    const parsed = parsePromptDurationSec(next);
+    if (parsed !== null) {
+      setTargetDurationSec(parsed);
+      setDurationSyncedFromPrompt(true);
+    } else {
+      setDurationSyncedFromPrompt(false);
+    }
+  }
+
+  const [capabilities, setCapabilities] = useState<Awaited<ReturnType<NonNullable<CinemaBridgeApi['cinemaCapabilities']>>> | null>(null);
+  const [pkg, setPkg] = useState<CinemaPackageView | null>(null);
+  const [benchmark, setBenchmark] = useState<BenchmarkView | null>(null);
+  const [realRender, setRealRender] = useState<RealRenderView | null>(null);
+  const [otioPreview, setOtioPreview] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [benchmarking, setBenchmarking] = useState(false);
+  const [renderingReal, setRenderingReal] = useState(false);
+  const [progressPct, setProgressPct] = useState<number | null>(null);
+  const [progressStage, setProgressStage] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void bridge()?.cinemaCapabilities?.().then(setCapabilities).catch(() => {});
+  }, []);
+
+  async function runProduction(effectivePrompt: string, options?: { autoOpenEditor?: boolean }) {
+    const api = bridge();
+    if (!api?.cinemaProduce) {
+      setError('Cinema IPC bridge indisponível neste contexto.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setOtioPreview(null);
+    setProgressPct(15);
+    setProgressStage('Planejando direção, roteiro e storyboard...');
+    let progressTimer: ReturnType<typeof setInterval> | null = null;
+    try {
+      let result = await api.cinemaProduce({
+        projectId: `cinema_${Date.now()}`,
+        prompt: effectivePrompt,
+        genre,
+        format,
+        targetDurationSec,
+        humorIntensity,
+        renderProfile,
+      });
+      if (result.findings.length > 0 && api.cinemaRepair) {
+        setProgressPct(40);
+        setProgressStage('Aplicando reparo automático de qualidade...');
+        result = await api.cinemaRepair(result.timeline.projectId);
+      }
+      setPkg(result);
+
+      if (options?.autoOpenEditor !== false) {
+        if (api.cinemaRenderRealMp4) {
+          setRenderingReal(true);
+          setProgressPct(55);
+          setProgressStage('Sintetizando narração (VoiceStudio) e renderizando MP4 (FFmpeg)...');
+          progressTimer = setInterval(() => {
+            setProgressPct((prev) => (prev !== null && prev < 92 ? prev + 3 : prev));
+          }, 700);
+          try {
+            const rendered = await api.cinemaRenderRealMp4({
+              projectId: result.timeline.projectId,
+              useNvenc: capabilities?.gpuNvenc ?? true,
+            });
+            setRealRender(rendered);
+          } finally {
+            if (progressTimer) clearInterval(progressTimer);
+            setRenderingReal(false);
+          }
+        }
+        setProgressPct(100);
+        setProgressStage('Concluído! Abrindo Editor...');
+        navigate(`/video?projectId=${encodeURIComponent(result.timeline.projectId)}`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (progressTimer) clearInterval(progressTimer);
+      setBusy(false);
+      setProgressPct(null);
+      setProgressStage('');
+    }
+  }
+
+  async function handleProduce(e: React.FormEvent) {
+    e.preventDefault();
+    await runProduction(prompt, { autoOpenEditor: true });
+  }
+
+  async function handleRevision(e: React.FormEvent) {
+    e.preventDefault();
+    if (!revisionNote.trim()) return;
+    const nextPrompt = `${prompt} | Revisão: ${revisionNote.trim()}`;
+    setRevisionNote('');
+    await runProduction(nextPrompt);
+  }
+
+  async function handleRepair() {
+    const api = bridge();
+    if (!api?.cinemaRepair || !pkg) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setPkg(await api.cinemaRepair(pkg.timeline.projectId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleExportOtio() {
+    const api = bridge();
+    if (!api?.cinemaExportOtio || !pkg) return;
+    setBusy(true);
+    try {
+      const res = await api.cinemaExportOtio(pkg.timeline.projectId);
+      setOtioPreview(res.otioJson.slice(0, 1400));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleBenchmark() {
+    const api = bridge();
+    if (!api?.cinemaRunBenchmark) return;
+    setBenchmarking(true);
+    setBusy(true);
+    setError(null);
+    try {
+      setBenchmark(await api.cinemaRunBenchmark());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBenchmarking(false);
+      setBusy(false);
+    }
+  }
+
+  async function handleRenderRealMp4() {
+    const api = bridge();
+    if (!api?.cinemaRenderRealMp4 || !pkg) return;
+    setRenderingReal(true);
+    setError(null);
+    try {
+      const rendered = await api.cinemaRenderRealMp4({
+        projectId: pkg.timeline.projectId,
+        useNvenc: capabilities?.gpuNvenc ?? true,
+      });
+      setRealRender(rendered);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRenderingReal(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6 p-6 xl:p-8">
+      {/* Creative Direction Hero */}
+      <section className="rounded-2xl border border-primary/30 bg-gradient-to-r from-[#1a102d] via-[#100e1b] to-[#17120c] p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] font-semibold tracking-[0.22em] text-amber-400 uppercase">
+              Direção Criativa IA
+            </p>
+            <h1 className="mt-1 text-2xl font-semibold text-foreground">Produção com IA</h1>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              Descreva o vídeo desejado em linguagem natural. O Aethera planeja narrativa, storyboard, ritmo e humor pontual (35% padrão).
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-[#121220] px-3 py-1 text-purple-200">
+              <Bot className="size-3.5 text-purple-400" />
+              {readyAgents.length > 0
+                ? `${readyAgents.length} agente(s) ativo(s) (RF-07)`
+                : 'Modo determinístico local'}
+            </span>
+            {capabilities && (
+              <span className="rounded-full border border-border bg-[#121220] px-3 py-1 text-muted-foreground">
+                FFmpeg {capabilities.ffmpeg ? 'OK' : 'Fallback'}
+              </span>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Main Prompt & Creative Controls */}
+      <form onSubmit={handleProduce} className="grid gap-4 rounded-2xl border border-border bg-card p-5 lg:grid-cols-12">
+        <div className="space-y-2 lg:col-span-12">
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-prompt">
+            Direção Criativa / Briefing
+          </label>
+          <textarea
+            id="cinema-prompt"
+            value={prompt}
+            onChange={(e) => handlePromptChange(e.target.value)}
+            rows={3}
+            className="w-full rounded-xl border border-border bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none"
+          />
+          {durationSyncedFromPrompt && (
+            <p className="text-[11px] text-emerald-400">
+              Duração sincronizada automaticamente com o briefing: {targetDurationSec}s ({Math.round(targetDurationSec / 60)} min)
+            </p>
+          )}
+        </div>
+
+        <div className="space-y-1 lg:col-span-3">
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-genre">Estilo / Gênero</label>
+          <select
+            id="cinema-genre"
+            value={genre}
+            onChange={(e) => setGenre(e.target.value as typeof genre)}
+            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+          >
+            <option value="gameplay_essay">Gameplay Essay</option>
+            <option value="documentary">Documentário</option>
+            <option value="top_list">Top List / Ranking</option>
+            <option value="trailer">Trailer</option>
+          </select>
+        </div>
+
+        <div className="space-y-1 lg:col-span-3">
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-format">Formato</label>
+          <select
+            id="cinema-format"
+            value={format}
+            onChange={(e) => setFormat(e.target.value as typeof format)}
+            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+          >
+            <option value="youtube_16_9">YouTube 16:9 (-14 LUFS)</option>
+            <option value="shorts_9_16">Shorts 9:16 (-12.5 LUFS)</option>
+          </select>
+        </div>
+
+        <div className="space-y-1 lg:col-span-2">
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-duration">Duração (min)</label>
+          <input
+            id="cinema-duration"
+            type="number"
+            min={0.5}
+            max={60}
+            step={0.5}
+            value={Number((targetDurationSec / 60).toFixed(2))}
+            onChange={(e) => setTargetDurationSec(Math.max(15, Math.round((Number(e.target.value) || 1) * 60)))}
+            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+          />
+        </div>
+
+        <div className="space-y-1 lg:col-span-4">
+          <label className="flex items-center justify-between text-xs font-medium text-muted-foreground" htmlFor="cinema-humor">
+            <span className="inline-flex items-center gap-1"><Laugh className="size-3.5 text-amber-400" /> Intensidade de Humor</span>
+            <span className="font-mono text-foreground">{humorIntensity}% {humorIntensity === 35 ? '(Padrão)' : humorIntensity === 0 ? '(Desativado)' : ''}</span>
+          </label>
+          <input
+            id="cinema-humor"
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={humorIntensity}
+            onChange={(e) => setHumorIntensity(Number(e.target.value))}
+            className="w-full accent-purple-500"
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 lg:col-span-12">
+          <select
+            aria-label="Perfil de render"
+            value={renderProfile}
+            onChange={(e) => setRenderProfile(e.target.value as typeof renderProfile)}
+            className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
+          >
+            <option value="draft_540p">Draft 540p (1.4 GB VRAM)</option>
+            <option value="review_720p">Review 720p (2.4 GB VRAM)</option>
+            <option value="master_1080p">Master 1080p (4.8 GB VRAM)</option>
+          </select>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleBenchmark}
+              disabled={busy || benchmarking}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-medium hover:border-primary disabled:opacity-50"
+            >
+              {benchmarking ? <LoaderCircle className="size-3.5 animate-spin" /> : <Activity className="size-3.5" />}
+              {benchmarking ? 'Rodando Benchmark...' : 'Rodar Benchmark'}
+            </button>
+            <button
+              type="submit"
+              disabled={busy || renderingReal}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-purple-600 to-amber-500 px-5 py-2 text-xs font-semibold text-white shadow-lg hover:brightness-110 disabled:opacity-50"
+            >
+              {busy || renderingReal ? <LoaderCircle className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+              {busy || renderingReal ? 'Produzindo e renderizando...' : 'Gerar Direção & Storyboard'}
+            </button>
+          </div>
+        </div>
+
+        {progressPct !== null && (
+          <div className="lg:col-span-12 space-y-1.5 rounded-xl border border-purple-500/30 bg-[#0d0d17] p-3">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-purple-200">{progressStage}</span>
+              <span className="font-mono font-semibold text-amber-300">{progressPct}%</span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-purple-500 to-amber-400 transition-all duration-300"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+          </div>
+        )}
+      </form>
+
+      {error && (
+        <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive">
+          {error}
+        </div>
+      )}
+
+      {benchmark && (
+        <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
+          <h2 className="text-sm font-semibold">Benchmark Corpus ({benchmark.devCount} dev / {benchmark.holdoutCount} holdout)</h2>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 text-xs">
+            <div className="rounded-xl border border-border bg-[#0d0d17] p-3">
+              <div className="text-muted-foreground">Recall Defeitos Críticos</div>
+              <div className="mt-1 text-lg font-bold text-emerald-400">{(benchmark.criticalDefectRecall * 100).toFixed(0)}%</div>
+            </div>
+            <div className="rounded-xl border border-border bg-[#0d0d17] p-3">
+              <div className="text-muted-foreground">Falso Positivo</div>
+              <div className="mt-1 text-lg font-bold">{(benchmark.falsePositiveRate * 100).toFixed(1)}%</div>
+            </div>
+            <div className="rounded-xl border border-border bg-[#0d0d17] p-3">
+              <div className="text-muted-foreground">Bloqueio Sensível</div>
+              <div className="mt-1 text-lg font-bold text-emerald-400">{(benchmark.sensitiveBlockAccuracy * 100).toFixed(0)}%</div>
+            </div>
+            <div className="rounded-xl border border-border bg-[#0d0d17] p-3">
+              <div className="text-muted-foreground">Direcionado vs Baseline</div>
+              <div className="mt-1 text-lg font-bold">{benchmark.meanDirectedScore} vs {benchmark.meanBaselineScore}</div>
+            </div>
+            <div className="rounded-xl border border-border bg-[#0d0d17] p-3">
+              <div className="text-muted-foreground">A/B Humor (35% vs 0%)</div>
+              <div className="mt-1 text-lg font-bold">{(benchmark.abHumor35ActiveRate * 100).toFixed(0)}% vs {(benchmark.abHumor0ActiveRate * 100).toFixed(0)}%</div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {pkg && (
+        <div className="grid gap-6 lg:grid-cols-12">
+          {/* Narrative & Storyboard */}
+          <section className="space-y-4 rounded-2xl border border-border bg-card p-5 lg:col-span-7">
+            <div className="flex items-center justify-between">
+              <h2 className="inline-flex items-center gap-2 text-sm font-semibold">
+                <Clapperboard className="size-4 text-purple-400" /> Planejamento Narrativo & Storyboard ({pkg.direction.shots.length} cenas)
+              </h2>
+              <button
+                type="button"
+                onClick={handleExportOtio}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs hover:border-primary"
+              >
+                <Download className="size-3.5" /> Exportar OTIO
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground">{pkg.direction.treatment}</p>
+
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              {pkg.direction.shots.map((s, idx) => {
+                const sceneDur = Math.max(4, Math.round(pkg.direction.brief.targetDurationSec / Math.max(1, pkg.direction.shots.length)));
+                return (
+                  <div key={s.shotId} className="overflow-hidden rounded-xl border border-border bg-[#0d0d17] text-xs">
+                    <div className="relative flex h-20 items-end justify-between bg-gradient-to-br from-[#23133d] via-[#131326] to-[#1f160c] p-2.5">
+                      <span className="rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-amber-300">
+                        Cena {idx + 1} · {sceneDur}s
+                      </span>
+                      <span className="rounded bg-primary/30 px-1.5 py-0.5 text-[10px] text-purple-100">{s.framing}</span>
+                    </div>
+                    <div className="p-3 space-y-1">
+                      <div className="flex items-center justify-between font-semibold text-foreground">
+                        <span className="font-mono">{s.shotId}</span>
+                        <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300">
+                          <Volume2 className="size-3" /> Narração + SFX
+                        </span>
+                      </div>
+                      <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                        <Camera className="size-3 text-purple-400" /> {s.cameraMotion} · Transição: {s.transitionIn}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        Plano B: {s.alternativePlanB.framing} ({s.alternativePlanB.transitionIn})
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-[#0d0d17] p-3 text-xs">
+              <span>
+                {planApproved
+                  ? 'Plano aprovado para edição e renderização.'
+                  : 'Revise as cenas acima antes de avançar para o Editor NLE.'}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPlanApproved(true)}
+                  className={`rounded-lg px-3 py-1.5 font-semibold ${
+                    planApproved
+                      ? 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                      : 'bg-emerald-600 text-white hover:brightness-110'
+                  }`}
+                >
+                  {planApproved ? 'Plano Aprovado' : 'Aprovar Plano'}
+                </button>
+                <Link
+                  to="/video"
+                  className="rounded-lg border border-primary/50 bg-primary/20 px-3 py-1.5 font-medium text-purple-200 hover:bg-primary/30"
+                >
+                  Abrir no Editor NLE
+                </Link>
+              </div>
+            </div>
+
+            {/* Natural-language revision input */}
+            <form onSubmit={handleRevision} className="flex gap-2 pt-2">
+              <input
+                value={revisionNote}
+                onChange={(e) => setRevisionNote(e.target.value)}
+                placeholder="Pedir alteração por linguagem natural (ex.: acelerar abertura e reduzir humor)..."
+                className="flex-1 rounded-xl border border-border bg-background px-3 py-2 text-xs"
+              />
+              <button
+                type="submit"
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-3.5 py-2 text-xs font-semibold text-white"
+              >
+                <Send className="size-3.5" /> Revisar
+              </button>
+            </form>
+          </section>
+
+          {/* Comedy Beats & Release Gates */}
+          <section className="space-y-4 rounded-2xl border border-border bg-card p-5 lg:col-span-5">
+            <div className="flex items-center justify-between">
+              <h2 className="inline-flex items-center gap-2 text-sm font-semibold">
+                {pkg.releaseGates.passed ? (
+                  <CheckCircle2 className="size-4 text-emerald-400" />
+                ) : (
+                  <ShieldAlert className="size-4 text-amber-400" />
+                )}
+                Qualidade & Beats de Humor
+              </h2>
+              <span className="font-mono text-xs">{pkg.scorecard.compositeScore}/100</span>
+            </div>
+
+            {!pkg.releaseGates.passed && (
+              <button
+                type="button"
+                onClick={handleRepair}
+                disabled={busy}
+                className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-amber-500 px-3 py-2 text-xs font-semibold text-black"
+              >
+                <Wrench className="size-3.5" /> Executar Reparo Cirúrgico (Budget 3)
+              </button>
+            )}
+
+            <div className="space-y-2">
+              {pkg.timeline.comedyBeats.length === 0 ? (
+                <p className="text-xs text-muted-foreground">Nenhum beat de humor ativo (intensidade 0% ou contexto sensível).</p>
+              ) : (
+                pkg.timeline.comedyBeats.map((cb) => (
+                  <div key={cb.beatId} className="rounded-xl border border-border bg-[#0d0d17] p-3 text-xs space-y-1">
+                    <div className="flex items-center justify-between font-medium">
+                      <span>{cb.humorMechanism} · pausa {cb.pauseFrames}f</span>
+                      <span className="text-muted-foreground">{cb.contextRisk}</span>
+                    </div>
+                    <p>{cb.punchline}</p>
+                    <p className="text-[11px] text-muted-foreground">Fallback sem humor: {cb.fallbackWithoutHumor}</p>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="rounded-xl border border-border bg-[#0d0d17] p-3 text-xs text-muted-foreground flex items-center justify-between">
+              <span className="inline-flex items-center gap-1.5"><Film className="size-3.5" /> {pkg.renderProfile.profile}</span>
+              <span>{pkg.renderProfile.width}x{pkg.renderProfile.height}</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleRenderRealMp4}
+              disabled={busy || renderingReal}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-cyan-600 px-3 py-2 text-xs font-semibold text-white hover:brightness-110 disabled:opacity-50"
+            >
+              <Film className="size-3.5" /> {renderingReal ? 'Renderizando MP4 Real...' : 'Renderizar MP4 Real (FFmpeg)'}
+            </button>
+
+            {realRender && (
+              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs space-y-2">
+                <div className="flex items-center justify-between font-semibold text-emerald-300">
+                  <span>MP4 Real Verificado (FFprobe/ebur128)</span>
+                  <span className="font-mono text-[11px]">{realRender.encoderUsed}</span>
+                </div>
+                <p className="font-mono text-[10px] text-muted-foreground break-all">{realRender.mp4Path}</p>
+                <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                  <div>Duração: <span className="font-mono text-foreground">{realRender.probe.durationSec.toFixed(2)}s</span></div>
+                  <div>Resolução: <span className="font-mono text-foreground">{realRender.probe.width}x{realRender.probe.height}</span></div>
+                  <div>LUFS: <span className="font-mono text-foreground">{realRender.probe.integratedLufs ?? 'N/A'}</span></div>
+                  <div>True Peak: <span className="font-mono text-foreground">{realRender.probe.truePeakDbtp ?? 'N/A'} dBTP</span></div>
+                  <div>Black frames: <span className="font-mono text-foreground">{realRender.probe.blackFrames.length}</span></div>
+                  <div>Narração: <span className="font-mono text-foreground">{realRender.narrationMode}</span></div>
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  Efeitos: {realRender.appliedEffects.join(' · ')}
+                </div>
+                {realRender.realQcFindings.length > 0 && (
+                  <div className="space-y-1 pt-1">
+                    {realRender.realQcFindings.map((f) => (
+                      <div key={f.issueId} className="text-[11px] text-amber-300">
+                        [{f.severity}] {f.evidence}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {otioPreview && (
+              <pre className="max-h-40 overflow-auto rounded-xl border border-border bg-background p-3 text-[11px] text-muted-foreground">
+                {otioPreview}
+              </pre>
+            )}
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}

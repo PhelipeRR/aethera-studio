@@ -1,0 +1,228 @@
+{
+  "projectId": "aethera_space_jwst_blackholes",
+  "totalDur": 51.25,
+  "sceneStartSec": [
+    0,
+    8,
+    15.25,
+    21.5,
+    26.75,
+    34,
+    40.25,
+    47
+  ],
+  "audioEvents": [
+    {
+      "sourceId": "nar_1",
+      "sceneId": "space_01_hook",
+      "bus": "A1_narration",
+      "role": "narration",
+      "startMs": 250,
+      "endMs": 6723,
+      "gainDb": 0,
+      "priority": 100
+    },
+    {
+      "sourceId": "nar_2",
+      "sceneId": "space_02_mirror",
+      "bus": "A1_narration",
+      "role": "narration",
+      "startMs": 8250,
+      "endMs": 15436,
+      "gainDb": 0,
+      "priority": 100
+    },
+    {
+      "sourceId": "nar_3",
+      "sceneId": "space_03_highlights",
+      "bus": "A1_narration",
+      "role": "narration",
+      "startMs": 15500,
+      "endMs": 19989,
+      "gainDb": 0,
+      "priority": 100
+    },
+    {
+      "sourceId": "nar_4",
+      "sceneId": "space_04_comedy_35",
+      "bus": "A1_narration",
+      "role": "narration",
+      "startMs": 21750,
+      "endMs": 26650,
+      "gainDb": 0,
+      "priority": 100
+    },
+    {
+      "sourceId": "nar_5",
+      "sceneId": "space_05_pillars",
+      "bus": "A1_narration",
+      "role": "narration",
+      "startMs": 27000,
+      "endMs": 32290,
+      "gainDb": 0,
+      "priority": 100
+    },
+    {
+      "sourceId": "nar_6",
+      "sceneId": "space_06_blackhole_video",
+      "bus": "A1_narration",
+      "role": "narration",
+      "startMs": 34250,
+      "endMs": 38745,
+      "gainDb": 0,
+      "priority": 100
+    },
+    {
+      "sourceId": "nar_7",
+      "sceneId": "space_07_climax_m87",
+      "bus": "A1_narration",
+      "role": "narration",
+      "startMs": 40500,
+      "endMs": 44120,
+      "gainDb": 0,
+      "priority": 100
+    },
+    {
+      "sourceId": "nar_8",
+      "sceneId": "space_08_outro",
+      "bus": "A1_narration",
+      "role": "narration",
+      "startMs": 47250,
+      "endMs": 50990,
+      "gainDb": 0,
+      "priority": 100
+    },
+    {
+      "sourceId": "space_pad_01",
+      "sceneId": "global",
+      "bus": "A3_music",
+      "role": "music",
+      "startMs": 0,
+      "endMs": 51250,
+      "gainDb": -16,
+      "priority": 40,
+      "duckedUnderSpeech": true
+    },
+    {
+      "sourceId": "sfx_comedy_01",
+      "sceneId": "space_04_comedy_35",
+      "bus": "A4_sfx",
+      "role": "sfx",
+      "startMs": 21500,
+      "endMs": 21750,
+      "gainDb": -10,
+      "priority": 70
+    },
+    {
+      "sourceId": "sfx_climax_02",
+      "sceneId": "space_07_climax_m87",
+      "bus": "A4_sfx",
+      "role": "sfx",
+      "startMs": 40250,
+      "endMs": 40700,
+      "gainDb": -8,
+      "priority": 70
+    }
+  ],
+  "audioAudit": {
+    "approved": true,
+    "totalDurationMs": 51250,
+    "minGapMs": 200,
+    "blockedReasons": [],
+    "conflicts": [
+      {
+        "conflictId": "nar_tight_2_3",
+        "severity": "warning",
+        "type": "narration_tight_gap",
+        "startMs": 15436,
+        "endMs": 15500,
+        "sources": [
+          "nar_2",
+          "nar_3"
+        ],
+        "sceneIds": [
+          "space_02_mirror",
+          "space_03_highlights"
+        ],
+        "origin": "A1_narration",
+        "description": "Respiro curto entre \"nar_2\" e \"nar_3\": 64ms (mínimo recomendado 200ms).",
+        "correctiveAction": "Adicionar pausa mínima de 180–250ms entre falas consecutivas."
+      }
+    ],
+    "busesSummary": {
+      "A1_narration": {
+        "eventCount": 8,
+        "totalActiveMs": 40193
+      },
+      "A2_gameplay_dialogue": {
+        "eventCount": 0,
+        "totalActiveMs": 0
+      },
+      "A3_music": {
+        "eventCount": 1,
+        "totalActiveMs": 51250
+      },
+      "A4_sfx": {
+        "eventCount": 2,
+        "totalActiveMs": 700
+      },
+      "A5_ambience": {
+        "eventCount": 0,
+        "totalActiveMs": 0
+      }
+    }
+  },
+  "probe": {
+    "filePath": "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\space-doc\\aethera-space-doc.mp4",
+    "fileSizeBytes": 35360070,
+    "durationSec": 51.25,
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "videoCodec": "h264",
+    "audioCodec": "aac",
+    "audioSampleRate": 48000,
+    "avDurationDeltaSec": 0.017,
+    "integratedLufs": -14.6,
+    "truePeakDbtp": -1.4,
+    "blackFramesCount": 1,
+    "frozenSegmentsCount": 3,
+    "sceneCutsCount": 4,
+    "silenceEventsCount": 0
+  },
+  "qcFindings": [
+    {
+      "issueId": "real_qc_black_frames",
+      "timeRange": {
+        "start": {
+          "value": 0,
+          "rate": 1
+        },
+        "duration": {
+          "value": 51,
+          "rate": 1
+        }
+      },
+      "category": "technical",
+      "severity": "critical",
+      "confidence": 1,
+      "evidence": "FFmpeg blackdetect encontrou 1 segmento(s) preto(s) no MP4 final.",
+      "owner": "editor",
+      "fixSuggestion": "Remover ou substituir quadros pretos nas transições.",
+      "affectedDependencies": [
+        "v1"
+      ],
+      "status": "open"
+    }
+  ],
+  "frames": [
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\space-doc\\frames\\frame_01_3s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\space-doc\\frames\\frame_02_10s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\space-doc\\frames\\frame_03_17s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\space-doc\\frames\\frame_04_23s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\space-doc\\frames\\frame_05_30s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\space-doc\\frames\\frame_06_37s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\space-doc\\frames\\frame_07_43s.png",
+    "C:\\dev\\neuralbridge-studio\\docs\\aethera\\cinema\\space-doc\\frames\\frame_08_49s.png"
+  ]
+}

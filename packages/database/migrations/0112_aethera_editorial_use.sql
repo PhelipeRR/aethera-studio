@@ -1,0 +1,3 @@
+CREATE TABLE `aethera_editorial_policies` (`project_id` text PRIMARY KEY NOT NULL REFERENCES `video_projects`(`id`) ON DELETE CASCADE, `third_party_editorial_use` integer NOT NULL DEFAULT 0, `note` text NOT NULL, `decided_by` text NOT NULL, `decided_at` text NOT NULL);
+--> statement-breakpoint
+CREATE TABLE `aethera_media_editorial_decisions` (`asset_id` text NOT NULL REFERENCES `velix_local_assets`(`id`) ON DELETE CASCADE, `project_id` text NOT NULL REFERENCES `video_projects`(`id`) ON DELETE CASCADE, `decision` text NOT NULL, `note` text NOT NULL, `decided_by` text NOT NULL, `decided_at` text NOT NULL, PRIMARY KEY(`asset_id`, `project_id`));

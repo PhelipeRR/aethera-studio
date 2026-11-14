@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `velix_editorial_claims_run_text_idx` ON `velix_editorial_claims` (`run_id`,`text_hash`)

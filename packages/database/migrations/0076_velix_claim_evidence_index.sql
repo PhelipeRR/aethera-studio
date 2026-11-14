@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `velix_claim_evidence_claim_url_idx` ON `velix_claim_evidence` (`claim_id`,`url`)

@@ -1,0 +1,10 @@
+{
+  "name": "@neuralbridge/desktop-shared",
+  "private": true,
+  "version": "0.1.65",
+  "description": "Shared Electron main/preload/renderer runtime modules for Singularity Ecosystem apps",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

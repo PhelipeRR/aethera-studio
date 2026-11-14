@@ -1,0 +1,1 @@
+CREATE TABLE `azure_devops_cache` (`connection_id` text NOT NULL REFERENCES `azure_devops_connections`(`id`) ON DELETE CASCADE, `entity_type` text NOT NULL, `entity_id` text NOT NULL, `payload` text NOT NULL, `fetched_at` text NOT NULL, PRIMARY KEY(`connection_id`,`entity_type`,`entity_id`))

@@ -1,0 +1,53 @@
+{
+  "name": "neuralbridge",
+  "private": true,
+  "version": "0.1.65",
+  "description": "Local-first orchestrator and shared memory for Claude Code and Codex CLI",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "npm run dev -w @neuralbridge/desktop",
+    "build": "npm run build -w @neuralbridge/desktop",
+    "build:orchestrator": "npm run build -w @neuralbridge/orchestrator-desktop",
+    "build:aethera": "npm run build -w @neuralbridge/aethera-desktop",
+    "build:void": "npm run build -w @neuralbridge/void-desktop",
+    "build:all-apps": "npm run build && npm run build:orchestrator && npm run build:aethera && npm run build:void",
+    "typecheck": "tsc -p packages/shared && tsc -p packages/integration-contracts && tsc -p packages/cinema && tsc -p packages/core && tsc -p packages/database && tsc -p packages/brain && tsc -p packages/mcp-server && tsc -p packages/workspace && tsc -p packages/agents && tsc -p packages/orchestrator && tsc -p packages/extensions-neura && tsc -p packages/extensions-velix && tsc -p tests/tsconfig.json && npm run typecheck -w @neuralbridge/desktop && npm run typecheck -w @neuralbridge/orchestrator-desktop && npm run typecheck -w @neuralbridge/aethera-desktop && npm run typecheck -w @neuralbridge/void-desktop",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:e2e": "npm run build && npm run build:motion && playwright test",
+    "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
+    "dist:win": "node scripts/generate-icon.mjs && npm run build && electron-builder --projectDir apps/desktop --config electron-builder.yml --win nsis",
+    "dist:win:orchestrator": "node scripts/generate-icon.mjs && npm run build:orchestrator && electron-builder --projectDir apps/orchestrator-desktop --config electron-builder.yml --win nsis",
+    "dist:win:aethera": "node scripts/generate-icon.mjs && npm run build:aethera && electron-builder --projectDir apps/aethera-desktop --config electron-builder.yml --win nsis",
+    "dist:win:void": "node scripts/generate-icon.mjs && npm run build:void && electron-builder --projectDir apps/void-desktop --config electron-builder.yml --win nsis",
+    "build:motion": "node scripts/build-motion-bundle.mjs",
+    "verify:dist": "node scripts/verify-distribution.mjs",
+    "verify:windows-signature": "node scripts/verify-windows-signature.mjs",
+    "diagnostics:export": "node scripts/export-diagnostics.mjs",
+    "extension:pack": "node scripts/pack-extension.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@neuralbridge/agents": "0.1.0",
+    "@neuralbridge/shared": "0.1.0",
+    "@neuralbridge/workspace": "0.1.0",
+    "@playwright/test": "1.64.0",
+    "@types/node": "24.9.0",
+    "@types/selfsigned": "^2.0.4",
+    "electron-builder": "^26.18.0",
+    "eslint": "10.12.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.13.0",
+    "selfsigned": "^5.5.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.2",
+    "vitest": "5.0.4"
+  },
+  "type": "module"
+}

@@ -1,0 +1,680 @@
+{
+  "schemaVersion": 1,
+  "sharedRoot": ".agents/skills",
+  "generatedAtIso": "2026-11-14T00:06:12.277Z",
+  "totalProjectSkills": 38,
+  "packageSkills": [
+    "node_modules/playwright-core/lib/tools/skills/playwright-cli/SKILL.md",
+    "node_modules/playwright-core/lib/tools/skills/playwright-component-testing/SKILL.md",
+    "node_modules/playwright-core/lib/tools/skills/playwright-trace/SKILL.md"
+  ],
+  "skills": [
+    {
+      "id": "ask-matt",
+      "name": "ask-matt",
+      "description": "Ask which skill or flow fits your situation. A router over the skills in this repo.",
+      "path": ".agents/skills/ask-matt/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "PHASE-BOUNDARIES.md"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "chief-of-staff",
+      "name": "chief-of-staff",
+      "description": "Pursue a long-running goal in a single session by co-ordinating subagents.",
+      "path": ".agents/skills/chief-of-staff/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_adapted"
+    },
+    {
+      "id": "claude-handoff",
+      "name": "claude-handoff",
+      "description": "Hand the current conversation off to a fresh background agent that picks up the work immediately.",
+      "path": ".agents/skills/claude-handoff/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude"
+      ],
+      "status": "exclusive_claude"
+    },
+    {
+      "id": "code-review",
+      "name": "code-review",
+      "description": "Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes: Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to \\\"review since X\\\".",
+      "path": ".agents/skills/code-review/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "codebase-design",
+      "name": "codebase-design",
+      "description": "Shared vocabulary for designing deep modules. Use when the user wants to design or improve a module's interface, find deepening opportunities, decide where a seam goes, make code more testable or AI-navigable, or when another skill needs the deep-module vocabulary.",
+      "path": ".agents/skills/codebase-design/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "DEEPENING.md",
+        "DESIGN-IT-TWICE.md"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "diagnosing-bugs",
+      "name": "diagnosing-bugs",
+      "description": "Diagnosis loop for hard bugs and performance regressions. Use when the user says \"diagnose\"/\"debug this\", or reports something broken/throwing/failing/slow.",
+      "path": ".agents/skills/diagnosing-bugs/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "scripts/hitl-loop.template.sh"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "domain-modeling",
+      "name": "domain-modeling",
+      "description": "Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a GLOSSARY.md, or recording or editing an ADR.",
+      "path": ".agents/skills/domain-modeling/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "ADR-FORMAT.md",
+        "agents/openai.yaml",
+        "GLOSSARY-FORMAT.md"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "git-guardrails-claude-code",
+      "name": "git-guardrails-claude-code",
+      "description": "Set up Claude Code hooks to block dangerous git commands (push, reset --hard, clean, branch -D, etc.) before they execute. Use when user wants to prevent destructive git operations, add git safety hooks, or block git push/reset in Claude Code.",
+      "path": ".agents/skills/git-guardrails-claude-code/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "scripts/block-dangerous-git.sh"
+      ],
+      "compatibleAgents": [
+        "claude"
+      ],
+      "status": "exclusive_claude"
+    },
+    {
+      "id": "grill-me",
+      "name": "grill-me",
+      "description": "A relentless interview to sharpen a plan or design.",
+      "path": ".agents/skills/grill-me/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "grill-with-docs",
+      "name": "grill-with-docs",
+      "description": "A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go.",
+      "path": ".agents/skills/grill-with-docs/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "grilling",
+      "name": "grilling",
+      "description": "Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.",
+      "path": ".agents/skills/grilling/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "handoff",
+      "name": "handoff",
+      "description": "Compact the current conversation into a handoff document for another agent to pick up.",
+      "path": ".agents/skills/handoff/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "implement",
+      "name": "implement",
+      "description": "Implement a piece of work based on a spec or set of tickets.",
+      "path": ".agents/skills/implement/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "implement-spec",
+      "name": "implement-spec",
+      "description": "Implement the result of /to-spec and /to-tickets in code.",
+      "path": ".agents/skills/implement-spec/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_adapted"
+    },
+    {
+      "id": "improve-codebase-architecture",
+      "name": "improve-codebase-architecture",
+      "description": "Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick.",
+      "path": ".agents/skills/improve-codebase-architecture/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "HTML-REPORT.md"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "loop-me",
+      "name": "loop-me",
+      "description": "Grill me about specs for the workflows I want to build, within this workspace.",
+      "path": ".agents/skills/loop-me/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "migrate-to-shoehorn",
+      "name": "migrate-to-shoehorn",
+      "description": "Migrate test files from `as` type assertions to @total-typescript/shoehorn. Use when user mentions shoehorn, wants to replace `as` in tests, or needs partial test data.",
+      "path": ".agents/skills/migrate-to-shoehorn/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "pr",
+      "name": "pr",
+      "description": "Use when writing a PR body.",
+      "path": ".agents/skills/pr/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "CREDITS.md"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "prototype",
+      "name": "prototype",
+      "description": "Build a throwaway prototype to answer a design question. Use when the user wants to sanity-check whether a state model or logic feels right, or explore what a UI should look like.",
+      "path": ".agents/skills/prototype/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "LOGIC.md",
+        "UI.md"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "research",
+      "name": "research",
+      "description": "Investigate a question against high-trust primary sources and capture the findings as a Markdown file in the repo. Use when the user wants a topic researched, docs or API facts gathered, or reading legwork delegated to a background agent.",
+      "path": ".agents/skills/research/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "retro",
+      "name": "retro",
+      "description": "Conduct a retrospective on a coding session.",
+      "path": ".agents/skills/retro/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "scaffold-exercises",
+      "name": "scaffold-exercises",
+      "description": "Create exercise directory structures with sections, problems, solutions, and explainers that pass linting. Use when user wants to scaffold exercises, create exercise stubs, or set up a new course section.",
+      "path": ".agents/skills/scaffold-exercises/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "setup-matt-pocock-skills",
+      "name": "setup-matt-pocock-skills",
+      "description": "Configure this repo for the engineering skills: set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills.",
+      "path": ".agents/skills/setup-matt-pocock-skills/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "domain.md",
+        "issue-tracker-github.md",
+        "issue-tracker-gitlab.md",
+        "issue-tracker-local.md",
+        "triage-labels.md"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "setup-pre-commit",
+      "name": "setup-pre-commit",
+      "description": "Set up Husky pre-commit hooks with lint-staged (Prettier), type checking, and tests in the current repo. Use when user wants to add pre-commit hooks, set up Husky, configure lint-staged, or add commit-time formatting/typechecking/testing.",
+      "path": ".agents/skills/setup-pre-commit/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "setup-ts-deep-modules",
+      "name": "setup-ts-deep-modules",
+      "description": "Wire dependency-cruiser into a TypeScript repo so each package is a deep module, with implementation hidden in subfolders and reachable only through its entry-point files. User-invoked.",
+      "path": ".agents/skills/setup-ts-deep-modules/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "dependency-cruiser.config.cjs"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "tdd",
+      "name": "tdd",
+      "description": "Test-driven development. Use when the user wants to build features or fix bugs test-first, mentions \"red-green-refactor\", or wants integration tests.",
+      "path": ".agents/skills/tdd/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "mocking.md",
+        "tests.md"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "teach",
+      "name": "teach",
+      "description": "Teach the user a new skill or concept, within this workspace.",
+      "path": ".agents/skills/teach/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "GLOSSARY-FORMAT.md",
+        "LEARNING-RECORD-FORMAT.md",
+        "MISSION-FORMAT.md",
+        "RESOURCES-FORMAT.md"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "to-questionnaire",
+      "name": "to-questionnaire",
+      "description": "Turn a decision you can't fully answer into a questionnaire for someone else to fill in.",
+      "path": ".agents/skills/to-questionnaire/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "to-spec",
+      "name": "to-spec",
+      "description": "Turn the current conversation into a spec and publish it to the project issue tracker: no interview, just synthesis of what you've already discussed.",
+      "path": ".agents/skills/to-spec/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "to-tickets",
+      "name": "to-tickets",
+      "description": "Break a plan, spec, or the current conversation into a set of tracer-bullet tickets, each declaring its blocking edges, published to the configured tracker (edges as text in one file per ticket locally, or native blocking links on a real tracker).",
+      "path": ".agents/skills/to-tickets/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "triage",
+      "name": "triage",
+      "description": "Move issues and external PRs through a state machine of triage roles, categorise, verify, grill if needed, and write agent-ready briefs.",
+      "path": ".agents/skills/triage/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "AGENT-BRIEF.md",
+        "agents/openai.yaml",
+        "OUT-OF-SCOPE.md"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "wait-what",
+      "name": "wait-what",
+      "description": "Stop. That last message did not land: re-pitch it.",
+      "path": ".agents/skills/wait-what/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "wayfinder",
+      "name": "wayfinder",
+      "description": "Plan a huge chunk of work (more than one agent session can hold) as a shared map of decision tickets on your issue tracker, and resolve them one at a time until the way to the destination is clear.",
+      "path": ".agents/skills/wayfinder/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "wizard",
+      "name": "wizard",
+      "description": "Generate an interactive bash wizard that walks a human through steps only they can perform. Use when provisioning infrastructure, setting up credentials or CI secrets, walking an unfamiliar third-party dashboard, or running a one-off migration or cutover. Don't invoke this for steps the agent can perform itself.",
+      "path": ".agents/skills/wizard/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "template.sh"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "writing-beats",
+      "name": "writing-beats",
+      "description": "Writing, exploit; assemble raw material into a journey of beats, grounding each term before a beat leans on it.",
+      "path": ".agents/skills/writing-beats/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "writing-for-agents",
+      "name": "writing-for-agents",
+      "description": "Writing documents for agents. Use when creating or editing skills, or modifying AGENTS.md or CLAUDE.md.",
+      "path": ".agents/skills/writing-for-agents/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml",
+        "SKILL-MECHANICS.md"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "writing-fragments",
+      "name": "writing-fragments",
+      "description": "Writing, explore: mine raw fragments, no structure yet.",
+      "path": ".agents/skills/writing-fragments/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    },
+    {
+      "id": "writing-shape",
+      "name": "writing-shape",
+      "description": "Writing, exploit: shape raw material into an article, paragraph by paragraph.",
+      "path": ".agents/skills/writing-shape/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "shared_reused"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "paths": { "@/*": ["./src/renderer/src/*"] }
+  },
+  "include": ["src/renderer/src", "test/neura-speech-level.test.ts", "test/aethera-mark.test.ts", "test/production-phases.test.ts", "test/aethera-agent-line.test.ts"]
+}

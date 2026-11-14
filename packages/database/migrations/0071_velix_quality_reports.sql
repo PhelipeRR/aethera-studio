@@ -1,0 +1,1 @@
+CREATE TABLE `velix_quality_reports` (`id` text PRIMARY KEY NOT NULL, `run_id` text NOT NULL REFERENCES `velix_production_runs`(`id`) ON DELETE CASCADE, `stage_id` text, `blocking` integer NOT NULL DEFAULT 1, `checks` text NOT NULL DEFAULT '[]', `exportable` integer NOT NULL DEFAULT 0, `created_at` text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))

@@ -1,0 +1,68 @@
+[
+  {
+    "file": "jwst_deep_field.jpg",
+    "type": "image",
+    "source": "NASA Image Library (Public Domain)",
+    "nasa_id": "NHQ202207120017",
+    "title": "JWST’s First Full-Color Images",
+    "center": "HQ",
+    "date": "2022-07-12T00:00:00Z",
+    "href": "https://images-assets.nasa.gov/image/NHQ202207120017/NHQ202207120017~large.jpg"
+  },
+  {
+    "file": "jwst_carina.jpg",
+    "type": "image",
+    "source": "NASA Image Library (Public Domain)",
+    "nasa_id": "carina_nebula",
+    "title": "James Webb Space Telescope NIRCam Image of the “Cosmic Cliffs” in Carina Nebula",
+    "center": "STScI (Webb)",
+    "date": "2022-07-12T11:00:00Z",
+    "href": "https://images-assets.nasa.gov/image/carina_nebula/carina_nebula~large.jpg"
+  },
+  {
+    "file": "jwst_pillars.jpg",
+    "type": "image",
+    "source": "NASA Image Library (Public Domain)",
+    "nasa_id": "PIA25433",
+    "title": "The Eagle Nebula Observed by WISE",
+    "center": "JPL",
+    "date": "2022-11-11T00:00:00Z",
+    "href": "https://images-assets.nasa.gov/image/PIA25433/PIA25433~large.jpg"
+  },
+  {
+    "file": "jwst_mirror.jpg",
+    "type": "image",
+    "source": "NASA Image Library (Public Domain)",
+    "nasa_id": "GSFC_20171208_Archive_e001822",
+    "title": "Being \"Secondary\" is Important for a Webb Telescope Mirror",
+    "center": "GSFC",
+    "date": "2017-12-08T00:00:00Z",
+    "href": "https://images-assets.nasa.gov/image/GSFC_20171208_Archive_e001822/GSFC_20171208_Archive_e001822~medium.jpg"
+  },
+  {
+    "file": "black_hole_m87.jpg",
+    "type": "image",
+    "source": "NASA Image Library (Public Domain)",
+    "nasa_id": "PIA23122",
+    "title": "Spitzer Captures Messier 87",
+    "center": "JPL",
+    "date": "2019-04-25T00:00:00Z",
+    "href": "https://images-assets.nasa.gov/image/PIA23122/PIA23122~medium.jpg"
+  },
+  {
+    "file": "nasa_jwst_highlights.mp4",
+    "type": "video",
+    "source": "NASA Video Library (Public Domain)",
+    "title": "First Images from the James Webb Space Telescope (Official NASA Highlights)",
+    "url": "https://images-assets.nasa.gov/video/First%20Images%20from%20the%20James%20Webb%20Space%20Telescope%20(Official%20NASA%20Highlights)/First%20Images%20from%20the%20James%20Webb%20Space%20Telescope%20(Official%20NASA%20Highlights)~orig.mp4",
+    "segment": "00:00:18+7s"
+  },
+  {
+    "file": "nasa_black_holes.mp4",
+    "type": "video",
+    "source": "NASA Video Library (Public Domain)",
+    "title": "NuSTAR-Hunting Hidden Black Holes (NASA JPL)",
+    "url": "https://images-assets.nasa.gov/video/JPL-20250409-NUSTARf-0001-Hunting_Hidden_Black_Holes_2160cc/JPL-20250409-NUSTARf-0001-Hunting_Hidden_Black_Holes_2160cc~orig.mp4",
+    "segment": "00:00:25+7s"
+  }
+]

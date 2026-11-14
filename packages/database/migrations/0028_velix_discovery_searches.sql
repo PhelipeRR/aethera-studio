@@ -1,0 +1,1 @@
+CREATE TABLE `velix_discovery_searches` (`id` text PRIMARY KEY NOT NULL, `project_id` text NOT NULL REFERENCES `video_projects`(`id`) ON DELETE CASCADE, `niche` text NOT NULL, `query` text NOT NULL, `provider` text NOT NULL, `status` text NOT NULL, `created_at` text NOT NULL DEFAULT (datetime('now')));

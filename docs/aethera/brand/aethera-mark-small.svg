@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs>
+  <linearGradient id="ring" x1="0.9" y1="0.05" x2="0.1" y2="0.95"><stop offset="0" stop-color="#f6e2b0"/><stop offset="0.45" stop-color="#d9b875"/><stop offset="1" stop-color="#7a5e28"/></linearGradient>
+  <linearGradient id="blade" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5a4720"/><stop offset="0.55" stop-color="#2a2312"/><stop offset="1" stop-color="#0d1b1c"/></linearGradient>
+  <radialGradient id="bead"><stop offset="0" stop-color="#fff8e6"/><stop offset="0.35" stop-color="#f3d79a" stop-opacity="0.9"/><stop offset="1" stop-color="#d9b875" stop-opacity="0"/></radialGradient>
+</defs>
+  <circle cx="32" cy="32" r="27" fill="#041417"/>
+  <circle cx="32" cy="32" r="13" fill="#010304"/>
+  <circle cx="32" cy="32" r="27" fill="none" stroke="url(#ring)" stroke-width="6"/><circle cx="53.05" cy="13.54" r="8" fill="url(#bead)"/>
+</svg>

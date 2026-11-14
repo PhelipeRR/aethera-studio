@@ -1,0 +1,1 @@
+CREATE TABLE `velix_storyboards` (`id` text PRIMARY KEY NOT NULL, `run_id` text NOT NULL REFERENCES `velix_production_runs`(`id`) ON DELETE CASCADE, `version` integer NOT NULL, `content` text NOT NULL, `source` text NOT NULL, `edit` text, `created_at` text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))

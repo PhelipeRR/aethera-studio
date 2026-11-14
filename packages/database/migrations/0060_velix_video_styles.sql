@@ -1,0 +1,1 @@
+CREATE TABLE `velix_video_styles` (`project_id` text NOT NULL REFERENCES `video_projects`(`id`) ON DELETE CASCADE, `video_name` text NOT NULL DEFAULT '', `data` text NOT NULL, `updated_at` text NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (`project_id`, `video_name`));

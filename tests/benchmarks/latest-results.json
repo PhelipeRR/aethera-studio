@@ -1,0 +1,36 @@
+{
+  "environment": {
+    "node": "v24.17.0",
+    "platform": "win32"
+  },
+  "dataset": 3,
+  "indexed": {
+    "indexed": 3,
+    "skipped": 0,
+    "removed": 0,
+    "chunks": 3,
+    "tooLarge": 0,
+    "limited": false
+  },
+  "indexMs": 6.309099999999944,
+  "fts": {
+    "recall": 1,
+    "precision": 0.3333333333333333,
+    "mrr": 1
+  },
+  "semantic": {
+    "recall": 1,
+    "precision": 0.3333333333333333,
+    "mrr": 1
+  },
+  "hybrid": {
+    "recall": 1,
+    "precision": 0.3333333333333333,
+    "mrr": 1
+  },
+  "latencyMs": {
+    "p50": 0.4901999999999589,
+    "p95": 1.7178999999998723
+  },
+  "estimatedContextTokens": 264
+}

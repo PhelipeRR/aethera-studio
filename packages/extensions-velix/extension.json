@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "velix",
+  "name": "Aethera",
+  "version": "1.0.0",
+  "minCoreVersion": "0.1.0",
+  "capabilities": ["navigation", "artifacts", "settings", "diagnostics"],
+  "permissions": ["navigation", "artifacts", "settings", "diagnostics"],
+  "entrypoints": { "main": "src/index.ts" },
+  "checksum": "sha256:1e75d93d85cb61717d4b3840886c90d4398af84775e3a8c049d119607c5fe954",
+  "signature": { "algorithm": "sha256", "value": "1e75d93d85cb61717d4b3840886c90d4398af84775e3a8c049d119607c5fe954" },
+  "updateChannel": "local"
+}

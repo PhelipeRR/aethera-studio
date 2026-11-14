@@ -1,0 +1,1 @@
+CREATE TABLE `azure_devops_connections` (`id` text PRIMARY KEY NOT NULL, `base_url` text NOT NULL, `collection` text NOT NULL, `project` text NOT NULL, `status` text NOT NULL DEFAULT 'disconnected', `read_only` integer NOT NULL DEFAULT 1, `capabilities` text NOT NULL DEFAULT '{}', `updated_at` text NOT NULL DEFAULT (datetime('now')))

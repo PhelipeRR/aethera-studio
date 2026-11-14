@@ -1,0 +1,28 @@
+{
+  "name": "@neuralbridge/mobile",
+  "private": true,
+  "version": "0.1.0",
+  "main": "expo/AppEntry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --no-file-parallelism"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
+    "@neuralbridge/shared": "0.1.0",
+    "expo": "~54.0.20",
+    "expo-crypto": "~15.0.7",
+    "expo-secure-store": "~15.0.7",
+    "react": "19.1.0",
+    "react-native": "0.81.5"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.16",
+    "vitest": "5.0.4",
+    "typescript": "6.0.3"
+  }
+}

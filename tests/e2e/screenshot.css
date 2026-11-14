@@ -1,0 +1,3 @@
+/* Visual regression baselines (lote 50.08): live machine readings change every second, so they are hidden while a
+   screenshot is compared. The layout around them is still captured. */
+[data-live-metric] { visibility: hidden !important; }

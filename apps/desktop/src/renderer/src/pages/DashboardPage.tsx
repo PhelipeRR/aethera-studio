@@ -1,0 +1,76 @@
+import * as React from 'react';
+import { Activity, ArrowRight, Bot, Brain, CheckCircle2, CircleAlert, Clock3, Database, FolderKanban, MessageSquare, RefreshCw, Server, Sparkles, XCircle } from 'lucide-react';
+import { Link } from 'react-router';
+import { useQuery } from '@tanstack/react-query';
+import { PageHeader } from '@/app/PageHeader';
+import { healthOf, useAgents } from '@/app/useAgents';
+import { formatWhen } from '@/features/brain/format';
+import { useOverview } from '@/features/brain/api';
+import { useTaskList, useTaskUpdates } from '@/features/tasks/api';
+import { StatusBadge } from '@/features/tasks/TaskCard';
+import type { TaskStatus } from '@neuralbridge/shared/domain';
+import { FirstSuccessPanel } from '@/features/onboarding/FirstSuccessPanel';
+import { ShellAside, ShellTimeline } from '@/app/shell-slots';
+import { ActivityList, DonutChart, GlassPanel, SectionLabel, StatCard } from '@/components/ui/glass';
+import { formatCount } from '@/components/ui/glass-model';
+import { Timeline } from '@/components/shell/Timeline';
+import { taskEvents } from '@/components/shell/timeline-model';
+import { TYPE_LABEL } from '@/features/brain/labels';
+
+const periods = ['24h', '7d', '30d'] as const;
+type Period = (typeof periods)[number];
+
+function Metric({ label, value, hint, icon: Icon }: { label: string; value: string; hint: string; icon: typeof Activity }) {
+  return <article className="sg-panel rounded-xl p-5 transition-colors hover:border-primary/40"><div className="flex items-center justify-between text-muted-foreground"><span className="text-xs font-medium uppercase tracking-[0.12em]">{label}</span><Icon className="size-4" aria-hidden="true" /></div><p className="mt-4 text-3xl font-semibold tracking-tight tabular-nums">{value}</p><p className="mt-1 text-xs text-muted-foreground">{hint}</p></article>;
+}
+
+function HealthItem({ label, icon: Icon, ok, note }: { label: string; icon: typeof Activity; ok: boolean | null; note: string }) {
+  return <li aria-label={label} className="flex items-center gap-3 sg-panel rounded-lg px-3 py-3">{ok === true ? <CheckCircle2 className="size-4 text-primary" aria-label="Disponível" /> : ok === false ? <XCircle className="size-4 text-destructive" aria-label="Indisponível" /> : <CircleAlert className="size-4 text-warning" aria-label="Aviso" />}<Icon className="size-4 text-muted-foreground" aria-hidden="true" /><div className="min-w-0"><p className="text-sm font-medium">{label}</p><p className="truncate text-xs text-muted-foreground">{note}</p></div></li>;
+}
+
+export function DashboardPage({ description }: { description: string }) {
+  useTaskUpdates();
+  const [period, setPeriod] = React.useState<Period>('7d');
+  const [now] = React.useState(() => Date.now());
+  const { agents, checking, error: agentsError, refresh } = useAgents();
+  const tasks = useTaskList({ limit: 100 });
+  const overview = useOverview();
+  const projects = useQuery({ queryKey: ['projects', 'list'], queryFn: () => window.neuralbridge.projects.list(), staleTime: 60_000 });
+  const mcp = useQuery({ queryKey: ['mcp', 'status'], queryFn: () => window.neuralbridge.mcp.status(), staleTime: 60_000 });
+  const history = useQuery({ queryKey: ['history-sync', 'status'], queryFn: () => window.neuralbridge.historySync.status(), refetchInterval: 10_000 });
+  const allTasks = tasks.data ?? [];
+  const since = now - (period === '24h' ? 86_400_000 : period === '7d' ? 604_800_000 : 2_592_000_000);
+  const scoped = allTasks.filter((task) => Date.parse(task.createdAt) >= since);
+  const done = scoped.filter((task) => task.status === 'completed').length;
+  const failed = scoped.filter((task) => task.status === 'failed').length;
+  const cancelled = scoped.filter((task) => task.status === 'cancelled').length;
+  const active = scoped.filter((task) => !(['completed', 'failed', 'cancelled'] as TaskStatus[]).includes(task.status)).length;
+  const totalTokens = scoped.reduce((sum, task) => sum + (task.tokens.input ?? 0) + (task.tokens.output ?? 0), 0);
+  const claudeTasks = scoped.filter((task) => task.agents.includes('claude')).length;
+  const codexTasks = scoped.filter((task) => task.agents.includes('codex')).length;
+  const success = scoped.length ? `${Math.round((done / scoped.length) * 100)}%` : '—';
+  const claude = agents?.find((agent) => agent.id === 'claude');
+  const codex = agents?.find((agent) => agent.id === 'codex');
+  const typeSegments = (overview.data?.byType ?? []).map((entry) => ({ id: entry.type, label: TYPE_LABEL[entry.type], value: entry.count, color: `var(--type-${entry.type})` }));
+  // Lote 50.05: the Hub of the reference. Right panel and day timeline use the shell slots, with real data only.
+  const hub = (
+    <>
+      <ShellAside title="Resumo do workspace">
+        <StatCard label="Memórias no banco local" value={overview.data?.total ?? null} caption={overview.data ? `${formatCount(overview.data.embeddings.indexed)} com embedding` : undefined} unavailableReason={overview.isError ? 'banco indisponível' : 'carregando'} icon={<Brain />} />
+        <GlassPanel className="p-4">
+          <SectionLabel as="h2">Distribuição por tipo</SectionLabel>
+          <div className="mt-3"><DonutChart stacked size={112} title="Memórias por tipo" centerLabel={formatCount(overview.data?.total ?? null, 'compact')} centerCaption="memórias" segments={typeSegments} /></div>
+        </GlassPanel>
+        <GlassPanel className="p-4">
+          <p className="text-sm text-foreground">Atividade recente</p>
+          <ActivityList className="mt-3" empty="Nenhuma tarefa ainda." items={allTasks.slice(0, 5).map((task) => ({ id: task.id, label: <Link className="hover:text-primary focus-visible:ring-2 focus-visible:ring-ring" to={`/runs/${task.id}`}>{task.threadTitle ?? task.prompt.slice(0, 60)}</Link>, when: formatWhen(task.createdAt), icon: <Activity /> }))} />
+        </GlassPanel>
+      </ShellAside>
+      <ShellTimeline><Timeline events={taskEvents(allTasks)} title="Linha do tempo de hoje" /></ShellTimeline>
+    </>
+  );
+  return <>{hub}<PageHeader title="Dashboard" description={description} /><main className="space-y-6 px-6 py-6 xl:px-8"><section data-tour="dashboard-actions" className="relative overflow-hidden rounded-2xl border border-primary/25 bg-gradient-to-br from-primary/20 via-card to-card p-6 shadow-lg shadow-primary/5"><div className="pointer-events-none absolute -right-12 -top-20 size-64 rounded-full bg-primary/10 blur-3xl" /><div className="relative max-w-2xl"><p className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-primary"><Sparkles className="size-3.5" aria-hidden="true" /> Workspace local-first</p><h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">O que vamos construir hoje?</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">Orquestre agentes, consulte sua memória e acompanhe o trabalho em um só lugar.</p><div className="mt-5 flex flex-wrap gap-2"><Link to="/chat" className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring"><MessageSquare className="size-4" aria-hidden="true" /> Iniciar tarefa <ArrowRight className="size-4" aria-hidden="true" /></Link><Link to="/projects" className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-background/40 px-4 text-sm font-medium transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"><FolderKanban className="size-4" aria-hidden="true" /> Ver projetos</Link></div></div></section><FirstSuccessPanel hasProject={Boolean(projects.data?.length)} hasAgent={Boolean(claude?.installed || codex?.installed)} hasTask={Boolean(allTasks.length)} /><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm text-muted-foreground">Visão operacional</p><p className="text-xs text-muted-foreground">Dados reais do Singularity, sem estimativas inventadas.</p></div><div className="flex items-center gap-2"><div className="flex sg-panel rounded-lg p-1" role="group" aria-label="Período">{periods.map((item) => <button key={item} type="button" onClick={() => setPeriod(item)} className={`rounded-md px-3 py-1.5 text-xs ${period === item ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}>{item}</button>)}</div><button type="button" onClick={refresh} className="rounded-lg border p-2 text-muted-foreground hover:text-foreground" aria-label="Atualizar agentes"><RefreshCw className={`size-4 ${checking ? 'animate-spin' : ''}`} /></button></div></div>
+  <section data-tour="dashboard-metrics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Indicadores"><Metric label="Tarefas executadas" value={scoped.length ? String(scoped.length) : '—'} hint={scoped.length ? `${active} em andamento` : 'Sem dados no período'} icon={Activity} /><Metric label="Taxa de sucesso" value={success} hint={scoped.length ? `${done} concluídas` : 'Sem base suficiente'} icon={CheckCircle2} /><Metric label="Tokens reportados" value={totalTokens ? totalTokens.toLocaleString('pt-BR') : '—'} hint={totalTokens ? 'Entrada + saída dos agentes' : 'Nenhum uso informado'} icon={Clock3} /><Metric label="Memórias persistidas" value={overview.data ? String(overview.data.total) : '—'} hint={overview.data ? `${overview.data.embeddings.indexed} com embedding` : 'Carregando Brain'} icon={Brain} /></section>
+  <section className="grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,1fr)]"><article className="sg-panel rounded-xl p-5"><div className="flex items-start justify-between"><div><h2 className="font-medium">Atividade recente</h2><p className="mt-1 text-xs text-muted-foreground">Execuções no período selecionado.</p></div><Activity className="size-4 text-muted-foreground" /></div><div className="mt-6 grid grid-cols-4 gap-3">{[['Concluídas', done, 'text-primary'], ['Falhas', failed, 'text-destructive'], ['Canceladas', cancelled, 'text-warning'], ['Em andamento', active, 'text-agent-codex']].map(([label, value, color]) => <div key={String(label)} className="rounded-lg bg-muted/50 p-3"><p className="text-xs text-muted-foreground">{label}</p><p className={`mt-2 text-2xl font-semibold tabular-nums ${color}`}>{value}</p></div>)}</div><div className="mt-6 space-y-4 rounded-lg border border-dashed p-4" aria-label="Atividade por agente"><div><div className="mb-1 flex justify-between text-xs"><span>Claude Code</span><span className="text-muted-foreground">{claudeTasks}</span></div><div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-agent-claude" style={{ width: `${scoped.length ? Math.max(2, (claudeTasks / scoped.length) * 100) : 0}%` }} /></div></div><div><div className="mb-1 flex justify-between text-xs"><span>Codex CLI</span><span className="text-muted-foreground">{codexTasks}</span></div><div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-agent-codex" style={{ width: `${scoped.length ? Math.max(2, (codexTasks / scoped.length) * 100) : 0}%` }} /></div></div></div><div className="mt-3 text-xs text-muted-foreground">{scoped.length ? 'Distribuição das execuções carregadas por agente' : 'Sem atividade no período'}</div></article><article className="sg-panel rounded-xl p-5"><div className="flex items-start justify-between"><div><h2 className="font-medium">Saúde do sistema</h2><p className="mt-1 text-xs text-muted-foreground">Estado verificável das integrações.</p></div><Server className="size-4 text-muted-foreground" /></div><ul aria-label="Integrações" className="mt-5 space-y-2"><HealthItem label="Claude Code" icon={Bot} ok={claude ? healthOf(claude) === 'ready' : null} note={claude ? (claude.warnings[0] ?? (claude.installed ? 'Pronto' : 'Não instalado')) : agentsError ?? 'Verificando…'} /><HealthItem label="Codex CLI" icon={Bot} ok={codex ? healthOf(codex) === 'ready' : null} note={codex ? (codex.warnings[0] ?? (codex.installed ? 'Pronto' : 'Não instalado')) : agentsError ?? 'Verificando…'} /><HealthItem label="MCP" icon={Server} ok={mcp.data ? true : mcp.isError ? false : null} note={mcp.data ? 'Servidor e clientes configurados' : mcp.isError ? 'Não foi possível verificar' : 'Verificando…'} /><HealthItem label="Neural Brain / RAG" icon={Database} ok={overview.data ? true : overview.isError ? false : null} note={overview.data ? `${overview.data.total} memórias · ${overview.data.embeddings.indexed} embeddings` : overview.isError ? 'Banco indisponível' : 'Carregando…'} /><HealthItem label="Sincronização" icon={RefreshCw} ok={history.data ? history.data.errors === 0 : null} note={history.data ? (history.data.running ? 'Em execução' : `${history.data.sessions} sessões processadas`) : 'Sem dados'} /></ul></article></section>
+  <section className="grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,1fr)]"><article className="sg-panel rounded-xl"><div className="flex items-center justify-between border-b px-5 py-4"><div><h2 className="font-medium">Tarefas recentes</h2><p className="mt-1 text-xs text-muted-foreground">Execuções registradas pelo TaskEngine.</p></div><Link to="/runs" className="text-xs text-primary hover:underline">Ver todas</Link></div>{tasks.isLoading ? <p className="p-5 text-sm text-muted-foreground">Carregando tarefas…</p> : tasks.isError ? <p role="alert" className="p-5 text-sm text-destructive">Não foi possível carregar as tarefas.</p> : allTasks.length === 0 ? <p className="p-5 text-sm text-muted-foreground">Nenhuma tarefa registrada. Comece pelo <Link to="/chat" className="text-primary hover:underline">Chat</Link>.</p> : <ul className="divide-y">{allTasks.slice(0, 6).map((task) => <li key={task.id} className="flex flex-wrap items-center gap-3 px-5 py-3"><Link to={`/runs/${task.id}`} className="min-w-0 flex-1 truncate text-sm hover:underline">{task.threadTitle ?? task.prompt}</Link><span className="hidden text-xs text-muted-foreground md:inline">{task.projectName ?? 'Sem projeto'}</span><StatusBadge status={task.status} /><span className="text-xs text-muted-foreground">{formatWhen(task.createdAt)}</span></li>)}</ul>}</article><article className="sg-panel rounded-xl"><div className="flex items-center justify-between border-b px-5 py-4"><div><h2 className="font-medium">Projetos ativos</h2><p className="mt-1 text-xs text-muted-foreground">Projetos disponíveis para novas tarefas.</p></div><FolderKanban className="size-4 text-muted-foreground" /></div>{projects.isLoading ? <p className="p-5 text-sm text-muted-foreground">Carregando projetos…</p> : projects.data?.length ? <ul className="divide-y">{projects.data.slice(0, 5).map((project) => <li key={project.id} className="flex items-center gap-3 px-5 py-3"><span className={`size-2 rounded-full ${project.exists ? 'bg-primary' : 'bg-warning'}`} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{project.name}</p><p className="truncate text-xs text-muted-foreground">{project.memoryCount} memórias · {project.exists ? 'disponível' : 'caminho indisponível'}</p></div></li>)}</ul> : <p className="p-5 text-sm text-muted-foreground">Nenhum projeto cadastrado.</p>}</article></section></main></>;
+}

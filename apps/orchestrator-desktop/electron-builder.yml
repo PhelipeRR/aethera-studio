@@ -1,0 +1,37 @@
+appId: com.singularity.orchestrator
+productName: Singularity Orchestrator
+executableName: SingularityOrchestrator
+artifactName: SingularityOrchestrator-Setup-${version}-${arch}.${ext}
+directories:
+  output: ../../dist/orchestrator
+  buildResources: build
+icon: build/icon.ico
+files:
+  - out/**/*
+  - package.json
+  - build/icon.ico
+  - '!**/onnxruntime-node/bin/napi-v6/linux/**'
+  - '!**/onnxruntime-node/bin/napi-v6/darwin/**'
+asar: true
+asarUnpack:
+  - node_modules/better-sqlite3/**
+  - node_modules/@modelcontextprotocol/sdk/**
+  - node_modules/ws/**
+extraResources:
+  - from: ../../packages/database/migrations
+    to: migrations
+extraMetadata:
+  main: out/main/index.js
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  requestedExecutionLevel: asInvoker
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Singularity Orchestrator

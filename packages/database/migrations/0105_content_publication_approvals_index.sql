@@ -1,0 +1,1 @@
+CREATE INDEX content_publication_approvals_package_idx ON content_publication_approvals (package_id, created_at);

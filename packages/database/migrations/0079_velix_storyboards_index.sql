@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `velix_storyboards_run_version_idx` ON `velix_storyboards` (`run_id`,`version`)

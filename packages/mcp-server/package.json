@@ -1,0 +1,17 @@
+{
+  "name": "@neuralbridge/mcp-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@neuralbridge/brain": "0.1.0",
+    "@neuralbridge/database": "0.1.0",
+    "@neuralbridge/shared": "0.1.0",
+    "drizzle-orm": "0.45.4",
+    "zod": "4.6.7"
+  }
+}
