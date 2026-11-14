@@ -14,6 +14,7 @@ import {
   planMediaCoverage,
   planTargetedSegmentRegeneration,
   recordApprovedPronunciationRule,
+  runAutonomousMediaAcquisition,
   sampleDistributedFrameTimestamps,
   searchResilientMediaSources,
 } from '../src/index.js';
@@ -355,5 +356,64 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
         (s) => s.provider === 'yt_dlp' && s.status === 'blocked_auth_or_antibot',
       ),
     ).toBe(true);
+  });
+
+  it('autonomous acquisition expands queries across rounds, auto-resolves gaps, and sends only unresolved gaps to Review Room', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'aethera-auto-acq-'));
+    const { writeFileSync } = await import('node:fs');
+    const gokuFile = join(tmp, 'goku.png');
+    const vegetaFile = join(tmp, 'vegeta.png');
+    const unrelatedFile = join(tmp, 'podcast.png');
+    writeFileSync(gokuFile, Buffer.alloc(2048, 1));
+    writeFileSync(vegetaFile, Buffer.alloc(2048, 2));
+    writeFileSync(unrelatedFile, Buffer.alloc(2048, 3));
+
+    let searchCalls = 0;
+    const audit = await runAutonomousMediaAcquisition({
+      projectId: 'auto_test_1',
+      prompt: 'Dragon Ball Z Saga Freeza',
+      genre: 'anime',
+      format: 'analysis',
+      mediaDir: tmp,
+      segments: [
+        { segmentId: 's1', subject: 'Goku', narrationText: 'Goku enfrenta Freeza', entities: ['goku', 'freeza'], expectedDurationSec: 10 },
+        { segmentId: 's2', subject: 'Vegeta', narrationText: 'Vegeta em Namek', entities: ['vegeta'], expectedDurationSec: 10 },
+        { segmentId: 's3', subject: 'Piccolo', narrationText: 'Piccolo em Namek', entities: ['piccolo'], expectedDurationSec: 10 },
+      ],
+      probeDurationFn: async () => 12,
+      limits: { maxRounds: 2, maxDurationMs: 15_000, maxQueriesTotal: 10 },
+      deps: {
+        localMediaDirs: [],
+        fetchImpl: (async () => new Response(JSON.stringify({}), { status: 404 })) as unknown as typeof fetch,
+        ytDlpSearchFn: async (q) => {
+          searchCalls += 1;
+          if (q.toLowerCase().includes('goku')) {
+            return [
+              { url: 'https://example.com/goku', title: 'Dragon Ball Z Goku vs Freeza', durationSec: 12 },
+              { url: 'https://example.com/podcast', title: 'Podcast entrevista tecnologia', durationSec: 12 },
+            ];
+          }
+          // Vegeta só aparece na rodada 2 (consulta ampliada)
+          if (searchCalls > 3 && q.toLowerCase().includes('vegeta')) {
+            return [{ url: 'https://example.com/vegeta', title: 'Dragon Ball Z Vegeta Namek', durationSec: 12 }];
+          }
+          return [];
+        },
+        ytDlpAcquireFn: async (url) => {
+          if (url.endsWith('/goku')) return gokuFile;
+          if (url.endsWith('/vegeta')) return vegetaFile;
+          if (url.endsWith('/podcast')) return unrelatedFile;
+          return null;
+        },
+      },
+    });
+
+    expect(audit.roundsExecuted).toBe(2);
+    expect(audit.candidatesFoundCount).toBe(3);
+    expect(audit.acquiredFilesCount).toBe(3);
+    expect(audit.approvedForAssemblyCount).toBe(2);
+    expect(audit.rejectedCandidates).toHaveLength(1);
+    expect(audit.autoResolvedGaps.some((g) => g.segmentId === 's2' && g.resolvedInRound === 2)).toBe(true);
+    expect(audit.unresolvedGapsForReview.map((g) => g.segmentId)).toEqual(['s3']);
   });
 });

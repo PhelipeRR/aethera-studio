@@ -1,5 +1,17 @@
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
+import {
+  evaluateMediaRelevance,
+  type MediaRelevanceDecision,
+} from '../qc/media-relevance-gate.js';
+import {
+  expandScriptOrientedQueries,
+  planMediaCoverage,
+  type AcquiredMediaAsset,
+  type CoverageFormat,
+  type MediaCoverageReport,
+  type ScriptCoverageSegment,
+} from './media-coverage-planner.js';
 
 export type MediaProviderId =
   | 'local_library'
@@ -156,16 +168,38 @@ async function searchInternetArchive(
   const data = (await res.json()) as {
     response?: { docs?: Array<{ identifier?: string; title?: string; description?: string }> };
   };
-  return (data.response?.docs ?? [])
-    .filter((d) => d.identifier)
-    .map((d) => ({
-      url: `https://archive.org/details/${d.identifier}`,
-      title: d.title ?? d.identifier!,
+  const out: MediaSourceCandidate[] = [];
+  for (const d of (data.response?.docs ?? []).filter((doc) => doc.identifier)) {
+    const id = d.identifier!;
+    let directUrl = `https://archive.org/details/${id}`;
+    let directDownloadable = false;
+    try {
+      const metaRes = await fetchFn(`https://archive.org/metadata/${encodeURIComponent(id)}/files`, {
+        signal: signal ?? AbortSignal.timeout(6000),
+      });
+      if (metaRes.ok) {
+        const metaJson = (await metaRes.json()) as { result?: Array<{ name?: string }> };
+        const mediaFile = (metaJson.result ?? []).find((f) =>
+          /\.(mp4|webm|jpg|jpeg|png)$/i.test(f.name ?? ''),
+        );
+        if (mediaFile?.name) {
+          directUrl = `https://archive.org/download/${encodeURIComponent(id)}/${encodeURIComponent(mediaFile.name)}`;
+          directDownloadable = true;
+        }
+      }
+    } catch {
+      // keep details URL if metadata lookup fails
+    }
+    out.push({
+      url: directUrl,
+      title: d.title ?? id,
       ...(d.description ? { description: String(d.description).slice(0, 240) } : {}),
-      origin: 'internet_archive' as const,
+      origin: 'internet_archive',
       license: 'internet_archive_open',
-      directDownloadable: false,
-    }));
+      directDownloadable,
+    });
+  }
+  return out;
 }
 
 export async function searchResilientMediaSources(
@@ -340,4 +374,274 @@ export async function acquireResilientMediaFile(
   }
 
   return { filePath: null, provider: null, statuses: search.providerStatuses };
+}
+
+export interface AutonomousAcquisitionAuditReport {
+  roundsExecuted: number;
+  elapsedMs: number;
+  queriesExecuted: Array<{ round: number; segmentId: string; subject: string; query: string }>;
+  candidatesFoundCount: number;
+  candidatesByProvider: Record<string, number>;
+  acquiredFilesCount: number;
+  approvedForAssemblyCount: number;
+  rejectedCandidates: Array<{
+    mediaId: string;
+    title: string;
+    origin: string;
+    rejectionCode?: string;
+    reason: string;
+  }>;
+  autoResolvedGaps: Array<{ segmentId: string; subject: string; resolvedInRound: number; mediaId: string }>;
+  unresolvedGapsForReview: Array<{ segmentId: string; subject: string; suggestedQuery: string; reason: string }>;
+  providerStatuses: ProviderAttemptStatus[];
+  coverageReport: MediaCoverageReport;
+  approvedAssets: AcquiredMediaAsset[];
+  relevanceDecisions: MediaRelevanceDecision[];
+}
+
+/**
+ * Autonomous multi-round coverage-driven acquisition:
+ * expands queries across all available sources for uncovered segments within configurable limits,
+ * never reuses incompatible media, and sends only truly unresolved gaps to the Review Room.
+ */
+export async function runAutonomousMediaAcquisition(input: {
+  projectId: string;
+  prompt: string;
+  genre?: string;
+  format?: CoverageFormat;
+  segments: ScriptCoverageSegment[];
+  mediaDir: string;
+  deps: ResilientAcquisitionDeps;
+  probeDurationFn?: (filePath: string) => Promise<number>;
+  limits?: {
+    maxRounds?: number;
+    maxDurationMs?: number;
+    maxQueriesTotal?: number;
+  };
+  signal?: AbortSignal;
+}): Promise<AutonomousAcquisitionAuditReport> {
+  const startedAt = Date.now();
+  const maxRounds = Math.max(1, input.limits?.maxRounds ?? 3);
+  const maxDurationMs = Math.max(5_000, input.limits?.maxDurationMs ?? 120_000);
+  const maxQueriesTotal = Math.max(input.segments.length, input.limits?.maxQueriesTotal ?? 28);
+  const fetchFn = input.deps.fetchImpl ?? fetch;
+
+  const queriesExecuted: AutonomousAcquisitionAuditReport['queriesExecuted'] = [];
+  const candidatesByProvider: Record<string, number> = {};
+  const seenCandidateKeys = new Set<string>();
+  const rejectedCandidates: AutonomousAcquisitionAuditReport['rejectedCandidates'] = [];
+  const relevanceDecisions: MediaRelevanceDecision[] = [];
+  const approvedAssets: AcquiredMediaAsset[] = [];
+  const allStatuses: ProviderAttemptStatus[] = [];
+  const autoResolvedGaps: AutonomousAcquisitionAuditReport['autoResolvedGaps'] = [];
+
+  let candidatesFoundCount = 0;
+  let acquiredFilesCount = 0;
+  let ytDlpBlocked = false;
+  let uncoveredAfterRound1 = new Set<string>();
+
+  const effectiveDeps = (): ResilientAcquisitionDeps => {
+    if (!ytDlpBlocked) return input.deps;
+    const { ytDlpSearchFn: _s, ytDlpAcquireFn: _a, ...rest } = input.deps;
+    return rest;
+  };
+
+  let latestCoverage: MediaCoverageReport = planMediaCoverage({
+    segments: input.segments,
+    assets: [],
+    ...(input.format ? { format: input.format } : {}),
+    relevanceDecisions: [],
+    requireRelevanceApproval: true,
+  });
+
+  let roundsExecuted = 0;
+
+  for (let round = 1; round <= maxRounds; round += 1) {
+    if (Date.now() - startedAt >= maxDurationMs) break;
+    if (queriesExecuted.length >= maxQueriesTotal) break;
+
+    roundsExecuted = round;
+    const targetSegments =
+      round === 1
+        ? input.segments
+        : input.segments.filter((s) => latestCoverage.uncoveredSubjects.includes(s.subject));
+
+    if (targetSegments.length === 0) break;
+
+    const roundQueries =
+      round === 1
+        ? targetSegments.map((s) => ({
+            segment: s,
+            query: `${s.subject} ${s.entities?.slice(0, 2).join(' ') ?? ''}`.trim() || input.prompt,
+          }))
+        : expandScriptOrientedQueries({
+            prompt: input.prompt,
+            segments: targetSegments,
+            ...(input.genre ? { genre: input.genre } : {}),
+            uncoveredSegmentIds: targetSegments.map((s) => s.segmentId),
+          }).map((q, idx) => ({
+            segment: targetSegments[idx % targetSegments.length]!,
+            query: round === 3 ? `${q} anime scene` : q,
+          }));
+
+    for (const item of roundQueries) {
+      if (Date.now() - startedAt >= maxDurationMs) break;
+      if (queriesExecuted.length >= maxQueriesTotal) break;
+
+      queriesExecuted.push({
+        round,
+        segmentId: item.segment.segmentId,
+        subject: item.segment.subject,
+        query: item.query,
+      });
+
+      const searchRes = await searchResilientMediaSources(item.query, effectiveDeps(), input.signal);
+      allStatuses.push(...searchRes.providerStatuses);
+      if (searchRes.providerStatuses.some((s) => s.provider === 'yt_dlp' && s.status === 'blocked_auth_or_antibot')) {
+        ytDlpBlocked = true;
+      }
+
+      for (const cand of searchRes.candidates) {
+        candidatesByProvider[cand.origin] = (candidatesByProvider[cand.origin] ?? 0) + 1;
+        const candKey = `${cand.origin}:${cand.url}`;
+        if (seenCandidateKeys.has(candKey)) continue;
+        seenCandidateKeys.add(candKey);
+        candidatesFoundCount += 1;
+
+        // Try to acquire file locally if downloadable or local
+        let filePath: string | null = null;
+        if (cand.localPath && existsSync(cand.localPath)) {
+          filePath = cand.localPath;
+        } else if (cand.directDownloadable && /^https?:\/\//i.test(cand.url)) {
+          try {
+            const res = await fetchFn(cand.url, { signal: input.signal ?? AbortSignal.timeout(12_000) });
+            if (res.ok) {
+              const buf = Buffer.from(await res.arrayBuffer());
+              if (buf.length >= 1024) {
+                const ext = extname(new URL(cand.url).pathname) || '.mp4';
+                const outDir = join(input.mediaDir, `auto_r${round}_${acquiredFilesCount + 1}`);
+                mkdirSync(outDir, { recursive: true });
+                filePath = join(outDir, `asset_${acquiredFilesCount + 1}${ext}`);
+                writeFileSync(filePath, buf);
+              }
+            }
+          } catch {
+            filePath = null;
+          }
+        } else if (cand.origin === 'yt_dlp' && !ytDlpBlocked && input.deps.ytDlpAcquireFn) {
+          try {
+            filePath = await input.deps.ytDlpAcquireFn(cand.url, acquiredFilesCount, input.mediaDir, input.signal);
+          } catch {
+            filePath = null;
+          }
+        }
+
+        if (!filePath) continue;
+        acquiredFilesCount += 1;
+
+        const mediaId = `auto_${cand.origin}_${acquiredFilesCount}`;
+        let durationSec = cand.durationSec ?? 12;
+        if (input.probeDurationFn) {
+          try {
+            durationSec = await input.probeDurationFn(filePath);
+          } catch {
+            durationSec = cand.durationSec ?? 12;
+          }
+        }
+
+        const decision = await evaluateMediaRelevance(
+          {
+            mediaId,
+            uri: filePath,
+            ...(cand.title ? { title: cand.title } : {}),
+            ...(cand.description ? { description: cand.description } : {}),
+            origin: cand.origin,
+            durationSec,
+            projectId: input.projectId,
+          },
+          {
+            segmentId: item.segment.segmentId,
+            prompt: input.prompt,
+            narrationText: item.segment.narrationText,
+            ...(input.genre ? { genre: input.genre } : {}),
+            ...(item.segment.entities ? { expectedEntities: item.segment.entities } : {}),
+          },
+        );
+        relevanceDecisions.push(decision);
+
+        if (!decision.accepted) {
+          rejectedCandidates.push({
+            mediaId,
+            title: cand.title ?? filePath,
+            origin: cand.origin,
+            ...(decision.rejectionCode ? { rejectionCode: decision.rejectionCode } : {}),
+            reason: decision.reason,
+          });
+          continue;
+        }
+
+        approvedAssets.push({
+          mediaId,
+          uri: filePath,
+          ...(cand.title ? { title: cand.title } : {}),
+          origin: cand.origin,
+          durationSec,
+          compatible: true,
+          relevantToEntities: decision.matchedEntities,
+        });
+
+        if (round > 1 && uncoveredAfterRound1.has(item.segment.segmentId)) {
+          autoResolvedGaps.push({
+            segmentId: item.segment.segmentId,
+            subject: item.segment.subject,
+            resolvedInRound: round,
+            mediaId,
+          });
+          uncoveredAfterRound1.delete(item.segment.segmentId);
+        }
+      }
+    }
+
+    latestCoverage = planMediaCoverage({
+      segments: input.segments,
+      assets: approvedAssets,
+      ...(input.format ? { format: input.format } : {}),
+      relevanceDecisions,
+      requireRelevanceApproval: true,
+    });
+
+    if (round === 1) {
+      uncoveredAfterRound1 = new Set(
+        latestCoverage.segments.filter((s) => !s.covered).map((s) => s.segmentId),
+      );
+    }
+
+    if (latestCoverage.gatePassed) break;
+  }
+
+  const unresolvedGapsForReview = latestCoverage.segments
+    .filter((s) => !s.covered)
+    .map((s) => ({
+      segmentId: s.segmentId,
+      subject: s.subject,
+      suggestedQuery: `${input.prompt.split(/[—:|]/)[0]?.trim() || input.prompt} ${s.subject}`.trim(),
+      reason: `Cobertura insuficiente após ${roundsExecuted} rodada(s) automática(s): ${s.usableDurationSec}s / ${s.expectedDurationSec}s.`,
+    }));
+
+  return {
+    roundsExecuted,
+    elapsedMs: Date.now() - startedAt,
+    queriesExecuted,
+    candidatesFoundCount,
+    candidatesByProvider,
+    acquiredFilesCount,
+    approvedForAssemblyCount: approvedAssets.length,
+    rejectedCandidates,
+    autoResolvedGaps,
+    unresolvedGapsForReview,
+    providerStatuses: allStatuses,
+    coverageReport: latestCoverage,
+    approvedAssets,
+    relevanceDecisions,
+  };
 }
