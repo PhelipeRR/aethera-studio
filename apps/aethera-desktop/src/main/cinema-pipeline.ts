@@ -77,6 +77,7 @@ export interface StagedProductionJob {
   scriptValidation?: ScriptValidationReport;
   isTechnicalSample?: boolean;
   error?: string;
+  startedAt?: string;
   updatedAt: string;
 }
 
@@ -156,8 +157,11 @@ export function extractSceneQueriesFromPrompt(prompt: string, sceneCount = 4): s
   const cleaned = prompt.trim();
   if (!cleaned) return ['Cena principal'];
 
-  // Strip meta-directives (format, tone, duration, humor) to isolate the actual subject
-  const stripped = cleaned
+  // Strip meta-directives (format, tone, duration, humor, structured headers) to isolate the actual subject
+  const withoutStructuredFields = cleaned
+    .replace(/\b(t[ií]tulo|nicho|dura[çc][ãa]o(\s+alvo)?|tom|objetivo|formato|estilo)\s*:\s*/gi, ' ')
+    .replace(/\b(nicho|dura[çc][ãa]o(\s+alvo)?|tom|objetivo)\s*:\s*[^|\n]+/gi, ' ');
+  const stripped = withoutStructuredFields
     .replace(/\b(crie|faça|gere|produza|monte)\s+(um|uma)\s+v[ií]deo\s*(cinematogr[áa]fico|épico|curto|longo)?\s*(sobre|de|acerca\s+de)?/gi, ' ')
     .replace(/\bcom\s+narrativa\s+\w+/gi, ' ')
     .replace(/\bhumor\s*(pontual|leve|moderado|forte|\d+%)?/gi, ' ')
@@ -165,7 +169,9 @@ export function extractSceneQueriesFromPrompt(prompt: string, sceneCount = 4): s
     .replace(/\s+/g, ' ')
     .trim();
 
-  const coreTopic = (stripped.split(/[,;|•\n]+/)[0] ?? stripped).replace(/[.,;!?]+$/g, '').trim() || cleaned.slice(0, 60);
+  const quotedTerms = [...cleaned.matchAll(/['"“”]([^'"“”]{2,40})['"“”]/g)].map((m) => m[1]?.trim()).filter(Boolean) as string[];
+  const rawTopic = (stripped.split(/[,;|•\n]+/)[0] ?? stripped).replace(/[.,;!?]+$/g, '').trim() || cleaned.slice(0, 60);
+  const coreTopic = quotedTerms.length > 0 ? quotedTerms.slice(-2).join(' ') : rawTopic.slice(0, 55);
   const isGaming = /\b(elden ring|game|jogo|boss|chefe|gameplay|soulslike|minecraft|gta|valorant|fortnite|zelda)\b/i.test(cleaned);
   const suffixes = isGaming
     ? ['gameplay no commentary', 'boss fight', 'cinematic', 'best moments', 'highlights', 'trailer']
@@ -494,6 +500,7 @@ export class StagedCinemaPipeline {
       acquiredMedia: [],
       pendingMedia: [],
       workspaceDir: projectPaths.root,
+      startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 

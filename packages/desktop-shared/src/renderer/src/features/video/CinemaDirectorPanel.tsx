@@ -90,6 +90,56 @@ interface StagedJobView {
   pendingMedia: PendingMediaSlotView[];
   isTechnicalSample?: boolean;
   error?: string;
+  startedAt?: string;
+  updatedAt?: string;
+}
+
+function formatDurationClock(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  if (m > 0) return `${m}m ${String(s).padStart(2, '0')}s`;
+  return `${s}s`;
+}
+
+function computeJobTiming(
+  job: Pick<StagedJobView, 'projectId' | 'state' | 'progressPct' | 'startedAt' | 'updatedAt'> | null | undefined,
+  nowMs: number,
+  fallbackStartMs?: number,
+): { elapsedLabel: string; etaLabel: string; isActive: boolean } {
+  if (!job) return { elapsedLabel: '0s', etaLabel: 'Calculando...', isActive: false };
+  const terminal = ['editor', 'cancelled', 'error', 'paused_pending_media'].includes(job.state);
+  const isActive = !terminal;
+  let startMs = job.startedAt ? Date.parse(job.startedAt) : Number.NaN;
+  if (!Number.isFinite(startMs)) {
+    const idTsMatch = job.projectId.match(/(\d{13})$/);
+    if (idTsMatch?.[1]) {
+      startMs = Number(idTsMatch[1]);
+    }
+  }
+  if (!Number.isFinite(startMs) && fallbackStartMs) {
+    startMs = fallbackStartMs;
+  }
+  const updatedMs = job.updatedAt ? Date.parse(job.updatedAt) : Number.NaN;
+  const endMs = isActive ? nowMs : Number.isFinite(updatedMs) ? updatedMs : nowMs;
+  const elapsedMs = Number.isFinite(startMs) ? Math.max(0, endMs - startMs) : 0;
+  const elapsedLabel = formatDurationClock(elapsedMs);
+  if (job.state === 'editor' || job.progressPct >= 100) {
+    return { elapsedLabel, etaLabel: 'Concluído', isActive: false };
+  }
+  if (job.state === 'paused_pending_media') {
+    return { elapsedLabel, etaLabel: 'Aguardando mídia', isActive: false };
+  }
+  if (job.state === 'cancelled' || job.state === 'error') {
+    return { elapsedLabel, etaLabel: job.state === 'cancelled' ? 'Cancelado' : 'Interrompido', isActive: false };
+  }
+  if (job.progressPct < 5 || elapsedMs < 2000) {
+    return { elapsedLabel, etaLabel: 'Calculando...', isActive };
+  }
+  const etaMs = Math.max(0, Math.round((elapsedMs / job.progressPct) * (100 - job.progressPct)));
+  return { elapsedLabel, etaLabel: `~${formatDurationClock(etaMs)}`, isActive };
 }
 
 const STAGE_DISPLAY_LABELS: Record<string, string> = {
@@ -384,6 +434,8 @@ export function CinemaDirectorPanel() {
   const [progressStage, setProgressStage] = useState('');
   const [stagedJob, setStagedJob] = useState<StagedJobView | null>(null);
   const [stagedJobs, setStagedJobs] = useState<StagedJobView[]>([]);
+  const [activeStartMs, setActiveStartMs] = useState<number | undefined>(undefined);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [directorCount, setDirectorCount] = useState<number>(7);
   const [error, setError] = useState<string | null>(null);
 
@@ -402,6 +454,16 @@ export function CinemaDirectorPanel() {
       setVoiceStudioAvailable(false);
     }
   };
+
+  useEffect(() => {
+    const hasActive =
+      busy ||
+      (stagedJob && !['editor', 'cancelled', 'error', 'paused_pending_media'].includes(stagedJob.state)) ||
+      stagedJobs.some((j) => !['editor', 'cancelled', 'error', 'paused_pending_media'].includes(j.state));
+    if (!hasActive) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [busy, stagedJob, stagedJobs]);
 
   useEffect(() => {
     const api = bridge();
@@ -433,6 +495,8 @@ export function CinemaDirectorPanel() {
       return;
     }
     setBusy(true);
+    setActiveStartMs(Date.now());
+    setNowMs(Date.now());
     setError(null);
     setOtioPreview(null);
     const newProjectId = `cinema_${Date.now()}`;
@@ -547,6 +611,8 @@ export function CinemaDirectorPanel() {
     const api = bridge();
     if (!api?.cinemaResumeProduction || !stagedJob) return;
     setBusy(true);
+    setActiveStartMs(Date.now());
+    setNowMs(Date.now());
     setError(null);
     try {
       const updated = await api.cinemaResumeProduction(stagedJob.projectId);
@@ -570,6 +636,8 @@ export function CinemaDirectorPanel() {
     const api = bridge();
     if (!api?.cinemaResolvePendingMedia || !stagedJob) return;
     setBusy(true);
+    setActiveStartMs(Date.now());
+    setNowMs(Date.now());
     setError(null);
     try {
       const updated = await api.cinemaResolvePendingMedia({
@@ -607,6 +675,8 @@ export function CinemaDirectorPanel() {
     const api = bridge();
     if (!api?.cinemaRepair || !pkg) return;
     setBusy(true);
+    setActiveStartMs(Date.now());
+    setNowMs(Date.now());
     setError(null);
     try {
       setPkg(await api.cinemaRepair(pkg.timeline.projectId));
@@ -636,6 +706,8 @@ export function CinemaDirectorPanel() {
     if (!api?.cinemaRunBenchmark) return;
     setBenchmarking(true);
     setBusy(true);
+    setActiveStartMs(Date.now());
+    setNowMs(Date.now());
     setError(null);
     try {
       setBenchmark(await api.cinemaRunBenchmark());
@@ -850,11 +922,16 @@ export function CinemaDirectorPanel() {
           </div>
         </div>
 
-        {(progressPct !== null || stagedJob) && (
+        {(progressPct !== null || stagedJob) && (() => {
+          const activeTiming = computeJobTiming(stagedJob, nowMs, activeStartMs);
+          return (
           <div className="lg:col-span-12 space-y-2.5 rounded-xl border border-purple-500/30 bg-[#0d0d17] p-3">
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
               <span className="text-purple-200">{stagedJob?.message || progressStage}</span>
               <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  Decorrido: <span className="text-foreground">{activeTiming.elapsedLabel}</span> · Restante aprox.: <span className="text-foreground">{activeTiming.etaLabel}</span>
+                </span>
                 {busy && stagedJob && (
                   <button
                     type="button"
@@ -903,7 +980,8 @@ export function CinemaDirectorPanel() {
               })}
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {stagedJob?.state === 'paused_pending_media' && stagedJob.pendingMedia.length > 0 && (
           <div className="lg:col-span-12 space-y-2.5 rounded-xl border border-amber-500/45 bg-amber-500/10 p-4">
@@ -1022,6 +1100,15 @@ export function CinemaDirectorPanel() {
                         style={{ width: `${job.progressPct}%` }}
                       />
                     </div>
+                    {(() => {
+                      const timing = computeJobTiming(job, nowMs);
+                      return (
+                        <div className="flex items-center justify-between font-mono text-[10px] text-muted-foreground">
+                          <span>Decorrido: {timing.elapsedLabel}</span>
+                          <span>Restante aprox.: {timing.etaLabel}</span>
+                        </div>
+                      );
+                    })()}
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-mono text-[10px] text-muted-foreground">{job.projectId}</span>
                       <div className="flex items-center gap-1.5">
@@ -1034,16 +1121,31 @@ export function CinemaDirectorPanel() {
                         >
                           <Trash2 className="size-3.5" />
                         </button>
-                        <button
-                          type="button"
-                          disabled={!ready}
-                          title={ready ? 'Abrir produção concluída no Editor' : 'Aguarde todas as etapas serem concluídas para abrir no Editor'}
-                          onClick={() => navigate(`/video?projectId=${encodeURIComponent(job.projectId)}`)}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-primary/25 px-3 py-1.5 text-[11px] font-semibold text-purple-100 hover:bg-primary/40 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          <Film className="size-3.5" />
-                          {ready ? 'Editor' : 'Aguardando etapas'}
-                        </button>
+                        {job.state === 'paused_pending_media' ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setStagedJob(job);
+                              setProgressPct(job.progressPct);
+                              setProgressStage(job.message);
+                              window.scrollTo({ top: 0, behavior: 'smooth' });
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/50 bg-amber-500/20 px-3 py-1.5 text-[11px] font-semibold text-amber-200 hover:bg-amber-500/30"
+                          >
+                            Resolver Mídias ({job.pendingMedia.length})
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={!ready}
+                            title={ready ? 'Abrir produção concluída no Editor' : 'Aguarde todas as etapas serem concluídas para abrir no Editor'}
+                            onClick={() => navigate(`/video?projectId=${encodeURIComponent(job.projectId)}`)}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-primary/25 px-3 py-1.5 text-[11px] font-semibold text-purple-100 hover:bg-primary/40 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <Film className="size-3.5" />
+                            {ready ? 'Editor' : 'Aguardando etapas'}
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
