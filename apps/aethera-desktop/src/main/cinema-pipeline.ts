@@ -82,6 +82,7 @@ export interface StagedProductionJob {
   renderProfile: RenderQualityProfile;
   useNvenc: boolean;
   voiceStudioVoiceId?: string;
+  language?: string;
   allowDeterministicScriptFallback?: boolean;
   acquisitionBudgetMultiplier?: number;
   editorialScript?: EditorialScript;
@@ -170,6 +171,7 @@ export interface StagedPipelineDeps {
     projectId: string;
     prompt: string;
     genre?: CinemaGenre;
+    language?: string;
     targetDurationSec: number;
     humorIntensity: number;
     queries: string[];
@@ -510,6 +512,7 @@ export class StagedCinemaPipeline {
     renderProfile?: RenderQualityProfile;
     useNvenc?: boolean;
     voiceStudioVoiceId?: string;
+    language?: string;
     seedMediaFiles?: string[];
   }): Promise<StagedProductionJob> {
     const projectPaths = this.ensureProjectWorkspace(input.projectId, input.prompt);
@@ -523,6 +526,7 @@ export class StagedCinemaPipeline {
       renderProfile: input.renderProfile ?? 'review_720p',
       useNvenc: input.useNvenc ?? true,
       ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
+      ...(input.language ? { language: input.language } : {}),
       state: 'prompt',
       progressPct: 5,
       message: 'Analisando prompt e extraindo intenções de cena...',
@@ -850,6 +854,7 @@ export class StagedCinemaPipeline {
             projectId: job.projectId,
             prompt: job.prompt,
             ...(job.genre ? { genre: job.genre } : {}),
+            ...(job.language ? { language: job.language } : {}),
             targetDurationSec: job.targetDurationSec,
             humorIntensity: job.humorIntensity,
             queries,
@@ -1181,6 +1186,7 @@ export class StagedCinemaPipeline {
         previewQuality: 'fast_preview',
         segmentCacheDir,
         ...(job.genre ? { genre: job.genre } : {}),
+        ...(job.language ? { language: job.language } : {}),
       });
 
       const v1Clips = pkg.timeline.clips.filter((c) => c.trackId === 'v1');
@@ -1364,6 +1370,7 @@ export class StagedCinemaPipeline {
           previewQuality: 'fast_preview',
           segmentCacheDir,
           ...(job.genre ? { genre: job.genre } : {}),
+          ...(job.language ? { language: job.language } : {}),
         });
 
         const critic2 = await evaluateRenderedVisualCritic({

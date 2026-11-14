@@ -55,6 +55,7 @@ export interface RealRenderInput {
   voiceExpressiveness?: number;
   voiceBaseWpm?: number;
   channelId?: string;
+  language?: string;
 }
 
 export interface RealRenderResult {
@@ -648,6 +649,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     ...(input.voiceBaseWpm !== undefined ? { baseWpm: input.voiceBaseWpm } : {}),
     ...(input.pronunciationDictionary ? { dictionary: input.pronunciationDictionary } : {}),
     ...(input.channelId ? { channelId: input.channelId } : {}),
+    ...(input.language ? { language: input.language } : {}),
   });
 
   const narrationTextToSpeak = voicePlan.segments.map((s) => s.editorialText).join(' ');

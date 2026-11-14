@@ -340,6 +340,7 @@ export function CinemaDirectorPanel() {
   const [durationSyncedFromPrompt, setDurationSyncedFromPrompt] = useState(true);
   const [humorIntensity, setHumorIntensity] = useState(35);
   const [renderProfile, setRenderProfile] = useState<'draft_540p' | 'review_720p' | 'master_1080p'>('review_720p');
+  const [videoLanguage, setVideoLanguage] = useState('pt-BR');
   const [voiceOptions, setVoiceOptions] = useState<Array<{ id: string; label: string; source?: string }>>([]);
   const [voiceStudioAvailable, setVoiceStudioAvailable] = useState(false);
   const [selectedVoiceId, setSelectedVoiceId] = useState('9190edfa');
@@ -522,6 +523,7 @@ export function CinemaDirectorPanel() {
           renderProfile,
           useNvenc: capabilities?.gpuNvenc ?? true,
           voiceStudioVoiceId: selectedVoiceId,
+          language: videoLanguage,
         });
         setStagedJob(finalJob);
         setProgressPct(finalJob.progressPct);
@@ -876,6 +878,22 @@ export function CinemaDirectorPanel() {
               <option value="draft_540p">Draft 540p (1.4 GB VRAM)</option>
               <option value="review_720p">Review 720p (2.4 GB VRAM)</option>
               <option value="master_1080p">Master 1080p (4.8 GB VRAM)</option>
+            </select>
+
+            <select
+              id="cinema-language"
+              aria-label="Idioma do vídeo"
+              value={videoLanguage}
+              onChange={(e) => setVideoLanguage(e.target.value)}
+              className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
+            >
+              <option value="pt-BR">Idioma: Português (BR)</option>
+              <option value="en-US">Idioma: English (US)</option>
+              <option value="es-ES">Idioma: Español</option>
+              <option value="fr-FR">Idioma: Français</option>
+              <option value="de-DE">Idioma: Deutsch</option>
+              <option value="it-IT">Idioma: Italiano</option>
+              <option value="ja-JP">Idioma: 日本語 (JP)</option>
             </select>
 
             <div className="flex items-center gap-1.5">

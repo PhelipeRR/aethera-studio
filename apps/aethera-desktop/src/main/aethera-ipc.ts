@@ -2113,9 +2113,21 @@ export function registerAetheraDomainIpc(options: {
                 ? 'Bloco final (tensão, clímax e conclusão natural)'
                 : `Bloco intermediário ${blockIdx + 1}/${totalBlocks} (capítulos de desenvolvimento)`;
 
+          const languageLabels: Record<string, string> = {
+            'pt-BR': 'português do Brasil (pt-BR)',
+            'en-US': 'inglês americano (en-US)',
+            'es-ES': 'espanhol (es-ES)',
+            'fr-FR': 'francês (fr-FR)',
+            'de-DE': 'alemão (de-DE)',
+            'it-IT': 'italiano (it-IT)',
+            'ja-JP': 'japonês (ja-JP)',
+          };
+          const targetLanguageLabel =
+            languageLabels[input.language ?? 'pt-BR'] ?? (input.language || 'português do Brasil (pt-BR)');
+
           const blockPrompt = [
             `Você é o Diretor de Roteiro e Narração do Aethera Studio.`,
-            `Escreva ${blockRole} de um roteiro REAL e natural em português do Brasil, pronto para ser lido em voz alta.`,
+            `Escreva ${blockRole} de um roteiro REAL e natural em ${targetLanguageLabel}, pronto para ser lido em voz alta.`,
             `Briefing/Tema: "${input.prompt}"`,
             `Gênero: ${input.genre ?? 'gameplay_essay'} | Humor contextual: ${input.humorIntensity}% | Tópicos: ${input.queries.join(', ')}`,
             `Gere exatamente ${countInBlock} cenas/beats com ~${blockWordsTarget} palavras faladas no total.`,
@@ -3357,6 +3369,7 @@ export function registerAetheraDomainIpc(options: {
         renderProfile?: 'draft_540p' | 'review_720p' | 'master_1080p';
         useNvenc?: boolean;
         voiceStudioVoiceId?: string;
+        language?: string;
         seedMediaFiles?: string[];
       },
     ) => {
