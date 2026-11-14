@@ -184,3 +184,125 @@ export function analyzeMediaAsset(input: {
     provenanceVerified: Boolean(input.media.license && sha256 && !input.media.offline),
   };
 }
+
+export interface NarrationSegment {
+  segmentId: string;
+  startSec: number;
+  endSec: number;
+  text: string;
+  keywords?: string[];
+}
+
+export interface SemanticMediaDescriptor {
+  mediaId: string;
+  title: string;
+  tags: string[];
+  transcript?: string;
+  sceneSummary?: string;
+  durationSec: number;
+  hasHud?: boolean;
+}
+
+export interface SemanticClipMatch {
+  segmentId: string;
+  mediaId: string | null;
+  score: number;
+  matchedTerms: string[];
+  justification: string;
+}
+
+const STOPWORDS = new Set([
+  'de', 'da', 'do', 'das', 'dos', 'em', 'na', 'no', 'nas', 'nos', 'um', 'uma', 'uns', 'umas',
+  'que', 'para', 'por', 'com', 'sem', 'como', 'mais', 'muito', 'esse', 'essa', 'isso', 'este',
+  'esta', 'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'sobre', 'entre', 'apos',
+]);
+
+export function tokenizeSemanticTerms(raw: string): string[] {
+  const { sanitized } = sanitizeUntrustedMediaText(raw);
+  return sanitized
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((tok) => tok.length >= 3 && !STOPWORDS.has(tok));
+}
+
+/**
+ * Semantic Editing: matches timestamped narration segments to the most relevant
+ * media clips based on narration meaning, transcripts, tags, and scene summaries.
+ */
+export function matchNarrationSegmentsToMedia(
+  segments: NarrationSegment[],
+  mediaPool: SemanticMediaDescriptor[],
+): SemanticClipMatch[] {
+  if (segments.length === 0) return [];
+  if (mediaPool.length === 0) {
+    return segments.map((seg) => ({
+      segmentId: seg.segmentId,
+      mediaId: null,
+      score: 0,
+      matchedTerms: [],
+      justification: 'Nenhuma mídia disponível no pool semântico para este trecho.',
+    }));
+  }
+
+  const usageCount = new Map<string, number>();
+  let lastPickedId: string | null = null;
+
+  return segments.map((seg) => {
+    const segTerms = new Set([
+      ...tokenizeSemanticTerms(seg.text),
+      ...(seg.keywords ?? []).flatMap((k) => tokenizeSemanticTerms(k)),
+    ]);
+
+    let best: { media: SemanticMediaDescriptor; score: number; matched: string[] } | null = null;
+
+    for (const media of mediaPool) {
+      const mediaTermSet = new Set([
+        ...tokenizeSemanticTerms(media.title),
+        ...media.tags.flatMap((t) => tokenizeSemanticTerms(t)),
+        ...tokenizeSemanticTerms(media.transcript ?? ''),
+        ...tokenizeSemanticTerms(media.sceneSummary ?? ''),
+      ]);
+
+      const matched: string[] = [];
+      for (const term of segTerms) {
+        if (mediaTermSet.has(term)) {
+          matched.push(term);
+        }
+      }
+
+      const baseOverlap = segTerms.size > 0 ? matched.length / Math.sqrt(segTerms.size) : 0;
+      const repeatPenalty = (usageCount.get(media.mediaId) ?? 0) * 0.12 + (lastPickedId === media.mediaId ? 0.25 : 0);
+      const score = Number(Math.max(0, baseOverlap - repeatPenalty).toFixed(4));
+
+      if (!best || score > best.score) {
+        best = { media, score, matched };
+      }
+    }
+
+    if (!best) {
+      return {
+        segmentId: seg.segmentId,
+        mediaId: null,
+        score: 0,
+        matchedTerms: [],
+        justification: 'Sem correspondência semântica encontrada.',
+      };
+    }
+
+    usageCount.set(best.media.mediaId, (usageCount.get(best.media.mediaId) ?? 0) + 1);
+    lastPickedId = best.media.mediaId;
+
+    return {
+      segmentId: seg.segmentId,
+      mediaId: best.media.mediaId,
+      score: best.score,
+      matchedTerms: best.matched,
+      justification:
+        best.matched.length > 0
+          ? `Correspondência semântica (${best.matched.join(', ')}) com "${best.media.title}".`
+          : `Melhor candidato disponível por diversidade visual: "${best.media.title}".`,
+    };
+  });
+}

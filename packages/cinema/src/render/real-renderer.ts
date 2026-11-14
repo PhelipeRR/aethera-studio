@@ -1,12 +1,15 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CinemaProductionPackage } from '../index.js';
 import {
+  detectMediaAnomalies,
   extractWaveformPeaks,
   probeRealMp4,
   runRealMediaQc,
+  type MediaAnomalyReport,
   type RealMp4ProbeResult,
 } from '../qc/real-media-probe.js';
 import type { QcFindingRecord } from '../ir/timeline-ir.js';
@@ -36,6 +39,7 @@ export interface RealRenderInput {
   prompt?: string;
   technicalSampleMaxClips?: number;
   previewQuality?: 'fast_preview' | 'standard';
+  segmentCacheDir?: string;
 }
 
 export interface RealRenderResult {
@@ -56,6 +60,13 @@ export interface RealRenderResult {
     sfx: string;
     ambience: string;
     master: string;
+  };
+  anomalies?: MediaAnomalyReport;
+  incrementalRenderStats?: {
+    totalScenes: number;
+    cacheHits: number;
+    reRenderedScenes: number;
+    cacheDir: string;
   };
   audioTimeline: AudioTimelineEvent[];
   audioAudit: SoundDirectorAuditReport;
@@ -265,6 +276,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   ];
 
   // 1. Render scene clips with real motion graphics, color grading, vignette/VFX and learned directives
+  let cacheHits = 0;
+  let reRenderedScenes = 0;
   const directives = input.evolution
     ? input.evolution.resolveProductionDirectives({
         prompt: input.prompt ?? input.pkg.timeline.projectId,
@@ -405,6 +418,28 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       .filter(Boolean)
       .join(',');
 
+    const segmentCacheDir = input.segmentCacheDir ?? join(workDir, 'segment-cache');
+    mkdirSync(segmentCacheDir, { recursive: true });
+    const sceneKey = createHash('sha1')
+      .update(
+        JSON.stringify({
+          sourceUri: spec.sourceUri ?? null,
+          dur: spec.effectiveDur,
+          vf,
+          previewQuality: input.previewQuality ?? 'full',
+          isImageSource,
+        }),
+      )
+      .digest('hex');
+    const cachedScenePath = join(segmentCacheDir, `seg_${sceneKey}.mp4`);
+
+    if (existsSync(cachedScenePath)) {
+      copyFileSync(cachedScenePath, outScene);
+      cacheHits += 1;
+      sceneFiles.push(outScene);
+      continue;
+    }
+
     const inputArgs = spec.sourceUri
       ? isImageSource
         ? ['-loop', '1', '-t', String(spec.effectiveDur), '-i', spec.sourceUri]
@@ -426,6 +461,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       'veryfast',
       outScene,
     ]);
+    copyFileSync(outScene, cachedScenePath);
+    reRenderedScenes += 1;
     sceneFiles.push(outScene);
   }
 
@@ -601,6 +638,10 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const targetTp = input.pkg.soundPlan.platformProfile?.truePeakDbtp ?? -1.0;
   const targetLra = input.pkg.soundPlan.platformProfile?.loudnessRangeLu ?? 8.0;
 
+  const sfxDelay1Ms = Math.min(5600, Math.max(100, Math.round(totalDur * 250)));
+  const sfxDelay2Ms = Math.min(11200, Math.max(250, Math.round(totalDur * 500)));
+  const sfxDelay3Ms = Math.min(16800, Math.max(400, Math.round(totalDur * 750)));
+
   // Generate warm chord music bed + ambience room tone + SFX whoosh/impact cues synced to stems & mixer gains
   const audioComplex = [
     `[0:a]apad=whole_dur=${totalDur},volume=${voiceVol},asplit=2[nar_sc][nar_mix]`,
@@ -611,9 +652,9 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     `[music][nar_sc]sidechaincompress=threshold=0.03:ratio=${duckRatio}:attack=25:release=250,asplit=2[ducked_music][ducked_music_stem]`,
     `anoisesrc=color=pink:sample_rate=48000:duration=${totalDur},volume=0.015,volume=${ambienceVol},asplit=2[amb][amb_stem]`,
     // SFX impacts synced to scene transitions
-    `sine=frequency=520:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.32,volume=${sfxVol},adelay=5600|5600[sfx1]`,
-    `sine=frequency=780:sample_rate=48000:duration=0.22,afade=t=out:st=0.04:d=0.18,volume=0.35,volume=${sfxVol},adelay=11200|11200[sfx2]`,
-    `sine=frequency=440:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.30,volume=${sfxVol},adelay=16800|16800[sfx3]`,
+    `sine=frequency=520:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.32,volume=${sfxVol},adelay=${sfxDelay1Ms}|${sfxDelay1Ms}[sfx1]`,
+    `sine=frequency=780:sample_rate=48000:duration=0.22,afade=t=out:st=0.04:d=0.18,volume=0.35,volume=${sfxVol},adelay=${sfxDelay2Ms}|${sfxDelay2Ms}[sfx2]`,
+    `sine=frequency=440:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.30,volume=${sfxVol},adelay=${sfxDelay3Ms}|${sfxDelay3Ms}[sfx3]`,
     `[sfx1][sfx2][sfx3]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=${totalDur},atrim=0:${totalDur},asplit=2[sfx_mix][sfx_stem]`,
     `[nar_mix][ducked_music][amb][sfx_mix]amix=inputs=4:duration=longest:normalize=0,atrim=0:${totalDur},loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}[aout]`,
   ].join(';');
@@ -708,7 +749,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   }
 
   const probe = await probeRealMp4(mp4Path);
-  const realQcFindings = runRealMediaQc(probe, -14.0);
+  const anomalies = await detectMediaAnomalies(mp4Path);
+  const realQcFindings = runRealMediaQc(probe, -14.0, anomalies);
   const waveformPeaks = await extractWaveformPeaks(audioMixPath, 80);
 
   return {
@@ -728,6 +770,13 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       `Narração (${narrationMode}) + música + SFX sincronizados + sidechain ducking + loudnorm -14 LUFS`,
     ],
     probe,
+    anomalies,
+    incrementalRenderStats: {
+      totalScenes: clipSpecs.length,
+      cacheHits,
+      reRenderedScenes,
+      cacheDir: input.segmentCacheDir ?? join(workDir, 'segment-cache'),
+    },
     realQcFindings: [...realQcFindings, ...audioAudit.conflicts.map((c, idx) => ({
       issueId: `sound_director_${c.conflictId}_${idx}`,
       timeRange: {

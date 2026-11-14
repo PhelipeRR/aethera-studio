@@ -1,0 +1,282 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import type { QcFindingRecord } from '../ir/timeline-ir.js';
+import type { AetheraEvolutionCore } from '../evolution/evolution-core.js';
+import { resolveLearnedSceneConstraints } from '../evolution/production-learning.js';
+import {
+  extractVerificationFrames,
+  type MediaAnomalyReport,
+  type RealMp4ProbeResult,
+} from './real-media-probe.js';
+
+export type VisualRepairAction =
+  | 'hide_lower_third'
+  | 'swap_duplicate_clip'
+  | 'rerender_scene'
+  | 'retry_media_research'
+  | 'regenerate_narration';
+
+export interface VisualCriticProposal {
+  sceneId: string;
+  action: VisualRepairAction;
+  reason: string;
+  severity: 'critical' | 'warning';
+}
+
+export interface VisualCriticSceneInput {
+  sceneId: string;
+  startSec: number;
+  durationSec: number;
+  sourceMediaId?: string;
+  hasTextOverlay?: boolean;
+  hasGameplayHud?: boolean;
+  narrationText?: string;
+}
+
+export interface VisualCriticReport {
+  passed: boolean;
+  score: number;
+  sampledFrames: string[];
+  findings: QcFindingRecord[];
+  proposedRepairs: VisualCriticProposal[];
+  appliedLearnedRuleIds: string[];
+  summary: string;
+}
+
+export interface AutonomousSupervisorDecision {
+  status: 'approved_for_review' | 'needs_repair';
+  actions: VisualCriticProposal[];
+  rerenderSceneIds: string[];
+  retryResearchSceneIds: string[];
+  regenerateNarration: boolean;
+  rationale: string;
+}
+
+/**
+ * AI Visual Critic: inspects rendered frames, timeline repetition, HUD/text collisions,
+ * and objective FFmpeg anomalies to propose scene-level repairs before user approval.
+ */
+export async function evaluateRenderedVisualCritic(input: {
+  projectId: string;
+  mp4Path?: string;
+  framesDir?: string;
+  scenes: VisualCriticSceneInput[];
+  probe?: RealMp4ProbeResult;
+  anomalies?: MediaAnomalyReport;
+  evolution?: AetheraEvolutionCore;
+  genre?: string;
+  prompt?: string;
+  analyzeFrameWithAI?: (framePath: string, scene: VisualCriticSceneInput) => Promise<{
+    issue?: string;
+    severity?: 'critical' | 'warning';
+    suggestedAction?: VisualRepairAction;
+  } | null>;
+}): Promise<VisualCriticReport> {
+  const findings: QcFindingRecord[] = [];
+  const proposedRepairs: VisualCriticProposal[] = [];
+  const sampledFrames: string[] = [];
+
+  const learned = input.evolution
+    ? resolveLearnedSceneConstraints(input.evolution, {
+        prompt: input.prompt ?? input.projectId,
+        ...(input.genre ? { genre: input.genre } : {}),
+        hasGameplayHud: input.scenes.some((s) => Boolean(s.hasGameplayHud)),
+      })
+    : { avoidHudOverlap: false, preferDiscreteTypography: false, avoidActCards: false, appliedRuleIds: [] };
+
+  // 1. Sample 1 frame per scene midpoint if MP4 exists
+  if (input.mp4Path && existsSync(input.mp4Path) && input.framesDir && input.scenes.length > 0) {
+    const timestamps = input.scenes.map((s) =>
+      Number((s.startSec + Math.max(0.2, s.durationSec / 2)).toFixed(2)),
+    );
+    try {
+      const frames = await extractVerificationFrames(
+        input.mp4Path,
+        join(input.framesDir, 'critic-frames'),
+        timestamps,
+      );
+      sampledFrames.push(...frames);
+
+      if (input.analyzeFrameWithAI) {
+        for (let i = 0; i < frames.length; i += 1) {
+          const framePath = frames[i];
+          const scene = input.scenes[i];
+          if (!framePath || !scene) continue;
+          const aiRes = await input.analyzeFrameWithAI(framePath, scene).catch(() => null);
+          if (aiRes?.issue) {
+            const sev = aiRes.severity ?? 'warning';
+            findings.push({
+              issueId: `visual_critic_ai_${scene.sceneId}`,
+              timeRange: {
+                start: { value: Math.floor(scene.startSec), rate: 1 },
+                duration: { value: Math.max(1, Math.ceil(scene.durationSec)), rate: 1 },
+              },
+              category: 'visual',
+              severity: sev,
+              confidence: 0.88,
+              evidence: aiRes.issue,
+              owner: 'director',
+              fixSuggestion: 'Aplicar reparo pontual na cena via applyTargetedRepair.',
+              affectedDependencies: [scene.sceneId],
+              status: 'open',
+            });
+            proposedRepairs.push({
+              sceneId: scene.sceneId,
+              action: aiRes.suggestedAction ?? 'rerender_scene',
+              reason: aiRes.issue,
+              severity: sev,
+            });
+          }
+        }
+      }
+    } catch {
+      // Non-fatal if frame sampling fails
+    }
+  }
+
+  // 2. Check consecutive visual repetition
+  for (let i = 1; i < input.scenes.length; i += 1) {
+    const prev = input.scenes[i - 1];
+    const curr = input.scenes[i];
+    if (prev && curr && prev.sourceMediaId && prev.sourceMediaId === curr.sourceMediaId) {
+      const reason = `Repetição visual consecutiva: ${curr.sceneId} reutiliza a mesma mídia (${curr.sourceMediaId}) de ${prev.sceneId}.`;
+      findings.push({
+        issueId: `visual_critic_repeat_${curr.sceneId}`,
+        timeRange: {
+          start: { value: Math.floor(curr.startSec), rate: 1 },
+          duration: { value: Math.max(1, Math.ceil(curr.durationSec)), rate: 1 },
+        },
+        category: 'visual',
+        severity: 'warning',
+        confidence: 0.95,
+        evidence: reason,
+        owner: 'editor',
+        fixSuggestion: 'Trocar o clipe da cena repetida ou buscar B-roll alternativo.',
+        affectedDependencies: [curr.sceneId],
+        status: 'open',
+      });
+      proposedRepairs.push({
+        sceneId: curr.sceneId,
+        action: 'swap_duplicate_clip',
+        reason,
+        severity: 'warning',
+      });
+    }
+  }
+
+  // 3. Check HUD / overlay collision (amplified by Academy Production Learning)
+  for (const scene of input.scenes) {
+    if (scene.hasGameplayHud && scene.hasTextOverlay && learned.avoidHudOverlap) {
+      const reason = `Regra aprendida na Academy: overlay/título em ${scene.sceneId} pode cobrir o HUD de gameplay.`;
+      findings.push({
+        issueId: `visual_critic_hud_${scene.sceneId}`,
+        timeRange: {
+          start: { value: Math.floor(scene.startSec), rate: 1 },
+          duration: { value: Math.max(1, Math.ceil(scene.durationSec)), rate: 1 },
+        },
+        category: 'visual',
+        severity: 'critical',
+        confidence: 0.94,
+        evidence: reason,
+        owner: 'vfx',
+        fixSuggestion: 'Ocultar ou reposicionar lower-third fora da área de HUD.',
+        affectedDependencies: [scene.sceneId],
+        status: 'open',
+      });
+      proposedRepairs.push({
+        sceneId: scene.sceneId,
+        action: 'hide_lower_third',
+        reason,
+        severity: 'critical',
+      });
+    }
+  }
+
+  // 4. Objective anomalies from FFmpeg
+  if (input.anomalies) {
+    for (const blk of input.anomalies.blackIntervals) {
+      const hitScene = input.scenes.find(
+        (s) => blk.startSec >= s.startSec && blk.startSec <= s.startSec + s.durationSec,
+      );
+      const sceneId = hitScene?.sceneId ?? input.scenes[0]?.sceneId ?? 'shot_1';
+      proposedRepairs.push({
+        sceneId,
+        action: 'rerender_scene',
+        reason: `Frame preto detectado (${blk.startSec}s–${blk.endSec}s).`,
+        severity: 'critical',
+      });
+    }
+    for (const sil of input.anomalies.silenceIntervals) {
+      const hitScene = input.scenes.find(
+        (s) => sil.startSec >= s.startSec && sil.startSec <= s.startSec + s.durationSec,
+      );
+      const sceneId = hitScene?.sceneId ?? input.scenes[0]?.sceneId ?? 'shot_1';
+      proposedRepairs.push({
+        sceneId,
+        action: 'regenerate_narration',
+        reason: `Silêncio prolongado detectado (${sil.startSec}s–${sil.endSec}s).`,
+        severity: 'warning',
+      });
+    }
+  }
+
+  const criticalCount = proposedRepairs.filter((r) => r.severity === 'critical').length;
+  const warningCount = proposedRepairs.filter((r) => r.severity === 'warning').length;
+  const score = Math.max(0, Math.min(100, 100 - criticalCount * 20 - warningCount * 7));
+  const passed = criticalCount === 0 && score >= 75;
+
+  return {
+    passed,
+    score,
+    sampledFrames,
+    findings,
+    proposedRepairs,
+    appliedLearnedRuleIds: learned.appliedRuleIds,
+    summary: passed
+      ? `AI Visual Critic aprovado (${score}/100, ${sampledFrames.length} frame(s) inspecionados).`
+      : `AI Visual Critic reprovou com ${criticalCount} erro(s) crítico(s) e ${warningCount} aviso(s).`,
+  };
+}
+
+/**
+ * Autonomous Production Supervisor: decides concrete scene-level recovery actions
+ * without requiring multiple simultaneous AI providers.
+ */
+export function runAutonomousSupervisorPass(
+  report: VisualCriticReport,
+): AutonomousSupervisorDecision {
+  if (report.passed && report.proposedRepairs.length === 0) {
+    return {
+      status: 'approved_for_review',
+      actions: [],
+      rerenderSceneIds: [],
+      retryResearchSceneIds: [],
+      regenerateNarration: false,
+      rationale: 'Nenhuma anomalia crítica encontrada; prévia liberada para revisão do usuário.',
+    };
+  }
+
+  const rerenderSet = new Set<string>();
+  const researchSet = new Set<string>();
+  let regenerateNarration = false;
+
+  for (const repair of report.proposedRepairs) {
+    if (repair.action === 'hide_lower_third' || repair.action === 'rerender_scene') {
+      rerenderSet.add(repair.sceneId);
+    } else if (repair.action === 'swap_duplicate_clip' || repair.action === 'retry_media_research') {
+      researchSet.add(repair.sceneId);
+      rerenderSet.add(repair.sceneId);
+    } else if (repair.action === 'regenerate_narration') {
+      regenerateNarration = true;
+    }
+  }
+
+  return {
+    status: 'needs_repair',
+    actions: report.proposedRepairs,
+    rerenderSceneIds: Array.from(rerenderSet),
+    retryResearchSceneIds: Array.from(researchSet),
+    regenerateNarration,
+    rationale: `Supervisor determinou reparos pontuais: ${rerenderSet.size} cena(s) para re-render incremental, ${researchSet.size} para nova mídia, narração=${regenerateNarration ? 'sim' : 'não'}.`,
+  };
+}

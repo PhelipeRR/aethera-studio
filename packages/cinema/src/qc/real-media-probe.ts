@@ -116,9 +116,97 @@ export async function probeRealMp4(filePath: string): Promise<RealMp4ProbeResult
   };
 }
 
+export interface MediaAnomalyInterval {
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+}
+
+export interface MediaAnomalyReport {
+  blackIntervals: MediaAnomalyInterval[];
+  silenceIntervals: MediaAnomalyInterval[];
+  freezeIntervals: MediaAnomalyInterval[];
+}
+
+export async function detectMediaAnomalies(
+  mediaPath: string,
+  options?: { minBlackSec?: number; minSilenceSec?: number; minFreezeSec?: number },
+): Promise<MediaAnomalyReport> {
+  const minBlack = options?.minBlackSec ?? 0.4;
+  const minSilence = options?.minSilenceSec ?? 1.5;
+  const minFreeze = options?.minFreezeSec ?? 2.0;
+
+  let stderr = '';
+  try {
+    const res = await execFileAsync('ffmpeg', [
+      '-hide_banner',
+      '-i',
+      mediaPath,
+      '-vf',
+      `blackdetect=d=${minBlack}:pix_th=0.10,freezedetect=n=-60dB:d=${minFreeze}`,
+      '-af',
+      `silencedetect=n=-50dB:d=${minSilence}`,
+      '-f',
+      'null',
+      '-',
+    ]);
+    stderr = res.stderr ?? '';
+  } catch (err) {
+    stderr = (err as { stderr?: string })?.stderr ?? '';
+  }
+
+  const blackIntervals: MediaAnomalyInterval[] = [];
+  for (const m of stderr.matchAll(/black_start:([\d.]+)\s+black_end:([\d.]+)\s+black_duration:([\d.]+)/g)) {
+    blackIntervals.push({
+      startSec: Number(m[1]),
+      endSec: Number(m[2]),
+      durationSec: Number(m[3]),
+    });
+  }
+
+  const silenceIntervals: MediaAnomalyInterval[] = [];
+  let pendingSilenceStart: number | null = null;
+  for (const line of stderr.split(/\r?\n/)) {
+    const sMatch = line.match(/silence_start:\s*([\d.]+)/);
+    if (sMatch) pendingSilenceStart = Number(sMatch[1]);
+    const eMatch = line.match(/silence_end:\s*([\d.]+)\s*\|\s*silence_duration:\s*([\d.]+)/);
+    if (eMatch) {
+      const endSec = Number(eMatch[1]);
+      const durationSec = Number(eMatch[2]);
+      silenceIntervals.push({
+        startSec: pendingSilenceStart ?? Math.max(0, endSec - durationSec),
+        endSec,
+        durationSec,
+      });
+      pendingSilenceStart = null;
+    }
+  }
+
+  const freezeIntervals: MediaAnomalyInterval[] = [];
+  let pendingFreezeStart: number | null = null;
+  for (const line of stderr.split(/\r?\n/)) {
+    const fsMatch = line.match(/freeze_start:\s*([\d.]+)/);
+    if (fsMatch) pendingFreezeStart = Number(fsMatch[1]);
+    const feMatch = line.match(/freeze_end:\s*([\d.]+)/);
+    const fdMatch = line.match(/freeze_duration:\s*([\d.]+)/);
+    if (feMatch && pendingFreezeStart !== null) {
+      const endSec = Number(feMatch[1]);
+      freezeIntervals.push({
+        startSec: pendingFreezeStart,
+        endSec,
+        durationSec: fdMatch ? Number(fdMatch[1]) : Number((endSec - pendingFreezeStart).toFixed(3)),
+      });
+      pendingFreezeStart = null;
+    }
+  }
+
+  return { blackIntervals, silenceIntervals, freezeIntervals };
+}
+
 export function runRealMediaQc(
   probe: RealMp4ProbeResult,
   targetLufs = -14.0,
+  anomalies?: MediaAnomalyReport,
 ): QcFindingRecord[] {
   const findings: QcFindingRecord[] = [];
   const defaultRange = { start: { value: 0, rate: 1 }, duration: { value: Math.round(probe.durationSec), rate: 1 } };
@@ -181,6 +269,51 @@ export function runRealMediaQc(
       affectedDependencies: ['a_nar', 'a_mus'],
       status: 'open',
     });
+  }
+
+  if (anomalies) {
+    for (const [idx, b] of anomalies.blackIntervals.entries()) {
+      findings.push({
+        issueId: `real_qc_black_interval_${idx}`,
+        timeRange: { start: { value: Math.floor(b.startSec), rate: 1 }, duration: { value: Math.max(1, Math.ceil(b.durationSec)), rate: 1 } },
+        category: 'visual',
+        severity: 'warning',
+        confidence: 1,
+        evidence: `Trecho preto detectado via blackdetect (${b.startSec}s–${b.endSec}s, ${b.durationSec}s).`,
+        owner: 'director',
+        fixSuggestion: 'Substituir ou aparar trecho preto na cena afetada.',
+        affectedDependencies: ['v1'],
+        status: 'open',
+      });
+    }
+    for (const [idx, s] of anomalies.silenceIntervals.entries()) {
+      findings.push({
+        issueId: `real_qc_silence_interval_${idx}`,
+        timeRange: { start: { value: Math.floor(s.startSec), rate: 1 }, duration: { value: Math.max(1, Math.ceil(s.durationSec)), rate: 1 } },
+        category: 'audio',
+        severity: 'warning',
+        confidence: 1,
+        evidence: `Silêncio prolongado detectado via silencedetect (${s.startSec}s–${s.endSec}s, ${s.durationSec}s).`,
+        owner: 'sound',
+        fixSuggestion: 'Verificar lacuna de narração ou preencher cama sonora.',
+        affectedDependencies: ['a_nar'],
+        status: 'open',
+      });
+    }
+    for (const [idx, f] of anomalies.freezeIntervals.entries()) {
+      findings.push({
+        issueId: `real_qc_freeze_interval_${idx}`,
+        timeRange: { start: { value: Math.floor(f.startSec), rate: 1 }, duration: { value: Math.max(1, Math.ceil(f.durationSec)), rate: 1 } },
+        category: 'visual',
+        severity: 'warning',
+        confidence: 1,
+        evidence: `Imagem congelada detectada via freezedetect (${f.startSec}s–${f.endSec}s, ${f.durationSec}s).`,
+        owner: 'editor',
+        fixSuggestion: 'Adicionar movimento de câmera (Ken Burns) ou trocar clipe estático.',
+        affectedDependencies: ['v1'],
+        status: 'open',
+      });
+    }
   }
 
   return findings;
