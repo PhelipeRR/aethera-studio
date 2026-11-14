@@ -14,9 +14,13 @@ import {
   applyTargetedRepair,
   evaluateEnsemble,
   evaluateReleaseGates,
+  evaluateRenderedVisualCritic,
+  matchNarrationSegmentsToMedia,
   probeRealMp4,
   produceCinemaPackage,
   renderRealCinemaMp4,
+  resolveLearnedSceneConstraints,
+  runAutonomousSupervisorPass,
   type AetheraEvolutionCore,
   type CinemaGenre,
   type CinemaProductionPackage,
@@ -94,6 +98,14 @@ export interface StagedPipelineDeps {
   onProgress?: (job: StagedProductionJob) => void;
   onPackageReady: (pkg: CinemaProductionPackage, prompt: string) => void;
   onRenderReady: (projectId: string, render: RealRenderResult) => void;
+  analyzeFrameWithAI?: (
+    framePath: string,
+    scene: { sceneId: string; narration?: string; hasGameplayHud?: boolean },
+  ) => Promise<{
+    issue?: string;
+    severity?: 'warning' | 'critical';
+    suggestedAction?: 'hide_lower_third' | 'swap_duplicate_clip' | 'rerender_scene';
+  } | null>;
   searchExternalMedia?: (
     query: string,
     slotIndex: number,
@@ -728,6 +740,75 @@ export class StagedCinemaPipeline {
           },
         };
       }
+      // Etapa C (Academy Production Learning): aplicar restrições aprendidas antes da montagem
+      const learnedConstraints = resolveLearnedSceneConstraints(this.deps.evolutionCore, {
+        prompt: job.prompt,
+        ...(job.genre ? { genre: job.genre } : {}),
+        hasGameplayHud: job.genre === 'gameplay_essay',
+      });
+      if (learnedConstraints.avoidHudOverlap) {
+        pkg = {
+          ...pkg,
+          timeline: {
+            ...pkg.timeline,
+            clips: pkg.timeline.clips.map((c) =>
+              c.trackId === 'v1'
+                ? {
+                    ...c,
+                    effects: c.effects.some((e) => e.kind === 'hide_title')
+                      ? c.effects
+                      : [
+                          ...c.effects,
+                          {
+                            effectId: `learned_no_hud_${c.clipId}`,
+                            kind: 'hide_title',
+                            params: { reason: 'academy_avoid_hud_overlap' },
+                            enabled: true,
+                            estimatedCostMs: 0,
+                            fallbackMode: 'skip',
+                          },
+                        ],
+                  }
+                : c,
+            ),
+          },
+        };
+      }
+
+      // Etapa B (Semantic Editing): correlacionar segmentos de narração às mídias adquiridas
+      if (job.acquiredMedia.length > 0 && pkg.direction.narrativeBeats.length > 0) {
+        const videoTrackClips = pkg.timeline.clips.filter((c) => c.trackId === 'v1');
+        const segments = pkg.direction.narrativeBeats.slice(0, videoTrackClips.length).map((beat, idx) => {
+          const clip = videoTrackClips[idx];
+          const startSec = clip ? clip.timelineRange.start.value / Math.max(1, clip.timelineRange.start.rate) : idx * 6;
+          const durSec = clip ? clip.timelineRange.duration.value / Math.max(1, clip.timelineRange.duration.rate) : 6;
+          return {
+            segmentId: clip?.clipId ?? beat.beatId,
+            startSec,
+            endSec: startSec + durSec,
+            text: `${beat.stage} ${beat.summary}`,
+          };
+        });
+        const mediaDescriptors = job.acquiredMedia.map((m) => ({
+          mediaId: m.mediaId,
+          title: basename(m.uri),
+          durationSec: m.duration.value / Math.max(1, m.duration.rate),
+          tags: [m.kind, m.origin],
+        }));
+        const semanticMatches = matchNarrationSegmentsToMedia(segments, mediaDescriptors);
+        const matchByClipId = new Map(semanticMatches.map((m) => [m.segmentId, m]));
+        pkg = {
+          ...pkg,
+          timeline: {
+            ...pkg.timeline,
+            clips: pkg.timeline.clips.map((c) => {
+              const hit = matchByClipId.get(c.clipId);
+              return hit && hit.mediaId && hit.score > 0 ? { ...c, mediaId: hit.mediaId } : c;
+            }),
+          },
+        };
+      }
+
       job.completedStages = [...new Set([...job.completedStages, 'planejamento'])] as ProductionStageState[];
 
       // MONTAGEM
@@ -760,14 +841,15 @@ export class StagedCinemaPipeline {
       this.saveJob(job);
       job.completedStages = [...new Set([...job.completedStages, 'audio_sfx_vfx'])] as ProductionStageState[];
 
-      // PRÉVIA (Render MP4 real)
+      // PRÉVIA (Render MP4 real + Cache Incremental + AI Visual Critic + Supervisor sem loop)
       checkCancelled();
       job.state = 'previa';
       job.progressPct = 92;
       job.message = 'Renderizando prévia audiovisual sincronizada (FFmpeg)...';
       this.saveJob(job);
 
-      const render = await renderRealCinemaMp4({
+      const segmentCacheDir = join(projectPaths.tempDir, 'segment-cache');
+      let render = await renderRealCinemaMp4({
         pkg,
         outputDir: projectPaths.rendersDir,
         fileName: `${job.projectId}.mp4`,
@@ -777,8 +859,91 @@ export class StagedCinemaPipeline {
         evolution: this.deps.evolutionCore,
         prompt: job.prompt,
         previewQuality: 'fast_preview',
+        segmentCacheDir,
         ...(job.genre ? { genre: job.genre } : {}),
       });
+
+      const v1Clips = pkg.timeline.clips.filter((c) => c.trackId === 'v1');
+      const buildSceneSpecs = (clips: typeof v1Clips) =>
+        clips.map((c, idx) => ({
+          sceneId: c.clipId,
+          startSec: c.timelineRange.start.value / Math.max(1, c.timelineRange.start.rate),
+          durationSec: c.timelineRange.duration.value / Math.max(1, c.timelineRange.duration.rate),
+          sourceMediaId: c.mediaId,
+          hasTextOverlay: !c.effects.some((e) => e.kind === 'hide_title' && e.enabled),
+          hasGameplayHud: job.genre === 'gameplay_essay',
+          ...(pkg.direction.narrativeBeats[idx]?.summary ? { narration: pkg.direction.narrativeBeats[idx].summary } : {}),
+        }));
+
+      const critic1 = await evaluateRenderedVisualCritic({
+        projectId: job.projectId,
+        mp4Path: render.mp4Path,
+        framesDir: join(projectPaths.tempDir, 'visual-critic'),
+        prompt: job.prompt,
+        ...(job.genre ? { genre: job.genre } : {}),
+        scenes: buildSceneSpecs(v1Clips),
+        ...(render.anomalies ? { anomalies: render.anomalies } : {}),
+        evolution: this.deps.evolutionCore,
+        ...(this.deps.analyzeFrameWithAI ? { analyzeFrameWithAI: this.deps.analyzeFrameWithAI } : {}),
+      });
+      const sup1 = runAutonomousSupervisorPass(critic1, {
+        attempt: 1,
+        maxAttempts: 2,
+        previousActionSignatures: [],
+      });
+
+      if (sup1.status === 'needs_repair' && sup1.rerenderSceneIds.length > 0) {
+        const repairIds = new Set(sup1.rerenderSceneIds);
+        const altMediaPool = job.acquiredMedia.map((m) => m.mediaId);
+        pkg = {
+          ...pkg,
+          timeline: {
+            ...pkg.timeline,
+            clips: pkg.timeline.clips.map((c) => {
+              if (!repairIds.has(c.clipId)) return c;
+              const needHideTitle = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'hide_lower_third');
+              const needSwapClip = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'swap_duplicate_clip');
+              const nextMediaId =
+                needSwapClip && altMediaPool.length > 1
+                  ? altMediaPool.find((id) => id !== c.mediaId) ?? c.mediaId
+                  : c.mediaId;
+              return {
+                ...c,
+                mediaId: nextMediaId,
+                effects:
+                  needHideTitle && !c.effects.some((e) => e.kind === 'hide_title')
+                    ? [
+                        ...c.effects,
+                        {
+                          effectId: `sup_hide_title_${c.clipId}`,
+                          kind: 'hide_title',
+                          params: { reason: 'supervisor_targeted_repair' },
+                          enabled: true,
+                          estimatedCostMs: 0,
+                          fallbackMode: 'skip',
+                        },
+                      ]
+                    : c.effects,
+              };
+            }),
+          },
+        };
+        this.deps.onPackageReady(pkg, job.prompt);
+        render = await renderRealCinemaMp4({
+          pkg,
+          outputDir: projectPaths.rendersDir,
+          fileName: `${job.projectId}.mp4`,
+          useNvenc: job.useNvenc,
+          requireRealMedia: job.acquiredMedia.length > 0,
+          voiceStudioVoiceId: '9190edfa',
+          evolution: this.deps.evolutionCore,
+          prompt: job.prompt,
+          previewQuality: 'fast_preview',
+          segmentCacheDir,
+          ...(job.genre ? { genre: job.genre } : {}),
+        });
+      }
+
       job.isTechnicalSample = render.isTechnicalSample;
       this.deps.onRenderReady(job.projectId, render);
       job.completedStages = [...new Set([...job.completedStages, 'previa', 'editor'])] as ProductionStageState[];

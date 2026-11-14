@@ -203,10 +203,28 @@ export async function detectMediaAnomalies(
   return { blackIntervals, silenceIntervals, freezeIntervals };
 }
 
+export interface IntentionalAnomalyRanges {
+  black?: Array<{ startSec: number; endSec: number }>;
+  silence?: Array<{ startSec: number; endSec: number }>;
+  freeze?: Array<{ startSec: number; endSec: number }>;
+}
+
+function overlapsIntentionalRange(
+  interval: MediaAnomalyInterval,
+  ranges?: Array<{ startSec: number; endSec: number }>,
+): boolean {
+  if (!ranges || ranges.length === 0) return false;
+  return ranges.some((r) => interval.startSec < r.endSec && interval.endSec > r.startSec);
+}
+
 export function runRealMediaQc(
   probe: RealMp4ProbeResult,
   targetLufs = -14.0,
   anomalies?: MediaAnomalyReport,
+  options?: {
+    intentionalRanges?: IntentionalAnomalyRanges;
+    dramaticSilenceMaxSec?: number;
+  },
 ): QcFindingRecord[] {
   const findings: QcFindingRecord[] = [];
   const defaultRange = { start: { value: 0, rate: 1 }, duration: { value: Math.round(probe.durationSec), rate: 1 } };
@@ -272,7 +290,14 @@ export function runRealMediaQc(
   }
 
   if (anomalies) {
+    const dramaticSilenceMaxSec = options?.dramaticSilenceMaxSec ?? 2.2;
     for (const [idx, b] of anomalies.blackIntervals.entries()) {
+      const isEdgeFade =
+        (b.startSec < 1.0 && b.durationSec <= 1.2) ||
+        (probe.durationSec > 2 && b.endSec >= probe.durationSec - 1.0 && b.durationSec <= 1.5);
+      if (isEdgeFade || overlapsIntentionalRange(b, options?.intentionalRanges?.black)) {
+        continue;
+      }
       findings.push({
         issueId: `real_qc_black_interval_${idx}`,
         timeRange: { start: { value: Math.floor(b.startSec), rate: 1 }, duration: { value: Math.max(1, Math.ceil(b.durationSec)), rate: 1 } },
@@ -287,6 +312,12 @@ export function runRealMediaQc(
       });
     }
     for (const [idx, s] of anomalies.silenceIntervals.entries()) {
+      if (
+        s.durationSec <= dramaticSilenceMaxSec ||
+        overlapsIntentionalRange(s, options?.intentionalRanges?.silence)
+      ) {
+        continue;
+      }
       findings.push({
         issueId: `real_qc_silence_interval_${idx}`,
         timeRange: { start: { value: Math.floor(s.startSec), rate: 1 }, duration: { value: Math.max(1, Math.ceil(s.durationSec)), rate: 1 } },
@@ -301,6 +332,9 @@ export function runRealMediaQc(
       });
     }
     for (const [idx, f] of anomalies.freezeIntervals.entries()) {
+      if (overlapsIntentionalRange(f, options?.intentionalRanges?.freeze)) {
+        continue;
+      }
       findings.push({
         issueId: `real_qc_freeze_interval_${idx}`,
         timeRange: { start: { value: Math.floor(f.startSec), rate: 1 }, duration: { value: Math.max(1, Math.ceil(f.durationSec)), rate: 1 } },

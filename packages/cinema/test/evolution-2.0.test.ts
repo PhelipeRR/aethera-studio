@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -67,7 +67,7 @@ describe('Aethera Studio Evolution 2.0 (Etapas A, B, C)', () => {
     expect(anomalies.blackIntervals.length).toBeGreaterThan(0);
     expect(anomalies.silenceIntervals.length).toBeGreaterThan(0);
 
-    const findings = runRealMediaQc(probe, -14.0, anomalies);
+    const findings = runRealMediaQc(probe, -14.0, anomalies, { dramaticSilenceMaxSec: 1.5 });
     expect(findings.some((f) => f.issueId.startsWith('real_qc_black_interval_'))).toBe(true);
     expect(findings.some((f) => f.issueId.startsWith('real_qc_silence_interval_'))).toBe(true);
   });
@@ -224,10 +224,130 @@ describe('Aethera Studio Evolution 2.0 (Etapas A, B, C)', () => {
     expect(criticReport.proposedRepairs.some((r) => r.action === 'hide_lower_third' && r.sceneId === 'shot_1')).toBe(true);
     expect(criticReport.proposedRepairs.some((r) => r.action === 'swap_duplicate_clip' && r.sceneId === 'shot_2')).toBe(true);
 
-    const decision = runAutonomousSupervisorPass(criticReport);
+    const decision = runAutonomousSupervisorPass(criticReport, { attempt: 1, maxAttempts: 2 });
     expect(decision.status).toBe('needs_repair');
     expect(decision.rerenderSceneIds).toContain('shot_1');
     expect(decision.rerenderSceneIds).toContain('shot_2');
     expect(decision.retryResearchSceneIds).toContain('shot_2');
+
+    // Anti-loop guard: repeating the same signatures escalates to user instead of looping
+    const signatures = decision.actions.map((a) => `${a.sceneId}:${a.action}`);
+    const repeated = runAutonomousSupervisorPass(criticReport, {
+      attempt: 2,
+      maxAttempts: 2,
+      previousActionSignatures: signatures,
+    });
+    expect(repeated.status).toBe('escalate_to_user');
+    expect(repeated.actions).toHaveLength(0);
+
+    // Provider-backed AI Visual Critic inspection (when AI provider is available)
+    const inspectedFrames: string[] = [];
+    const aiCritic = await evaluateRenderedVisualCritic({
+      projectId: 'proj_elden',
+      mp4Path: sampleMp4,
+      framesDir: dir,
+      evolution,
+      genre: 'gameplay_essay',
+      prompt: 'Chefes mais difíceis de Elden Ring',
+      scenes: [
+        {
+          sceneId: 'shot_1',
+          startSec: 0,
+          durationSec: 2,
+          sourceMediaId: 'media_boss_1',
+        },
+      ],
+      analyzeFrameWithAI: async (framePath) => {
+        inspectedFrames.push(framePath);
+        return {
+          issue: 'Legenda com baixo contraste detectada pelo provedor de visão.',
+          severity: 'warning',
+          suggestedAction: 'rerender_scene',
+        };
+      },
+    });
+    expect(inspectedFrames).toHaveLength(1);
+    expect(existsSync(inspectedFrames[0]!)).toBe(true);
+    expect(aiCritic.proposedRepairs.some((r) => r.action === 'rerender_scene')).toBe(true);
+  }, 15000);
+
+  it('Audit Item 3 & 8: modifies 1 of 3 scenes in real FFmpeg render, reuses 2, and cleans orphan .tmp cache', async () => {
+    const dir = createTempDir();
+    const segCacheDir = join(dir, 'segment-cache');
+    const pkg = produceCinemaPackage({
+      prompt: 'Documentário sobre vulcões ativos e placas tectônicas',
+      genre: 'documentary',
+      format: 'youtube_16_9',
+      targetDurationSec: 18,
+      humorIntensity: 10,
+    });
+    pkg.timeline.clips = pkg.timeline.clips.slice(0, 3);
+    while (pkg.direction.narrativeBeats.length < 3) {
+      pkg.direction.narrativeBeats.push({
+        beatId: `beat_${pkg.direction.narrativeBeats.length + 1}`,
+        stage: 'progression',
+        summary: `Narração da cena ${pkg.direction.narrativeBeats.length + 1}`,
+        intensity: 0.6,
+        timeRange: { start: { value: pkg.direction.narrativeBeats.length * 6, rate: 1 }, duration: { value: 6, rate: 1 } },
+        sensitiveContext: false,
+      });
+    }
+
+    const first = await renderRealCinemaMp4({
+      pkg,
+      outputDir: join(dir, 'r1'),
+      previewQuality: 'fast_preview',
+      segmentCacheDir: segCacheDir,
+    });
+    expect(first.incrementalRenderStats?.cacheHits).toBe(0);
+    expect(first.incrementalRenderStats?.reRenderedScenes).toBe(3);
+
+    // Simulate interrupted .tmp artifact in segment cache
+    writeFileSync(join(segCacheDir, 'seg_interrupted.mp4.tmp'), 'partial');
+
+    // Modify ONLY scene 2's beat summary
+    const modifiedPkg = structuredClone(pkg);
+    modifiedPkg.direction.narrativeBeats[1]!.summary = 'Narração alterada apenas na cena 2 com novo texto.';
+
+    const second = await renderRealCinemaMp4({
+      pkg: modifiedPkg,
+      outputDir: join(dir, 'r2'),
+      previewQuality: 'fast_preview',
+      segmentCacheDir: segCacheDir,
+    });
+    expect(existsSync(second.mp4Path)).toBe(true);
+    expect(second.incrementalRenderStats?.cacheHits).toBe(2);
+    expect(second.incrementalRenderStats?.reRenderedScenes).toBe(1);
+    expect(readdirSync(segCacheDir).some((f) => f.endsWith('.tmp'))).toBe(false);
+  }, 30000);
+
+  it('Audit Item 4: runRealMediaQc ignores edge fades and short dramatic silence while catching real anomalies', () => {
+    const findings = runRealMediaQc(
+      {
+        durationSec: 20,
+        width: 1280,
+        height: 720,
+        videoCodec: 'h264',
+        audioCodec: 'aac',
+        integratedLufs: -14,
+        truePeakDb: -1.5,
+      },
+      -14,
+      {
+        blackIntervals: [
+          { startSec: 0, endSec: 0.6, durationSec: 0.6 }, // edge fade-in (allowed)
+          { startSec: 8, endSec: 9.5, durationSec: 1.5 }, // real mid-video black defect
+        ],
+        silenceIntervals: [
+          { startSec: 4, endSec: 5.8, durationSec: 1.8 }, // short dramatic silence (allowed)
+          { startSec: 12, endSec: 16.5, durationSec: 4.5 }, // prolonged unintended silence
+        ],
+        freezeIntervals: [],
+      },
+    );
+    expect(findings.some((f) => f.issueId === 'real_qc_black_interval_0')).toBe(false);
+    expect(findings.some((f) => f.issueId === 'real_qc_black_interval_1')).toBe(true);
+    expect(findings.some((f) => f.issueId === 'real_qc_silence_interval_0')).toBe(false);
+    expect(findings.some((f) => f.issueId === 'real_qc_silence_interval_1')).toBe(true);
   });
 });

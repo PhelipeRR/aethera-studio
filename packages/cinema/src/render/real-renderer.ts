@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CinemaProductionPackage } from '../index.js';
@@ -420,20 +420,61 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
 
     const segmentCacheDir = input.segmentCacheDir ?? join(workDir, 'segment-cache');
     mkdirSync(segmentCacheDir, { recursive: true });
+    if (i === 0) {
+      for (const f of readdirSync(segmentCacheDir)) {
+        if (f.endsWith('.tmp')) {
+          try {
+            unlinkSync(join(segmentCacheDir, f));
+          } catch {
+            // ignore cleanup errors
+          }
+        }
+      }
+    }
+
+    let sourceStat: { mtimeMs: number; size: number } | null = null;
+    if (spec.sourceUri && existsSync(spec.sourceUri)) {
+      try {
+        const st = statSync(spec.sourceUri);
+        sourceStat = { mtimeMs: st.mtimeMs, size: st.size };
+      } catch {
+        sourceStat = null;
+      }
+    }
+    const matchingBeat = input.pkg.direction?.narrativeBeats?.[i];
     const sceneKey = createHash('sha1')
       .update(
         JSON.stringify({
           sourceUri: spec.sourceUri ?? null,
+          sourceStat,
           dur: spec.effectiveDur,
+          speed: spec.clip?.speed ?? 1,
+          trimIn: spec.clip?.sourceRange?.start?.value ?? 0,
+          trimOut: spec.clip?.sourceRange?.duration?.value ?? null,
           vf,
+          fontOption: resolveFontOption(),
+          effects: (spec.clip?.effects ?? []).map((e) => ({ kind: e.kind, enabled: e.enabled, params: e.params })),
+          beatSummary: matchingBeat?.summary ?? null,
+          beatStage: matchingBeat?.stage ?? null,
           previewQuality: input.previewQuality ?? 'full',
+          useNvenc: Boolean(input.useNvenc),
           isImageSource,
+          fps: 30,
         }),
       )
       .digest('hex');
     const cachedScenePath = join(segmentCacheDir, `seg_${sceneKey}.mp4`);
 
+    let validCacheHit = false;
     if (existsSync(cachedScenePath)) {
+      try {
+        validCacheHit = statSync(cachedScenePath).size > 1024;
+      } catch {
+        validCacheHit = false;
+      }
+    }
+
+    if (validCacheHit) {
       copyFileSync(cachedScenePath, outScene);
       cacheHits += 1;
       sceneFiles.push(outScene);
@@ -461,7 +502,9 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       'veryfast',
       outScene,
     ]);
-    copyFileSync(outScene, cachedScenePath);
+    const tmpCachePath = `${cachedScenePath}.tmp`;
+    copyFileSync(outScene, tmpCachePath);
+    renameSync(tmpCachePath, cachedScenePath);
     reRenderedScenes += 1;
     sceneFiles.push(outScene);
   }

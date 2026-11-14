@@ -70,3 +70,19 @@ benchmark B-1, riscos e pré-requisitos). AS-01 concluída (documentação). Cad
 
 
 Pré-requisito central: nenhuma mudança de runtime antes de o Content OS (migrações 0098–0103) estar estabilizado e em commit.
+
+
+---
+
+## Auditoria de Integração & Validação Real — Evolution 2.0 (Etapas A, B, C) — 2026-11-14
+
+Matriz de maturidade após auditoria e correções de integração no pipeline principal (`apps/aethera-desktop/src/main/cinema-pipeline.ts` e `aethera-ipc.ts`):
+
+| Funcionalidade | Implementada | Integrada no Pipeline | Testada (Vitest) | Validada em Render Real (FFmpeg) | Lacunas / Notas |
+| --- | --- | --- | --- | --- | --- |
+| **Etapa A1: Detecção objetiva (`blackdetect`, `silencedetect`, `freezedetect`)** | Sim | Sim (`renderRealCinemaMp4` + `cinema:probe-real-mp4`) | Sim | Sim | Filtra fades de borda (`<= 1.2s`/`1.5s`) e pausas dramáticas (`<= 2.2s`) ou intervalos intencionais (`intentionalRanges`). |
+| **Etapa A2: Cache incremental por cena (`segmentCacheDir`)** | Sim | Sim (`projectPaths.tempDir/segment-cache`) | Sim | Sim (3 cenas, edita cena 2 -> `cacheHits: 2`, `reRenderedScenes: 1`) | Hash `sha1` inclui `sourceUri`, `sourceStat` (`mtimeMs`, `size`), `dur`, `speed`, `trimIn/Out`, `vf`, `fontOption`, `effects`, `beatSummary/Stage`, `previewQuality`, `useNvenc`, `fps`. Escrita atômica `.tmp` + `renameSync` e limpeza de `.tmp` órfãos. |
+| **Etapa B: Edição semântica (`matchNarrationSegmentsToMedia`)** | Sim | Sim (`cinema-pipeline.ts` etapa `planejamento`) | Sim | Parcial (validada com descritores; aguarda mais testes com mídia real variada no desktop) | Correlaciona `pkg.direction.narrativeBeats` aos clipes `v1` quando `acquiredMedia.length > 0`. |
+| **Etapa C1: Academy Production Learning (`production-learning.ts`)** | Sim | Sim (`cinema-pipeline.ts` aplica `resolveLearnedSceneConstraints`) | Sim | Parcial (validada em `evolution-2.0.test.ts` + hook no pipeline) | Regras aprendidas (`avoidHudOverlap`) injetam `hide_title` antes da montagem/render. |
+| **Etapa C2: AI Visual Critic (`evaluateRenderedVisualCritic`)** | Sim | Sim (`cinema-pipeline.ts` etapa `previa`) | Sim | Sim (extração real de frames + modo provedor e modo degradado) | Quando `deps.analyzeFrameWithAI` não é injetado pelo runtime, opera em modo degradado determinístico (frames + FFmpeg anomalies + regras Academy). |
+| **Etapa C3: Supervisor Autônomo (`runAutonomousSupervisorPass`)** | Sim | Sim (`cinema-pipeline.ts` etapa `previa` com re-render incremental) | Sim | Parcial (guarda anti-loop `maxAttempts: 2` + `previousActionSignatures` testada; aprovação visual final manual) | Escalona para `escalate_to_user` se repetir assinatura de reparo ou atingir `maxAttempts`. |

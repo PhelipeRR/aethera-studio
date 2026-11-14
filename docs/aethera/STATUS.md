@@ -641,3 +641,18 @@ composição, ritmo e coerência.
 - [x] **Aethera Academia (`academy-engine.ts`)**: ingestão multimodal com sondagem `ffprobe`, modos `study` / `reference` / `train`, roteamento por especialidade, exercícios práticos conectados à memória evolutiva, Q&A fundamentado com citações (`askAcademy`) e limpeza coordenada na exclusão de materiais.
 - [x] **IPC, Preload & UI (`aethera-ipc.ts`, `preload/index.ts`, `AetheraAgentsPage.tsx`, `AetheraAcademyPanel.tsx`)**: exposição completa de `cinema:evolution-*` e `cinema:academy-*` sob `userData/evolution/` e interface para os 15 diretores, DAG, feedback humano, rollback/desativação e Academia.
 - [x] **Validação**: `npm run typecheck`, `eslint`, `npm run build:aethera`, Vitest (`4 arquivos / 18 testes`, incluindo `evolution-academy.test.ts` com ciclo Antes/Depois sobre `showcase-v2-final.mp4`, persistência entre reinícios e sanitização) e Playwright Electron E2E (`tests/e2e/aethera-evolution.spec.ts`, `1 passed`).
+
+
+---
+
+### Auditoria de Integração & Validação Real — Evolution 2.0 (2026-11-14)
+
+- [x] **Pipeline Principal (`apps/aethera-desktop/src/main/cinema-pipeline.ts` & `aethera-ipc.ts`)**: Conectados `matchNarrationSegmentsToMedia` (Etapa B), `resolveLearnedSceneConstraints` (Etapa C Academy), `segmentCacheDir` persistente por projeto (Etapa A2), `detectMediaAnomalies` em `cinema:probe-real-mp4` (Etapa A1) e `evaluateRenderedVisualCritic` + `runAutonomousSupervisorPass` com re-render incremental na etapa `previa` (Etapa C).
+- [x] **Cache Incremental & Recuperação (`packages/cinema/src/render/real-renderer.ts`)**: `sceneKey` expandido para incluir `sourceStat` (`mtimeMs`, `size`), `speed`, `trimIn/Out`, `fontOption`, `effects`, `beatSummary`, `beatStage`, `previewQuality`, `useNvenc`, `fps`; escrita atômica (`.tmp` -> `renameSync`), validação `size > 1024` e limpeza automática de `.tmp` órfãos após interrupção.
+- [x] **QC sem Falsos Positivos (`packages/cinema/src/qc/real-media-probe.ts`)**: `runRealMediaQc` e `evaluateRenderedVisualCritic` ignoram fades de borda (`black` na abertura/encerramento) e silêncio dramático curto (`<= 2.2s`), além de suportarem `intentionalRanges`.
+- [x] **Guarda Anti-Loop do Supervisor (`packages/cinema/src/qc/visual-critic.ts`)**: `runAutonomousSupervisorPass` limita tentativas (`maxAttempts: 2`) e bloqueia assinaturas repetidas (`previousActionSignatures`), retornando `escalate_to_user`.
+- [x] **Validação Executada**:
+  - Vitest (`evolution-2.0.test.ts`, `nle-editor-integration.test.ts`, `waveform-extractor.test.ts`, `trend-radar.test.ts`): **4 arquivos / 21 testes passando**, incluindo render real FFmpeg de 3 cenas alterando apenas a cena 2 (`cacheHits: 2`, `reRenderedScenes: 1`) e limpeza de `.tmp` órfão.
+  - TypeScript (`npm run typecheck -w @neuralbridge/aethera-desktop`): **0 erros**.
+  - Build (`npm run build:aethera`): **Concluído com sucesso**.
+- [ ] **Lacuna Conhecida**: `StagedPipelineDeps.analyzeFrameWithAI` está integrado como hook opcional; enquanto nenhum provedor multimodal de visão for plugado no `aethera-ipc.ts`, o Visual Critic executa em modo degradado determinístico. Aprovação visual final dos vídeos permanece manual.

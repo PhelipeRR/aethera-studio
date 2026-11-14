@@ -19,6 +19,7 @@ import {
   applyColorGradingControls,
   applyPromptRevisionToPackage,
   applyTargetedRepair,
+  detectMediaAnomalies,
   evaluateEnsemble,
   evaluateReleaseGates,
   exportToOtioJson,
@@ -1925,6 +1926,7 @@ export function registerAetheraDomainIpc(options: {
         voiceStudioVoiceId: '9190edfa',
         evolution: evolutionCore,
         prompt,
+        segmentCacheDir: join(app.getPath('userData'), 'cinema-projects', input.projectId, 'cache', 'segments'),
       });
       const enriched = { ...res, mediaUrl: toMediaUrl(res.mp4Path) };
       cinemaRenders.set(input.projectId, enriched);
@@ -1936,8 +1938,9 @@ export function registerAetheraDomainIpc(options: {
     async (event, input: { filePath: string; targetLufs?: number }) => {
       ensureTrusted(event.senderFrame);
       const probe = await probeRealMp4(input.filePath);
-      const realQcFindings = runRealMediaQc(probe, input.targetLufs ?? -14);
-      return { probe, realQcFindings };
+      const anomalies = await detectMediaAnomalies(input.filePath);
+      const realQcFindings = runRealMediaQc(probe, input.targetLufs ?? -14, anomalies);
+      return { probe, anomalies, realQcFindings };
     },
   );
   ipcMain.handle(

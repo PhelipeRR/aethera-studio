@@ -44,7 +44,7 @@ export interface VisualCriticReport {
 }
 
 export interface AutonomousSupervisorDecision {
-  status: 'approved_for_review' | 'needs_repair';
+  status: 'approved_for_review' | 'needs_repair' | 'escalate_to_user';
   actions: VisualCriticProposal[];
   rerenderSceneIds: string[];
   retryResearchSceneIds: string[];
@@ -192,9 +192,14 @@ export async function evaluateRenderedVisualCritic(input: {
     }
   }
 
-  // 4. Objective anomalies from FFmpeg
+  // 4. Objective anomalies from FFmpeg (ignoring edge fades & short dramatic pauses)
+  const totalTimelineSec = input.scenes.reduce((acc, s) => Math.max(acc, s.startSec + s.durationSec), 0);
   if (input.anomalies) {
     for (const blk of input.anomalies.blackIntervals) {
+      const isEdgeFade =
+        (blk.startSec < 1.0 && blk.durationSec <= 1.2) ||
+        (totalTimelineSec > 2 && blk.endSec >= totalTimelineSec - 1.0 && blk.durationSec <= 1.5);
+      if (isEdgeFade) continue;
       const hitScene = input.scenes.find(
         (s) => blk.startSec >= s.startSec && blk.startSec <= s.startSec + s.durationSec,
       );
@@ -207,6 +212,7 @@ export async function evaluateRenderedVisualCritic(input: {
       });
     }
     for (const sil of input.anomalies.silenceIntervals) {
+      if (sil.durationSec <= 2.2) continue;
       const hitScene = input.scenes.find(
         (s) => sil.startSec >= s.startSec && sil.startSec <= s.startSec + s.durationSec,
       );
@@ -244,6 +250,11 @@ export async function evaluateRenderedVisualCritic(input: {
  */
 export function runAutonomousSupervisorPass(
   report: VisualCriticReport,
+  options?: {
+    attempt?: number;
+    maxAttempts?: number;
+    previousActionSignatures?: string[];
+  },
 ): AutonomousSupervisorDecision {
   if (report.passed && report.proposedRepairs.length === 0) {
     return {
@@ -256,11 +267,32 @@ export function runAutonomousSupervisorPass(
     };
   }
 
+  const attempt = options?.attempt ?? 1;
+  const maxAttempts = options?.maxAttempts ?? 2;
+  const prevSet = new Set(options?.previousActionSignatures ?? []);
+  const novelRepairs = report.proposedRepairs.filter(
+    (r) => !prevSet.has(`${r.sceneId}:${r.action}`),
+  );
+
+  if (attempt > maxAttempts || novelRepairs.length === 0) {
+    return {
+      status: 'escalate_to_user',
+      actions: [],
+      rerenderSceneIds: [],
+      retryResearchSceneIds: [],
+      regenerateNarration: false,
+      rationale:
+        attempt > maxAttempts
+          ? `Limite de tentativas (${maxAttempts}) atingido; escalando para aprovação manual sem loop.`
+          : 'Reparos propostos já foram tentados anteriormente; evitando reprocessamento em loop.',
+    };
+  }
+
   const rerenderSet = new Set<string>();
   const researchSet = new Set<string>();
   let regenerateNarration = false;
 
-  for (const repair of report.proposedRepairs) {
+  for (const repair of novelRepairs) {
     if (repair.action === 'hide_lower_third' || repair.action === 'rerender_scene') {
       rerenderSet.add(repair.sceneId);
     } else if (repair.action === 'swap_duplicate_clip' || repair.action === 'retry_media_research') {
@@ -273,10 +305,10 @@ export function runAutonomousSupervisorPass(
 
   return {
     status: 'needs_repair',
-    actions: report.proposedRepairs,
+    actions: novelRepairs,
     rerenderSceneIds: Array.from(rerenderSet),
     retryResearchSceneIds: Array.from(researchSet),
     regenerateNarration,
-    rationale: `Supervisor determinou reparos pontuais: ${rerenderSet.size} cena(s) para re-render incremental, ${researchSet.size} para nova mídia, narração=${regenerateNarration ? 'sim' : 'não'}.`,
+    rationale: `Supervisor determinou reparos pontuais (tentativa ${attempt}/${maxAttempts}): ${rerenderSet.size} cena(s) para re-render incremental, ${researchSet.size} para nova mídia, narração=${regenerateNarration ? 'sim' : 'não'}.`,
   };
 }
