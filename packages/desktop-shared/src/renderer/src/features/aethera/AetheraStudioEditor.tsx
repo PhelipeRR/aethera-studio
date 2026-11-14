@@ -3,6 +3,7 @@ import {
   Bot,
   ChevronRight,
   Download,
+  FileText,
   Film,
   Layers,
   LoaderCircle,
@@ -14,6 +15,8 @@ import {
   Redo2,
   Save,
   Scissors,
+  Search,
+  ShieldCheck,
   Sliders,
   Sparkles,
   Type,
@@ -21,6 +24,7 @@ import {
   Upload,
   Volume2,
   Wand2,
+  X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
@@ -84,7 +88,33 @@ interface EditorPackageView {
       humorIntensity?: number;
       renderProfile?: string;
     };
+    narrativeBeats?: Array<{
+      beatId: string;
+      act: string;
+      title: string;
+      narrationText: string;
+      durationSec: number;
+    }>;
+    shots?: Array<{
+      shotId: string;
+      beatId: string;
+      framing: string;
+      cameraMotion: string;
+      motionJustification: string;
+      mediaGap: boolean;
+    }>;
+    mediaGaps?: Array<{ shotId: string; reason: string }>;
   };
+  scorecard?: {
+    technicalScore: number;
+    audioScore: number;
+    visualScore: number;
+    narrativeScore: number;
+    comedyScore: number;
+    compositeScore: number;
+  };
+  releaseGates?: { passed: boolean };
+  findings?: Array<{ issueId: string; severity: string; evidence: string; status: string }>;
   timeline: {
     projectId: string;
     version: number;
@@ -156,6 +186,20 @@ interface CinemaBridge {
   cinemaRenderRealMp4?: (input: { projectId: string; useNvenc?: boolean }) => Promise<RealRenderResultView>;
   cinemaImportMedia?: (input?: { filePath?: string }) => Promise<ImportedAsset | null>;
   cinemaListLibrary?: () => Promise<ImportedAsset[]>;
+  cinemaGetProductionState?: (projectId: string) => Promise<{
+    projectId: string;
+    prompt: string;
+    state: string;
+    progressPct: number;
+    completedStages: string[];
+    acquiredMedia?: Array<{ mediaId: string; uri?: string; kind: string; width?: number; height?: number; license?: string }>;
+    pendingMedia?: Array<{ slotIndex: number; query: string; reason: string }>;
+  } | null>;
+  cinemaUpdateScript?: (input: {
+    projectId: string;
+    treatment?: string;
+    beats?: Array<{ beatId: string; title?: string; narrationText?: string }>;
+  }) => Promise<EditorPackageView>;
   cinemaSubmitFeedback?: (input: {
     text: string;
     projectId?: string;
@@ -263,6 +307,18 @@ export function AetheraStudioEditor() {
   const [savingAudio, setSavingAudio] = useState(false);
   const [previewingBus, setPreviewingBus] = useState<string | null>(null);
   const [timelineTool, setTimelineTool] = useState<'select' | 'razor'>('select');
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditTab, setAuditTab] = useState<'script' | 'research' | 'quality'>('script');
+  const [auditJob, setAuditJob] = useState<{
+    state: string;
+    progressPct: number;
+    completedStages: string[];
+    acquiredMedia?: Array<{ mediaId: string; uri?: string; kind: string; width?: number; height?: number; license?: string }>;
+    pendingMedia?: Array<{ slotIndex: number; query: string; reason: string }>;
+  } | null>(null);
+  const [treatmentDraft, setTreatmentDraft] = useState('');
+  const [beatsDraft, setBeatsDraft] = useState<Array<{ beatId: string; act: string; title: string; narrationText: string; durationSec: number }>>([]);
+  const [savingScript, setSavingScript] = useState(false);
   const [layoutSizes, setLayoutSizes] = useState<{
     leftPct: number;
     rightPct: number;
@@ -930,6 +986,62 @@ export function AetheraStudioEditor() {
     }
   }
 
+  async function openAuditModal() {
+    if (!pkg) return;
+    setTreatmentDraft(pkg.direction?.treatment ?? '');
+    setBeatsDraft(
+      (pkg.direction?.narrativeBeats ?? []).map((b) => ({
+        beatId: b.beatId,
+        act: b.act,
+        title: b.title,
+        narrationText: b.narrationText,
+        durationSec: b.durationSec,
+      }))
+    );
+    setAuditOpen(true);
+    const api = getBridge();
+    if (api?.cinemaGetProductionState) {
+      try {
+        const job = await api.cinemaGetProductionState(pkg.timeline.projectId);
+        if (job && typeof job === 'object') {
+          setAuditJob(job as typeof auditJob);
+        } else {
+          setAuditJob(null);
+        }
+      } catch {
+        setAuditJob(null);
+      }
+    }
+  }
+
+  async function handleSaveScript() {
+    if (!pkg) return;
+    const api = getBridge();
+    if (!api?.cinemaUpdateScript) {
+      setStatusMsg('Ponte de edição de roteiro indisponível neste modo.');
+      return;
+    }
+    setSavingScript(true);
+    try {
+      const updated = await api.cinemaUpdateScript({
+        projectId: pkg.timeline.projectId,
+        treatment: treatmentDraft,
+        beats: beatsDraft.map((b) => ({
+          beatId: b.beatId,
+          title: b.title,
+          narrationText: b.narrationText,
+        })),
+      });
+      setPkg(updated);
+      setPreviewStale(true);
+      setStatusMsg('Roteiro e narração salvos no projeto.');
+    } catch (err) {
+      setStatusMsg(`Erro ao salvar roteiro: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSavingScript(false);
+    }
+  }
+
   async function handleSplitAtPlayhead(targetClipId?: string) {
     const api = getBridge();
     const target = clips.find((c) => c.clipId === (targetClipId ?? activeClipAtPlayhead?.clipId ?? selectedClipId));
@@ -1202,6 +1314,15 @@ export function AetheraStudioEditor() {
           <Link to="/aethera/review" className="rounded-lg border border-border px-2.5 py-1.5 hover:border-primary">
             Revisão
           </Link>
+          <button
+            type="button"
+            onClick={() => void openAuditModal()}
+            disabled={!pkg}
+            title="Auditoria do projeto, pesquisa, mídias e edição de roteiro"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-purple-500/40 bg-purple-500/10 px-2.5 py-1.5 text-purple-200 hover:border-purple-400 hover:bg-purple-500/20 disabled:opacity-50"
+          >
+            <FileText className="size-3.5" /> Auditoria &amp; Roteiro
+          </button>
           <button
             type="button"
             onClick={resetLayoutSizes}
@@ -2280,6 +2401,317 @@ export function AetheraStudioEditor() {
           </>
         )}
       </div>
+
+      {auditOpen && pkg && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Auditoria do Projeto e Editor de Roteiro"
+        >
+          <div className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border bg-[#0d0d17] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-border px-5 py-3">
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">
+                  Auditoria do Projeto &amp; Editor de Roteiro
+                </h2>
+                <p className="text-[11px] text-muted-foreground">
+                  {projects.find((p) => p.projectId === pkg.timeline.projectId)?.title ?? pkg.timeline.projectId} · v{pkg.timeline.version}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAuditOpen(false)}
+                className="rounded-lg border border-border p-1.5 text-muted-foreground hover:border-primary hover:text-foreground"
+                aria-label="Fechar auditoria"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 border-b border-border bg-background/40 px-5 py-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setAuditTab('script')}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium transition-colors ${
+                  auditTab === 'script'
+                    ? 'bg-purple-600/25 text-purple-200 border border-purple-500/40'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <FileText className="size-3.5" /> Roteiro &amp; Narração ({beatsDraft.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setAuditTab('research')}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium transition-colors ${
+                  auditTab === 'research'
+                    ? 'bg-purple-600/25 text-purple-200 border border-purple-500/40'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <Search className="size-3.5" /> Pesquisa &amp; Mídias ({Object.keys(pkg.timeline.sourceMedia ?? {}).length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setAuditTab('quality')}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium transition-colors ${
+                  auditTab === 'quality'
+                    ? 'bg-purple-600/25 text-purple-200 border border-purple-500/40'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <ShieldCheck className="size-3.5" /> Direção &amp; Qualidade
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 text-xs">
+              {auditTab === 'script' && (
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-medium text-purple-200">
+                      Tratamento / Sinopse Geral
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={treatmentDraft}
+                      onChange={(e) => setTreatmentDraft(e.target.value)}
+                      placeholder="Resumo narrativo e abordagem do vídeo..."
+                      className="w-full rounded-xl border border-border bg-background px-3 py-2 text-xs text-foreground focus:border-purple-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-medium text-purple-200">
+                        Cenas / Beats Narrativos ({beatsDraft.length})
+                      </span>
+                      <span className="text-[11px] text-muted-foreground">
+                        Edite o título ou texto de narração e clique em Salvar Roteiro.
+                      </span>
+                    </div>
+
+                    {beatsDraft.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-border p-4 text-center text-muted-foreground">
+                        Este projeto ainda não possui beats de roteiro estruturados.
+                      </div>
+                    ) : (
+                      beatsDraft.map((beat, idx) => (
+                        <div
+                          key={beat.beatId}
+                          className="space-y-2 rounded-xl border border-border bg-card/60 p-3"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="rounded bg-purple-500/20 px-2 py-0.5 font-mono text-[10px] text-purple-200">
+                                #{idx + 1} · {beat.act}
+                              </span>
+                              <span className="font-mono text-[10px] text-muted-foreground">
+                                {beat.durationSec}s
+                              </span>
+                            </div>
+                            <input
+                              type="text"
+                              value={beat.title}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setBeatsDraft((prev) =>
+                                  prev.map((item) =>
+                                    item.beatId === beat.beatId ? { ...item, title: val } : item
+                                  )
+                                );
+                              }}
+                              className="min-w-[240px] flex-1 rounded-lg border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground focus:border-purple-500 focus:outline-none"
+                              aria-label={`Título do beat ${idx + 1}`}
+                            />
+                          </div>
+                          <textarea
+                            rows={3}
+                            value={beat.narrationText}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setBeatsDraft((prev) =>
+                                prev.map((item) =>
+                                  item.beatId === beat.beatId ? { ...item, narrationText: val } : item
+                                )
+                              );
+                            }}
+                            className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground focus:border-purple-500 focus:outline-none"
+                            aria-label={`Narração do beat ${idx + 1}`}
+                          />
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {auditTab === 'research' && (
+                <div className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-xl border border-border bg-card/60 p-3">
+                      <p className="text-[11px] font-medium text-purple-200">Mídias no Projeto ({Object.keys(pkg.timeline.sourceMedia ?? {}).length})</p>
+                      <div className="mt-2 max-h-60 space-y-1.5 overflow-y-auto">
+                        {Object.values(pkg.timeline.sourceMedia ?? {}).length === 0 ? (
+                          <p className="text-muted-foreground">Nenhuma mídia vinculada ao projeto.</p>
+                        ) : (
+                          Object.values(pkg.timeline.sourceMedia ?? {}).map((m) => (
+                            <div key={m.mediaId} className="rounded-lg border border-border/70 bg-background/60 p-2">
+                              <p className="truncate font-medium text-foreground">{m.mediaId}</p>
+                              <p className="truncate text-[10px] text-muted-foreground">
+                                {m.kind}{m.width && m.height ? ` · ${m.width}x${m.height}` : ''} · {m.license}
+                              </p>
+                              {m.uri && (
+                                <p className="truncate font-mono text-[10px] text-muted-foreground">{m.uri}</p>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-border bg-card/60 p-3">
+                      <p className="text-[11px] font-medium text-purple-200">
+                        Aquisição &amp; Lacunas de Pesquisa
+                      </p>
+                      <div className="mt-2 max-h-60 space-y-1.5 overflow-y-auto">
+                        {auditJob ? (
+                          <>
+                            <p className="text-[11px] text-muted-foreground">
+                              Estado: <span className="text-foreground">{auditJob.state}</span> ({auditJob.progressPct}%) · Etapas:{' '}
+                              {auditJob.completedStages?.join(', ') || 'nenhuma'}
+                            </p>
+                            {(auditJob.acquiredMedia ?? []).map((am) => (
+                              <div key={am.mediaId} className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2">
+                                <p className="truncate font-medium text-emerald-200">{am.mediaId}</p>
+                                <p className="truncate text-[10px] text-emerald-300/80">
+                                  {am.kind} {am.width && am.height ? `· ${am.width}x${am.height}` : ''} {am.license ? `· ${am.license}` : ''}
+                                </p>
+                              </div>
+                            ))}
+                            {(auditJob.pendingMedia ?? []).map((pm) => (
+                              <div key={`${pm.slotIndex}-${pm.query}`} className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2">
+                                <p className="font-medium text-amber-200">Pendente (Slot {pm.slotIndex}): {pm.query}</p>
+                                <p className="text-[10px] text-amber-300/80">{pm.reason}</p>
+                              </div>
+                            ))}
+                          </>
+                        ) : (
+                          <p className="text-muted-foreground">Nenhum registro de job de produção IA encontrado para este projeto.</p>
+                        )}
+                        {(pkg.direction?.mediaGaps ?? []).map((gap) => (
+                          <div key={gap.shotId} className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2">
+                            <p className="font-medium text-rose-200">Lacuna em {gap.shotId}</p>
+                            <p className="text-[10px] text-rose-300/80">{gap.reason}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {auditTab === 'quality' && (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-border bg-card/60 p-3">
+                    <p className="text-[11px] font-medium text-purple-200">Briefing Original</p>
+                    <p className="mt-1 whitespace-pre-wrap text-foreground">
+                      {pkg.direction?.brief?.prompt || 'Sem briefing registrado.'}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+                      {pkg.direction?.brief?.genre && <span>Gênero: {pkg.direction.brief.genre}</span>}
+                      {pkg.direction?.brief?.targetDurationSec && (
+                        <span>Alvo: {pkg.direction.brief.targetDurationSec}s</span>
+                      )}
+                      {pkg.direction?.brief?.humorIntensity !== undefined && (
+                        <span>Humor: {Math.round(pkg.direction.brief.humorIntensity * 100)}%</span>
+                      )}
+                      {pkg.direction?.brief?.renderProfile && (
+                        <span>Perfil: {pkg.direction.brief.renderProfile}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {pkg.scorecard && (
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-6">
+                      {[
+                        ['Geral', pkg.scorecard.compositeScore],
+                        ['Técnico', pkg.scorecard.technicalScore],
+                        ['Áudio', pkg.scorecard.audioScore],
+                        ['Visual', pkg.scorecard.visualScore],
+                        ['Narrativa', pkg.scorecard.narrativeScore],
+                        ['Humor', pkg.scorecard.comedyScore],
+                      ].map(([label, val]) => (
+                        <div key={String(label)} className="rounded-xl border border-border bg-card/60 p-2.5 text-center">
+                          <p className="text-[10px] text-muted-foreground">{label}</p>
+                          <p className="mt-0.5 text-sm font-semibold text-foreground">{String(val)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="rounded-xl border border-border bg-card/60 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] font-medium text-purple-200">Release Gates &amp; Achados</p>
+                      {pkg.releaseGates && (
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                            pkg.releaseGates.passed
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : 'bg-amber-500/20 text-amber-300'
+                          }`}
+                        >
+                          {pkg.releaseGates.passed ? 'Aprovado' : 'Com pendências'}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-2 space-y-1.5">
+                      {(pkg.findings ?? []).length === 0 ? (
+                        <p className="text-muted-foreground">Nenhum achado crítico registrado.</p>
+                      ) : (
+                        (pkg.findings ?? []).map((f) => (
+                          <div key={f.issueId} className="rounded-lg border border-border/70 bg-background/60 p-2">
+                            <p className="font-medium text-foreground">
+                              [{f.severity}] {f.issueId} ({f.status})
+                            </p>
+                            <p className="text-[11px] text-muted-foreground">{f.evidence}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between border-t border-border bg-background/60 px-5 py-3 text-xs">
+              <span className="text-[11px] text-muted-foreground">
+                Alterações no roteiro incrementam a versão do projeto automaticamente.
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAuditOpen(false)}
+                  className="rounded-lg border border-border px-3 py-1.5 text-muted-foreground hover:border-primary hover:text-foreground"
+                >
+                  Fechar
+                </button>
+                {auditTab === 'script' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveScript()}
+                    disabled={savingScript}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-amber-500 px-3.5 py-1.5 font-semibold text-white hover:brightness-110 disabled:opacity-50"
+                  >
+                    {savingScript ? <LoaderCircle className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+                    {savingScript ? 'Salvando Roteiro...' : 'Salvar Roteiro'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -2257,6 +2257,53 @@ export function registerAetheraDomainIpc(options: {
   });
 
   ipcMain.handle(
+    'cinema:update-script',
+    async (
+      event,
+      input: {
+        projectId: string;
+        treatment?: string;
+        beats?: Array<{ beatId: string; title?: string; narrationText?: string }>;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      let pkg: CinemaProductionPackage | null = cinemaPackages.get(input.projectId) ?? null;
+      if (!pkg) {
+        const file = join(cinemaProjectsDir, `${input.projectId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`);
+        if (existsSync(file)) {
+          pkg = JSON.parse(readFileSync(file, 'utf8')) as CinemaProductionPackage;
+          cinemaPackages.set(input.projectId, pkg);
+        }
+      }
+      if (!pkg) throw new Error('not_found: projeto não encontrado para editar roteiro.');
+      const beatMap = new Map((input.beats ?? []).map((b) => [b.beatId, b]));
+      const updatedBeats = pkg.direction.narrativeBeats.map((beat) => {
+        const patch = beatMap.get(beat.beatId);
+        if (!patch) return beat;
+        return {
+          ...beat,
+          ...(typeof patch.title === 'string' ? { title: patch.title } : {}),
+          ...(typeof patch.narrationText === 'string' ? { narrationText: patch.narrationText } : {}),
+        };
+      });
+      const updated: CinemaProductionPackage = {
+        ...pkg,
+        direction: {
+          ...pkg.direction,
+          ...(typeof input.treatment === 'string' ? { treatment: input.treatment } : {}),
+          narrativeBeats: updatedBeats,
+        },
+        timeline: recomputeTimelineFingerprints({
+          ...pkg.timeline,
+          version: pkg.timeline.version + 1,
+        }),
+      };
+      persistCinemaProject(updated);
+      return updated;
+    },
+  );
+
+  ipcMain.handle(
     'cinema:update-color-grade',
     async (
       event,

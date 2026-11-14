@@ -57,6 +57,11 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   }) => ipcRenderer.invoke('cinema:update-color-plan', input),
   cinemaApplyPromptRevision: (input: { projectId: string; instruction: string; selectedClipId?: string }) =>
     ipcRenderer.invoke('cinema:apply-prompt-revision', input),
+  cinemaUpdateScript: (input: {
+    projectId: string;
+    treatment?: string;
+    beats?: Array<{ beatId: string; title?: string; narrationText?: string }>;
+  }) => ipcRenderer.invoke('cinema:update-script', input),
   cinemaStartStagedProduction: (input: Record<string, unknown>) =>
     ipcRenderer.invoke('cinema:start-staged-production', input),
   cinemaCancelProduction: (projectId: string) => ipcRenderer.invoke('cinema:cancel-production', projectId),
