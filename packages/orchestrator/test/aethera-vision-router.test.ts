@@ -108,4 +108,42 @@ describe('VisionRouter', () => {
     expect(result.attempts.at(-1)?.outcome).toBe('over_budget');
     expect(calls).toEqual([]);
   });
+
+  it('places quota-blocked providers on cooldown and reports health status without repeating calls', async () => {
+    let codexCalls = 0;
+    const codexQuotaProvider: VisualAnalysisProvider = {
+      id: 'codex',
+      model: 'gpt-5-codex',
+      capabilities: ['describe'],
+      limits: { maxImagesPerCall: 3 },
+      detect: async () => ({ available: true }),
+      describe: async () => {
+        codexCalls += 1;
+        throw new Error('ERROR: You’ve hit your usage limit. Try again later.');
+      },
+    };
+    const claudeOk: VisualAnalysisProvider = {
+      id: 'claude',
+      model: 'sonnet',
+      capabilities: ['describe'],
+      limits: { maxImagesPerCall: 3 },
+      detect: async () => ({ available: true }),
+      describe: async () => ({ description: 'Anime scene verified', tags: ['anime'] }),
+    };
+    const cooldowns = new Map<string, { untilMs: number; reason: string }>();
+    const router1 = new Router([codexQuotaProvider, claudeOk], memoryCache(), [], undefined, undefined, cooldowns);
+    const res1 = await router1.describe({ frames: [frames[0]!], policy: policy({ chain: ['codex', 'claude'] }) });
+    expect(res1.provider).toBe('claude');
+    expect(codexCalls).toBe(1);
+
+    const router2 = new Router([codexQuotaProvider, claudeOk], memoryCache(), [], undefined, undefined, cooldowns);
+    const health = await router2.checkProvidersHealth(['codex', 'claude']);
+    expect(health[0]?.available).toBe(false);
+    expect(health[0]?.reason).toMatch(/quota_cooldown/);
+    expect(health[1]?.available).toBe(true);
+
+    const res2 = await router2.describe({ frames: [frames[1]!], policy: policy({ chain: ['codex', 'claude'] }) });
+    expect(res2.provider).toBe('claude');
+    expect(codexCalls).toBe(1);
+  });
 });

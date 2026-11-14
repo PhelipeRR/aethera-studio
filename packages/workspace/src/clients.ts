@@ -54,8 +54,17 @@ export function findClientCli(client: McpClientId, env: Record<string, string | 
   const override = overrideCli(client, env);
   if (override) return override;
   if (client === 'claude') {
-    const exe = findOnPath(env, 'claude.exe');
-    return exe ? { command: exe, args: [] } : null;
+    const exe = findOnPath(env, 'claude.exe') ?? findOnPath(env, 'claude');
+    if (exe) return { command: exe, args: [] };
+    const home = env['USERPROFILE'] ?? env['HOME'] ?? homedir();
+    const localAppData = env['LOCALAPPDATA'] ?? join(home, 'AppData', 'Local');
+    const candidates = [
+      join(home, '.local', 'bin', 'claude.exe'),
+      join(localAppData, 'Programs', 'claude', 'claude.exe'),
+      join(localAppData, 'Microsoft', 'WinGet', 'Links', 'claude.exe'),
+    ];
+    const found = candidates.find((p) => existsSync(p));
+    return found ? { command: found, args: [] } : null;
   }
   const native = findOnPath(env, 'codex.exe');
   if (native) return { command: native, args: [] };

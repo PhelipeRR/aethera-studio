@@ -111,6 +111,7 @@ import {
   createScriptStageAdapter,
   createStoryboardStageAdapter,
   createSyncStageAdapter,
+  createOllamaLocalVlmProvider,
   createTaskEngineVisionProvider,
   createVisionProviders,
   createVisualIndexStageAdapter,
@@ -130,6 +131,7 @@ import {
   tokenReport,
   toYouTubePublicationRequest,
   VisionRouter,
+  type VisionCooldownEntry,
   YOUTUBE_ENDPOINTS,
   type YouTubeEndpoints,
 } from '@neuralbridge/orchestrator';
@@ -172,6 +174,7 @@ import {
   defaultYtDlp,
   detectSilences,
   extractStillDataUrl,
+  findClientCli,
   generateVoiceStudioNarration,
   insertSilences,
   inspectRenderQuality,
@@ -1699,6 +1702,7 @@ export function registerAetheraDomainIpc(options: {
   const editorialCalendar = new EditorialCalendarEngine(
     join(app.getPath('userData'), 'calendar', 'editorial-calendar-store.json'),
   );
+  const visionProviderCooldowns = new Map<string, VisionCooldownEntry>();
   const stagedPipeline = new StagedCinemaPipeline({
     jobsDir: join(app.getPath('userData'), 'cinema-jobs'),
     mediaDir: join(app.getPath('userData'), 'cinema-media'),
@@ -1752,32 +1756,50 @@ export function registerAetheraDomainIpc(options: {
         hash: createHash('sha256').update(readFileSync(framePath)).digest('hex'),
         atMs: Math.round((timestampsSec[idx] ?? 0) * 1000),
       }));
-      const configured = taskEngine
-        ? [
-            createTaskEngineVisionProvider({
-              id: 'claude',
-              model: 'sonnet',
-              root: frameDir,
-              projectId: segment.segmentId,
-              enabled: true,
-              taskEngine,
-            }),
-            createTaskEngineVisionProvider({
-              id: 'codex',
-              model: 'gpt-5-codex',
-              root: frameDir,
-              projectId: segment.segmentId,
-              enabled: true,
-              taskEngine,
-            }),
-          ]
-        : [];
-      const router = new VisionRouter(createVisionProviders(configured), {
-        get: (k) => visionCache.get(JSON.stringify(k)),
-        put: (k, v) => {
-          visionCache.set(JSON.stringify(k), v);
+      const configured = [
+        ...(taskEngine
+          ? [
+              createTaskEngineVisionProvider({
+                id: 'claude',
+                model: 'sonnet',
+                root: frameDir,
+                projectId: segment.segmentId,
+                enabled: true,
+                taskEngine,
+                checkAvailable: async () =>
+                  findClientCli('claude')
+                    ? { available: true }
+                    : { available: false, reason: 'Claude CLI (claude.exe) não encontrado.' },
+              }),
+              createTaskEngineVisionProvider({
+                id: 'codex',
+                model: 'gpt-5-codex',
+                root: frameDir,
+                projectId: segment.segmentId,
+                enabled: true,
+                taskEngine,
+                checkAvailable: async () =>
+                  findClientCli('codex')
+                    ? { available: true }
+                    : { available: false, reason: 'Codex CLI não encontrado.' },
+              }),
+            ]
+          : []),
+        createOllamaLocalVlmProvider(),
+      ];
+      const router = new VisionRouter(
+        createVisionProviders(configured),
+        {
+          get: (k) => visionCache.get(JSON.stringify(k)),
+          put: (k, v) => {
+            visionCache.set(JSON.stringify(k), v);
+          },
         },
-      });
+        [],
+        undefined,
+        undefined,
+        visionProviderCooldowns,
+      );
       const policy: VisionPolicy = {
         schemaVersion: 1,
         task: 'describe',

@@ -25,6 +25,10 @@ export type VisionCacheKey = { frameHash: string; provider: string; model: strin
 export interface VisionCachePort { get(key: VisionCacheKey): unknown; put(key: VisionCacheKey, value: unknown): void }
 export interface VisionSpendPort { get(key: string): number; add(key: string, amount: number): number }
 export type VisionAttemptOutcome = 'ok' | 'cached' | 'low_confidence' | 'unavailable' | 'over_budget' | 'error';
+export interface VisionCooldownEntry { untilMs: number; reason: string }
+export function isVisionQuotaError(message: string): boolean {
+  return /usage limit|quota|rate[- ]limit|too many requests|\b429\b|try again at|insufficient[_ ]quota|credit balance/i.test(message);
+}
 type Attempt = { provider: string; outcome: VisionAttemptOutcome; detail?: string };
 export interface VisionRouting extends VisionClassification { provider: string | null; model: string | null; band: ConfidenceBand; calibratedConfidence: number | null; costUsd: number; attempts: Attempt[] }
 export interface VisionResult<T> { value: T | null; provider: string | null; model: string | null; costUsd: number; attempts: Attempt[]; refs: string[]; reportedModel?: string | null }
@@ -38,10 +42,33 @@ class VisionOverBudgetError extends Error { constructor() { super('vision budget
 export class VisionRouter {
   private readonly providers: Map<string, VisualAnalysisProvider>;
   private readonly spend: VisionSpendPort;
-  constructor(providers: readonly VisualAnalysisProvider[], private readonly cache: VisionCachePort, private readonly calibrations: readonly ConfidenceCalibration[] = [], spend?: VisionSpendPort, private readonly scheduler: VisualWorkScheduler = visionGpuScheduler) {
+  constructor(providers: readonly VisualAnalysisProvider[], private readonly cache: VisionCachePort, private readonly calibrations: readonly ConfidenceCalibration[] = [], spend?: VisionSpendPort, private readonly scheduler: VisualWorkScheduler = visionGpuScheduler, private readonly cooldowns: Map<string, VisionCooldownEntry> = new Map()) {
     this.providers = new Map(providers.map((provider) => [provider.id, provider]));
     const amounts = new Map<string, number>();
     this.spend = spend ?? { get: (key) => amounts.get(key) ?? 0, add: (key, amount) => { const total = (amounts.get(key) ?? 0) + amount; amounts.set(key, total); return total; } };
+  }
+
+  async checkProvidersHealth(chain: readonly string[]): Promise<Array<{ provider: string; available: boolean; reason?: string }>> {
+    const out: Array<{ provider: string; available: boolean; reason?: string }> = [];
+    for (const id of chain) {
+      const cd = this.cooldowns.get(id);
+      if (cd && cd.untilMs > Date.now()) {
+        out.push({ provider: id, available: false, reason: `quota_cooldown: ${cd.reason}` });
+        continue;
+      }
+      const provider = this.providers.get(id);
+      if (!provider) {
+        out.push({ provider: id, available: false, reason: 'not configured' });
+        continue;
+      }
+      try {
+        const res = await provider.detect();
+        out.push(res.available ? { provider: id, available: true } : { provider: id, available: false, reason: res.reason });
+      } catch (err) {
+        out.push({ provider: id, available: false, reason: err instanceof Error ? err.message : 'detect failed' });
+      }
+    }
+    return out;
   }
 
   async classify(input: Request & { frames: readonly VisionFrame[]; labels: readonly SegmentKind[] }): Promise<VisionRouting> {
@@ -78,6 +105,11 @@ export class VisionRouter {
     const budgetKey = input.budgetKey ?? `${input.policy.scope}:${input.policy.version}`;
     for (const id of input.policy.chain) {
       if (input.signal?.aborted) throw new Error('cancelled: visual analysis interrupted.');
+      const cd = this.cooldowns.get(id);
+      if (cd && cd.untilMs > Date.now()) {
+        attempts.push({ provider: id, outcome: 'unavailable', detail: `quota_cooldown: ${cd.reason}` });
+        continue;
+      }
       const provider = this.providers.get(id);
       if (!provider || !provider.capabilities.includes(capability)) { attempts.push({ provider: id, outcome: 'unavailable', detail: `capability ${capability} unavailable` }); continue; }
       const controller = new AbortController();
@@ -160,7 +192,13 @@ export class VisionRouter {
       } catch (error) {
         if (input.signal?.aborted) throw new Error('cancelled: visual analysis interrupted.', { cause: error });
         if (error instanceof VisionOverBudgetError) attempts.push({ provider: id, outcome: 'over_budget' });
-        else attempts.push({ provider: id, outcome: 'error', detail: error instanceof Error ? error.message : 'provider error' });
+        else {
+          const detail = error instanceof Error ? error.message : 'provider error';
+          if (isVisionQuotaError(detail)) {
+            this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: detail.slice(-160) });
+          }
+          attempts.push({ provider: id, outcome: 'error', detail });
+        }
       } finally { clearTimeout(timer); input.signal?.removeEventListener('abort', abort); }
     }
     return empty();
