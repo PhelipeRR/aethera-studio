@@ -416,4 +416,88 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(audit.autoResolvedGaps.some((g) => g.segmentId === 's2' && g.resolvedInRound === 2)).toBe(true);
     expect(audit.unresolvedGapsForReview.map((g) => g.segmentId)).toEqual(['s3']);
   });
+
+  it('audit: accepts same-universe DBZ Vegeta clip without false negative, rejects other anime, and enforces deadline + deduplication', async () => {
+    const dbzPrompt = 'Análise completa de Dragon Ball Z: Saga Freeza em Namekusei';
+    const seg2 = {
+      segmentId: 'seg_2',
+      prompt: dbzPrompt,
+      narrationText: 'Gohan e Kuririn enfrentam os soldados de Freeza em Namekusei.',
+      genre: 'anime',
+      expectedEntities: ['gohan', 'kuririn', 'freeza'],
+    };
+
+    // Mesmo universo narrativo (DBZ / Vegeta) não deve ser rejeitado por falso negativo
+    const vegetaDecision = await evaluateMediaRelevance(
+      {
+        mediaId: 'yt_vegeta',
+        uri: 'yt_slot_7.mp4',
+        title: 'DBZ Vegeta fica muito irado !',
+        origin: 'yt_dlp',
+        durationSec: 155,
+      },
+      seg2,
+    );
+    expect(vegetaDecision.accepted).toBe(true);
+    expect(vegetaDecision.relevanceTier).toBe('same_universe_context');
+
+    // Outro anime (Naruto) deve ser rejeitado
+    const narutoDecision = await evaluateMediaRelevance(
+      {
+        mediaId: 'yt_naruto',
+        uri: 'naruto.mp4',
+        title: 'Naruto Shippuden Sasuke vs Itachi AMV',
+        origin: 'yt_dlp',
+        durationSec: 120,
+        visualCategoryHint: 'anime_animation',
+      },
+      seg2,
+    );
+    expect(narutoDecision.accepted).toBe(false);
+    expect(narutoDecision.rejectionCode).toBe('generic_anime_style_without_entity');
+
+    // Deadline previsível + deduplicação SHA-256
+    const tmp = mkdtempSync(join(tmpdir(), 'aethera-deadline-'));
+    const { writeFileSync } = await import('node:fs');
+    const dupA = join(tmp, 'dupA.mp4');
+    const dupB = join(tmp, 'dupB.mp4');
+    const sameBytes = Buffer.from('identical-video-payload-bytes'.repeat(100));
+    writeFileSync(dupA, sameBytes);
+    writeFileSync(dupB, sameBytes);
+
+    const audit = await runAutonomousMediaAcquisition({
+      projectId: 'deadline_test',
+      prompt: dbzPrompt,
+      genre: 'anime',
+      mediaDir: tmp,
+      segments: [
+        { segmentId: 's1', subject: 'Goku', narrationText: 'Goku em Namek', entities: ['goku'], expectedDurationSec: 30 },
+        { segmentId: 's2', subject: 'Freeza', narrationText: 'Freeza ataca', entities: ['freeza'], expectedDurationSec: 30 },
+      ],
+      limits: { maxRounds: 2, maxDurationMs: 1200, perOperationTimeoutMs: 400 },
+      deps: {
+        localMediaDirs: [],
+        fetchImpl: (async () => new Response('{}', { status: 404 })) as unknown as typeof fetch,
+        ytDlpSearchFn: async (_q, _c, sig) => {
+          await new Promise((resolve, reject) => {
+            const t = setTimeout(resolve, 600);
+            sig?.addEventListener('abort', () => {
+              clearTimeout(t);
+              reject(new Error('aborted'));
+            });
+          });
+          return [
+            { url: 'https://example.com/a', title: 'Dragon Ball Z Goku', durationSec: 15 },
+            { url: 'https://example.com/b', title: 'Dragon Ball Z Goku Mirror', durationSec: 15 },
+          ];
+        },
+        ytDlpAcquireFn: async (url) => (url.endsWith('/a') ? dupA : dupB),
+      },
+    });
+
+    expect(audit.elapsedMs).toBeLessThan(2200);
+    expect(audit.stoppedReason).toBe('deadline_exceeded');
+    expect(audit.duplicateFilesSkipped).toBe(1);
+    expect(audit.approvedForAssemblyCount).toBe(1);
+  });
 });

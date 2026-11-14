@@ -48,6 +48,7 @@ export interface MediaRelevanceDecision {
   mediaId: string;
   accepted: boolean;
   score: number;
+  relevanceTier?: 'exact_segment_match' | 'same_universe_context' | 'rejected';
   rejectionCode?:
     | 'unrelated_real_person'
     | 'wrong_anime_or_entity'
@@ -57,6 +58,7 @@ export interface MediaRelevanceDecision {
     | 'insufficient_metadata_and_visual_match';
   reason: string;
   sampledTimestampsSec: number[];
+  extractedFramePaths?: string[];
   matchedEntities: string[];
   visualCategory: VisualCategory;
 }
@@ -83,11 +85,30 @@ const STOPWORDS = new Set([
   'anime', 'manga', 'jogo', 'jogos', 'game', 'games', 'historia', 'episodio', 'capitulo',
 ]);
 
+const UNIVERSE_ALIASES: Array<[RegExp, string]> = [
+  [/\bdbz\b/g, 'dragon ball dragon ball z'],
+  [/\bdbs\b/g, 'dragon ball super dragon ball'],
+  [/\bssj\b/g, 'super saiyajin super saiyan'],
+  [/\bnamek\b/g, 'namekusei namek'],
+  [/\bfrieza\b/g, 'freeza frieza'],
+  [/\bkrillin\b/g, 'kuririn krillin'],
+];
+
+function expandNarrativeAliases(normalizedText: string): string {
+  let out = normalizedText;
+  for (const [pattern, replacement] of UNIVERSE_ALIASES) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
 export function extractTopicEntities(text: string): string[] {
-  const cleaned = text
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
+  const cleaned = expandNarrativeAliases(
+    text
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase(),
+  );
   const tokens = cleaned.match(/[a-z0-9]{3,}/g) ?? [];
   const unique: string[] = [];
   for (const token of tokens) {
@@ -239,20 +260,26 @@ export async function evaluateMediaRelevance(
         ).sort((a, b) => b[1] - a[1])[0]?.[0] as VisualCategory)
       : inferVisualCategoryFromMetadata(candidate);
 
-  const combinedText = [
-    candidate.title ?? '',
-    candidate.description ?? '',
-    (candidate.tags ?? []).join(' '),
-    candidate.transcriptExcerpt ?? '',
-    ...frameAnalyses.map((f) => `${f.description ?? ''} ${(f.detectedEntities ?? []).join(' ')}`),
-  ]
-    .join(' ')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
+  const combinedText = expandNarrativeAliases(
+    [
+      candidate.title ?? '',
+      candidate.description ?? '',
+      (candidate.tags ?? []).join(' '),
+      candidate.transcriptExcerpt ?? '',
+      ...frameAnalyses.map((f) => `${f.description ?? ''} ${(f.detectedEntities ?? []).join(' ')}`),
+    ]
+      .join(' ')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase(),
+  );
 
   const candidateEntities = extractTopicEntities(combinedText);
   const matchedEntities = expectedEntities.filter(
+    (entity) => combinedText.includes(entity) || candidateEntities.includes(entity),
+  );
+  const universeEntities = extractTopicEntities(segment.prompt);
+  const matchedUniverseEntities = universeEntities.filter(
     (entity) => combinedText.includes(entity) || candidateEntities.includes(entity),
   );
 
@@ -270,6 +297,7 @@ export async function evaluateMediaRelevance(
       mediaId: candidate.mediaId,
       accepted: false,
       score: 0.1,
+      relevanceTier: 'rejected',
       rejectionCode: 'unrelated_real_person',
       reason:
         'Mídia exibe pessoa real em câmera/vlog/react sem justificativa de entrevista, bastidores ou live-action para roteiro de anime.',
@@ -279,13 +307,14 @@ export async function evaluateMediaRelevance(
     };
   }
 
-  // 4. For anime content, validate specific work/character/context when required — never accept generic anime-style blindly
-  if (expectsAnime && expectedEntities.length > 0 && matchedEntities.length === 0) {
+  // 4. For anime content, validate specific work/character/context OR same narrative universe — never accept generic anime-style blindly
+  if (expectsAnime && expectedEntities.length > 0 && matchedEntities.length === 0 && matchedUniverseEntities.length === 0) {
     const isGenericAnime = dominantVisualCategory === 'anime_animation';
     return {
       mediaId: candidate.mediaId,
       accepted: false,
       score: isGenericAnime ? 0.25 : 0.05,
+      relevanceTier: 'rejected',
       rejectionCode: isGenericAnime ? 'generic_anime_style_without_entity' : 'wrong_anime_or_entity',
       reason: isGenericAnime
         ? `Estilo anime genérico sem comprovação da obra/personagem/contexto esperado (${expectedEntities.slice(0, 4).join(', ')}).`
@@ -297,11 +326,18 @@ export async function evaluateMediaRelevance(
   }
 
   // 5. General entity overlap check for non-anime topics (e.g., different games)
-  if (!expectsAnime && expectedEntities.length >= 2 && matchedEntities.length === 0 && candidateEntities.length > 0) {
+  if (
+    !expectsAnime &&
+    expectedEntities.length >= 2 &&
+    matchedEntities.length === 0 &&
+    matchedUniverseEntities.length === 0 &&
+    candidateEntities.length > 0
+  ) {
     return {
       mediaId: candidate.mediaId,
       accepted: false,
       score: 0.15,
+      relevanceTier: 'rejected',
       rejectionCode: 'wrong_game_or_topic',
       reason: `Mídia incompatível com o tema/jogo esperado (${expectedEntities.slice(0, 4).join(', ')}).`,
       sampledTimestampsSec,
@@ -310,8 +346,13 @@ export async function evaluateMediaRelevance(
     };
   }
 
-  const entityScore =
-    expectedEntities.length > 0 ? Math.min(1, matchedEntities.length / Math.min(3, expectedEntities.length)) : 0.6;
+  const isSameUniverseFallback = matchedEntities.length === 0 && matchedUniverseEntities.length > 0;
+  const effectiveMatched = matchedEntities.length > 0 ? matchedEntities : matchedUniverseEntities;
+  const entityScore = isSameUniverseFallback
+    ? 0.65
+    : expectedEntities.length > 0
+      ? Math.min(1, matchedEntities.length / Math.min(3, expectedEntities.length))
+      : 0.6;
   const visualBonus =
     expectsAnime && dominantVisualCategory === 'anime_animation'
       ? 0.25
@@ -325,10 +366,11 @@ export async function evaluateMediaRelevance(
       mediaId: candidate.mediaId,
       accepted: false,
       score,
+      relevanceTier: 'rejected',
       rejectionCode: 'insufficient_metadata_and_visual_match',
       reason: 'Evidência visual e de metadados insuficiente para confirmar relevância.',
       sampledTimestampsSec,
-      matchedEntities,
+      matchedEntities: effectiveMatched,
       visualCategory: dominantVisualCategory,
     };
   }
@@ -337,12 +379,14 @@ export async function evaluateMediaRelevance(
     mediaId: candidate.mediaId,
     accepted: true,
     score,
-    reason:
-      matchedEntities.length > 0
-        ? `Relevância confirmada (${matchedEntities.slice(0, 4).join(', ')}) em ${sampledTimestampsSec.length} frames distribuídos.`
+    relevanceTier: isSameUniverseFallback ? 'same_universe_context' : 'exact_segment_match',
+    reason: isSameUniverseFallback
+      ? `Pertence ao mesmo universo narrativo (${effectiveMatched.slice(0, 4).join(', ')}) do roteiro, embora destaque outro personagem/momento.`
+      : effectiveMatched.length > 0
+        ? `Relevância confirmada (${effectiveMatched.slice(0, 4).join(', ')}) em ${sampledTimestampsSec.length} frames distribuídos.`
         : 'Relevância contextual compatível.',
     sampledTimestampsSec,
-    matchedEntities,
+    matchedEntities: effectiveMatched,
     visualCategory: dominantVisualCategory,
   };
 }

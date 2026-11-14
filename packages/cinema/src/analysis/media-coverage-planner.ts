@@ -321,8 +321,13 @@ export function planMediaCoverage(input: {
       seg.entities && seg.entities.length > 0 ? seg.entities : extractTopicEntities(`${seg.subject} ${seg.narrationText}`);
 
     const candidates = validAssets.filter((asset) => {
-      if (!asset.relevantToEntities || asset.relevantToEntities.length === 0) return true;
-      return entities.some((e) => asset.relevantToEntities!.includes(e));
+      if (!asset.relevantToEntities || asset.relevantToEntities.length === 0) {
+        return !input.requireRelevanceApproval || entities.length === 0;
+      }
+      const hasDirectOverlap = entities.some((e) => asset.relevantToEntities!.includes(e));
+      if (hasDirectOverlap) return true;
+      const decision = decisionByMediaId.get(asset.mediaId);
+      return decision?.accepted === true && decision.relevanceTier === 'same_universe_context';
     });
 
     const segUsages = usages.filter((u) => u.segmentId === seg.segmentId);
