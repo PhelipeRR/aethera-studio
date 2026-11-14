@@ -92,3 +92,14 @@ Matriz de maturidade após auditoria e correções de integração no pipeline p
 - **Provedor real reutilizado (sem duplicação):** `apps/aethera-desktop/src/main/aethera-ipc.ts` conecta `analyzeFrameWithAI` ao `VisionRouter` + `createVisionProviders` + `createTaskEngineVisionProvider` (`@neuralbridge/orchestrator`), com fallback automático `['claude', 'codex', 'local-siglip', 'local-vlm', 'ffmpeg-heuristics']`, operando com 1 único provedor ou em modo degradado.
 - **Critérios avaliados (`packages/cinema/src/qc/visual-critic.ts`):** composição, HUD (`hide_lower_third`), legendas/tipografia (`adjust_typography`), repetição visual (`swap_duplicate_clip`), correspondência narração-imagem (`retry_media_research`), VFX (`adjust_vfx`) e SFX (`adjust_sfx`).
 - **Reparos direcionados & cache incremental:** `cinema-pipeline.ts` aplica reparos somente nas cenas em `rerenderSceneIds`, preserva cenas aprovadas e reutiliza `segmentCacheDir`, com segunda passagem anti-loop (`maxAttempts: 2`, `escalate_to_user`).
+
+### Validação End-to-End de Produção Autônoma (~5 min: TOP 5 Jogos de 2027) — 2026-11-14
+
+- **Projeto preservado para Sala de Revisão e edição por prompt:** `cinema_top5_2027_e2e` (`%APPDATA%\AetheraStudio\cinema-jobs\cinema_top5_2027_e2e.job.json`).
+- **Script reproduzível:** `scripts/e2e-production-top5-2027.mts`.
+- **Resultados reais observados:**
+  - MP4 final: `298s` (~5 min), `81.95 MB`, `1280x720 @ 30fps`, `h264/aac 48kHz`, `avDurationDeltaSec: 0`, `frozenSegmentsCount: 0`, `silenceEventsCount: 0`.
+  - Narração: `voicestudio_tts` (Voice Studio RTX 4060 Ti).
+  - Mídias reais: 4 trailers baixados via `yt-dlp` (com pausa em `paused_pending_media` quando faltou mídia e retomada via `resolvePendingMedia`).
+  - AI Visual Critic (`claude-cli`): inspecionou os 6 frames PNG reais, identificando desalinhamentos reais entre trailer e narração (`clip_2`, `clip_4`, `clip_5`, `clip_6`); após reparo direcionado do Supervisor, `clip_2` e `clip_5` passaram (`cacheHits: 3`, `reRenderedScenes: 3`).
+  - Problemas reais reportados para intervenção manual: `blackdetect` em `clip_3` (`124.43s–125.1s` e `126.47s–127.23s`), `loudness_drift` (`-19.5 LUFS` vs `-14.0 LUFS`) e falta de trailer específico de *Fable* em `clip_4`.

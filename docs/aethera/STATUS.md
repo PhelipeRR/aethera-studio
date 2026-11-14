@@ -667,3 +667,15 @@ composição, ritmo e coerência.
   - TypeScript (`npm run typecheck -w @neuralbridge/aethera-desktop`): **0 erros**.
   - Build (`npm run build:aethera`): **Concluído com sucesso**.
 - [x] **Aprovação visual final**: Permanece manual pelo usuário.
+
+### Validação End-to-End de Produção Autônoma (~5 min: TOP 5 Jogos de 2027) — 2026-11-14
+
+- [x] **Produção E2E real executada (`scripts/e2e-production-top5-2027.mts`)**:
+  - **MP4 final**: `C:\Users\Pheli\AppData\Roaming\AetheraStudio\cinema-workspaces\cinema_top5_2027_e2e\renders\cinema_top5_2027_e2e.mp4` (`298s`, `81.95 MB`, `1280x720`, `30fps`, `h264`, `aac 48kHz`).
+  - **Relatório de Qualidade**: `C:\Users\Pheli\AppData\Roaming\AetheraStudio\cinema-projects\cinema_top5_2027_e2e\e2e_quality_report.json`.
+  - **Provedores reais utilizados**: Voice Studio (`voicestudio_tts`), `yt-dlp` (4 trailers reais), `ffmpeg`/`ffprobe`, e `claude-cli` (visão real nos 6 frames PNG extraídos).
+  - **Cache incremental & reparos**: `totalScenes: 6`, `cacheHits: 3`, `reRenderedScenes: 3` após reparo direcionado do Supervisor.
+- [ ] **Pendências para intervenção/aprovação manual na Sala de Revisão**:
+  1. `clip_3` possui dois trechos pretos do trailer original (`124.43s–125.1s` e `126.47s–127.23s`).
+  2. `clip_4` (Fable) ficou com trailer de *Tomb Raider* por haver 4 arquivos adquiridos para 5 jogos distintos.
+  3. `integratedLufs` medido em `-19.5 LUFS` (abaixo do alvo `-14.0 LUFS`).
