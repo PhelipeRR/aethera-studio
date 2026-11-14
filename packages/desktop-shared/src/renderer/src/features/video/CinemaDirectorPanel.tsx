@@ -20,6 +20,7 @@ import {
 import { Link, useNavigate } from 'react-router';
 import { healthOf, useAgents } from '@/app/useAgents';
 import { notify } from '@/components/NotificationsOverlay';
+import { TrendRadarPanel, type TrendRadarBridgeApi } from './TrendRadarPanel';
 
 interface CinemaBridgeApi {
   cinemaCapabilities?: () => Promise<{
@@ -640,6 +641,18 @@ export function CinemaDirectorPanel() {
           </div>
         </div>
       </section>
+
+      <TrendRadarPanel
+        api={(bridge() ?? {}) as TrendRadarBridgeApi}
+        onApplyIdea={(payload) => {
+          setPrompt(payload.promptText);
+          setGenre(payload.genre);
+          setFormat(payload.format);
+          setTargetDurationSec(Math.max(30, payload.durationMin * 60));
+          setDurationSyncedFromPrompt(true);
+          setHumorIntensity(payload.humorIntensity);
+        }}
+      />
 
       {/* Main Prompt & Creative Controls */}
       <form onSubmit={handleProduce} className="grid gap-4 rounded-2xl border border-border bg-card p-5 lg:grid-cols-12">

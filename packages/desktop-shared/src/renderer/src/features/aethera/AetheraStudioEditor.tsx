@@ -25,12 +25,14 @@ import {
   Upload,
   Volume2,
   Wand2,
+  Waves,
   X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router';
 import { notify } from '@/components/NotificationsOverlay';
+import { WaveformCanvas, type WaveformDataView } from './WaveformCanvas';
 
 type LeftBinTab = 'media' | 'effects' | 'transitions' | 'titles' | 'sfx' | 'music';
 type InspectorTab = 'transform' | 'color' | 'audio' | 'subtitles' | 'speed';
@@ -159,6 +161,13 @@ interface RealRenderResultView {
   encoderUsed: string;
   narrationMode: string;
   waveformPeaks?: number[];
+  stemPaths?: {
+    voiceover?: string;
+    music?: string;
+    sfx?: string;
+    ambience?: string;
+    master?: string;
+  };
   probe: {
     durationSec: number;
     width: number;
@@ -230,6 +239,11 @@ interface CinemaBridge {
     };
   }) => Promise<{ pkg: EditorPackageView }>;
   cinemaNleOp?: (input: Record<string, unknown>) => Promise<{ pkg: EditorPackageView }>;
+  cinemaExtractWaveform?: (input: { filePath: string; buckets?: number }) => Promise<{
+    ok: boolean;
+    data?: WaveformDataView;
+    error?: string;
+  }>;
   cinemaApplyPromptRevision?: (input: {
     projectId: string;
     instruction: string;
@@ -1276,10 +1290,69 @@ export function AetheraStudioEditor() {
     }
   }
 
-  const waveformBars = renderedMedia?.waveformPeaks?.length
-    ? renderedMedia.waveformPeaks
-    : importedAssets.find((a) => a.waveformPeaks.length > 0)?.waveformPeaks ??
-      Array.from({ length: 48 }, (_, i) => Number((0.18 + 0.55 * Math.abs(Math.sin(i * 0.45))).toFixed(2)));
+  const [waveformMap, setWaveformMap] = useState<
+    Record<string, { loading: boolean; data: WaveformDataView | null; error: string | null }>
+  >({});
+
+  const ensureWaveformLoaded = useCallback((filePath?: string | null) => {
+    if (!filePath) return;
+    const api = getBridge();
+    if (!api?.cinemaExtractWaveform) return;
+    setWaveformMap((prev) => {
+      if (prev[filePath]?.loading || prev[filePath]?.data || prev[filePath]?.error) {
+        return prev;
+      }
+      void api
+        .cinemaExtractWaveform!({ filePath, buckets: 1024 })
+        .then((res) => {
+          setWaveformMap((curr) => ({
+            ...curr,
+            [filePath]: res.ok && res.data
+              ? { loading: false, data: res.data, error: null }
+              : { loading: false, data: null, error: res.error ?? 'Falha ao extrair waveform' },
+          }));
+        })
+        .catch((err: unknown) => {
+          setWaveformMap((curr) => ({
+            ...curr,
+            [filePath]: {
+              loading: false,
+              data: null,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          }));
+        });
+      return {
+        ...prev,
+        [filePath]: { loading: true, data: null, error: null },
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    const paths = new Set<string>();
+    if (renderedMedia?.stemPaths?.voiceover) paths.add(renderedMedia.stemPaths.voiceover);
+    if (renderedMedia?.stemPaths?.music) paths.add(renderedMedia.stemPaths.music);
+    if (renderedMedia?.stemPaths?.sfx) paths.add(renderedMedia.stemPaths.sfx);
+    if (renderedMedia?.stemPaths?.ambience) paths.add(renderedMedia.stemPaths.ambience);
+    if (renderedMedia?.stemPaths?.master) paths.add(renderedMedia.stemPaths.master);
+    if (renderedMedia?.mp4Path) paths.add(renderedMedia.mp4Path);
+    for (const asset of importedAssets) {
+      if (asset.kind === 'audio' || asset.kind === 'video') {
+        paths.add(asset.filePath);
+      }
+    }
+    if (pkg?.timeline?.sourceMedia) {
+      for (const sm of Object.values(pkg.timeline.sourceMedia)) {
+        if ((sm.kind === 'audio' || sm.kind === 'video') && sm.uri && !sm.uri.startsWith('http')) {
+          paths.add(sm.uri);
+        }
+      }
+    }
+    for (const p of paths) {
+      ensureWaveformLoaded(p);
+    }
+  }, [renderedMedia, importedAssets, pkg, ensureWaveformLoaded]);
 
   const timelineWidthPx = Math.max(680, Math.ceil((totalDurationSec + 2) * pxPerSec));
   const ticks = Array.from({ length: Math.ceil(totalDurationSec) + 2 }, (_, s) => s).filter(
@@ -2214,6 +2287,7 @@ export function AetheraStudioEditor() {
                   { id: 'a_nar', label: 'A1 Narração', icon: Volume2 },
                   { id: 'a_mus', label: 'A2 Música', icon: Music },
                   { id: 'a_sfx', label: 'A3 SFX', icon: Sliders },
+                  { id: 'a_amb', label: 'A4 Ambiente', icon: Waves },
                 ].map((track) => {
                   const Icon = track.icon;
                   return (
@@ -2331,60 +2405,191 @@ export function AetheraStudioEditor() {
                   })}
                 </div>
 
-                {/* A1 Narration Waveform */}
+                {/* A1 Narration, A2 Music, A3 SFX, A4 Ambience Real Waveforms */}
                 {(() => {
                   const nar = pkg?.soundPlan.stems.find((s) => s.stemRole === 'voiceover');
                   const mus = pkg?.soundPlan.stems.find((s) => s.stemRole === 'music');
-                  const narScale = nar?.muted ? 0.08 : Math.min(1.4, Math.max(0.2, Math.pow(10, (nar?.targetGainDb ?? 0) / 20)));
-                  const musScale = mus?.muted ? 0.08 : Math.min(1.4, Math.max(0.15, Math.pow(10, ((mus?.targetGainDb ?? -16) + 16) / 20)));
+                  const sfxStem = pkg?.soundPlan.stems.find((s) => s.stemRole === 'sfx');
+                  const amb = pkg?.soundPlan.stems.find((s) => s.stemRole === 'ambience');
+
+                  const audioAssets = importedAssets.filter((a) => a.kind === 'audio');
+                  const narPath =
+                    renderedMedia?.stemPaths?.voiceover ??
+                    audioAssets.find((a) => /nar|voz|voice/i.test(a.name))?.filePath ??
+                    renderedMedia?.mp4Path ??
+                    audioAssets[0]?.filePath ??
+                    null;
+                  const musPath =
+                    renderedMedia?.stemPaths?.music ??
+                    audioAssets.find((a) => /mus|music|bgm|beat/i.test(a.name))?.filePath ??
+                    renderedMedia?.stemPaths?.master ??
+                    null;
+                  const sfxPath =
+                    renderedMedia?.stemPaths?.sfx ??
+                    audioAssets.find((a) => /sfx|fx|impact|whoosh/i.test(a.name))?.filePath ??
+                    renderedMedia?.stemPaths?.master ??
+                    null;
+                  const ambPath =
+                    renderedMedia?.stemPaths?.ambience ??
+                    audioAssets.find((a) => /amb|room|crowd|wind/i.test(a.name))?.filePath ??
+                    null;
+
+                  const narState = narPath ? waveformMap[narPath] : undefined;
+                  const musState = musPath ? waveformMap[musPath] : undefined;
+                  const sfxState = sfxPath ? waveformMap[sfxPath] : undefined;
+                  const ambState = ambPath ? waveformMap[ambPath] : undefined;
+
+                  const narClips = clips.filter((c) => (c.trackId ?? 'v1') === 'v1');
+                  const sfxEvents = pkg?.soundPlan.sfxEvents ?? [];
+
                   return (
                     <>
-                      <div className={`relative flex h-10 items-center rounded-lg border border-emerald-500/25 bg-[#090910] px-1 ${nar?.muted ? 'opacity-40' : ''}`} style={{ width: timelineWidthPx }}>
+                      {/* A1 Narração (clip-synced bipolar waveform) */}
+                      <div
+                        className={`relative flex h-10 items-center rounded-lg border border-emerald-500/25 bg-[#090910] ${nar?.muted ? 'opacity-40' : ''}`}
+                        style={{ width: timelineWidthPx }}
+                      >
                         <span className="pointer-events-none absolute right-2 top-0.5 z-10 font-mono text-[9px] text-emerald-300">
                           {nar?.muted ? 'MUTE' : `${nar?.targetGainDb ?? 0} dB`}
                         </span>
-                        <div className="flex h-7 w-full items-center gap-[2px]">
-                          {waveformBars.map((amp, idx) => (
-                            <div
-                              key={idx}
-                              className="flex-1 rounded-full bg-emerald-400/70"
-                              style={{ height: `${Math.min(100, Math.round(amp * 100 * narScale))}%` }}
-                            />
-                          ))}
-                        </div>
+                        {narClips.length > 0 ? (
+                          narClips.map((clip) => {
+                            const clipWidth = Math.max(24, (clip.durationSec / Math.max(0.25, clip.speed)) * pxPerSec - 2);
+                            const clipSourceUri = clip.sourceMediaId
+                              ? pkg?.timeline.sourceMedia[clip.sourceMediaId]?.uri
+                              : undefined;
+                            const clipPath =
+                              clipSourceUri && !clipSourceUri.startsWith('http') && waveformMap[clipSourceUri]?.data?.hasAudio
+                                ? clipSourceUri
+                                : narPath;
+                            const clipState = clipPath ? waveformMap[clipPath] : narState;
+                            return (
+                              <div
+                                key={`nar_${clip.clipId}`}
+                                className="absolute top-1 bottom-1 overflow-hidden rounded border border-emerald-500/30 bg-emerald-950/20"
+                                style={{ left: clip.startSec * pxPerSec, width: clipWidth }}
+                                title={`${clip.label} · ${clip.durationSec}s (${clip.speed}x)`}
+                              >
+                                <WaveformCanvas
+                                  data={clipState?.data ?? null}
+                                  loading={Boolean(clipState?.loading)}
+                                  error={clipState?.error ?? null}
+                                  widthPx={clipWidth}
+                                  heightPx={32}
+                                  role="voiceover"
+                                  sourceStartSec={clip.startSec}
+                                  timelineDurationSec={clip.durationSec / Math.max(0.25, clip.speed)}
+                                  speed={clip.speed}
+                                  gainDb={nar?.targetGainDb ?? 0}
+                                  muted={Boolean(nar?.muted)}
+                                  label={clip.label}
+                                />
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <WaveformCanvas
+                            data={narState?.data ?? null}
+                            loading={Boolean(narState?.loading)}
+                            error={narState?.error ?? null}
+                            widthPx={timelineWidthPx}
+                            heightPx={34}
+                            role="voiceover"
+                            timelineDurationSec={totalDurationSec}
+                            gainDb={nar?.targetGainDb ?? 0}
+                            muted={Boolean(nar?.muted)}
+                            label="A1 Narração"
+                          />
+                        )}
                       </div>
 
-                      {/* A2 Music Waveform */}
-                      <div className={`relative flex h-10 items-center rounded-lg border border-sky-500/25 bg-[#090910] px-1 ${mus?.muted ? 'opacity-40' : ''}`} style={{ width: timelineWidthPx }}>
+                      {/* A2 Música (bipolar waveform) */}
+                      <div
+                        className={`relative flex h-10 items-center overflow-hidden rounded-lg border border-sky-500/25 bg-[#090910] ${mus?.muted ? 'opacity-40' : ''}`}
+                        style={{ width: timelineWidthPx }}
+                      >
                         <span className="pointer-events-none absolute right-2 top-0.5 z-10 font-mono text-[9px] text-sky-300">
                           {mus?.muted ? 'MUTE' : `${mus?.targetGainDb ?? -16} dB`}
                         </span>
-                        <div className="flex h-6 w-full items-center gap-[3px]">
-                          {waveformBars.map((amp, idx) => (
+                        <WaveformCanvas
+                          data={musState?.data ?? null}
+                          loading={Boolean(musState?.loading)}
+                          error={musState?.error ?? null}
+                          widthPx={Math.max(40, totalDurationSec * pxPerSec)}
+                          heightPx={34}
+                          role="music"
+                          timelineDurationSec={totalDurationSec}
+                          gainDb={(mus?.targetGainDb ?? -16) + 16}
+                          muted={Boolean(mus?.muted)}
+                          fadeInSec={1.2}
+                          fadeOutSec={1.5}
+                          label="A2 Música"
+                        />
+                      </div>
+
+                      {/* A3 SFX (individual cue clips with real waveforms) */}
+                      <div
+                        className={`relative h-10 rounded-lg border border-amber-500/20 bg-[#090910] ${sfxStem?.muted ? 'opacity-40' : ''}`}
+                        style={{ width: timelineWidthPx }}
+                      >
+                        <span className="pointer-events-none absolute right-2 top-0.5 z-10 font-mono text-[9px] text-amber-300">
+                          {sfxStem?.muted ? 'MUTE' : `${sfxStem?.targetGainDb ?? -8} dB`}
+                        </span>
+                        {sfxEvents.map((ev) => {
+                          const cueDurationSec = 1.2;
+                          const cueWidth = Math.max(48, cueDurationSec * pxPerSec);
+                          return (
                             <div
-                              key={idx}
-                              className="flex-1 rounded-full bg-sky-400/55"
-                              style={{ height: `${Math.min(100, Math.max(12, Math.round(amp * 75 * musScale)))}%` }}
-                            />
-                          ))}
-                        </div>
+                              key={ev.cueId}
+                              className="absolute top-1 bottom-1 overflow-hidden rounded border border-amber-400/50 bg-amber-500/15"
+                              style={{ left: ev.timeSeconds * pxPerSec, width: cueWidth }}
+                              title={`${ev.sfxName} @ ${ev.timeSeconds}s — ${ev.reason}`}
+                            >
+                              <WaveformCanvas
+                                data={sfxState?.data ?? null}
+                                loading={Boolean(sfxState?.loading)}
+                                error={sfxState?.error ?? null}
+                                widthPx={cueWidth}
+                                heightPx={32}
+                                role="sfx"
+                                sourceStartSec={ev.timeSeconds}
+                                timelineDurationSec={cueDurationSec}
+                                gainDb={(sfxStem?.targetGainDb ?? -8) + 8}
+                                muted={Boolean(sfxStem?.muted)}
+                                label={ev.sfxName}
+                              />
+                              <span className="pointer-events-none absolute left-1 top-0.5 truncate text-[9px] font-medium text-amber-200 drop-shadow">
+                                {ev.sfxName}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* A4 Ambiente (bipolar waveform) */}
+                      <div
+                        className={`relative flex h-10 items-center overflow-hidden rounded-lg border border-violet-500/25 bg-[#090910] ${amb?.muted ? 'opacity-40' : ''}`}
+                        style={{ width: timelineWidthPx }}
+                      >
+                        <span className="pointer-events-none absolute right-2 top-0.5 z-10 font-mono text-[9px] text-violet-300">
+                          {amb?.muted ? 'MUTE' : `${amb?.targetGainDb ?? -22} dB`}
+                        </span>
+                        <WaveformCanvas
+                          data={ambState?.data ?? null}
+                          loading={Boolean(ambState?.loading)}
+                          error={ambState?.error ?? null}
+                          widthPx={Math.max(40, totalDurationSec * pxPerSec)}
+                          heightPx={34}
+                          role="ambience"
+                          timelineDurationSec={totalDurationSec}
+                          gainDb={(amb?.targetGainDb ?? -22) + 22}
+                          muted={Boolean(amb?.muted)}
+                          label="A4 Ambiente"
+                        />
                       </div>
                     </>
                   );
                 })()}
-
-                {/* A3 SFX Cues */}
-                <div className="relative h-10 rounded-lg bg-[#090910]" style={{ width: timelineWidthPx }}>
-                  {(pkg?.soundPlan.sfxEvents ?? []).map((ev) => (
-                    <div
-                      key={ev.cueId}
-                      className="absolute top-2 bottom-2 rounded border border-amber-400/60 bg-amber-500/25 px-1.5 py-0.5 text-[10px] text-amber-200"
-                      style={{ left: ev.timeSeconds * pxPerSec }}
-                    >
-                      {ev.sfxName}
-                    </div>
-                  ))}
-                </div>
               </div>
             </div>
           </div>

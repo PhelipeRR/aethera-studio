@@ -25,6 +25,26 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaInspectDeleteProject: (projectId: string) => ipcRenderer.invoke('cinema:inspect-delete-project', projectId),
   cinemaDeleteProject: (projectId: string) => ipcRenderer.invoke('cinema:delete-project', projectId),
   cinemaListStagedJobs: () => ipcRenderer.invoke('cinema:list-staged-jobs'),
+  cinemaExtractWaveform: (input: { filePath: string; buckets?: number }) =>
+    ipcRenderer.invoke('cinema:extract-waveform', input),
+  trendRadarSearch: (input: {
+    config: unknown;
+    sessionId?: string;
+    appendMore?: boolean;
+    refresh?: boolean;
+  }) => ipcRenderer.invoke('trend-radar:search', input),
+  trendRadarListSessions: () => ipcRenderer.invoke('trend-radar:list-sessions'),
+  trendRadarGenerateBriefing: (input: {
+    sessionId: string;
+    ideaId: string;
+    alternativeApproach?: boolean;
+  }) => ipcRenderer.invoke('trend-radar:generate-briefing', input),
+  trendRadarRefineBriefing: (input: {
+    sessionId: string;
+    ideaId: string;
+    instruction: string;
+    updatedFields?: Record<string, unknown>;
+  }) => ipcRenderer.invoke('trend-radar:refine-briefing', input),
   cinemaLoadProject: (projectId: string) => ipcRenderer.invoke('cinema:load-project', projectId),
   cinemaImportMedia: (input?: { filePath?: string }) =>
     ipcRenderer.invoke('cinema:import-media', input),

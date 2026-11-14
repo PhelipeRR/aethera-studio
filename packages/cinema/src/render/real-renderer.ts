@@ -50,6 +50,13 @@ export interface RealRenderResult {
   probe: RealMp4ProbeResult;
   realQcFindings: QcFindingRecord[];
   waveformPeaks: number[];
+  stemPaths?: {
+    voiceover: string;
+    music: string;
+    sfx: string;
+    ambience: string;
+    master: string;
+  };
   audioTimeline: AudioTimelineEvent[];
   audioAudit: SoundDirectorAuditReport;
 }
@@ -574,6 +581,9 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   assertSoundDirectorApproval(audioAudit);
 
   const audioMixPath = join(workDir, 'audio_master.wav');
+  const musicStemPath = join(workDir, 'stem_music.wav');
+  const sfxStemPath = join(workDir, 'stem_sfx.wav');
+  const ambienceStemPath = join(workDir, 'stem_ambience.wav');
   const stemByRole = new Map(input.pkg.soundPlan.stems.map((s) => [s.stemRole, s]));
   const voiceStem = stemByRole.get('voiceover');
   const musicStem = stemByRole.get('music');
@@ -598,13 +608,14 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     `sine=frequency=164.81:sample_rate=48000:duration=${totalDur},volume=0.09[m2]`,
     `sine=frequency=220:sample_rate=48000:duration=${totalDur},volume=0.07[m3]`,
     `[m1][m2][m3]amix=inputs=3:normalize=0,afade=t=in:st=0:d=1.2,afade=t=out:st=${Math.max(0.2, totalDur - 1.5)}:d=1.5,volume=${musicVol}[music]`,
-    `[music][nar_sc]sidechaincompress=threshold=0.03:ratio=${duckRatio}:attack=25:release=250[ducked_music]`,
-    `anoisesrc=color=pink:sample_rate=48000:duration=${totalDur},volume=0.015,volume=${ambienceVol}[amb]`,
+    `[music][nar_sc]sidechaincompress=threshold=0.03:ratio=${duckRatio}:attack=25:release=250,asplit=2[ducked_music][ducked_music_stem]`,
+    `anoisesrc=color=pink:sample_rate=48000:duration=${totalDur},volume=0.015,volume=${ambienceVol},asplit=2[amb][amb_stem]`,
     // SFX impacts synced to scene transitions
     `sine=frequency=520:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.32,volume=${sfxVol},adelay=5600|5600[sfx1]`,
     `sine=frequency=780:sample_rate=48000:duration=0.22,afade=t=out:st=0.04:d=0.18,volume=0.35,volume=${sfxVol},adelay=11200|11200[sfx2]`,
     `sine=frequency=440:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.30,volume=${sfxVol},adelay=16800|16800[sfx3]`,
-    `[nar_mix][ducked_music][amb][sfx1][sfx2][sfx3]amix=inputs=6:duration=longest:normalize=0,atrim=0:${totalDur},loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}[aout]`,
+    `[sfx1][sfx2][sfx3]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=${totalDur},atrim=0:${totalDur},asplit=2[sfx_mix][sfx_stem]`,
+    `[nar_mix][ducked_music][amb][sfx_mix]amix=inputs=4:duration=longest:normalize=0,atrim=0:${totalDur},loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}[aout]`,
   ].join(';');
 
   await execFileAsync('ffmpeg', [
@@ -620,6 +631,27 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     '-ac',
     '2',
     audioMixPath,
+    '-map',
+    '[ducked_music_stem]',
+    '-ar',
+    '24000',
+    '-ac',
+    '1',
+    musicStemPath,
+    '-map',
+    '[sfx_stem]',
+    '-ar',
+    '24000',
+    '-ac',
+    '1',
+    sfxStemPath,
+    '-map',
+    '[amb_stem]',
+    '-ar',
+    '24000',
+    '-ac',
+    '1',
+    ambienceStemPath,
   ]);
 
   // 4. Mux final MP4 (prefer NVENC if requested and available, fallback libx264)
@@ -712,6 +744,13 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       status: 'open' as const,
     }))],
     waveformPeaks,
+    stemPaths: {
+      voiceover: narrationWav,
+      music: musicStemPath,
+      sfx: sfxStemPath,
+      ambience: ambienceStemPath,
+      master: audioMixPath,
+    },
     audioTimeline,
     audioAudit,
   };

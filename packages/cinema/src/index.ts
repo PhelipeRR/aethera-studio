@@ -10,6 +10,7 @@ export * from './audio/sound-engine.js';
 export * from './audio/sound-director.js';
 export * from './qc/qc-engine.js';
 export * from './qc/real-media-probe.js';
+export * from './qc/waveform-extractor.js';
 export * from './render/real-renderer.js';
 export * from './benchmarks/benchmark-suite.js';
 export * from './evolution/evolution-core.js';

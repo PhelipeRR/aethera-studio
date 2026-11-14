@@ -8,6 +8,11 @@ import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
 import { StagedCinemaPipeline, type StagedProductionJob } from './cinema-pipeline.js';
 import {
+  TrendRadarEngine,
+  type CinematicBriefing,
+  type TrendSearchConfig,
+} from './trend-radar.js';
+import {
   AetheraAcademyEngine,
   AetheraEvolutionCore,
   applyAudioMixerUpdates,
@@ -18,7 +23,9 @@ import {
   evaluateReleaseGates,
   exportToOtioJson,
   extractSingleThumbnail,
+  extractWaveformData,
   extractWaveformPeaks,
+  WaveformCache,
   groupClips,
   listAllDirectors,
   moveClip,
@@ -1688,6 +1695,162 @@ export function registerAetheraDomainIpc(options: {
       }
     },
   });
+
+  const trendRadar = new TrendRadarEngine(
+    join(app.getPath('userData'), 'cinema-trend-radar'),
+    evolutionCore,
+    {
+      searchYouTube: async (query) => {
+        try {
+          const results = await ytDlpSearch(ytDlp, query, 6);
+          return results
+            .filter((item) => Boolean(item.url && item.title))
+            .map((item) => ({
+              title: item.title ?? query,
+              url: item.url,
+              source: 'YouTube (yt-dlp)',
+              publishedAt: new Date().toISOString(),
+              origin: 'youtube' as const,
+            }));
+        } catch {
+          return [];
+        }
+      },
+      searchNews: async (query, config) => {
+        try {
+          const lang = encodeURIComponent(config.language || 'pt-BR');
+          const country = encodeURIComponent((config.country || 'BR').toUpperCase());
+          const q = encodeURIComponent(query);
+          const url = `https://news.google.com/rss/search?q=${q}&hl=${lang}&gl=${country}&ceid=${country}:${lang.split('-')[0] ?? 'pt'}`;
+          const res = await fetch(url, {
+            headers: { 'User-Agent': 'AetheraStudio/1.0' },
+            signal: AbortSignal.timeout(12_000),
+          });
+          if (!res.ok) return [];
+          const xml = await res.text();
+          const items: Array<{
+            title: string;
+            url: string;
+            publishedAt: string;
+            source: string;
+            origin: 'news';
+          }> = [];
+          const itemMatches = xml.matchAll(/<item>([\s\S]*?)<\/item>/g);
+          for (const match of itemMatches) {
+            if (items.length >= 10) break;
+            const block = match[1] ?? '';
+            const rawTitle = block.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>|<title>([\s\S]*?)<\/title>/);
+            const rawLink = block.match(/<link>([\s\S]*?)<\/link>/);
+            const rawDate = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+            const rawSource = block.match(/<source[^>]*>([\s\S]*?)<\/source>/);
+            const title = (rawTitle?.[1] ?? rawTitle?.[2] ?? '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
+            const link = (rawLink?.[1] ?? '').trim();
+            if (!title || !link) continue;
+            const pubDate = rawDate?.[1]?.trim();
+            const parsedDate =
+              pubDate && !Number.isNaN(Date.parse(pubDate))
+                ? new Date(pubDate).toISOString()
+                : new Date().toISOString();
+            items.push({
+              title,
+              url: link,
+              publishedAt: parsedDate,
+              source: (rawSource?.[1] ?? 'Google News').trim(),
+              origin: 'news',
+            });
+          }
+          return items;
+        } catch {
+          return [];
+        }
+      },
+      searchReddit: async (query, config) => {
+        try {
+          const t = config.period === '24h' ? 'day' : config.period === '7d' ? 'week' : config.period === '30d' ? 'month' : 'year';
+          const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=top&t=${t}&limit=10`;
+          const res = await fetch(url, {
+            headers: { 'User-Agent': 'AetheraStudio/1.0 (TrendRadar)' },
+            signal: AbortSignal.timeout(12_000),
+          });
+          if (!res.ok) return [];
+          const json = (await res.json()) as {
+            data?: { children?: Array<{ data?: { title?: string; permalink?: string; created_utc?: number; subreddit_name_prefixed?: string; selftext?: string } }> };
+          };
+          const children = json.data?.children ?? [];
+          return children
+            .map((child) => child.data)
+            .filter((post): post is NonNullable<typeof post> => Boolean(post?.title && post?.permalink))
+            .map((post) => ({
+              title: post.title!,
+              url: `https://www.reddit.com${post.permalink!}`,
+              publishedAt:
+                typeof post.created_utc === 'number'
+                  ? new Date(post.created_utc * 1000).toISOString()
+                  : new Date().toISOString(),
+              source: post.subreddit_name_prefixed ?? 'Reddit',
+              origin: 'reddit' as const,
+              ...(post.selftext ? { snippet: post.selftext.slice(0, 220) } : {}),
+            }));
+        } catch {
+          return [];
+        }
+      },
+      synthesizeWithRF07: async ({ config, sources, excludeTitles }) => {
+        try {
+          const agy = await detectAntigravityCli();
+          if (!agy.installed || agy.authenticated === false) return null;
+          const promptText = [
+            'Você é o conselho de diretores RF-07 do Aethera Studio (Pesquisa & Mídia, Narrativa, Diretor-Geral, Humor, Edição/Cinematografia e Qualidade).',
+            `Gere exatamente ${config.ideaCount} ideias originais de vídeo em ${config.language} (${config.country}) para o nicho "${config.niche}"${config.subniche ? ` / subnicho "${config.subniche}"` : ''}.`,
+            `Período: ${config.period} | Formato preferido: ${config.format} | Duração alvo: ~${config.targetDurationMin} min.`,
+            excludeTitles.length > 0 ? `NÃO repita estes títulos/temas anteriores: ${excludeTitles.slice(0, 25).join(' | ')}` : '',
+            'Fontes verificadas coletadas (use SOMENTE estas fontes e datas reais, nunca invente números ou URLs):',
+            ...sources.slice(0, 24).map((s, idx) => `[${idx + 1}] (${s.origin}, ${s.publishedAt}) ${s.title} — ${s.url}`),
+            'Responda SOMENTE com JSON válido no formato {"ideas":[...]}',
+          ]
+            .filter(Boolean)
+            .join('\n');
+          const res = await runAntigravityPrompt({
+            prompt: promptText,
+            cwd: app.getPath('userData'),
+            timeoutMs: 30_000,
+          });
+          const raw = res.output ?? '';
+          const match = raw.match(/\{[\s\S]*\}/);
+          if (!match) return null;
+          const parsed = JSON.parse(match[0]) as { ideas?: unknown[] };
+          if (!Array.isArray(parsed.ideas) || parsed.ideas.length === 0) return null;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return parsed.ideas as any;
+        } catch {
+          return null;
+        }
+      },
+      refineBriefingWithRF07: async ({ briefing, instruction }) => {
+        try {
+          const agy = await detectAntigravityCli();
+          if (!agy.installed || agy.authenticated === false) return null;
+          const promptText = [
+            'Você é a equipe de Diretores Cinematográficos RF-07 do Aethera Studio.',
+            `Refine o briefing abaixo conforme a instrução do usuário: "${instruction}".`,
+            `Briefing atual JSON: ${JSON.stringify(briefing)}`,
+            'Responda SOMENTE com JSON válido contendo os campos atualizados de CinematicBriefing.',
+          ].join('\n');
+          const res = await runAntigravityPrompt({
+            prompt: promptText,
+            cwd: app.getPath('userData'),
+            timeoutMs: 25_000,
+          });
+          const raw = res.output ?? '';
+          const match = raw.match(/\{[\s\S]*\}/);
+          if (!match) return null;
+          return JSON.parse(match[0]) as Partial<CinematicBriefing>;
+        } catch {
+          return null;
+        }
+      },
+    },
+  );
   ipcMain.handle('cinema:capabilities', async (event) => {
     ensureTrusted(event.senderFrame);
     return probeCapabilities();
@@ -1946,6 +2109,34 @@ export function registerAetheraDomainIpc(options: {
         thumbnailUrl,
         waveformPeaks,
       };
+    },
+  );
+
+  const waveformCache = new WaveformCache(join(app.getPath('userData'), 'cinema-waveform-cache'));
+
+  ipcMain.handle(
+    'cinema:extract-waveform',
+    async (
+      event,
+      input: {
+        filePath: string;
+        buckets?: number;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      try {
+        const data = await extractWaveformData({
+          filePath: input.filePath,
+          buckets: input.buckets ?? 1024,
+          cache: waveformCache,
+        });
+        return { ok: true as const, data };
+      } catch (err) {
+        return {
+          ok: false as const,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
     },
   );
 
@@ -2346,6 +2537,67 @@ export function registerAetheraDomainIpc(options: {
       preservedSharedEntries: result.preservedSharedEntries,
     };
   });
+
+  ipcMain.handle(
+    'trend-radar:search',
+    async (
+      event,
+      input: {
+        config: TrendSearchConfig;
+        sessionId?: string;
+        appendMore?: boolean;
+        refresh?: boolean;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      return trendRadar.searchTrends(input.config, {
+        ...(input.appendMore && input.sessionId ? { appendToSessionId: input.sessionId } : {}),
+      });
+    },
+  );
+
+  ipcMain.handle('trend-radar:list-sessions', async (event) => {
+    ensureTrusted(event.senderFrame);
+    return trendRadar.listSessions();
+  });
+
+  ipcMain.handle(
+    'trend-radar:generate-briefing',
+    async (
+      event,
+      input: {
+        sessionId: string;
+        ideaId: string;
+        alternativeApproach?: boolean;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      return trendRadar.generateBriefing(input.sessionId, input.ideaId, {
+        ...(input.alternativeApproach ? { approachVariant: 1 } : {}),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    'trend-radar:refine-briefing',
+    async (
+      event,
+      input: {
+        sessionId: string;
+        ideaId: string;
+        instruction: string;
+        updatedFields?: Partial<CinematicBriefing>;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      return trendRadar.refineBriefing(
+        input.sessionId,
+        input.ideaId,
+        input.instruction,
+        input.updatedFields,
+      );
+    },
+  );
 
   ipcMain.handle(
     'cinema:update-script',
