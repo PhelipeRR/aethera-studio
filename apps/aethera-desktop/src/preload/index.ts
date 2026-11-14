@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaLoadProject: (projectId: string) => ipcRenderer.invoke('cinema:load-project', projectId),
   cinemaImportMedia: (input?: { filePath?: string }) =>
     ipcRenderer.invoke('cinema:import-media', input),
+  cinemaListLibrary: () => ipcRenderer.invoke('cinema:list-library'),
   cinemaEvolutionSnapshot: (input?: { refresh?: boolean }) =>
     ipcRenderer.invoke('cinema:evolution-snapshot', input),
   cinemaSubmitFeedback: (input: { text: string; projectId?: string; genre?: string }) =>

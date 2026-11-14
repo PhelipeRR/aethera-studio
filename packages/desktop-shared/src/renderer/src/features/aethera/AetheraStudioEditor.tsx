@@ -154,6 +154,7 @@ interface CinemaBridge {
   cinemaExportOtio?: (projectId: string) => Promise<{ otioJson: string }>;
   cinemaRenderRealMp4?: (input: { projectId: string; useNvenc?: boolean }) => Promise<RealRenderResultView>;
   cinemaImportMedia?: (input?: { filePath?: string }) => Promise<ImportedAsset | null>;
+  cinemaListLibrary?: () => Promise<ImportedAsset[]>;
   cinemaSubmitFeedback?: (input: {
     text: string;
     projectId?: string;
@@ -231,6 +232,7 @@ export function AetheraStudioEditor() {
   const [previewMode, setPreviewMode] = useState<'timeline' | 'mp4'>('timeline');
   const [renderedMedia, setRenderedMedia] = useState<RealRenderResultView | null>(null);
   const [importedAssets, setImportedAssets] = useState<ImportedAsset[]>([]);
+  const [librarySearch, setLibrarySearch] = useState('');
   const [rendering, setRendering] = useState(false);
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
   const [exportingOtio, setExportingOtio] = useState(false);
@@ -330,6 +332,19 @@ export function AetheraStudioEditor() {
     },
     [mapClipsFromPkg],
   );
+
+  useEffect(() => {
+    const api = getBridge();
+    if (!api?.cinemaListLibrary) return;
+    void api.cinemaListLibrary().then((items) => {
+      if (Array.isArray(items) && items.length > 0) {
+        setImportedAssets((prev) => {
+          const seen = new Set(prev.map((a) => a.mediaId));
+          return [...prev, ...items.filter((i) => !seen.has(i.mediaId))];
+        });
+      }
+    });
+  }, []);
 
   useEffect(() => {
     const api = getBridge();
@@ -1155,7 +1170,23 @@ export function AetheraStudioEditor() {
           <div className="flex-1 space-y-2 text-xs max-h-64 overflow-y-auto pr-1">
             {leftTab === 'media' && (
               <>
-                {importedAssets.map((asset) => (
+                <div className="sticky top-0 z-10 bg-[#12121e] pb-1.5">
+                  <input
+                    type="text"
+                    value={librarySearch}
+                    onChange={(e) => setLibrarySearch(e.target.value)}
+                    placeholder={`Buscar na biblioteca (${importedAssets.length})...`}
+                    className="w-full rounded-lg border border-border/50 bg-[#0d0d17] px-2.5 py-1.5 text-[11px] text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+                  />
+                </div>
+                {importedAssets
+                  .filter((asset) => {
+                    const q = librarySearch.trim().toLowerCase();
+                    if (!q) return true;
+                    return asset.name.toLowerCase().includes(q) || asset.filePath.toLowerCase().includes(q) || asset.kind.toLowerCase().includes(q);
+                  })
+                  .slice(0, 80)
+                  .map((asset) => (
                   <div
                     key={asset.mediaId}
                     draggable

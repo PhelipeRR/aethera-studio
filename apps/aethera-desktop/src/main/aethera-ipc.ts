@@ -63,6 +63,7 @@ import {
   VelixProductionRepository,
   VelixStoryboardRepository,
   VelixStyleRepository,
+  velixLocalAssets,
   videoProjects,
   videoRenderJobs,
 } from '@neuralbridge/database';
@@ -1882,6 +1883,29 @@ export function registerAetheraDomainIpc(options: {
       };
     },
   );
+
+  ipcMain.handle('cinema:list-library', async (event) => {
+    ensureTrusted(event.senderFrame);
+    if (!database.handle) return [];
+    const rows = database.handle.db.select().from(velixLocalAssets).all();
+    return rows.map((row) => {
+      const isImage = /\.(png|jpe?g|webp)$/i.test(row.path);
+      const isAudio = /\.(wav|mp3|ogg|flac)$/i.test(row.path);
+      const kind: 'video' | 'image' | 'audio' = isImage ? 'image' : isAudio ? 'audio' : 'video';
+      return {
+        mediaId: row.id,
+        filePath: row.path,
+        name: basename(row.path),
+        kind,
+        durationSec: isAudio ? 4 : isImage ? 5 : 6,
+        width: isAudio ? 0 : 1280,
+        height: isAudio ? 0 : 720,
+        mediaUrl: toMediaUrl(row.path),
+        thumbnailUrl: isImage ? toMediaUrl(row.path) : null,
+        waveformPeaks: [],
+      };
+    });
+  });
 
   // Aethera Evolution & Academy IPC handlers (using evolutionCore & academyEngine initialized above)
 
