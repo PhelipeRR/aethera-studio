@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
+import { exportSystemBackup, restoreSystemBackup } from './system-backup.js';
 import { StagedCinemaPipeline, type StagedProductionJob } from './cinema-pipeline.js';
 import {
   TrendRadarEngine,
@@ -3100,6 +3101,75 @@ export function registerAetheraDomainIpc(options: {
       filePath: chosenPath,
       academy: academySnap,
       evolution: evolutionSnap,
+    };
+  });
+
+  const buildSystemBackupDeps = () => ({
+    appVersion: app.getVersion(),
+    userDataDir,
+    databaseFile: database.status.file,
+    databaseHandle: database.handle,
+    preferencesFile,
+    calendarFile: join(app.getPath('userData'), 'calendar', 'editorial-calendar-store.json'),
+    cinemaProjectsDir,
+    academyEngine,
+    evolutionCore,
+    editorialCalendar,
+  });
+
+  ipcMain.handle('aethera:system-backup-export', async (event) => {
+    ensureTrusted(event.senderFrame);
+    const stamp = new Date().toISOString().slice(0, 10);
+    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const saveOpts: Electron.SaveDialogOptions = {
+      title: 'Exportar Backup Geral do Sistema — Aethera Studio',
+      defaultPath: join(app.getPath('documents'), `aethera-system-backup-${stamp}.json`),
+      filters: [{ name: 'Aethera System Backup (JSON)', extensions: ['json'] }],
+    };
+    const res = parentWin
+      ? await dialog.showSaveDialog(parentWin, saveOpts)
+      : await dialog.showSaveDialog(saveOpts);
+    if (res.canceled || !res.filePath) {
+      return { ok: false, canceled: true };
+    }
+    const exported = exportSystemBackup(buildSystemBackupDeps(), res.filePath);
+    return {
+      ok: true,
+      canceled: false,
+      filePath: exported.filePath,
+      counts: exported.counts,
+    };
+  });
+
+  ipcMain.handle('aethera:system-backup-restore', async (event) => {
+    ensureTrusted(event.senderFrame);
+    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const openOpts: Electron.OpenDialogOptions = {
+      title: 'Restaurar Backup Geral do Sistema — Aethera Studio',
+      properties: ['openFile'],
+      filters: [{ name: 'Aethera System Backup (JSON)', extensions: ['json'] }],
+    };
+    const res = parentWin
+      ? await dialog.showOpenDialog(parentWin, openOpts)
+      : await dialog.showOpenDialog(openOpts);
+    const chosenPath = res.filePaths[0];
+    if (res.canceled || !chosenPath) {
+      return { ok: false, canceled: true };
+    }
+    const restored = restoreSystemBackup(buildSystemBackupDeps(), chosenPath);
+    if (restored.requiresRelaunch && (app.isPackaged || process.env['NB_E2E_NO_RELAUNCH'] !== '1')) {
+      setTimeout(() => {
+        app.relaunch();
+        app.exit(0);
+      }, 450);
+    }
+    return {
+      ok: true,
+      canceled: false,
+      filePath: restored.filePath,
+      preservedDir: restored.preservedDir,
+      counts: restored.counts,
+      relaunching: restored.requiresRelaunch && (app.isPackaged || process.env['NB_E2E_NO_RELAUNCH'] !== '1'),
     };
   });
 

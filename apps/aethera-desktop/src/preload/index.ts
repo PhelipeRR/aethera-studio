@@ -71,6 +71,8 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
     ipcRenderer.invoke('cinema:academy-delete-material', input),
   cinemaAcademyExportBackup: () => ipcRenderer.invoke('cinema:academy-export-backup'),
   cinemaAcademyRestoreBackup: () => ipcRenderer.invoke('cinema:academy-restore-backup'),
+  systemExportBackup: () => ipcRenderer.invoke('aethera:system-backup-export'),
+  systemRestoreBackup: () => ipcRenderer.invoke('aethera:system-backup-restore'),
   cinemaCalendarSnapshot: (input?: { timezone?: string }) =>
     ipcRenderer.invoke('cinema:calendar-snapshot', input),
   cinemaCalendarUpsertEvent: (input: Record<string, unknown>) =>

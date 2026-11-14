@@ -6,10 +6,12 @@ import {
   CheckCircle2,
   Clapperboard,
   Database,
+  Download,
   Gamepad2,
   GraduationCap,
   HelpCircle,
   Mic,
+  RotateCcw,
   Shield,
   Sliders,
   Tv,
@@ -69,6 +71,29 @@ interface AetheraBridgeLoose {
     events: unknown[];
     series: unknown[];
   }>;
+  systemExportBackup?: () => Promise<{
+    ok: boolean;
+    canceled?: boolean;
+    filePath?: string;
+    counts?: {
+      cinemaProjects: number;
+      academyMaterials: number;
+      evolutionMemories: number;
+      calendarEvents: number;
+    };
+  }>;
+  systemRestoreBackup?: () => Promise<{
+    ok: boolean;
+    canceled?: boolean;
+    filePath?: string;
+    relaunching?: boolean;
+    counts?: {
+      cinemaProjects: number;
+      academyMaterials: number;
+      evolutionMemories: number;
+      calendarEvents: number;
+    };
+  }>;
 }
 
 export function AetheraSettingsPage({ description }: { description: string }) {
@@ -112,6 +137,7 @@ export function AetheraSettingsPage({ description }: { description: string }) {
   } | null>(null);
   const [academyCounts, setAcademyCounts] = useState({ materials: 0, knowledge: 0, exercises: 0 });
   const [calendarMeta, setCalendarMeta] = useState({ timezone: 'America/Sao_Paulo', events: 0, series: 0 });
+  const [systemBackupBusy, setSystemBackupBusy] = useState<'export' | 'restore' | null>(null);
 
   const getAetheraBridge = (): AetheraBridgeLoose =>
     ((window as unknown as { aethera?: AetheraBridgeLoose }).aethera ?? {}) as AetheraBridgeLoose;
@@ -165,6 +191,66 @@ export function AetheraSettingsPage({ description }: { description: string }) {
       setStatusMessage({ kind: 'ok', text: `Tema alterado para ${next}.` });
     } catch {
       setStatusMessage({ kind: 'error', text: 'Não foi possível salvar o tema.' });
+    }
+  };
+
+  const handleExportSystemBackup = async () => {
+    const ab = getAetheraBridge();
+    if (!ab.systemExportBackup) {
+      setStatusMessage({ kind: 'error', text: 'Backup Geral indisponível neste ambiente.' });
+      return;
+    }
+    setSystemBackupBusy('export');
+    try {
+      const res = await ab.systemExportBackup();
+      if (res?.canceled) return;
+      if (!res?.ok) {
+        setStatusMessage({ kind: 'error', text: 'Não foi possível exportar o Backup Geral do Sistema.' });
+        return;
+      }
+      const c = res.counts;
+      setStatusMessage({
+        kind: 'ok',
+        text: `Backup Geral salvo em ${res.filePath ?? 'arquivo selecionado'} (${c?.cinemaProjects ?? 0} projetos, ${c?.academyMaterials ?? 0} materiais da Academy, ${c?.evolutionMemories ?? 0} memórias, ${c?.calendarEvents ?? 0} eventos).`,
+      });
+    } catch (err) {
+      setStatusMessage({
+        kind: 'error',
+        text: err instanceof Error ? err.message : 'Erro ao exportar Backup Geral do Sistema.',
+      });
+    } finally {
+      setSystemBackupBusy(null);
+    }
+  };
+
+  const handleRestoreSystemBackup = async () => {
+    const ab = getAetheraBridge();
+    if (!ab.systemRestoreBackup) {
+      setStatusMessage({ kind: 'error', text: 'Restauração geral indisponível neste ambiente.' });
+      return;
+    }
+    setSystemBackupBusy('restore');
+    try {
+      const res = await ab.systemRestoreBackup();
+      if (res?.canceled) return;
+      if (!res?.ok) {
+        setStatusMessage({ kind: 'error', text: 'Não foi possível restaurar o Backup Geral do Sistema.' });
+        return;
+      }
+      await refreshAll();
+      setStatusMessage({
+        kind: 'ok',
+        text: res.relaunching
+          ? 'Backup Geral restaurado com segurança. Reiniciando o Aethera Studio para aplicar o banco de dados…'
+          : `Backup Geral restaurado a partir de ${res.filePath ?? 'arquivo selecionado'}.`,
+      });
+    } catch (err) {
+      setStatusMessage({
+        kind: 'error',
+        text: err instanceof Error ? err.message : 'Erro ao restaurar Backup Geral do Sistema.',
+      });
+    } finally {
+      setSystemBackupBusy(null);
     }
   };
 
@@ -347,6 +433,37 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                     <p>Electron {appInfo.electron} · {appInfo.platform}</p>
                   </div>
                 )}
+
+                <div className="rounded-xl border border-border bg-[#0d0d17] p-4 space-y-3 text-xs">
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground">Backup Geral do Sistema</h3>
+                    <p className="mt-1 text-muted-foreground">
+                      Exporta ou restaura em um único arquivo JSON o banco de dados (canais, projetos e histórico),
+                      preferências do estúdio, Aethera Academy, Memória Evolutiva, Calendário Editorial e projetos do
+                      Cinema. Antes de restaurar, o estado atual é preservado automaticamente em disco.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={systemBackupBusy !== null}
+                      onClick={() => void handleExportSystemBackup()}
+                      className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                    >
+                      <Download className="size-4" />
+                      {systemBackupBusy === 'export' ? 'Exportando backup…' : 'Backup Geral do Sistema'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={systemBackupBusy !== null}
+                      onClick={() => void handleRestoreSystemBackup()}
+                      className="inline-flex items-center gap-2 rounded-xl border border-border px-4 py-2 font-medium text-foreground hover:border-primary/50 disabled:opacity-50"
+                    >
+                      <RotateCcw className="size-4" />
+                      {systemBackupBusy === 'restore' ? 'Restaurando…' : 'Restaurar'}
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 
