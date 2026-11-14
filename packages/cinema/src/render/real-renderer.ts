@@ -679,12 +679,19 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
         copyFileSync(segWorkPath, cachedSegPath);
       }
     }
-    segmentWavPaths.push(segWorkPath);
-    const durMs = await measureAudioDurationMs(segWorkPath);
+    const segFinalPath = join(workDir, `nar_${seg.segmentId}_paced.wav`);
+    const padSec = Math.max(0.12, seg.targetPauseAfterMs / 1000);
+    await execFileAsync(
+      'ffmpeg',
+      ['-y', '-i', segWorkPath, '-af', `apad=pad_dur=${padSec.toFixed(2)}`, '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', segFinalPath],
+      { windowsHide: true, timeout: 30_000 },
+    );
+    segmentWavPaths.push(segFinalPath);
+    const durMs = await measureAudioDurationMs(segFinalPath);
     segmentProbes.push({
       segmentId: seg.segmentId,
       editorialText: seg.editorialText,
-      wavPath: segWorkPath,
+      wavPath: segFinalPath,
       durationSec: durMs / 1000,
     });
   }
