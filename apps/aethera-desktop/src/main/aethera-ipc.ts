@@ -2258,11 +2258,7 @@ export function registerAetheraDomainIpc(options: {
 
   ipcMain.handle('cinema:delete-project', async (event, projectId: string) => {
     ensureTrusted(event.senderFrame);
-    try {
-      stagedPipeline.cancel(projectId);
-    } catch {
-      // ignore if job is not active
-    }
+    stagedPipeline.deleteJob(projectId);
     cinemaPackages.delete(projectId);
     cinemaPrompts.delete(projectId);
     cinemaRenders.delete(projectId);
@@ -2273,10 +2269,6 @@ export function registerAetheraDomainIpc(options: {
     const projectFile = join(cinemaProjectsDir, `${safeId}.json`);
     if (existsSync(projectFile)) {
       unlinkSync(projectFile);
-    }
-    const jobFile = join(app.getPath('userData'), 'cinema-jobs', `${safeId}.json`);
-    if (existsSync(jobFile)) {
-      unlinkSync(jobFile);
     }
     return { deleted: true, projectId };
   });

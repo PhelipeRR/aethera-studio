@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
   applyTargetedRepair,
@@ -218,6 +218,20 @@ export class StagedCinemaPipeline {
     existing.state = 'cancelled';
     existing.message = 'Produção cancelada pelo usuário. Progresso preservado para retomada.';
     return this.saveJob(existing);
+  }
+
+  deleteJob(projectId: string): boolean {
+    const ctrl = this.controllers.get(projectId);
+    if (ctrl) {
+      ctrl.abort();
+      this.controllers.delete(projectId);
+    }
+    const file = this.jobFile(projectId);
+    if (existsSync(file)) {
+      unlinkSync(file);
+      return true;
+    }
+    return false;
   }
 
   async resolvePendingMedia(

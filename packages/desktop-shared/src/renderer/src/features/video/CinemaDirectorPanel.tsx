@@ -254,6 +254,7 @@ export function CinemaDirectorPanel() {
     try {
       await api.cinemaDeleteProject(deleteTarget.projectId);
       setStagedJobs((prev) => prev.filter((j) => j.projectId !== deleteTarget.projectId));
+      setStagedJob((prev) => (prev?.projectId === deleteTarget.projectId ? null : prev));
       notify({
         title: 'Projeto excluído',
         message: `O projeto "${deleteTarget.prompt || deleteTarget.projectId}" foi removido.`,
