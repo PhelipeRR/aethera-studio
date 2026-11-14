@@ -833,6 +833,8 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(decision.matchedIntervals!.length).toBe(1);
     expect(decision.matchedIntervals![0]!.startSec).toBeGreaterThanOrEqual(36.0);
     expect(decision.matchedIntervals![0]!.endSec).toBeLessThan(40.2);
+    expect(decision.matchedIntervals![0]!.provingTimestampsSec?.length).toBeGreaterThan(0);
+    expect(decision.matchedIntervals![0]!.provingDescriptions?.[0]).toContain('Super Saiyajin');
   });
 
   it('does not approve same-universe Dragon Ball clips when frames do not depict the required Raditz arrival event', async () => {
@@ -897,6 +899,35 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     });
     expect(lowConfSkipped.recorded).toBe(false);
 
+    const autoHypothesis = recordSceneGroundingNegativeExample(evolution, {
+      projectId: 'proj_dbz_1',
+      segmentId: 'slot_1',
+      mediaTitle: 'DRAGON BALL GT Vegeta mata nappa denovo dublado',
+      mediaSha256: 'deadbeef1234',
+      workScope: 'dragon ball',
+      eventScope: 'raditz chegada_desembarque',
+      expectedContext: 'raditz, chegada_desembarque',
+      observedVisualSummary: 'Vegeta derrotando Nappa em Dragon Ball GT',
+      mismatchReason: 'Cena de Dragon Ball GT com Vegeta e Nappa não corresponde à chegada de Raditz.',
+      visualConfidence: 0.92,
+      origin: 'automatic',
+      genre: 'anime',
+    });
+    expect(autoHypothesis.recorded).toBe(true);
+    expect(autoHypothesis.promotedToBlocking).toBe(false);
+
+    // Single automatic hypothesis must NOT permanently block by itself
+    const beforeConfirmation = findMatchingSceneGroundingNegativeExample(evolution, {
+      mediaTitle: 'DRAGON BALL GT Vegeta mata nappa denovo dublado',
+      mediaSha256: 'deadbeef1234',
+      workScope: 'dragon ball',
+      eventScope: 'raditz chegada_desembarque',
+      expectedContext: 'raditz | ações: chegada_desembarque',
+      genre: 'anime',
+    });
+    expect(beforeConfirmation.matched).toBe(false);
+
+    // Human review / confirmed correction promotes to blocking rule
     const recorded = recordSceneGroundingNegativeExample(evolution, {
       projectId: 'proj_dbz_1',
       segmentId: 'slot_1',
@@ -908,9 +939,11 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
       observedVisualSummary: 'Vegeta derrotando Nappa em Dragon Ball GT',
       mismatchReason: 'Cena de Dragon Ball GT com Vegeta e Nappa não corresponde à chegada de Raditz.',
       visualConfidence: 0.92,
+      origin: 'human_review',
       genre: 'anime',
     });
     expect(recorded.recorded).toBe(true);
+    expect(recorded.promotedToBlocking).toBe(true);
     expect(recorded.memoryId).toBeTruthy();
 
     const lookup = findMatchingSceneGroundingNegativeExample(evolution, {

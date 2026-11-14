@@ -111,6 +111,8 @@ export function resolveLearnedSceneConstraints(
 
 export const MIN_NEGATIVE_EXAMPLE_CONFIDENCE = 0.70;
 
+export type NegativeExampleOrigin = 'automatic' | 'human_review' | 'confirmed_correction';
+
 export interface SceneGroundingNegativeExampleInput {
   projectId: string;
   segmentId: string;
@@ -122,6 +124,7 @@ export interface SceneGroundingNegativeExampleInput {
   observedVisualSummary: string;
   mismatchReason: string;
   visualConfidence?: number;
+  origin?: NegativeExampleOrigin;
   genre?: string;
 }
 
@@ -148,12 +151,13 @@ function negativeTokens(text: string): string[] {
 export function recordSceneGroundingNegativeExample(
   evolution: AetheraEvolutionCore,
   input: SceneGroundingNegativeExampleInput,
-): { recorded: boolean; memoryId?: string; decisionId?: string; skippedReason?: string } {
-  const confidence = input.visualConfidence ?? 0.9;
-  if (confidence < MIN_NEGATIVE_EXAMPLE_CONFIDENCE) {
+): { recorded: boolean; promotedToBlocking?: boolean; origin?: NegativeExampleOrigin; memoryId?: string; decisionId?: string; skippedReason?: string } {
+  const origin: NegativeExampleOrigin = input.origin ?? 'automatic';
+  const confidence = input.visualConfidence ?? (origin === 'automatic' ? 0.8 : 0.95);
+  if (origin === 'automatic' && confidence < MIN_NEGATIVE_EXAMPLE_CONFIDENCE) {
     return {
       recorded: false,
-      skippedReason: `Confiança visual (${confidence.toFixed(2)}) abaixo do mínimo (${MIN_NEGATIVE_EXAMPLE_CONFIDENCE}) para consolidar exemplo negativo.`,
+      skippedReason: `Confiança visual (${confidence.toFixed(2)}) abaixo do mínimo (${MIN_NEGATIVE_EXAMPLE_CONFIDENCE}) para registrar hipótese negativa.`,
     };
   }
 
@@ -165,18 +169,27 @@ export function recordSceneGroundingNegativeExample(
     .update(`${input.mediaSha256 ?? normTitle}|${normWork}|${normEvent}`)
     .digest('hex')
     .slice(0, 16);
+  const techniqueKey = `sg_neg_${keyHash}`;
+
+  const existing = evolution.getSnapshot().memories.find((m) => m.techniqueKey === techniqueKey);
+  const nextEvidenceCount = (existing?.evidence.length ?? 0) + 1;
+  // Supervised learning guard: a single automatic classification only creates a 'proposed' hypothesis;
+  // blocking requires human_review, confirmed_correction, or >= 2 independent automatic evidences.
+  const shouldPromoteToValidated =
+    origin === 'human_review' || origin === 'confirmed_correction' || nextEvidenceCount >= 2;
 
   const memory = evolution.recordMemory({
-    techniqueKey: `sg_neg_${keyHash}`,
+    techniqueKey,
     directorId: 'narrative_director',
     kind: 'procedural',
-    epistemicLevel: 'validated_rule',
-    state: 'validated',
+    epistemicLevel: shouldPromoteToValidated ? 'validated_rule' : 'hypothesis',
+    state: shouldPromoteToValidated ? 'validated' : 'proposed',
     title: `Exemplo Negativo Scene Grounding: "${input.mediaTitle.slice(0, 50)}" ≠ "${input.expectedContext.slice(0, 40)}"`,
     content: [
       `MIDIA=${normTitle}`,
       `OBRA=${normWork || 'geral'}`,
       `EVENTO=${normEvent}`,
+      `ORIGEM=${origin}`,
       `ESPERADO=${normExpected}`,
       `OBSERVADO=${input.observedVisualSummary.slice(0, 220)}`,
       `MOTIVO=${input.mismatchReason}`,
@@ -184,6 +197,7 @@ export function recordSceneGroundingNegativeExample(
     tags: [
       'scene_grounding_negative',
       'negative_example',
+      `origin:${origin}`,
       ...(normWork ? [`work:${normWork}`] : []),
       ...(input.mediaSha256 ? [`sha256:${input.mediaSha256}`] : []),
       ...(input.genre ? [input.genre] : []),
@@ -193,25 +207,30 @@ export function recordSceneGroundingNegativeExample(
     },
     confidence: Math.min(0.96, Math.max(MIN_NEGATIVE_EXAMPLE_CONFIDENCE, confidence)),
     evidence: {
-      sourceType: 'production',
+      sourceType: origin === 'automatic' ? 'production' : 'human_feedback',
       sourceId: `${input.projectId}:${input.segmentId}`,
-      summary: `${input.mediaTitle} rejeitado para ${input.expectedContext}: ${input.mismatchReason}`,
+      summary: `[${origin}] ${input.mediaTitle} rejeitado para ${input.expectedContext}: ${input.mismatchReason}`,
       recordedAt: new Date().toISOString(),
     },
+    reasonForUpdate: shouldPromoteToValidated
+      ? `Promovido para regra bloqueante (${origin}, evidências=${nextEvidenceCount})`
+      : 'Hipótese inicial automática (não bloqueante)',
   });
 
   const decision = evolution.recordDecision({
     projectId: input.projectId,
     directorId: 'narrative_director',
     action: 'record_scene_grounding_negative_example',
-    rationale: `Registrado exemplo negativo de Scene Grounding (${input.segmentId}, obra=${normWork || 'geral'}, conf=${confidence.toFixed(2)}): "${input.mediaTitle}" não corresponde a "${input.expectedContext}" (${input.mismatchReason}).`,
+    rationale: `Registrado exemplo negativo [${origin}] (${input.segmentId}, obra=${normWork || 'geral'}, conf=${confidence.toFixed(2)}, estado=${memory.state}): "${input.mediaTitle}" ≠ "${input.expectedContext}".`,
     consultedMemoryIds: [memory.memoryId],
     consultedAcademyIds: ['scene_grounding'],
-    outcome: 'blocked',
+    outcome: shouldPromoteToValidated ? 'blocked' : 'applied',
   });
 
   return {
     recorded: true,
+    promotedToBlocking: shouldPromoteToValidated,
+    origin,
     memoryId: memory.memoryId,
     decisionId: decision.decisionId,
   };
@@ -260,8 +279,8 @@ export function findMatchingSceneGroundingNegativeExample(
   const snapshot = evolution.getSnapshot();
   const negMemories = snapshot.memories.filter(
     (m) =>
-      m.state !== 'disabled' &&
-      m.state !== 'rejected' &&
+      m.state === 'validated' &&
+      m.epistemicLevel === 'validated_rule' &&
       m.confidence >= MIN_NEGATIVE_EXAMPLE_CONFIDENCE &&
       m.tags.includes('scene_grounding_negative'),
   );

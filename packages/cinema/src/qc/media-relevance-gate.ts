@@ -81,7 +81,13 @@ export interface MediaRelevanceDecision {
     confidence: number;
   }>;
   matchedActions?: string[];
-  matchedIntervals?: Array<{ startSec: number; endSec: number; segmentId: string }>;
+  matchedIntervals?: Array<{
+    startSec: number;
+    endSec: number;
+    segmentId: string;
+    provingTimestampsSec?: number[];
+    provingDescriptions?: string[];
+  }>;
   eligibleSegmentIds?: string[];
   rejectionCode?:
     | 'unrelated_real_person'
@@ -376,7 +382,17 @@ export async function evaluateMediaRelevance(
 
       if (promisingAnchors.length > 0 && promisingAnchors.length < initialValid.length + 1) {
         const denseSet: number[] = [];
-        for (const anchor of promisingAnchors.slice(0, 2)) {
+        const sortedAnchors = promisingAnchors.slice().sort((a, b) => a.timestampSec - b.timestampSec);
+        for (let ai = 0; ai < sortedAnchors.length - 1; ai += 1) {
+          const gap = sortedAnchors[ai + 1]!.timestampSec - sortedAnchors[ai]!.timestampSec;
+          if (gap > 8 && denseSet.length < 6) {
+            const mid = Number(((sortedAnchors[ai]!.timestampSec + sortedAnchors[ai + 1]!.timestampSec) / 2).toFixed(2));
+            if (![...sampledTimestampsSec, ...denseSet].some((existing) => Math.abs(existing - mid) < 0.7)) {
+              denseSet.push(mid);
+            }
+          }
+        }
+        for (const anchor of sortedAnchors.slice(0, 2)) {
           for (const delta of [-1.5, 1.5, 3.0]) {
             const t = Number(Math.max(0.4, Math.min(candidate.durationSec - 0.3, anchor.timestampSec + delta)).toFixed(2));
             const alreadyNear = [...sampledTimestampsSec, ...denseSet].some((existing) => Math.abs(existing - t) < 0.7);
@@ -676,7 +692,15 @@ export async function evaluateMediaRelevance(
   const isFrameRelevant = (m: (typeof sortedPerFrame)[number]) =>
     useEventFilter ? m.isEventMatch : m.fEntities.length > 0 || m.fActions.length > 0;
 
-  const groupedIntervals: Array<{ startSec: number; endSec: number; segmentId: string; weight: number }> = [];
+  const MAX_VERIFIED_CONTINUOUS_GAP_SEC = 6.0;
+  const groupedIntervals: Array<{
+    startSec: number;
+    endSec: number;
+    segmentId: string;
+    weight: number;
+    provingTimestampsSec: number[];
+    provingDescriptions: string[];
+  }> = [];
   let activeRun: typeof sortedPerFrame = [];
 
   const flushRun = (run: typeof sortedPerFrame, nextNonMatchingTs?: number, prevNonMatchingTs?: number) => {
@@ -695,6 +719,8 @@ export async function evaluateMediaRelevance(
         endSec: Number(boundedEnd.toFixed(2)),
         segmentId: segment.segmentId,
         weight: run.reduce((acc, item) => acc + item.matchWeight, 0),
+        provingTimestampsSec: run.map((item) => item.frame.timestampSec),
+        provingDescriptions: run.map((item) => (item.frame.description ?? '').slice(0, 140)),
       });
     }
   };
@@ -702,6 +728,11 @@ export async function evaluateMediaRelevance(
   let prevNonMatchTs: number | undefined;
   for (const m of sortedPerFrame) {
     if (isFrameRelevant(m)) {
+      const lastInRun = activeRun[activeRun.length - 1];
+      if (lastInRun && m.frame.timestampSec - lastInRun.frame.timestampSec > MAX_VERIFIED_CONTINUOUS_GAP_SEC) {
+        flushRun(activeRun, undefined, prevNonMatchTs);
+        activeRun = [];
+      }
       activeRun.push(m);
     } else {
       if (activeRun.length > 0) {
@@ -718,7 +749,13 @@ export async function evaluateMediaRelevance(
 
   const matchedIntervals =
     groupedIntervals.length > 0
-      ? groupedIntervals.map(({ startSec, endSec, segmentId }) => ({ startSec, endSec, segmentId }))
+      ? groupedIntervals.map(({ startSec, endSec, segmentId, provingTimestampsSec, provingDescriptions }) => ({
+          startSec,
+          endSec,
+          segmentId,
+          provingTimestampsSec,
+          provingDescriptions,
+        }))
       : [{ startSec: 0, endSec: Number(candidate.durationSec.toFixed(2)), segmentId: segment.segmentId }];
 
   return {
