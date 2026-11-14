@@ -241,6 +241,31 @@ export function CinemaDirectorPanel() {
   const navigate = useNavigate();
   const { agents } = useAgents();
   const readyAgents = (agents ?? []).filter((a) => healthOf(a) === 'ready');
+  const [readyExtraCount, setReadyExtraCount] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    const api = (window as unknown as {
+      aetheraBridge?: {
+        cinemaEvolutionSnapshot?: () => Promise<{
+          extraEngines?: Array<{ installed: boolean; authenticated?: boolean }>;
+        }>;
+      };
+    }).aetheraBridge;
+    if (!api?.cinemaEvolutionSnapshot) return;
+    api
+      .cinemaEvolutionSnapshot()
+      .then((res) => {
+        if (!active) return;
+        const count = (res?.extraEngines ?? []).filter((e) => e.installed && e.authenticated !== false).length;
+        setReadyExtraCount(count);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+  const totalReadyProviders = readyAgents.length + readyExtraCount;
 
   const [prompt, setPrompt] = useState(
     'Crie um vídeo cinematográfico sobre os 10 chefes mais difíceis de Elden Ring, com narrativa épica, humor pontual e duração de 12 minutos.',
@@ -629,8 +654,8 @@ export function CinemaDirectorPanel() {
           <div className="flex flex-wrap gap-2 text-xs">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-[#121220] px-3 py-1 text-purple-200">
               <Bot className="size-3.5 text-purple-400" />
-              {readyAgents.length > 0
-                ? `${directorCount} diretores · ${readyAgents.length} provedor(es) RF-07`
+              {totalReadyProviders > 0
+                ? `${directorCount} diretores · ${totalReadyProviders} provedor(es) RF-07`
                 : `${directorCount} diretores · Modo determinístico local`}
             </span>
             {capabilities && (

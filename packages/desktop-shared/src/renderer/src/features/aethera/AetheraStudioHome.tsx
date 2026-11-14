@@ -72,9 +72,25 @@ export function AetheraStudioHome() {
   });
 
   const projectList = projects.data ?? [];
+  const extraEnginesQuery = useQuery({
+    queryKey: ['aethera-extra-engines'],
+    queryFn: async () => {
+      const bridge = (window as unknown as {
+        aetheraBridge?: {
+          cinemaEvolutionSnapshot?: () => Promise<{
+            extraEngines?: Array<{ installed: boolean; authenticated?: boolean }>;
+          }>;
+        };
+      }).aetheraBridge;
+      return bridge?.cinemaEvolutionSnapshot ? bridge.cinemaEvolutionSnapshot() : { extraEngines: [] };
+    },
+  });
+  const readyExtraCount = (extraEnginesQuery.data?.extraEngines ?? []).filter(
+    (e) => e.installed && e.authenticated !== false,
+  ).length;
   const activeCount = projectList.filter((p) => p.status !== 'completed' && p.status !== 'archived').length;
   const reviewCount = dashboards.filter((d) => d.data?.nextAction.kind === 'package' || d.data?.nextAction.kind === 'script').length;
-  const readyAgentsCount = (agents ?? []).filter((a) => healthOf(a) === 'ready').length;
+  const readyAgentsCount = (agents ?? []).filter((a) => healthOf(a) === 'ready').length + readyExtraCount;
   const activeStage = reviewCount > 0 ? 2 : activeCount > 0 ? 1 : 0;
 
   return (
