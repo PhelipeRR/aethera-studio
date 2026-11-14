@@ -45,7 +45,8 @@ describe('EVO-12 — Validação Real de Aprendizado e Autonomia Cinematográfic
         evolution: evo1,
         genre: 'documentario',
       });
-      expect(renderBefore.renderedHeadlines?.some((h) => /ATO\s+I/i.test(h))).toBe(true);
+      expect(renderBefore.renderedHeadlines?.length ?? 0).toBeGreaterThan(0);
+      expect(renderBefore.renderedHeadlines?.some((h) => /ATO\s+I|Aethera\s+Studio/i.test(h))).toBe(false);
       expect(renderBefore.probe.durationSec).toBeGreaterThan(5);
 
       // 1B. Provide exact human feedback from EVO-12

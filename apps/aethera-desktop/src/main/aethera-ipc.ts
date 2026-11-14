@@ -1,8 +1,10 @@
 import { eq } from 'drizzle-orm';
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
@@ -1749,42 +1751,92 @@ export function registerAetheraDomainIpc(options: {
     },
     generateAgentScript: async (input) => {
       try {
-        const agy = await detectAntigravityCli();
-        if (!agy.installed || agy.authenticated === false) return null;
         const desiredBeats = input.targetDurationSec > 90
           ? Math.max(8, Math.min(28, Math.round(input.targetDurationSec / 36)))
           : 6;
         const wordsTarget = Math.max(120, Math.round(input.targetDurationSec * 2.1));
-        const agentPrompt = [
-          `Você é a equipe de Diretores Cinematográficos RF-07 do Aethera Studio.`,
-          `Crie um roteiro completo em português para um vídeo de ${input.targetDurationSec}s (${Math.round(input.targetDurationSec / 60)} min).`,
-          `Tema: "${input.prompt}"`,
-          `Gênero: ${input.genre ?? 'gameplay_essay'} | Humor contextual: ${input.humorIntensity}% | Consultas de pesquisa: ${input.queries.join(', ')}`,
-          `Meta de narração falada: ~${wordsTarget} palavras divididas em ${desiredBeats} cenas/beats proporcionais à duração.`,
-          `Responda SOMENTE com JSON válido no formato: {"treatment":"...","beats":[{"stage":"hook|promise|progression|tension|climax|resolution","summary":"texto completo de narração e direção da cena"}]}`,
-        ].join('\n');
-        const res = await runAntigravityPrompt({
-          prompt: agentPrompt,
-          cwd: app.getPath('userData'),
-          timeoutMs: 25_000,
+        const learnedMemories = evolutionCore.retrieveRelevantMemories({
+          text: input.prompt,
+          ...(input.genre ? { genre: input.genre } : {}),
+          limit: 8,
         });
-        const raw = res.output ?? '';
-        const jsonMatch = raw.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) return null;
-        const parsed = JSON.parse(jsonMatch[0]) as {
-          treatment?: string;
-          beats?: Array<{ stage?: 'hook' | 'promise' | 'progression' | 'tension' | 'climax' | 'resolution' | 'cta'; summary?: string }>;
-        };
-        if (!Array.isArray(parsed.beats) || parsed.beats.length < 6) return null;
-        const cleanBeats = parsed.beats
-          .filter((b): b is { stage?: 'hook' | 'promise' | 'progression' | 'tension' | 'climax' | 'resolution' | 'cta'; summary: string } =>
-            typeof b?.summary === 'string' && b.summary.trim().length > 0,
+        const academyMaterials = academyEngine.getSnapshot().materials.slice(0, 4);
+        const academyRulesBlock = [
+          ...learnedMemories.map((m) => `- [${m.kind}] ${m.title}: ${m.content}`),
+          ...academyMaterials.map((mat) => `- [Estudo: ${mat.title} (${mat.kind})]`),
+        ]
+          .filter(Boolean)
+          .slice(0, 8);
+
+        const agentPrompt = [
+          `Você é o Diretor de Roteiro e Narração do Aethera Studio.`,
+          `Escreva um roteiro REAL, envolvente e natural em português do Brasil, pronto para ser lido em voz alta por um narrador humano em vídeo de ${input.targetDurationSec}s (${Math.round(input.targetDurationSec / 60)} min).`,
+          `Briefing/Tema: "${input.prompt}"`,
+          `Gênero: ${input.genre ?? 'gameplay_essay'} | Humor contextual: ${input.humorIntensity}% | Tópicos de pesquisa: ${input.queries.join(', ')}`,
+          `Meta de narração falada: ~${wordsTarget} palavras divididas em ${desiredBeats} cenas/beats proporcionais à duração.`,
+          ...(academyRulesBlock.length > 0
+            ? [`Regras aprendidas na Academy e Memória Evolutiva (aplique obrigatoriamente):`, ...academyRulesBlock]
+            : []),
+          `REGRAS OBRIGATÓRIAS DE QUALIDADE:`,
+          `- Escreva FALAS NATURAIS DE LOCUTOR (como um canal profissional do YouTube/documentário), NUNCA descrições de cena ou metalinguagem.`,
+          `- PROIBIDO usar frases de template ou burocráticas como: "Abertura cinematográfica apresentando", "Aethera Studio apresenta", "Ato I", "Ato 1", "Capítulo X de Y sobre", "Contextualização e promessa", ou repetir campos do briefing como "Título:", "Nicho:", "Duração alvo:".`,
+          `- Comece já prendendo a atenção do espectador com um fato forte, pergunta ou contraste real sobre o tema.`,
+          `Responda SOMENTE com JSON válido no formato: {"treatment":"resumo da abordagem editorial","beats":[{"stage":"hook|promise|progression|tension|climax|resolution|cta","summary":"fala exata que será narrada em voz alta nesta cena"}]}`,
+        ].join('\n');
+
+        const parseScriptOutput = (raw: string) => {
+          const jsonMatch = raw.match(/\{[\s\S]*\}/);
+          if (!jsonMatch) return null;
+          const parsed = JSON.parse(jsonMatch[0]) as {
+            treatment?: string;
+            beats?: Array<{ stage?: 'hook' | 'promise' | 'progression' | 'tension' | 'climax' | 'resolution' | 'cta'; summary?: string }>;
+          };
+          if (!Array.isArray(parsed.beats) || parsed.beats.length < 6) return null;
+          const cleanBeats = parsed.beats.filter(
+            (b): b is { stage?: 'hook' | 'promise' | 'progression' | 'tension' | 'climax' | 'resolution' | 'cta'; summary: string } =>
+              typeof b?.summary === 'string' && b.summary.trim().length > 0,
           );
-        if (cleanBeats.length < 6) return null;
-        return {
-          ...(typeof parsed.treatment === 'string' ? { treatment: parsed.treatment } : {}),
-          beats: cleanBeats,
+          if (cleanBeats.length < 6) return null;
+          return {
+            ...(typeof parsed.treatment === 'string' ? { treatment: parsed.treatment } : {}),
+            beats: cleanBeats,
+          };
         };
+
+        const agy = await detectAntigravityCli();
+        if (agy.installed && agy.authenticated !== false) {
+          try {
+            const res = await runAntigravityPrompt({
+              prompt: agentPrompt,
+              cwd: app.getPath('userData'),
+              timeoutMs: 90_000,
+            });
+            const parsed = parseScriptOutput(res.output ?? '');
+            if (parsed) return parsed;
+          } catch {
+            // fallback to next agent
+          }
+        }
+
+        const execFileAsync = promisify(execFile);
+        for (const [cmd, args] of [
+          ['claude', ['-p', '--output-format', 'text', agentPrompt]],
+          ['codex', ['exec', agentPrompt]],
+        ] as Array<[string, string[]]>) {
+          try {
+            const { stdout } = await execFileAsync(cmd, args, {
+              cwd: app.getPath('userData'),
+              timeout: 90_000,
+              maxBuffer: 4 * 1024 * 1024,
+            });
+            const parsed = parseScriptOutput(stdout);
+            if (parsed) return parsed;
+          } catch {
+            // try next provider
+          }
+        }
+
+        return null;
       } catch {
         return null;
       }

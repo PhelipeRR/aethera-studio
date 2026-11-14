@@ -302,12 +302,12 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const renderedHeadlines: string[] = [];
   const humorActive = input.pkg.timeline.humorProfile.humorIntensity > 0 && input.pkg.timeline.comedyBeats.length > 0;
   const defaultBeatTitles = [
-    'ATO I - Abertura Cinematografica',
-    'ATO II - Promessa & Conflito',
-    humorActive ? 'HUMOR (35%) - Contraste Editorial' : 'ATO III - Desenvolvimento',
-    'ATO IV - Tensao & Escalada',
-    'ATO V - Climax Visual (Rec.709)',
-    'ATO VI - Resolucao & Aethera Studio',
+    'Abertura',
+    'Contexto & Promessa',
+    humorActive ? 'Contraponto Editorial' : 'Desenvolvimento',
+    'Ponto de Inflexão',
+    'Clímax',
+    'Conclusão',
   ];
   const editorialTitles = [
     'Abertura - Contexto Visual',
@@ -599,8 +599,14 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
 
   // 3. Real Narration (VoiceStudio -> Windows SAPI PT-BR fallback -> procedural cue) + Sound Director Audit Gate + Bus Mix
   const narrationWav = join(workDir, 'narration.wav');
+  const scriptNarrationText = (input.pkg.direction.narrativeBeats ?? [])
+    .map((b) => b.summary.trim())
+    .filter(Boolean)
+    .join(' ')
+    .slice(0, 3800);
+  const narrationTextToSpeak = scriptNarrationText || input.pkg.direction.brief.prompt.slice(0, 500);
   const narrationMode = await synthesizeNarrationWav(
-    `Aethera Studio apresentando: ${input.pkg.direction.brief.prompt.slice(0, 140)}. Ritmo cinematográfico com humor pontual de ${input.pkg.timeline.humorProfile.humorIntensity} por cento e controle de qualidade Rec 709.`,
+    narrationTextToSpeak,
     narrationWav,
     {
       ...(input.voiceStudioUrl ? { voiceStudioUrl: input.voiceStudioUrl } : {}),

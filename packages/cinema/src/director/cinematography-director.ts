@@ -204,34 +204,39 @@ function buildContextualBeatNarration(params: {
   humorIntensity: number;
 }): string {
   const cleanTopic = params.prompt
-    .replace(/^(?:crie|fa[çc]a|gere|produza)\s+(?:um\s+)?(?:v[ií]deo(?:\s+cinematogr[áa]fico)?\s+(?:sobre|de)?\s*)/i, '')
+    .replace(/\b(t[ií]tulo|nicho|dura[çc][ãa]o(\s+alvo)?|tom|objetivo|formato|estilo)\s*:\s*/gi, ' ')
+    .replace(/\b(nicho|dura[çc][ãa]o(\s+alvo)?|tom|objetivo)\s*:\s*[^|\n]+/gi, ' ')
+    .replace(/^(?:crie|fa[çc]a|gere|produza|monte)\s+(?:um\s+)?(?:v[ií]deo(?:\s+cinematogr[áa]fico)?\s+(?:sobre|de)?\s*)/i, '')
     .replace(/,?\s*com\s+narrativa.*$/i, '')
-    .trim() || params.prompt.trim();
+    .split(/[|\n]+/)[0]
+    ?.replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 90) || params.prompt.trim().slice(0, 90);
 
   const humorLine =
     params.humorIntensity > 0
-      ? ' Um comentário irônico pontua a transição sem quebrar o ritmo cinematográfico.'
+      ? ' E acredite: os bastidores dessa história são ainda mais curiosos do que parecem.'
       : '';
 
   const baseParagraphs: Record<NarrativeBeat['stage'], string> = {
-    hook: `Abertura cinematográfica apresentando ${cleanTopic}. Logo nos primeiros segundos, estabelecemos o peso dramático, os riscos envolvidos e o motivo pelo qual este recorte exige atenção imediata do espectador.${humorLine}`,
-    promise: `Contextualização e promessa do episódio sobre ${cleanTopic}: explicamos os critérios de avaliação, o que torna cada momento memorável e como a jornada evolui em intensidade até o desfecho.`,
+    hook: `Você já parou para pensar no que realmente está por trás de ${cleanTopic}? Muita gente conhece só a superfície dessa história, mas os detalhes menos comentados mudam completamente a forma como enxergamos tudo isso.${humorLine}`,
+    promise: `Hoje vamos mergulhar nos bastidores, nas decisões que definiram ${cleanTopic} e nos momentos que quase ninguém percebeu na época.`,
     progression: params.itemNumber
-      ? `Capítulo ${params.itemNumber} de ${params.itemTotal ?? params.totalBeats} sobre ${cleanTopic}: analisamos os padrões de comportamento, decisões táticas, leitura de cenário, erros comuns e os momentos decisivos que definem esta etapa.${humorLine}`
-      : `Desenvolvimento narrativo (bloco ${params.beatIndex + 1} de ${params.totalBeats}) explorando ${cleanTopic} com evidências visuais, ritmo alternado, leitura de detalhes e aprofundamento técnico.${humorLine}`,
-    tension: `Escalada de tensão em ${cleanTopic}: o nível de exigência sobe drasticamente, as margens de erro desaparecem e cada movimento passa a ter consequência direta no resultado final.${humorLine}`,
-    climax: `Clímax principal de ${cleanTopic}: convergência máxima entre trilha sonora, ritmo de montagem e execução visual, destacando o momento mais intenso e memorável de toda a obra.`,
-    resolution: `Fechamento e síntese sobre ${cleanTopic}: consolidamos os aprendizados da jornada, conectamos os pontos altos do roteiro e entregamos uma conclusão marcante.`,
-    cta: `Encerramento convidando o público a comentar suas próprias experiências sobre ${cleanTopic} e acompanhar os próximos episódios do canal.`,
+      ? `No ponto ${params.itemNumber} de ${params.itemTotal ?? params.totalBeats} sobre ${cleanTopic}, olhamos de perto para o que aconteceu nos bastidores, as escolhas que fizeram diferença e o impacto real no resultado.${humorLine}`
+      : `Avançando na história de ${cleanTopic}, fica claro como cada escolha influenciou o caminho seguinte e por que esse detalhe se tornou tão marcante.${humorLine}`,
+    tension: `É aqui que a situação aperta em ${cleanTopic}: o prazo curto, a pressão crescente e as decisões difíceis colocam tudo em risco.${humorLine}`,
+    climax: `E chegamos ao momento decisivo de ${cleanTopic}, quando tudo o que foi construído até aqui converge para o desfecho que marcou o público.`,
+    resolution: `Olhando para trás, ${cleanTopic} deixa uma lição clara sobre ambição, execução e o peso de cada escolha ao longo do caminho.`,
+    cta: `Agora quero saber a sua opinião sobre ${cleanTopic}: o que mais chamou sua atenção nessa história? Deixe nos comentários.`,
   };
 
   let text = baseParagraphs[params.stage];
   const targetWords = Math.max(18, Math.round(params.durationSec * 2.1));
   const detailExtensions = [
-    `Nesta janela de ${Math.round(params.durationSec)} segundos, a decupagem alterna planos fechados para destacar reações e planos abertos para situar a escala do desafio.`,
-    `A narração mantém cadência firme, explicando o porquê de cada escolha visual, o impacto da trilha com ducking controlado e os contrastes entre expectativa e execução real.`,
-    `Observamos também os pequenos sinais que costumam passar despercebidos na primeira visualização, conectando ritmo, atmosfera e leitura estratégica do contexto apresentado.`,
-    `Com base nas referências pesquisadas para "${cleanTopic.slice(0, 80)}", reforçamos a coerência documental entre imagem em tela, comentário editorial e pontuação sonora.`,
+    `Quando observamos os fatos em sequência, percebemos que pequenas decisões tomadas muito antes acabaram definindo todo o resultado.`,
+    `Esse contraste entre o que era esperado e o que realmente aconteceu ajuda a entender por que o assunto continua rendendo tanta discussão.`,
+    `Cada detalhe desse episódio mostra como o contexto da época pesou diretamente nas escolhas finais.`,
+    `E é justamente essa combinação de fatores que torna essa história tão interessante de revisitar hoje.`,
   ];
 
   let extIdx = 0;
