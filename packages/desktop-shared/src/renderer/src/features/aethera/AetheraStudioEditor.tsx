@@ -263,6 +263,96 @@ export function AetheraStudioEditor() {
   const [savingAudio, setSavingAudio] = useState(false);
   const [previewingBus, setPreviewingBus] = useState<string | null>(null);
   const [timelineTool, setTimelineTool] = useState<'select' | 'razor'>('select');
+  const [layoutSizes, setLayoutSizes] = useState<{
+    leftPct: number;
+    rightPct: number;
+    timelinePx: number;
+    assistantPct: number;
+  }>(() => {
+    try {
+      const raw = localStorage.getItem('aethera_editor_layout_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<{ leftPct: number; rightPct: number; timelinePx: number; assistantPct: number }>;
+        return {
+          leftPct: Math.min(40, Math.max(14, Number(parsed.leftPct) || 23)),
+          rightPct: Math.min(42, Math.max(16, Number(parsed.rightPct) || 26)),
+          timelinePx: Math.min(480, Math.max(130, Number(parsed.timelinePx) || 215)),
+          assistantPct: Math.min(45, Math.max(16, Number(parsed.assistantPct) || 25)),
+        };
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return { leftPct: 23, rightPct: 26, timelinePx: 215, assistantPct: 25 };
+  });
+  const editorRootRef = useRef<HTMLDivElement | null>(null);
+  const topRowRef = useRef<HTMLDivElement | null>(null);
+  const bottomRowRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('aethera_editor_layout_v1', JSON.stringify(layoutSizes));
+    } catch {
+      // ignore storage errors
+    }
+  }, [layoutSizes]);
+
+  const resetLayoutSizes = useCallback(() => {
+    setLayoutSizes({ leftPct: 23, rightPct: 26, timelinePx: 215, assistantPct: 25 });
+  }, []);
+
+  const startPanelResize = useCallback(
+    (kind: 'left' | 'right' | 'timeline' | 'assistant', e: React.PointerEvent) => {
+      e.preventDefault();
+      const prevSelect = document.body.style.userSelect;
+      document.body.style.userSelect = 'none';
+
+      const onMove = (ev: PointerEvent) => {
+        if (kind === 'left' && topRowRef.current) {
+          const rect = topRowRef.current.getBoundingClientRect();
+          if (rect.width <= 0) return;
+          const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+          setLayoutSizes((prev) => ({
+            ...prev,
+            leftPct: Math.min(40, Math.max(14, Math.min(72 - prev.rightPct, Number(pct.toFixed(1))))),
+          }));
+        } else if (kind === 'right' && topRowRef.current) {
+          const rect = topRowRef.current.getBoundingClientRect();
+          if (rect.width <= 0) return;
+          const pct = ((rect.right - ev.clientX) / rect.width) * 100;
+          setLayoutSizes((prev) => ({
+            ...prev,
+            rightPct: Math.min(42, Math.max(16, Math.min(72 - prev.leftPct, Number(pct.toFixed(1))))),
+          }));
+        } else if (kind === 'timeline' && editorRootRef.current) {
+          const rect = editorRootRef.current.getBoundingClientRect();
+          const px = rect.bottom - ev.clientY - 10;
+          setLayoutSizes((prev) => ({
+            ...prev,
+            timelinePx: Math.min(480, Math.max(130, Math.round(px))),
+          }));
+        } else if (kind === 'assistant' && bottomRowRef.current) {
+          const rect = bottomRowRef.current.getBoundingClientRect();
+          if (rect.width <= 0) return;
+          const pct = ((rect.right - ev.clientX) / rect.width) * 100;
+          setLayoutSizes((prev) => ({
+            ...prev,
+            assistantPct: Math.min(45, Math.max(16, Number(pct.toFixed(1)))),
+          }));
+        }
+      };
+
+      const onUp = () => {
+        document.body.style.userSelect = prevSelect;
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    },
+    [],
+  );
   const [visualTransform, setVisualTransform] = useState({
     blendMode: 'normal',
     opacity: 1,
@@ -1051,7 +1141,8 @@ export function AetheraStudioEditor() {
 
   return (
     <div
-      className="flex h-[calc(100vh-3.5rem)] flex-col gap-2 overflow-hidden p-2.5"
+      ref={editorRootRef}
+      className="flex h-[calc(100vh-3.5rem)] flex-col gap-1.5 overflow-hidden p-2.5"
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
@@ -1113,6 +1204,14 @@ export function AetheraStudioEditor() {
           </Link>
           <button
             type="button"
+            onClick={resetLayoutSizes}
+            title="Restaurar tamanho padrão dos painéis"
+            className="rounded-lg border border-border px-2 py-1.5 text-[11px] text-muted-foreground hover:border-primary hover:text-foreground"
+          >
+            Painéis
+          </button>
+          <button
+            type="button"
             onClick={handleExportOtio}
             disabled={!pkg || exportingOtio}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 hover:border-primary disabled:opacity-50"
@@ -1147,9 +1246,16 @@ export function AetheraStudioEditor() {
         </div>
       )}
 
-      <div className="grid flex-1 min-h-0 gap-2 lg:grid-cols-12">
+      <div
+        ref={topRowRef}
+        style={{
+          ['--left-w' as string]: `${layoutSizes.leftPct}%`,
+          ['--right-w' as string]: `${layoutSizes.rightPct}%`,
+        }}
+        className="flex flex-1 min-h-0 flex-col gap-1.5 lg:flex-row lg:gap-0"
+      >
         {/* Left: Media & Assets Bin */}
-        <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card p-2.5 lg:col-span-3 space-y-2">
+        <aside className="flex min-h-0 shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-card p-2.5 lg:w-[var(--left-w)] space-y-2">
           <div className="flex flex-wrap gap-1 text-[11px]">
             {(
               [
@@ -1247,8 +1353,19 @@ export function AetheraStudioEditor() {
           </div>
         </aside>
 
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          title="Arraste para redimensionar Biblioteca / Player (duplo clique para resetar)"
+          onPointerDown={(e) => startPanelResize('left', e)}
+          onDoubleClick={resetLayoutSizes}
+          className="hidden lg:flex w-2 shrink-0 cursor-col-resize items-center justify-center group"
+        >
+          <div className="h-10 w-0.5 rounded-full bg-border/80 transition group-hover:h-16 group-hover:bg-purple-400" />
+        </div>
+
         {/* Center: Real Preview Stage (Live Canvas OR Rendered MP4 Video) */}
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-[#090910] p-2.5 lg:col-span-6 space-y-1.5">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-[#090910] p-2.5 space-y-1.5">
           <div className="flex items-center justify-between text-[11px]">
             <div className="flex gap-1">
               <button
@@ -1356,8 +1473,19 @@ export function AetheraStudioEditor() {
           </div>
         </section>
 
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          title="Arraste para redimensionar Player / Inspetor (duplo clique para resetar)"
+          onPointerDown={(e) => startPanelResize('right', e)}
+          onDoubleClick={resetLayoutSizes}
+          className="hidden lg:flex w-2 shrink-0 cursor-col-resize items-center justify-center group"
+        >
+          <div className="h-10 w-0.5 rounded-full bg-border/80 transition group-hover:h-16 group-hover:bg-purple-400" />
+        </div>
+
         {/* Right: Inspector */}
-        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card p-2.5 lg:col-span-3 space-y-2">
+        <aside className="flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-card p-2.5 lg:w-[var(--right-w)] space-y-2">
           <div className="flex-none flex flex-wrap gap-1 text-[11px]">
             {(
               [
@@ -1826,9 +1954,27 @@ export function AetheraStudioEditor() {
         </aside>
       </div>
 
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        title="Arraste para aumentar ou diminuir a altura da Timeline (duplo clique para resetar)"
+        onPointerDown={(e) => startPanelResize('timeline', e)}
+        onDoubleClick={resetLayoutSizes}
+        className="hidden lg:flex h-2 shrink-0 cursor-row-resize items-center justify-center group"
+      >
+        <div className="h-0.5 w-16 rounded-full bg-border/80 transition group-hover:w-28 group-hover:bg-purple-400" />
+      </div>
+
       {/* Bottom: Interactive Multi-track NLE Timeline + Collapsible AI Assistant */}
-      <div className="grid flex-none h-[215px] gap-2 overflow-hidden lg:grid-cols-12">
-        <section className={`flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card p-2.5 space-y-1.5 ${assistantOpen ? 'lg:col-span-9' : 'lg:col-span-12'}`}>
+      <div
+        ref={bottomRowRef}
+        style={{
+          height: `${layoutSizes.timelinePx}px`,
+          ['--assistant-w' as string]: `${layoutSizes.assistantPct}%`,
+        }}
+        className="flex flex-none min-h-0 flex-col gap-1.5 overflow-hidden lg:flex-row lg:gap-0"
+      >
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-card p-2.5 space-y-1.5">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 pb-2 text-xs">
             <div className="flex items-center gap-2">
               <button type="button" onClick={handleUndo} disabled={history.length === 0} className="rounded-md border border-border p-1.5 hover:border-primary disabled:opacity-40" aria-label="Desfazer">
@@ -2072,7 +2218,18 @@ export function AetheraStudioEditor() {
         </section>
 
         {assistantOpen && (
-          <aside className="flex min-h-0 flex-col overflow-y-auto rounded-xl border border-primary/30 bg-card p-2.5 lg:col-span-3 space-y-2">
+          <>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              title="Arraste para redimensionar Timeline / Assistente IA (duplo clique para resetar)"
+              onPointerDown={(e) => startPanelResize('assistant', e)}
+              onDoubleClick={resetLayoutSizes}
+              className="hidden lg:flex w-2 shrink-0 cursor-col-resize items-center justify-center group"
+            >
+              <div className="h-10 w-0.5 rounded-full bg-border/80 transition group-hover:h-16 group-hover:bg-purple-400" />
+            </div>
+            <aside className="flex min-h-0 shrink-0 flex-col overflow-y-auto rounded-xl border border-primary/30 bg-card p-2.5 lg:w-[var(--assistant-w)] space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="inline-flex items-center gap-1.5 text-xs font-semibold">
                 <Bot className="size-3.5 text-purple-400" /> Assistente de Edição IA
@@ -2119,7 +2276,8 @@ export function AetheraStudioEditor() {
                 {submittingRevision ? 'Aplicando e salvando memória...' : 'Corrigir & Ensinar Diretores'}
               </button>
             </form>
-          </aside>
+            </aside>
+          </>
         )}
       </div>
     </div>
