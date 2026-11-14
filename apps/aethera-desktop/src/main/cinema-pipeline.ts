@@ -630,6 +630,7 @@ export class StagedCinemaPipeline {
             segments: initialSegments,
             mediaDir: projectPaths.mediaDir,
             deps: this.deps.autonomousAcquisitionDeps,
+            probeDurationFn: async (fp) => (await probeRealMp4(fp)).durationSec,
             ...(this.deps.analyzeFrames ? { analyzeFrames: this.deps.analyzeFrames } : {}),
             requireVisualVerification: this.deps.requireVisualVerification ?? true,
             signal,

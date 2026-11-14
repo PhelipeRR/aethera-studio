@@ -353,6 +353,13 @@ export async function evaluateMediaRelevance(
       .toLowerCase(),
   );
 
+  const validVisualFrames = frameAnalyses.filter(
+    (f) =>
+      f.confidence > 0.15 &&
+      !/não foi possível inspecionar|nenhum conteúdo visual|nada visível|unable to inspect|cannot read|blockReadsOutsideWorkingDirectories/i.test(
+        f.description ?? '',
+      ),
+  );
   const visualEvidence = frameAnalyses.map((f) => ({
     timestampSec: f.timestampSec,
     description: f.description ?? '',
@@ -361,11 +368,11 @@ export async function evaluateMediaRelevance(
     confidence: f.confidence,
   }));
   const visualVerificationStatus: VisualVerificationStatus =
-    frameAnalyses.length > 0 ? 'visually_verified' : 'unverified_metadata_only';
+    validVisualFrames.length > 0 ? 'visually_verified' : 'unverified_metadata_only';
   const visualConfidence =
-    frameAnalyses.length > 0
+    validVisualFrames.length > 0
       ? Number(
-          (frameAnalyses.reduce((acc, f) => acc + f.confidence, 0) / frameAnalyses.length).toFixed(2),
+          (validVisualFrames.reduce((acc, f) => acc + f.confidence, 0) / validVisualFrames.length).toFixed(2),
         )
       : 0;
 
