@@ -25,16 +25,21 @@ import {
   produceCinemaPackage,
   renderRealCinemaMp4,
   resolveLearnedSceneConstraints,
+  runAutonomousMediaAcquisition,
   runAutonomousSupervisorPass,
   type AetheraEvolutionCore,
+  type AutonomousAcquisitionAuditReport,
   type CinemaGenre,
   type CinemaProductionPackage,
   type DeliveryFormat,
+  type DistributedFrameAnalysis,
   type MediaCoverageReport,
   type MediaRelevanceDecision,
   type NarrativeBeat,
   type RealRenderResult,
   type RenderQualityProfile,
+  type ResilientAcquisitionDeps,
+  type ScriptSegmentExpectation,
   type ScriptValidationReport,
   type SourceMediaRecord,
   buildEditorialScript,
@@ -89,6 +94,7 @@ export interface StagedProductionJob {
   scriptValidation?: ScriptValidationReport;
   mediaRelevanceDecisions?: MediaRelevanceDecision[];
   coverageReport?: MediaCoverageReport;
+  autonomousAudit?: AutonomousAcquisitionAuditReport;
   isTechnicalSample?: boolean;
   error?: string;
   startedAt?: string;
@@ -114,6 +120,13 @@ export interface StagedPipelineDeps {
   onProgress?: (job: StagedProductionJob) => void;
   onPackageReady: (pkg: CinemaProductionPackage, prompt: string) => void;
   onRenderReady: (projectId: string, render: RealRenderResult) => void;
+  analyzeFrames?: (
+    uri: string,
+    timestampsSec: number[],
+    segment: ScriptSegmentExpectation,
+  ) => Promise<DistributedFrameAnalysis[]>;
+  requireVisualVerification?: boolean;
+  autonomousAcquisitionDeps?: ResilientAcquisitionDeps;
   analyzeFrameWithAI?: (
     framePath: string,
     scene: {
@@ -592,6 +605,76 @@ export class StagedCinemaPipeline {
         this.saveJob(job);
 
         const pending: PendingMediaSlot[] = [];
+        if (this.deps.autonomousAcquisitionDeps && job.acquiredMedia.length < queries.length) {
+          const initialSegments = job.editorialScript
+            ? job.editorialScript.segments.map((s) => ({
+                segmentId: s.segmentId,
+                subject: s.title || s.segmentId,
+                narrationText: s.spokenText,
+                entities: extractTopicEntities(`${s.title ?? ''} ${s.spokenText}`),
+                expectedDurationSec: Math.max(8, s.estimatedDurationSec || 15),
+              }))
+            : queries.map((q, idx) => ({
+                segmentId: `slot_${idx + 1}`,
+                subject: q,
+                narrationText: q,
+                entities: extractTopicEntities(q),
+                expectedDurationSec: Math.max(8, Math.round((job.targetDurationSec ?? 90) / Math.max(1, queries.length))),
+              }));
+
+          const audit = await runAutonomousMediaAcquisition({
+            projectId: job.projectId,
+            prompt: job.prompt,
+            ...(job.genre ? { genre: job.genre } : {}),
+            format: job.format === 'shorts_9_16' ? 'shorts' : 'analysis',
+            segments: initialSegments,
+            mediaDir: projectPaths.mediaDir,
+            deps: this.deps.autonomousAcquisitionDeps,
+            ...(this.deps.analyzeFrames ? { analyzeFrames: this.deps.analyzeFrames } : {}),
+            requireVisualVerification: this.deps.requireVisualVerification ?? true,
+            signal,
+          });
+          job.autonomousAudit = audit;
+          relevanceDecisions.push(...audit.relevanceDecisions);
+          job.coverageReport = audit.coverageReport;
+
+          for (let idx = 0; idx < audit.approvedAssets.length; idx += 1) {
+            const approved = audit.approvedAssets[idx]!;
+            const media = await buildSourceMediaFromFile(approved.uri, approved.mediaId);
+            if (!media) continue;
+            const detail = audit.approvedMediaDetails.find((d) => d.mediaId === approved.mediaId);
+            this.cache.registerConsumer({
+              url: detail?.sourceUrl ?? `local://${job.projectId}/${approved.mediaId}`,
+              origin: approved.origin ?? 'autonomous_acquisition',
+              license: 'verified',
+              topic: job.prompt,
+              query: queries[idx] ?? job.prompt,
+              sourceFilePath: media.uri,
+              width: media.width ?? 1280,
+              height: media.height ?? 720,
+              durationSec: media.duration.value / Math.max(1, media.duration.rate),
+              projectId: job.projectId,
+            });
+            if (!job.acquiredMedia.some((m) => m.mediaId === media.mediaId || m.uri === media.uri)) {
+              job.acquiredMedia.push(media);
+            }
+          }
+
+          if (
+            audit.unresolvedGapsForReview.length > 0 &&
+            (job.acquiredMedia.length === 0 || (!audit.coverageReport.gatePassed && (job.targetDurationSec ?? 90) >= 180))
+          ) {
+            for (let gIdx = 0; gIdx < audit.unresolvedGapsForReview.length; gIdx += 1) {
+              const gap = audit.unresolvedGapsForReview[gIdx]!;
+              pending.push({
+                slotIndex: gIdx,
+                clipId: gap.segmentId,
+                query: gap.suggestedQuery,
+                reason: gap.reason,
+              });
+            }
+          }
+        } else {
         for (let i = 0; i < queries.length; i += 1) {
           checkCancelled();
           if (job.acquiredMedia[i]) continue;
@@ -675,6 +758,10 @@ export class StagedCinemaPipeline {
                   ...(job.genre ? { genre: job.genre } : {}),
                   expectedEntities,
                 },
+                {
+                  ...(this.deps.analyzeFrames ? { analyzeFrames: this.deps.analyzeFrames } : {}),
+                  requireVisualVerification: this.deps.requireVisualVerification ?? true,
+                },
               );
               relevanceDecisions.push(relevance);
               if (!relevance.accepted) {
@@ -713,6 +800,7 @@ export class StagedCinemaPipeline {
             query,
             reason: `Nenhuma mídia real encontrada automaticamente para "${query}". Importe um arquivo local, tente outra busca ou autorize geração visual explícita.`,
           });
+        }
         }
 
         job.mediaRelevanceDecisions = relevanceDecisions;
@@ -921,13 +1009,42 @@ export class StagedCinemaPipeline {
         }));
         const semanticMatches = matchNarrationSegmentsToMedia(segments, mediaDescriptors);
         const matchByClipId = new Map(semanticMatches.map((m) => [m.segmentId, m]));
+        const decisionByMediaId = new Map(relevanceDecisions.map((d) => [d.mediaId, d]));
         pkg = {
           ...pkg,
           timeline: {
             ...pkg.timeline,
             clips: pkg.timeline.clips.map((c) => {
+              if (c.trackId !== 'v1') return c;
               const hit = matchByClipId.get(c.clipId);
-              return hit && hit.mediaId && hit.score > 0 ? { ...c, mediaId: hit.mediaId } : c;
+              const candidateMediaId = hit && hit.mediaId && hit.score > 0 ? hit.mediaId : c.mediaId;
+              const decision = decisionByMediaId.get(candidateMediaId);
+              const clipIdx = videoTrackClips.findIndex((vc) => vc.clipId === c.clipId);
+              const expectedSegId = pkg.editorialScript?.segments[clipIdx]?.segmentId ?? `slot_${clipIdx + 1}`;
+              const isEligibleForSegment =
+                !decision ||
+                (decision.accepted &&
+                  decision.correspondenceLevel !== 'universe_only_coincidence' &&
+                  decision.correspondenceLevel !== 'unverified' &&
+                  (!decision.eligibleSegmentIds ||
+                    decision.eligibleSegmentIds.length === 0 ||
+                    decision.eligibleSegmentIds.includes(expectedSegId) ||
+                    decision.eligibleSegmentIds.includes(c.clipId)));
+              const finalMediaId = isEligibleForSegment ? candidateMediaId : c.mediaId;
+              const finalDecision = decisionByMediaId.get(finalMediaId);
+              const matchedInterval =
+                finalDecision?.matchedIntervals?.find((iv) => iv.segmentId === expectedSegId || iv.segmentId === c.clipId) ??
+                finalDecision?.matchedIntervals?.[0];
+              const nextSourceRange = matchedInterval
+                ? {
+                    start: { value: Math.round(matchedInterval.startSec * 30), rate: 30 },
+                    duration: {
+                      value: Math.round(Math.max(2, matchedInterval.endSec - matchedInterval.startSec) * 30),
+                      rate: 30,
+                    },
+                  }
+                : c.sourceRange;
+              return { ...c, mediaId: finalMediaId, sourceRange: nextSourceRange };
             }),
           },
         };
@@ -964,6 +1081,7 @@ export class StagedCinemaPipeline {
           origin: m.origin,
           durationSec: m.duration.value / Math.max(1, m.duration.rate),
           compatible: decision ? decision.accepted : false,
+          ...(decision?.matchedEntities ? { relevantToEntities: decision.matchedEntities } : {}),
           ...(decision && !decision.accepted ? { rejectedReason: decision.reason } : {}),
         };
       });
@@ -1245,6 +1363,8 @@ export class StagedCinemaPipeline {
         const critic2 = await evaluateRenderedVisualCritic({
           projectId: job.projectId,
           mp4Path: render.mp4Path,
+          mediaRelevanceDecisions: relevanceDecisions,
+          coverageReport,
           framesDir: join(projectPaths.tempDir, 'visual-critic'),
           prompt: job.prompt,
           ...(job.genre ? { genre: job.genre } : {}),

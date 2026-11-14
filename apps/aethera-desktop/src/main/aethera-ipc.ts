@@ -36,7 +36,10 @@ import {
   evaluateReleaseGates,
   exportToOtioJson,
   extractSingleThumbnail,
+  extractVerificationFrames,
   extractWaveformData,
+  type DistributedFrameAnalysis,
+  type VisualCategory,
   extractWaveformPeaks,
   WaveformCache,
   groupClips,
@@ -1705,6 +1708,109 @@ export function registerAetheraDomainIpc(options: {
     libraryDir: join(app.getPath('userData'), 'cinema-library'),
     cinemaProjectsDir,
     evolutionCore,
+    requireVisualVerification: true,
+    autonomousAcquisitionDeps: {
+      localMediaDirs: [join(app.getPath('userData'), 'cinema-media'), videoRoot()],
+      ytDlpSearchFn: (q, count, sig) => ytDlpSearch(ytDlp, q, count, sig),
+      ytDlpAcquireFn: async (targetUrl, idx, dir, sig) => {
+        const relativeDir = `acq_${idx + 1}`;
+        mkdirSync(join(dir, relativeDir), { recursive: true });
+        const out = await acquireWithYtDlp({
+          ytDlp,
+          url: targetUrl,
+          root: dir,
+          relativeDir,
+          fileStem: `slot_${idx + 1}`,
+          ...(sig ? { signal: sig } : {}),
+          ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),
+        });
+        return out.relativePath ? join(dir, out.relativePath) : null;
+      },
+    },
+    analyzeFrames: async (uri, timestampsSec, segment) => {
+      try {
+        if (!existsSync(uri) || timestampsSec.length === 0) return [];
+        const framesOutDir = join(app.getPath('userData'), 'cinema-temp', 'relevance-frames', createHash('sha1').update(uri).digest('hex').slice(0, 12));
+        mkdirSync(framesOutDir, { recursive: true });
+        const extracted = await extractVerificationFrames(uri, framesOutDir, timestampsSec);
+        if (extracted.length === 0) return [];
+        const visionCache = new Map<string, unknown>();
+        const results: DistributedFrameAnalysis[] = [];
+        for (let i = 0; i < extracted.length; i += 1) {
+          const framePath = extracted[i]!;
+          const ts = timestampsSec[i] ?? 0;
+          const frameDir = dirname(framePath);
+          const frameHash = createHash('sha256').update(readFileSync(framePath)).digest('hex');
+          const configured = taskEngine
+            ? [
+                createTaskEngineVisionProvider({
+                  id: 'claude',
+                  model: 'sonnet',
+                  root: frameDir,
+                  projectId: segment.segmentId,
+                  enabled: true,
+                  taskEngine,
+                }),
+                createTaskEngineVisionProvider({
+                  id: 'codex',
+                  model: 'gpt-5-codex',
+                  root: frameDir,
+                  projectId: segment.segmentId,
+                  enabled: true,
+                  taskEngine,
+                }),
+              ]
+            : [];
+          const router = new VisionRouter(createVisionProviders(configured), {
+            get: (k) => visionCache.get(JSON.stringify(k)),
+            put: (k, v) => {
+              visionCache.set(JSON.stringify(k), v);
+            },
+          });
+          const policy: VisionPolicy = {
+            schemaVersion: 1,
+            task: 'describe',
+            chain: ['claude', 'codex', 'local-siglip', 'local-vlm', 'ffmpeg-heuristics'],
+            scope: 'project',
+            thresholds: null,
+            version: 'aethera-scene-grounding-v1',
+            budgetUsd: 0.25,
+            maxLatencyMs: 20_000,
+          };
+          const analyzed = await router.analyze({
+            frames: [{ path: framePath, hash: frameHash, atMs: Math.round(ts * 1000) }],
+            context: `Segmento "${segment.segmentId}": ${segment.narrationText.slice(0, 220)}`,
+            policy,
+          });
+          // Nunca inventar correspondência visual a partir de heurística FFmpeg sem visão semântica real
+          if (!analyzed.value || analyzed.provider === 'ffmpeg-heuristics') {
+            continue;
+          }
+          const segVal = analyzed.value;
+          const descLower = segVal.description.toLowerCase();
+          const natureToCat = (): VisualCategory => {
+            if (/\b(anime|animad|animac|desenho|cel[- ]shading|ilustra)/i.test(descLower)) return 'anime_animation';
+            if (segVal.nature === 'interface' || /\b(gameplay|hud)\b/i.test(descLower)) return 'gameplay';
+            if (segVal.overlays?.webcam || segVal.nature === 'portrait' || segVal.nature === 'speech') {
+              return 'real_person_camera';
+            }
+            if (segVal.nature === 'document') return 'motion_graphic';
+            return 'unknown';
+          };
+          results.push({
+            timestampSec: ts,
+            visualCategory: natureToCat(),
+            detectedEntities: segVal.entities.map((e) => e.name.toLowerCase()),
+            detectedActions: segVal.actions.map((a) => a.description.toLowerCase()),
+            description: segVal.description,
+            confidence: segVal.confidence,
+          });
+        }
+        return results;
+      } catch {
+        return [];
+      }
+    },
     onProgress: (job: StagedProductionJob) => {
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) {
@@ -2019,6 +2125,21 @@ export function registerAetheraDomainIpc(options: {
           return {
             issue: `Quadro apenas com cartão de texto em cena que exige ação/conteúdo visual para a narração.`,
             severity: 'warning',
+            suggestedAction: 'retry_media_research',
+          };
+        }
+        if (
+          analyzed.provider !== 'ffmpeg-heuristics' &&
+          (seg.overlays?.webcam ||
+            ((seg.nature === 'portrait' || seg.nature === 'speech') &&
+              !/\b(anime|animad|animac|desenho|ilustra)/i.test(seg.description))) &&
+          scene.narrationText &&
+          /\b(anime|mang[aá]|saiyajin|goku|vegeta|freeza|naruto|epis[oó]dio)\b/i.test(scene.narrationText) &&
+          !/\b(entrevista|autor|criador|bastidores|live[- ]action|dublador)\b/i.test(scene.narrationText)
+        ) {
+          return {
+            issue: `Cena ${scene.sceneId} exibe pessoa real (${analyzed.provider}) incompatível com narração de anime.`,
+            severity: 'critical',
             suggestedAction: 'retry_media_research',
           };
         }

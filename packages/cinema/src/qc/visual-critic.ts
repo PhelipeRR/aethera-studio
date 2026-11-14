@@ -341,10 +341,13 @@ export async function evaluateRenderedVisualCritic(input: {
   // 4b. Media Relevance Gate & Coverage Gate integration — block automatic editorial approval on severe mismatch
   if (input.mediaRelevanceDecisions) {
     for (const decision of input.mediaRelevanceDecisions) {
-      if (decision.accepted) continue;
-      const hitScene =
-        input.scenes.find((s) => s.sourceMediaId === decision.mediaId) ?? input.scenes[0];
-      const sceneId = hitScene?.sceneId ?? 'shot_1';
+      const hitScene = input.scenes.find((s) => s.sourceMediaId === decision.mediaId);
+      const isWeakCorrespondence =
+        decision.correspondenceLevel === 'universe_only_coincidence' ||
+        decision.correspondenceLevel === 'unverified';
+      if (decision.accepted && (!isWeakCorrespondence || !hitScene)) continue;
+      const targetScene = hitScene ?? input.scenes[0];
+      const sceneId = targetScene?.sceneId ?? 'shot_1';
       const reason = `Incompatibilidade grave entre narração e imagem em ${sceneId} (${decision.mediaId}): ${decision.reason}`;
       findings.push({
         issueId: `visual_critic_relevance_${decision.mediaId}`,
