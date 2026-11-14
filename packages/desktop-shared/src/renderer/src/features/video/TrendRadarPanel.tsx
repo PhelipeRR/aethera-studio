@@ -173,7 +173,7 @@ export function formatBriefingToProductionPrompt(
 }
 
 export const TrendRadarPanel: React.FC<TrendRadarPanelProps> = ({ api, onApplyIdea }) => {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [niche, setNiche] = useState<string>('Games');
   const [customNiche, setCustomNiche] = useState<string>('');
   const [subniche, setSubniche] = useState<string>('');
@@ -367,14 +367,24 @@ export const TrendRadarPanel: React.FC<TrendRadarPanelProps> = ({ api, onApplyId
       data-testid="trend-radar-panel"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <span className="text-[11px] uppercase tracking-wider text-purple-300 font-semibold">
-            Pesquisa Inteligente & Pauta
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-2 text-left group"
+          aria-expanded={expanded}
+        >
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[#2d2647] bg-[#161124] text-xs text-purple-300 group-hover:border-purple-500/60">
+            {expanded ? '▾' : '▸'}
           </span>
-          <h3 className="text-base font-semibold text-white">
-            Radar de Tendências e Ideias com IA
-          </h3>
-        </div>
+          <div>
+            <span className="block text-[11px] uppercase tracking-wider text-purple-300 font-semibold">
+              Pesquisa Inteligente &amp; Pauta
+            </span>
+            <h3 className="text-base font-semibold text-white">
+              Radar de Tendências e Ideias com IA
+            </h3>
+          </div>
+        </button>
         <div className="flex items-center gap-2">
           {sessions.length > 0 && (
             <select
