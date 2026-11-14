@@ -34,6 +34,10 @@ export function AetheraProjectsPage() {
     queryKey: ['aethera-content-projects', 'default'],
     queryFn: () => window.neuralbridge.content.projects('default'),
   });
+  const queue = useQuery({
+    queryKey: ['aethera-content-queue', 'default'],
+    queryFn: () => window.neuralbridge.content.queue('default'),
+  });
   const channels = useQuery({
     queryKey: ['aethera-content-channels'],
     queryFn: () => window.neuralbridge.content.channels(),
@@ -156,14 +160,37 @@ export function AetheraProjectsPage() {
       ) : (
         <div className={viewMode === 'grid' ? 'grid gap-4 md:grid-cols-2 xl:grid-cols-3' : 'space-y-3'}>
           {filtered.map((project) => {
-            const pct =
-              project.status === 'completed'
-                ? 100
-                : project.status === 'active'
-                  ? 65
-                  : project.status === 'paused'
-                    ? 40
-                    : 20;
+            const q = queue.data?.find((item) => item.project.id === project.id);
+            let pct = 20;
+            let stageLabel = 'Rascunho / Briefing';
+            if (project.status === 'completed' || q?.latestPublicationStatus === 'published') {
+              pct = 100;
+              stageLabel = q?.latestPublicationStatus === 'published' ? 'Publicado' : 'Concluído';
+            } else if (project.status === 'archived') {
+              pct = 100;
+              stageLabel = 'Arquivado';
+            } else if (q?.latestPackageStatus === 'approved') {
+              pct = 90;
+              stageLabel = 'Pronto para Publicação';
+            } else if (q?.latestExecutionStatus === 'awaiting_approval') {
+              pct = 80;
+              stageLabel = 'Revisão & Aprovação';
+            } else if (q?.latestExecutionStatus === 'running') {
+              pct = 65;
+              stageLabel = 'Montagem & Renderização';
+            } else if (q?.latestExecutionStatus === 'paused' || project.status === 'paused') {
+              pct = 40;
+              stageLabel = 'Pausado (Aguardando Aprovação)';
+            } else if (project.status === 'active') {
+              pct = 65;
+              stageLabel = project.script ? 'Produção / Montagem' : project.brief ? 'Direção & Roteiro' : 'Em Produção';
+            } else if (project.script) {
+              pct = 50;
+              stageLabel = 'Roteiro Pronto';
+            } else if (project.brief) {
+              pct = 35;
+              stageLabel = 'Briefing Definido';
+            }
             return (
               <article
                 key={project.id}
@@ -191,11 +218,16 @@ export function AetheraProjectsPage() {
                   </div>
 
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="truncate font-medium text-purple-200">
+                          Etapa: {stageLabel}
+                        </span>
+                        <span className="shrink-0 font-mono text-muted-foreground">{pct}%</span>
+                      </div>
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
                         <div className="h-full rounded-full bg-gradient-to-r from-purple-500 to-amber-400" style={{ width: `${pct}%` }} />
                       </div>
-                      <span className="font-mono text-[11px] text-muted-foreground">{pct}%</span>
                     </div>
 
                     <div className="flex gap-2 pt-1">
