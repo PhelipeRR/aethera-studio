@@ -116,7 +116,7 @@ export function AetheraMediaLibraryPage() {
 
   return (
     <div
-      className="space-y-5 p-6 xl:p-8"
+      className="flex h-[calc(100vh-3.5rem)] flex-col gap-4 overflow-hidden p-4 xl:p-6"
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
@@ -125,7 +125,7 @@ export function AetheraMediaLibraryPage() {
       }}
     >
       {/* Header */}
-      <div className="flex flex-wrap items-end justify-between gap-4 rounded-2xl border border-border bg-gradient-to-r from-[#18102b] via-[#10101b] to-[#0c0c15] p-6">
+      <div className="flex-none flex flex-wrap items-end justify-between gap-4 rounded-2xl border border-border bg-gradient-to-r from-[#18102b] via-[#10101b] to-[#0c0c15] p-5">
         <div>
           <p className="text-[11px] font-semibold tracking-[0.22em] text-purple-400 uppercase">
             Estúdio / Biblioteca
@@ -157,7 +157,7 @@ export function AetheraMediaLibraryPage() {
       </div>
 
       {/* Category Tabs */}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex-none flex flex-wrap gap-2">
         {(
           [
             ['all', `Todos (${allAssets.length})`],
@@ -183,14 +183,14 @@ export function AetheraMediaLibraryPage() {
       </div>
 
       {/* Main 3-Zone Library Layout */}
-      <div className="grid gap-5 lg:grid-cols-12">
+      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-12">
         {/* Collections Tree */}
-        <aside className="rounded-2xl border border-border bg-card p-4 lg:col-span-3 space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <aside className="flex min-h-0 flex-col rounded-2xl border border-border bg-card p-4 lg:col-span-3">
+          <h2 className="flex-none text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Coleções por Projeto
           </h2>
           {projects.data?.length ? (
-            <ul className="space-y-1 text-xs">
+            <ul className="mt-3 flex-1 space-y-1 overflow-y-auto pr-1 text-xs">
               {projects.data.map((project) => (
                 <li key={project.id}>
                   <button
@@ -207,12 +207,12 @@ export function AetheraMediaLibraryPage() {
               ))}
             </ul>
           ) : (
-            <p className="text-xs text-muted-foreground">Nenhuma coleção criada ainda.</p>
+            <p className="mt-3 text-xs text-muted-foreground">Nenhuma coleção criada ainda.</p>
           )}
         </aside>
 
         {/* Visual Thumbnail Grid */}
-        <section className="lg:col-span-6">
+        <section className="flex min-h-0 flex-col lg:col-span-6">
           {projects.isLoading || library.isLoading ? (
             <div className="rounded-2xl border border-border bg-card p-8 text-center text-xs text-muted-foreground">
               Inventariando ativos do workspace...
@@ -226,13 +226,14 @@ export function AetheraMediaLibraryPage() {
               </p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="flex min-h-0 flex-1 flex-col gap-3">
               {filtered.length > 120 && (
-                <p className="text-[11px] text-muted-foreground">
+                <p className="flex-none text-[11px] text-muted-foreground">
                   Exibindo 120 de {filtered.length} ativos (use a busca acima para filtrar).
                 </p>
               )}
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="flex-1 overflow-y-auto pr-1">
+                <div className="grid gap-3 sm:grid-cols-2">
                 {filtered.slice(0, 120).map((item) => {
                 const Icon =
                   item.kind === 'audio'
@@ -271,13 +272,14 @@ export function AetheraMediaLibraryPage() {
                   </button>
                 );
               })}
+                </div>
               </div>
             </div>
           )}
         </section>
 
         {/* Right Inspector */}
-        <aside className="rounded-2xl border border-border bg-card p-4 lg:col-span-3 space-y-4">
+        <aside className="flex min-h-0 flex-col rounded-2xl border border-border bg-card p-4 lg:col-span-3 space-y-3 overflow-hidden">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Inspetor de Ativo
           </h2>
