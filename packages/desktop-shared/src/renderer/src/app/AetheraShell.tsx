@@ -50,6 +50,14 @@ export function AetheraShell({ routes }: AetheraShellProps) {
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = usePersistentFlag(AETHERA_SIDEBAR_COLLAPSED_KEY);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
+  const [appVersion, setAppVersion] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const nb = window.neuralbridge as unknown as { app?: { info?: () => Promise<{ version?: string }> } };
+    nb?.app?.info?.().then((info) => {
+      if (info?.version) setAppVersion(info.version);
+    }).catch(() => {});
+  }, []);
 
   const currentRoute = React.useMemo(() => {
     const exact = routes.find((r) => r.path === location.pathname);
@@ -206,7 +214,9 @@ export function AetheraShell({ routes }: AetheraShellProps) {
               <div className="mx-3 mb-3 space-y-2.5 rounded-xl border border-border/80 bg-[#10101d] p-3 text-xs">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold tracking-wide text-foreground">Aethera Cinema</span>
-                  <span className="rounded bg-primary/20 px-1.5 py-0.5 font-mono text-[10px] text-purple-300">v1.1</span>
+                  <span className="rounded bg-primary/20 px-1.5 py-0.5 font-mono text-[10px] text-purple-300">
+                    {appVersion ? `v${appVersion}` : 'v0.1'}
+                  </span>
                 </div>
                 <div data-live-metric className="space-y-1.5 border-t border-border/60 pt-2">
                   <MeterBar

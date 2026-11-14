@@ -227,6 +227,7 @@ import { registerExtensionIpcHandlers } from '../../../../packages/desktop-share
 import { registerRecoveryIpcHandlers } from '../../../../packages/desktop-shared/src/main/handlers/recovery.js';
 import { registerTasksIpcHandlers } from '../../../../packages/desktop-shared/src/main/handlers/tasks.js';
 import { registerThemeIpcHandlers } from '../../../../packages/desktop-shared/src/main/handlers/theme.js';
+import { createMonitoring, registerMonitoringIpcHandlers } from '../../../../packages/desktop-shared/src/main/handlers/monitoring.js';
 import { registerIpcHandler } from '../../../../packages/desktop-shared/src/main/ipc/handle.js';
 import { canWriteChannel, channelAccessToken, toStoredChannelTokens, YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from '../../../../packages/desktop-shared/src/main/oauth/channel-token.js';
 import { buildPkceAuthorizeUrl, createPkceSession, exchangePkceCode, GOOGLE_REVOKE_URL, parseDesktopOAuthClient, revokeOAuthToken, waitForLoopbackCallback } from '../../../../packages/desktop-shared/src/main/oauth/loopback.js';
@@ -316,6 +317,19 @@ export function registerAetheraDomainIpc(options: {
 
   registerExtensionIpcHandlers(ipcMain, { registry: extensionRegistry, installer: extensionInstaller }, isTrustedSender);
   registerThemeIpcHandlers(ipcMain, { preferencesFile, setNativeTheme: (source) => { nativeTheme.themeSource = source; } }, isTrustedSender);
+  const monitoring = createMonitoring({
+    preferencesFile,
+    dataDir: userDataDir,
+    appMetrics: () =>
+      app.getAppMetrics().map((metric) => ({
+        pid: metric.pid,
+        cpuPercent: metric.cpu.percentCPUUsage,
+        workingSetBytes: metric.memory.workingSetSize * 1024,
+      })),
+    log: (message) => console.warn(`[monitoring] ${message}`),
+  });
+  registerMonitoringIpcHandlers(ipcMain, monitoring, preferencesFile, isTrustedSender);
+  app.on('will-quit', () => monitoring.dispose());
 
   // Core + TaskEngine (supports multi-agent & single-agent fallback)
   const coreScript = join(__dirname, 'core.js');
