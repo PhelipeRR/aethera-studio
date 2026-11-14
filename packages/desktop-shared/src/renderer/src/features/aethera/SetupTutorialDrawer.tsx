@@ -54,6 +54,18 @@ export function SetupTutorialDrawer({
     onHighlightField?.(spec.steps[stepIdx]?.targetFieldId ?? null);
   }, [integrationId, spec, stepIdx, onHighlightField]);
 
+  useEffect(() => {
+    if (!integrationId) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onHighlightField?.(null);
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [integrationId, onClose, onHighlightField]);
+
   if (!spec || !integrationId) return null;
 
   const currentStep = spec.steps[stepIdx] ?? spec.steps[0]!;
@@ -86,11 +98,23 @@ export function SetupTutorialDrawer({
     }
   };
 
+  const handleClose = () => {
+    onHighlightField?.(null);
+    onClose();
+  };
+
   return (
-    <aside
-      aria-label={`Tutorial: ${spec.title}`}
-      className="rounded-2xl border border-purple-500/40 bg-[#0d0d1a] p-5 space-y-4 shadow-xl"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      onClick={handleClose}
     >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Tutorial: ${spec.title}`}
+        onClick={(e) => e.stopPropagation()}
+        className="max-h-[88vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-purple-500/40 bg-[#0d0d1a] p-6 space-y-4 shadow-2xl"
+      >
       <div className="flex items-start justify-between gap-3">
         <div className="space-y-1">
           <div className="inline-flex items-center gap-1.5 text-[11px] font-medium text-purple-300">
@@ -235,6 +259,7 @@ export function SetupTutorialDrawer({
           </button>
         )}
       </div>
-    </aside>
+      </div>
+    </div>
   );
 }
