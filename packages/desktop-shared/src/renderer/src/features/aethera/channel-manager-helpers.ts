@@ -106,23 +106,68 @@ export function buildFormFromChannel(channel: ContentChannel): ChannelFormState 
   };
 }
 
-export function toChannelSavePayload(form: ChannelFormState) {
+export function validateChannelForm(form: ChannelFormState): string[] {
+  const errors: string[] = [];
+  if (!form.id || form.id.length > 200) {
+    errors.push('ID do canal inválido (deve ter entre 1 e 200 caracteres).');
+  }
+  const name = form.name.trim();
+  if (!name) {
+    errors.push('Nome do canal é obrigatório.');
+  } else if (name.length > 200) {
+    errors.push('Nome do canal excede o limite de 200 caracteres.');
+  }
+  if (form.niche.trim().length > 300) {
+    errors.push('Nicho excede o limite de 300 caracteres.');
+  }
+  if (form.audience.trim().length > 500) {
+    errors.push('Público-alvo excede o limite de 500 caracteres.');
+  }
+  const tone = form.tone.trim() || form.editorialStrategy.narrativeTone.trim();
+  if (tone.length > 500) {
+    errors.push('Tom narrativo excede o limite de 500 caracteres.');
+  }
+  if (!Number.isFinite(form.budgetUsd) || form.budgetUsd < 0 || form.budgetUsd > 1_000_000) {
+    errors.push('Orçamento (USD) deve estar entre 0 e 1.000.000.');
+  }
+  if (!Number.isFinite(form.concurrencyLimit) || form.concurrencyLimit < 1 || form.concurrencyLimit > 32) {
+    errors.push('Concorrência máxima deve estar entre 1 e 32.');
+  }
+  return errors;
+}
+
+function buildSharedChannelFields(form: ChannelFormState) {
+  const tone = form.tone.trim() || form.editorialStrategy.narrativeTone.trim();
   return {
     id: form.id,
-    workspaceId: 'default',
     name: form.name.trim(),
     niche: form.niche.trim(),
     audience: form.audience.trim(),
-    tone: form.tone.trim() || form.editorialStrategy.narrativeTone.trim(),
+    tone,
     autonomy: form.autonomy,
-    budgetUsd: Number.isFinite(form.budgetUsd) ? Math.max(0, form.budgetUsd) : 0,
+    budgetUsd: Number.isFinite(form.budgetUsd) ? Math.max(0, Math.min(1_000_000, form.budgetUsd)) : 0,
     concurrencyLimit: Number.isFinite(form.concurrencyLimit) ? Math.max(1, Math.min(32, Math.round(form.concurrencyLimit))) : 1,
     identity: form.identity as unknown as Record<string, unknown>,
     editorialStrategy: {
       ...form.editorialStrategy,
-      narrativeTone: form.tone.trim() || form.editorialStrategy.narrativeTone.trim(),
+      narrativeTone: tone,
     } as unknown as Record<string, unknown>,
   };
+}
+
+export function toChannelCreatePayload(form: ChannelFormState) {
+  return {
+    ...buildSharedChannelFields(form),
+    workspaceId: 'default',
+  };
+}
+
+export function toChannelUpdatePayload(form: ChannelFormState) {
+  return buildSharedChannelFields(form);
+}
+
+export function toChannelSavePayload(form: ChannelFormState) {
+  return form.isNew ? toChannelCreatePayload(form) : toChannelUpdatePayload(form);
 }
 
 function draftKey(channelId: string): string {

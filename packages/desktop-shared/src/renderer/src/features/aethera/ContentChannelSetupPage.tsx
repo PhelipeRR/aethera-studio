@@ -40,7 +40,9 @@ import {
   loadChannelDraft,
   saveChannelDraft,
   TIMEZONE_OPTIONS,
-  toChannelSavePayload,
+  toChannelCreatePayload,
+  toChannelUpdatePayload,
+  validateChannelForm,
   WEEKDAY_OPTIONS,
   YOUTUBE_CATEGORIES,
   type ChannelFormState,
@@ -160,11 +162,14 @@ export function ContentChannelSetupPage() {
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const payload = toChannelSavePayload(form);
-      if (form.isNew) {
-        return window.neuralbridge.content.createChannel(payload);
+      const validationErrors = validateChannelForm(form);
+      if (validationErrors.length > 0) {
+        throw new Error(validationErrors.join(' '));
       }
-      return window.neuralbridge.content.updateChannel(payload);
+      if (form.isNew) {
+        return window.neuralbridge.content.createChannel(toChannelCreatePayload(form));
+      }
+      return window.neuralbridge.content.updateChannel(toChannelUpdatePayload(form));
     },
     onSuccess: (saved) => {
       clearChannelDraft(saved.id);
@@ -175,7 +180,11 @@ export function ContentChannelSetupPage() {
       void queryClient.invalidateQueries({ queryKey: ['aethera-content-channels'] });
     },
     onError: (err) => {
-      setStatusMessage({ kind: 'error', text: err instanceof Error ? err.message : 'Falha ao salvar canal.' });
+      const raw = err instanceof Error ? err.message : 'Falha ao salvar canal.';
+      const friendly = raw.includes('Invalid payload')
+        ? `Validação de contrato IPC rejeitou os dados enviados (${raw}). Verifique Nome (1–200), Nicho (<=300), Público-alvo (<=500) e Tom (<=500).`
+        : raw;
+      setStatusMessage({ kind: 'error', text: friendly });
     },
   });
 
