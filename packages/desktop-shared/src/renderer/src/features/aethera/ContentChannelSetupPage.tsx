@@ -316,6 +316,9 @@ export function ContentChannelSetupPage() {
         {/* Channel Switcher Bar */}
         <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card/60 p-3">
           <div className="flex flex-wrap items-center gap-2">
+            <span className="px-1 text-xs font-medium text-muted-foreground">
+              Canais ({channels.length})
+            </span>
             {channels.map((ch) => {
               const active = !form.isNew && form.id === ch.id;
               return (
@@ -380,6 +383,7 @@ export function ContentChannelSetupPage() {
               type="button"
               onClick={() => saveMutation.mutate()}
               disabled={saveMutation.isPending || !form.name.trim()}
+              title={!form.name.trim() ? 'Preencha o Nome do canal abaixo para salvar/criar' : undefined}
               className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
             >
               <Save className="size-4" />
