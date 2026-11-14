@@ -83,6 +83,7 @@ export interface StagedProductionJob {
   useNvenc: boolean;
   voiceStudioVoiceId?: string;
   allowDeterministicScriptFallback?: boolean;
+  acquisitionBudgetMultiplier?: number;
   editorialScript?: EditorialScript;
   state: ProductionStageState;
   progressPct: number;
@@ -633,6 +634,9 @@ export class StagedCinemaPipeline {
             probeDurationFn: async (fp) => (await probeRealMp4(fp)).durationSec,
             ...(this.deps.analyzeFrames ? { analyzeFrames: this.deps.analyzeFrames } : {}),
             requireVisualVerification: this.deps.requireVisualVerification ?? true,
+            ...(job.acquisitionBudgetMultiplier !== undefined
+              ? { limits: { budgetMultiplier: job.acquisitionBudgetMultiplier } }
+              : {}),
             signal,
           });
           job.autonomousAudit = audit;
