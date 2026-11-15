@@ -10,7 +10,15 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } 
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
-import { exportSystemBackup, restoreSystemBackup } from './system-backup.js';
+import {
+  estimateSystemBackup,
+  exportSystemBackup,
+  inspectSystemBackup,
+  restoreSystemBackup,
+  type RestoreConflictMode,
+  type RestoreSections,
+} from './system-backup.js';
+import { ManagedMediaLibrary } from './managed-media-library.js';
 import { StagedCinemaPipeline, type StagedProductionJob } from './cinema-pipeline.js';
 import {
   TrendRadarEngine,
@@ -2886,32 +2894,47 @@ export function registerAetheraDomainIpc(options: {
         filePath = res.filePaths[0];
       }
       if (!filePath) return null;
-      const mediaId = `imp_${createHash('sha1').update(filePath).digest('hex').slice(0, 10)}`;
-      const isImage = /\.(png|jpe?g|webp)$/i.test(filePath);
-      const isAudio = /\.(wav|mp3|ogg|flac)$/i.test(filePath);
-      const isTextDoc = /\.(txt|md|markdown|json)$/i.test(filePath);
+      const managedMediaLibrary = new ManagedMediaLibrary(userDataDir);
+      let effectivePath = filePath;
+      let portablePath: string | undefined;
+      let sha256: string | undefined;
+      let deduplicated = false;
+      let mediaId = `imp_${createHash('sha1').update(filePath).digest('hex').slice(0, 10)}`;
+      try {
+        const imported = await managedMediaLibrary.importFile(filePath);
+        effectivePath = imported.absolutePath;
+        portablePath = imported.record.portablePath;
+        sha256 = imported.record.sha256;
+        deduplicated = imported.deduplicated;
+        mediaId = imported.record.id;
+      } catch {
+        // Fallback to original path if unreadable/non-regular file
+      }
+      const isImage = /\.(png|jpe?g|webp)$/i.test(effectivePath);
+      const isAudio = /\.(wav|mp3|ogg|flac)$/i.test(effectivePath);
+      const isTextDoc = /\.(txt|md|markdown|json)$/i.test(effectivePath);
       const kind: 'video' | 'image' | 'audio' = isImage ? 'image' : isAudio ? 'audio' : 'video';
       let durationSec = isImage || isTextDoc ? 5 : 6;
       let width = 1280;
       let height = 720;
       let waveformPeaks: number[] = [];
-      let thumbnailUrl: string | null = isImage ? toMediaUrl(filePath) : null;
+      let thumbnailUrl: string | null = isImage ? toMediaUrl(effectivePath) : null;
       if (!isImage && !isTextDoc) {
         try {
-          const probed = await probeRealMp4(filePath);
+          const probed = await probeRealMp4(effectivePath);
           durationSec = Math.max(1, Number(probed.durationSec.toFixed(2)));
           if (probed.width > 0) width = probed.width;
           if (probed.height > 0) height = probed.height;
         } catch {
           // keep defaults
         }
-        waveformPeaks = await extractWaveformPeaks(filePath, 64);
+        waveformPeaks = await extractWaveformPeaks(effectivePath, 64);
       }
       if (kind === 'video') {
         try {
           mkdirSync(cinemaThumbsDir, { recursive: true });
           const thumbPath = join(cinemaThumbsDir, `${mediaId}.png`);
-          await extractSingleThumbnail(filePath, thumbPath, Math.min(1, durationSec / 2));
+          await extractSingleThumbnail(effectivePath, thumbPath, Math.min(1, durationSec / 2));
           thumbnailUrl = toMediaUrl(thumbPath);
         } catch {
           thumbnailUrl = null;
@@ -2919,13 +2942,17 @@ export function registerAetheraDomainIpc(options: {
       }
       return {
         mediaId,
-        filePath,
+        filePath: effectivePath,
+        ...(portablePath ? { portablePath } : {}),
+        ...(sha256 ? { sha256 } : {}),
+        deduplicated,
+        originalPath: filePath,
         name: basename(filePath),
         kind,
         durationSec,
         width,
         height,
-        mediaUrl: toMediaUrl(filePath),
+        mediaUrl: toMediaUrl(effectivePath),
         thumbnailUrl,
         waveformPeaks,
       };
@@ -3001,9 +3028,11 @@ export function registerAetheraDomainIpc(options: {
   ipcMain.handle('cinema:list-library', async (event) => {
     ensureTrusted(event.senderFrame);
     if (!database.handle) return [];
+    const managedMediaLibrary = new ManagedMediaLibrary(userDataDir);
     const rows = database.handle.db.select().from(velixLocalAssets).all();
     return rows.map((row) => {
-      const lower = row.path.toLowerCase();
+      const resolvedPath = managedMediaLibrary.resolvePortablePath(row.path) ?? row.path;
+      const lower = resolvedPath.toLowerCase();
       const isImage = /\.(png|jpe?g|webp|gif|svg)$/i.test(lower);
       const isAudio = /\.(wav|mp3|ogg|flac|aac|m4a)$/i.test(lower);
       const kind: 'video' | 'image' | 'audio' = isImage ? 'image' : isAudio ? 'audio' : 'video';
@@ -3021,16 +3050,16 @@ export function registerAetheraDomainIpc(options: {
                   : isImage
                     ? 'image'
                     : 'video';
-      const extMatch = row.path.match(/\.([a-z0-9]+)$/i);
+      const extMatch = resolvedPath.match(/\.([a-z0-9]+)$/i);
       const format = (extMatch?.[1] ?? kind).toUpperCase();
-      const origin = basename(dirname(row.path)) || 'local';
-      let cachedThumbUrl: string | null = isImage ? toMediaUrl(row.path) : null;
+      const origin = basename(dirname(resolvedPath)) || 'local';
+      let cachedThumbUrl: string | null = isImage ? toMediaUrl(resolvedPath) : null;
       if (!cachedThumbUrl && kind === 'video') {
         try {
-          if (existsSync(row.path)) {
-            const st = statSync(row.path);
+          if (existsSync(resolvedPath)) {
+            const st = statSync(resolvedPath);
             const key = createHash('sha1')
-              .update(`${row.path}|${st.size}|${Math.floor(st.mtimeMs)}|1`)
+              .update(`${resolvedPath}|${st.size}|${Math.floor(st.mtimeMs)}|1`)
               .digest('hex');
             const thumbPath = join(cinemaThumbsDir, `thumb_${key}.png`);
             if (existsSync(thumbPath)) {
@@ -3043,8 +3072,9 @@ export function registerAetheraDomainIpc(options: {
       }
       return {
         mediaId: row.id,
-        filePath: row.path,
-        name: basename(row.path),
+        filePath: resolvedPath,
+        portablePath: row.path,
+        name: basename(resolvedPath),
         kind,
         category,
         format,
@@ -3052,7 +3082,7 @@ export function registerAetheraDomainIpc(options: {
         durationSec: isAudio ? 4 : isImage ? 5 : 6,
         width: isAudio ? 0 : 1280,
         height: isAudio ? 0 : 720,
-        mediaUrl: toMediaUrl(row.path),
+        mediaUrl: toMediaUrl(resolvedPath),
         thumbnailUrl: cachedThumbUrl,
         waveformPeaks: [],
       };
@@ -3386,61 +3416,106 @@ export function registerAetheraDomainIpc(options: {
     editorialCalendar,
   });
 
-  ipcMain.handle('aethera:system-backup-export', async (event) => {
+  ipcMain.handle('aethera:system-backup-estimate', async (event) => {
     ensureTrusted(event.senderFrame);
-    const stamp = new Date().toISOString().slice(0, 10);
-    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-    const saveOpts: Electron.SaveDialogOptions = {
-      title: 'Exportar Backup Geral do Sistema — Aethera Studio',
-      defaultPath: join(app.getPath('documents'), `aethera-system-backup-${stamp}.json`),
-      filters: [{ name: 'Aethera System Backup (JSON)', extensions: ['json'] }],
-    };
-    const res = parentWin
-      ? await dialog.showSaveDialog(parentWin, saveOpts)
-      : await dialog.showSaveDialog(saveOpts);
-    if (res.canceled || !res.filePath) {
-      return { ok: false, canceled: true };
-    }
-    const exported = exportSystemBackup(buildSystemBackupDeps(), res.filePath);
-    return {
-      ok: true,
-      canceled: false,
-      filePath: exported.filePath,
-      counts: exported.counts,
-    };
+    return estimateSystemBackup(buildSystemBackupDeps());
   });
 
-  ipcMain.handle('aethera:system-backup-restore', async (event) => {
+  ipcMain.handle('aethera:system-backup-inspect', async (event, input?: { filePath?: string }) => {
     ensureTrusted(event.senderFrame);
-    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-    const openOpts: Electron.OpenDialogOptions = {
-      title: 'Restaurar Backup Geral do Sistema — Aethera Studio',
-      properties: ['openFile'],
-      filters: [{ name: 'Aethera System Backup (JSON)', extensions: ['json'] }],
-    };
-    const res = parentWin
-      ? await dialog.showOpenDialog(parentWin, openOpts)
-      : await dialog.showOpenDialog(openOpts);
-    const chosenPath = res.filePaths[0];
-    if (res.canceled || !chosenPath) {
-      return { ok: false, canceled: true };
+    let sourcePath = input?.filePath;
+    if (!sourcePath) {
+      const parentWin = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const openOpts: Electron.OpenDialogOptions = {
+        title: 'Selecionar Backup Geral do Sistema — Aethera Studio',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Aethera System Backup (ZIP / JSON)', extensions: ['zip', 'json'] },
+        ],
+      };
+      const res = parentWin
+        ? await dialog.showOpenDialog(parentWin, openOpts)
+        : await dialog.showOpenDialog(openOpts);
+      if (res.canceled || !res.filePaths[0]) return { ok: false, canceled: true };
+      sourcePath = res.filePaths[0];
     }
-    const restored = restoreSystemBackup(buildSystemBackupDeps(), chosenPath);
-    if (restored.requiresRelaunch && (app.isPackaged || process.env['NB_E2E_NO_RELAUNCH'] !== '1')) {
-      setTimeout(() => {
-        app.relaunch();
-        app.exit(0);
-      }, 450);
-    }
-    return {
-      ok: true,
-      canceled: false,
-      filePath: restored.filePath,
-      preservedDir: restored.preservedDir,
-      counts: restored.counts,
-      relaunching: restored.requiresRelaunch && (app.isPackaged || process.env['NB_E2E_NO_RELAUNCH'] !== '1'),
-    };
+    const inspection = await inspectSystemBackup(buildSystemBackupDeps(), sourcePath);
+    return { ...inspection, filePath: sourcePath, canceled: false };
   });
+
+  ipcMain.handle(
+    'aethera:system-backup-export',
+    async (event, input?: { allowIncomplete?: boolean }) => {
+      ensureTrusted(event.senderFrame);
+      const stamp = new Date().toISOString().slice(0, 10);
+      const parentWin = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const saveOpts: Electron.SaveDialogOptions = {
+        title: 'Exportar Backup Geral do Sistema — Aethera Studio',
+        defaultPath: join(app.getPath('documents'), `aethera-system-backup-${stamp}.zip`),
+        filters: [{ name: 'Aethera System Backup (ZIP)', extensions: ['zip'] }],
+      };
+      const res = parentWin
+        ? await dialog.showSaveDialog(parentWin, saveOpts)
+        : await dialog.showSaveDialog(saveOpts);
+      if (res.canceled || !res.filePath) {
+        return { ok: false, canceled: true };
+      }
+      const exported = await exportSystemBackup(buildSystemBackupDeps(), res.filePath, {
+        ...(input?.allowIncomplete !== undefined ? { allowIncomplete: input.allowIncomplete } : {}),
+      });
+      return {
+        ...exported,
+        canceled: false,
+      };
+    },
+  );
+
+  ipcMain.handle(
+    'aethera:system-backup-restore',
+    async (
+      event,
+      input?: {
+        filePath?: string;
+        sections?: RestoreSections;
+        conflictMode?: RestoreConflictMode;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      let chosenPath = input?.filePath;
+      if (!chosenPath) {
+        const parentWin = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+        const openOpts: Electron.OpenDialogOptions = {
+          title: 'Restaurar Backup Geral do Sistema — Aethera Studio',
+          properties: ['openFile'],
+          filters: [
+            { name: 'Aethera System Backup (ZIP / JSON)', extensions: ['zip', 'json'] },
+          ],
+        };
+        const res = parentWin
+          ? await dialog.showOpenDialog(parentWin, openOpts)
+          : await dialog.showOpenDialog(openOpts);
+        chosenPath = res.filePaths[0];
+        if (res.canceled || !chosenPath) {
+          return { ok: false, canceled: true };
+        }
+      }
+      const restored = await restoreSystemBackup(buildSystemBackupDeps(), chosenPath, {
+        ...(input?.sections ? { sections: input.sections } : {}),
+        ...(input?.conflictMode ? { conflictMode: input.conflictMode } : {}),
+      });
+      if (restored.requiresRelaunch && (app.isPackaged || process.env['NB_E2E_NO_RELAUNCH'] !== '1')) {
+        setTimeout(() => {
+          app.relaunch();
+          app.exit(0);
+        }, 450);
+      }
+      return {
+        ...restored,
+        canceled: false,
+        relaunching: restored.requiresRelaunch && (app.isPackaged || process.env['NB_E2E_NO_RELAUNCH'] !== '1'),
+      };
+    },
+  );
 
   const buildCalendarPayload = (timezoneOverride?: string) => {
     const snap = editorialCalendar.getSnapshot();

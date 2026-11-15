@@ -74,12 +74,16 @@ interface AetheraBridgeLoose {
     events: unknown[];
     series: unknown[];
   }>;
-  systemExportBackup?: () => Promise<{
-    ok: boolean;
-    canceled?: boolean;
-    filePath?: string;
-    counts?: {
+  systemEstimateBackup?: () => Promise<{
+    totalBytes: number;
+    compressedEstimateBytes: number;
+    complete: boolean;
+    missingFiles: Array<{ source: string; path: string }>;
+    excludedSecrets: string[];
+    counts: {
       cinemaProjects: number;
+      managedLibraryFiles?: number;
+      externalBundledFiles?: number;
       cinemaLibraryFiles?: number;
       libraryAssets?: number;
       academyMaterials: number;
@@ -87,11 +91,35 @@ interface AetheraBridgeLoose {
       calendarEvents: number;
     };
   }>;
-  systemRestoreBackup?: () => Promise<{
+  systemExportBackup?: (input?: { allowIncomplete?: boolean }) => Promise<{
+    ok: boolean;
+    complete?: boolean;
+    canceled?: boolean;
+    filePath?: string;
+    totalBytes?: number;
+    missingFiles?: Array<{ source: string; path: string }>;
+    counts?: {
+      cinemaProjects: number;
+      cinemaLibraryFiles?: number;
+      managedLibraryFiles?: number;
+      externalBundledFiles?: number;
+      libraryAssets?: number;
+      academyMaterials: number;
+      evolutionMemories: number;
+      calendarEvents: number;
+    };
+  }>;
+  systemRestoreBackup?: (input?: {
+    filePath?: string;
+    sections?: Record<string, boolean>;
+    conflictMode?: 'rename' | 'skip' | 'overwrite';
+  }) => Promise<{
     ok: boolean;
     canceled?: boolean;
     filePath?: string;
     relaunching?: boolean;
+    remappedReferences?: number;
+    conflicts?: string[];
     counts?: {
       cinemaProjects: number;
       cinemaLibraryFiles?: number;
@@ -220,6 +248,29 @@ export function AetheraSettingsPage({ description }: { description: string }) {
     }
   };
 
+  const [backupEstimate, setBackupEstimate] = useState<{
+    totalBytes: number;
+    compressedEstimateBytes: number;
+    complete: boolean;
+    missingCount: number;
+  } | null>(null);
+
+  const handleEstimateSystemBackup = async () => {
+    const ab = getAetheraBridge();
+    if (!ab.systemEstimateBackup) return;
+    try {
+      const est = await ab.systemEstimateBackup();
+      setBackupEstimate({
+        totalBytes: est.totalBytes,
+        compressedEstimateBytes: est.compressedEstimateBytes,
+        complete: est.complete,
+        missingCount: est.missingFiles.length,
+      });
+    } catch {
+      // ignore estimate error
+    }
+  };
+
   const handleExportSystemBackup = async () => {
     const ab = getAetheraBridge();
     if (!ab.systemExportBackup) {
@@ -228,16 +279,33 @@ export function AetheraSettingsPage({ description }: { description: string }) {
     }
     setSystemBackupBusy('export');
     try {
+      if (ab.systemEstimateBackup) {
+        const est = await ab.systemEstimateBackup();
+        setBackupEstimate({
+          totalBytes: est.totalBytes,
+          compressedEstimateBytes: est.compressedEstimateBytes,
+          complete: est.complete,
+          missingCount: est.missingFiles.length,
+        });
+      }
       const res = await ab.systemExportBackup();
       if (res?.canceled) return;
       if (!res?.ok) {
-        setStatusMessage({ kind: 'error', text: 'Não foi possível exportar o Backup Geral do Sistema.' });
+        const missingCount = res?.missingFiles?.length ?? 0;
+        setStatusMessage({
+          kind: 'error',
+          text:
+            missingCount > 0
+              ? `Backup recusado como completo: ${missingCount} arquivo(s) referenciado(s) estão ausentes no disco.`
+              : 'Não foi possível exportar o Backup Geral do Sistema.',
+        });
         return;
       }
       const c = res.counts;
+      const mb = res.totalBytes ? ` (${(res.totalBytes / (1024 * 1024)).toFixed(2)} MB)` : '';
       setStatusMessage({
         kind: 'ok',
-        text: `Backup Geral salvo em ${res.filePath ?? 'arquivo selecionado'} (${c?.cinemaProjects ?? 0} projetos, ${c?.libraryAssets ?? 0} itens na biblioteca, ${c?.cinemaLibraryFiles ?? 0} arquivos em cinema-library, ${c?.academyMaterials ?? 0} materiais da Academy, ${c?.evolutionMemories ?? 0} memórias, ${c?.calendarEvents ?? 0} eventos).`,
+        text: `Backup Geral .zip salvo em ${res.filePath ?? 'arquivo selecionado'}${mb} — ${c?.cinemaProjects ?? 0} projetos, ${c?.managedLibraryFiles ?? 0} mídias internas, ${c?.externalBundledFiles ?? 0} externas empacotadas, ${c?.libraryAssets ?? 0} registros na biblioteca, ${c?.academyMaterials ?? 0} materiais da Academy, ${c?.evolutionMemories ?? 0} memórias, ${c?.calendarEvents ?? 0} eventos.`,
       });
     } catch (err) {
       setStatusMessage({
@@ -257,18 +325,19 @@ export function AetheraSettingsPage({ description }: { description: string }) {
     }
     setSystemBackupBusy('restore');
     try {
-      const res = await ab.systemRestoreBackup();
+      const res = await ab.systemRestoreBackup({ conflictMode: 'rename' });
       if (res?.canceled) return;
       if (!res?.ok) {
         setStatusMessage({ kind: 'error', text: 'Não foi possível restaurar o Backup Geral do Sistema.' });
         return;
       }
       await refreshAll();
+      const remapInfo = res.remappedReferences ? ` · ${res.remappedReferences} referência(s) reconstruída(s)` : '';
       setStatusMessage({
         kind: 'ok',
         text: res.relaunching
-          ? 'Backup Geral restaurado com segurança. Reiniciando o Aethera Studio para aplicar o banco de dados…'
-          : `Backup Geral restaurado a partir de ${res.filePath ?? 'arquivo selecionado'}.`,
+          ? `Backup Geral restaurado com verificação SHA-256${remapInfo}. Reiniciando o Aethera Studio…`
+          : `Backup Geral restaurado a partir de ${res.filePath ?? 'arquivo selecionado'}${remapInfo}.`,
       });
     } catch (err) {
       setStatusMessage({
@@ -511,15 +580,30 @@ export function AetheraSettingsPage({ description }: { description: string }) {
 
                 <div className="rounded-xl border border-border bg-[#0d0d17] p-4 space-y-3 text-xs">
                   <div>
-                    <h3 className="text-sm font-semibold text-foreground">Backup Geral do Sistema</h3>
+                    <h3 className="text-sm font-semibold text-foreground">Backup Geral do Sistema (.zip portátil)</h3>
                     <p className="mt-1 text-muted-foreground">
-                      Exporta ou restaura em um único arquivo JSON o banco de dados (canais, projetos e histórico),
-                      preferências do estúdio, Biblioteca de Mídia, Aethera Academy, Memória Evolutiva, Calendário
-                      Editorial e projetos do Cinema. Antes de restaurar, o estado atual é preservado automaticamente em
-                      disco.
+                      Exporta em pacote <code>.zip</code> com manifesto SHA-256 o banco de dados, configurações (sem
+                      tokens ou senhas), Biblioteca Interna de Mídia, mídias referenciadas, Aethera Academy, Memória
+                      Evolutiva, Calendário Editorial e projetos do Cinema. Na restauração, valida hashes, reconstrói
+                      caminhos relativos e preserva dados existentes.
                     </p>
+                    {backupEstimate && (
+                      <p className="mt-2 text-muted-foreground">
+                        Tamanho estimado: <strong className="text-foreground">{(backupEstimate.compressedEstimateBytes / (1024 * 1024)).toFixed(2)} MB</strong>{' '}
+                        ({(backupEstimate.totalBytes / (1024 * 1024)).toFixed(2)} MB sem compressão)
+                        {!backupEstimate.complete ? ` · ${backupEstimate.missingCount} arquivo(s) ausente(s)` : ' · todos os arquivos presentes'}
+                      </p>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={systemBackupBusy !== null}
+                      onClick={() => void handleEstimateSystemBackup()}
+                      className="inline-flex items-center gap-2 rounded-xl border border-border px-3 py-2 font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+                    >
+                      Calcular tamanho
+                    </button>
                     <button
                       type="button"
                       disabled={systemBackupBusy !== null}
@@ -527,7 +611,7 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                       className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >
                       <Download className="size-4" />
-                      {systemBackupBusy === 'export' ? 'Exportando backup…' : 'Backup Geral do Sistema'}
+                      {systemBackupBusy === 'export' ? 'Exportando .zip…' : 'Backup Geral (.zip)'}
                     </button>
                     <button
                       type="button"
@@ -536,7 +620,7 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                       className="inline-flex items-center gap-2 rounded-xl border border-border px-4 py-2 font-medium text-foreground hover:border-primary/50 disabled:opacity-50"
                     >
                       <RotateCcw className="size-4" />
-                      {systemBackupBusy === 'restore' ? 'Restaurando…' : 'Restaurar'}
+                      {systemBackupBusy === 'restore' ? 'Validando e restaurando…' : 'Restaurar (.zip / .json)'}
                     </button>
                   </div>
                 </div>
