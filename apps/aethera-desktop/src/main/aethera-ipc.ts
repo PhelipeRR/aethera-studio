@@ -2009,11 +2009,109 @@ export function registerAetheraDomainIpc(options: {
         return null;
       }
     },
+    runEditorialResearch: async (interpretation, signal) => {
+      const researchPrompt = [
+        `Você é o Pesquisador Editorial Factual do Aethera Studio.`,
+        `Produza um dossiê estruturado sobre a obra "${interpretation.workTitle}" para o tema "${interpretation.theme}".`,
+        interpretation.requestedCount
+          ? `Identifique exatamente ${interpretation.requestedCount} entidades distintas ranqueadas pelos critérios: ${interpretation.rankingCriteria.join('; ')}.`
+          : `Identifique as entidades principais relevantes ao tema.`,
+        `Para cada entidade, liste fatos verificáveis, mecânicas/acontecimentos principais, padrões de ataque ou fases, consenso da comunidade e incertezas explícitas (diferencie fatos de opiniões; nunca invente fatos).`,
+        `Responda SOMENTE com JSON válido no formato:`,
+        `{"workTitle":"...","theme":"...","rankingCriteria":["..."],"entities":[{"entityName":"...","workTitle":"...","role":"...","rankPosition":1,"verifiedFacts":["..."],"mechanicsOrEvents":["..."],"attackPatternsOrPhases":["..."],"communityConsensus":"...","uncertainties":["..."],"sources":[{"title":"...","kind":"community"}]}],"uncertainties":["..."],"sourcesUsed":["..."]}`,
+      ].join('\n');
+
+      const parseDossier = (raw: string, providerUsed: string) => {
+        const match = raw.match(/\{[\s\S]*\}/);
+        if (!match) return null;
+        const parsed = JSON.parse(match[0]) as {
+          workTitle?: string;
+          theme?: string;
+          rankingCriteria?: string[];
+          entities?: Array<{
+            entityName: string;
+            workTitle?: string;
+            role?: string;
+            rankPosition?: number;
+            verifiedFacts?: string[];
+            mechanicsOrEvents?: string[];
+            attackPatternsOrPhases?: string[];
+            communityConsensus?: string;
+            uncertainties?: string[];
+            sources?: Array<{ title: string; kind: 'official' | 'community' | 'agent_synthesis'; url?: string }>;
+          }>;
+          uncertainties?: string[];
+          sourcesUsed?: string[];
+        };
+        if (!parsed.workTitle || !Array.isArray(parsed.entities) || parsed.entities.length === 0) return null;
+        return {
+          dossierId: `dossier_${interpretation.promptHash}`,
+          dossierHash: createHash('sha256').update(match[0]).digest('hex').slice(0, 12),
+          promptHash: interpretation.promptHash,
+          workTitle: parsed.workTitle,
+          theme: parsed.theme ?? interpretation.theme,
+          rankingCriteria: parsed.rankingCriteria ?? interpretation.rankingCriteria,
+          entities: parsed.entities.map((e) => ({
+            entityName: e.entityName,
+            workTitle: e.workTitle ?? parsed.workTitle!,
+            role: e.role ?? 'boss',
+            ...(e.rankPosition !== undefined ? { rankPosition: e.rankPosition } : {}),
+            verifiedFacts: e.verifiedFacts ?? [],
+            mechanicsOrEvents: e.mechanicsOrEvents ?? [],
+            ...(e.attackPatternsOrPhases ? { attackPatternsOrPhases: e.attackPatternsOrPhases } : {}),
+            ...(e.communityConsensus ? { communityConsensus: e.communityConsensus } : {}),
+            uncertainties: e.uncertainties ?? [],
+            sources: e.sources ?? [{ title: 'Síntese editorial', kind: 'agent_synthesis' as const }],
+          })),
+          uncertainties: parsed.uncertainties ?? [],
+          sourcesUsed: parsed.sourcesUsed ?? [providerUsed],
+          providerUsed,
+          createdAt: new Date().toISOString(),
+        };
+      };
+
+      const agy = await detectAntigravityCli();
+      if (agy.installed && agy.authenticated !== false) {
+        try {
+          const res = await runAntigravityPrompt({
+            prompt: researchPrompt,
+            cwd: app.getPath('userData'),
+            timeoutMs: 90_000,
+            signal,
+          });
+          const dossier = parseDossier(res.output ?? '', 'antigravity-cli');
+          if (dossier) return dossier;
+        } catch {
+          // fallback to claude / codex
+        }
+      }
+      const execFileAsync = promisify(execFile);
+      for (const [provider, cmd, args] of [
+        ['claude-cli', 'claude', ['-p', '--output-format', 'text', researchPrompt]],
+        ['codex-cli', 'codex', ['exec', researchPrompt]],
+      ] as Array<[string, string, string[]]>) {
+        try {
+          const { stdout } = await execFileAsync(cmd, args, {
+            cwd: app.getPath('userData'),
+            timeout: 90_000,
+            maxBuffer: 4 * 1024 * 1024,
+            signal,
+          });
+          const dossier = parseDossier(stdout, provider);
+          if (dossier) return dossier;
+        } catch {
+          // try next available provider
+        }
+      }
+      return null;
+    },
     generateAgentScript: async (input) => {
       try {
-        const desiredBeats = input.targetDurationSec > 90
-          ? Math.max(8, Math.min(28, Math.round(input.targetDurationSec / 36)))
-          : 6;
+        const desiredBeats = input.researchDossier?.entities.length
+          ? Math.max(input.researchDossier.entities.length + 2, input.targetDurationSec > 90 ? 12 : 6)
+          : input.targetDurationSec > 90
+            ? Math.max(8, Math.min(28, Math.round(input.targetDurationSec / 36)))
+            : 6;
         const wordsTarget = Math.max(120, Math.round(input.targetDurationSec * 2.1));
         const learnedMemories = evolutionCore.retrieveRelevantMemories({
           text: input.prompt,
@@ -2147,11 +2245,23 @@ export function registerAetheraDomainIpc(options: {
           const targetLanguageLabel =
             languageLabels[input.language ?? 'pt-BR'] ?? (input.language || 'português do Brasil (pt-BR)');
 
+          const researchContext = input.researchDossier
+            ? [
+                `Dossiê factual de pesquisa (${input.researchDossier.workTitle}):`,
+                `Critérios de ranking: ${input.researchDossier.rankingCriteria.join(' | ')}`,
+                ...input.researchDossier.entities.map(
+                  (e) =>
+                    `- ${e.rankPosition ? `#${e.rankPosition} ` : ''}${e.entityName}: ${e.mechanicsOrEvents.slice(0, 2).join('; ')} | Fatos: ${e.verifiedFacts.slice(0, 2).join('; ')}`,
+                ),
+              ]
+            : [];
+
           const blockPrompt = [
             `Você é o Diretor de Roteiro e Narração do Aethera Studio.`,
             `Escreva ${blockRole} de um roteiro REAL e natural em ${targetLanguageLabel}, pronto para ser lido em voz alta.`,
             `Briefing/Tema: "${input.prompt}"`,
             `Gênero: ${input.genre ?? 'gameplay_essay'} | Humor contextual: ${input.humorIntensity}% | Tópicos: ${input.queries.join(', ')}`,
+            ...researchContext,
             `Gere exatamente ${countInBlock} cenas/beats com ~${blockWordsTarget} palavras faladas no total.`,
             ...(prevTail ? [`Continuação direta após: "${prevTail}"`] : []),
             ...(academyRulesApplied.length > 0

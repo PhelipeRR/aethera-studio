@@ -150,14 +150,19 @@ function computeJobTiming(
 
 const STAGE_DISPLAY_LABELS: Record<string, string> = {
   prompt: 'Prompt',
-  pesquisa: 'Pesquisa',
-  aquisicao: 'Aquisição de Mídia',
-  paused_pending_media: 'Pausado (Mídia Pendente)',
-  paused_pending_script: 'Pausado (Roteiro Pendente)',
+  interpretacao: 'Interpretação',
+  pesquisa: 'Pesquisa Editorial',
+  paused_pending_research: 'Pausado (Pesquisa Pendente)',
   roteiro: 'Roteiro',
+  paused_pending_script: 'Pausado (Roteiro Pendente)',
+  decupagem: 'Decupagem Semântica',
+  aquisicao: 'Aquisição de Mídia',
+  validacao_visual: 'Validação Visual',
+  paused_pending_media: 'Pausado (Mídia Pendente)',
   planejamento: 'Planejamento',
   montagem: 'Montagem',
   audio_sfx_vfx: 'Áudio / SFX / VFX',
+  qc: 'QC Editorial',
   previa: 'Prévia',
   editor: 'Concluído — Pronto para Editor',
   cancelled: 'Cancelado',
@@ -165,7 +170,7 @@ const STAGE_DISPLAY_LABELS: Record<string, string> = {
 };
 
 function isJobReadyForEditor(job: StagedJobView): boolean {
-  const requiredStages = ['prompt', 'pesquisa', 'aquisicao', 'roteiro', 'planejamento', 'montagem', 'audio_sfx_vfx', 'previa'];
+  const requiredStages = ['prompt', 'interpretacao', 'pesquisa', 'roteiro', 'decupagem', 'aquisicao', 'validacao_visual', 'planejamento', 'montagem', 'audio_sfx_vfx', 'previa'];
   return (
     job.state === 'editor' &&
     job.progressPct >= 100 &&
@@ -176,12 +181,14 @@ function isJobReadyForEditor(job: StagedJobView): boolean {
 
 const PIPELINE_STAGES: Array<{ id: string; label: string }> = [
   { id: 'prompt', label: 'PROMPT' },
+  { id: 'interpretacao', label: 'INTERPRETAÇÃO' },
   { id: 'pesquisa', label: 'PESQUISA' },
-  { id: 'aquisicao', label: 'AQUISIÇÃO' },
   { id: 'roteiro', label: 'ROTEIRO' },
+  { id: 'decupagem', label: 'DECUPAGEM' },
+  { id: 'aquisicao', label: 'AQUISIÇÃO' },
+  { id: 'validacao_visual', label: 'VALIDAÇÃO' },
   { id: 'planejamento', label: 'PLANEJAMENTO' },
   { id: 'montagem', label: 'MONTAGEM' },
-  { id: 'audio_sfx_vfx', label: 'ÁUDIO/SFX/VFX' },
   { id: 'previa', label: 'PRÉVIA' },
   { id: 'editor', label: 'EDITOR' },
 ];

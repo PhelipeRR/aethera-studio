@@ -44,20 +44,36 @@ import {
   type SourceMediaRecord,
   buildEditorialScript,
   type EditorialScript,
+  interpretProductionPrompt,
+  validateEditorialResearchDossier,
+  validateScriptAgainstDossier,
+  buildSemanticDecupagem,
+  computeIncrementalInvalidation,
+  buildEditorialRecoveryPlan,
+  type PromptInterpretation,
+  type EditorialResearchDossier,
+  type SemanticSceneCut,
+  type IncrementalInvalidationReport,
+  type EditorialRecoveryStep,
 } from '@neuralbridge/cinema';
 import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
 
 export type ProductionStageState =
   | 'idle'
   | 'prompt'
+  | 'interpretacao'
   | 'pesquisa'
-  | 'aquisicao'
   | 'roteiro'
+  | 'decupagem'
+  | 'aquisicao'
+  | 'validacao_visual'
   | 'planejamento'
   | 'montagem'
   | 'audio_sfx_vfx'
+  | 'qc'
   | 'previa'
   | 'editor'
+  | 'paused_pending_research'
   | 'paused_pending_media'
   | 'paused_pending_script'
   | 'cancelled'
@@ -86,6 +102,11 @@ export interface StagedProductionJob {
   allowDeterministicScriptFallback?: boolean;
   acquisitionBudgetMultiplier?: number;
   editorialScript?: EditorialScript;
+  interpretation?: PromptInterpretation;
+  researchDossier?: EditorialResearchDossier;
+  sceneDecupagem?: SemanticSceneCut[];
+  invalidationReport?: IncrementalInvalidationReport;
+  editorialRecoveryPlans?: Array<{ sceneId: string; steps: EditorialRecoveryStep[] }>;
   state: ProductionStageState;
   progressPct: number;
   message: string;
@@ -167,6 +188,10 @@ export interface StagedPipelineDeps {
     signal: AbortSignal,
     preferredUrl?: string,
   ) => Promise<string | null>;
+  runEditorialResearch?: (
+    interpretation: PromptInterpretation,
+    signal: AbortSignal,
+  ) => Promise<EditorialResearchDossier | null>;
   generateAgentScript?: (input: {
     projectId: string;
     prompt: string;
@@ -175,6 +200,8 @@ export interface StagedPipelineDeps {
     targetDurationSec: number;
     humorIntensity: number;
     queries: string[];
+    interpretation?: PromptInterpretation;
+    researchDossier?: EditorialResearchDossier;
   }) => Promise<{
     treatment?: string;
     beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
@@ -579,17 +606,231 @@ export class StagedCinemaPipeline {
     try {
       const projectPaths = this.ensureProjectWorkspace(job.projectId, job.prompt);
       job.workspaceDir = projectPaths.root;
-      const desiredQueryCount = Math.max(4, Math.min(16, Math.ceil((job.targetDurationSec ?? 90) / 45)));
-      const queries = extractSceneQueriesFromPrompt(job.prompt, desiredQueryCount);
-      const expectedEntities = extractTopicEntities(job.prompt);
       const relevanceDecisions: MediaRelevanceDecision[] = [...(job.mediaRelevanceDecisions ?? [])];
 
-      // PESQUISA & AQUISIÇÃO (sempre contextual e isolada por projeto; nunca reaproveita pasta global cegamente)
-      if (!job.completedStages.includes('aquisicao')) {
+      // 1. INTERPRETAÇÃO DO PROMPT + INCREMENTALIDADE
+      checkCancelled();
+      job.state = 'interpretacao';
+      job.progressPct = 8;
+      job.message = 'Interpretando prompt, obra, entidades e critérios editoriais...';
+      const nextInterpretation = interpretProductionPrompt(job.prompt, {
+        ...(job.genre ? { genre: job.genre } : {}),
+        targetDurationSec: job.targetDurationSec,
+        humorIntensity: job.humorIntensity,
+        ...(job.language ? { language: job.language } : {}),
+      });
+      const invalidation = computeIncrementalInvalidation({
+        ...(job.interpretation?.promptHash ? { previousPromptHash: job.interpretation.promptHash } : {}),
+        nextInterpretation,
+        ...(job.researchDossier ? { previousDossier: job.researchDossier, nextDossier: job.researchDossier } : {}),
+        ...(job.sceneDecupagem ? { previousScenes: job.sceneDecupagem, nextScenes: job.sceneDecupagem } : {}),
+      });
+      job.invalidationReport = invalidation;
+      if (!invalidation.researchValid) {
+        delete job.researchDossier;
+        delete job.editorialScript;
+        delete job.sceneDecupagem;
+        job.completedStages = job.completedStages.filter(
+          (s) => s !== 'pesquisa' && s !== 'roteiro' && s !== 'decupagem' && s !== 'aquisicao' && s !== 'validacao_visual',
+        );
+      }
+      job.interpretation = nextInterpretation;
+      job.completedStages = [...new Set([...job.completedStages, 'prompt', 'interpretacao'])] as ProductionStageState[];
+      this.saveJob(job);
+
+      // 2. PESQUISA EDITORIAL ESTRUTURADA (antes do roteiro e da aquisição)
+      if (!job.completedStages.includes('pesquisa') || !job.researchDossier) {
         checkCancelled();
         job.state = 'pesquisa';
-        job.progressPct = 15;
-        job.message = 'Executando pesquisa contextual e verificando cache inteligente para o projeto...';
+        job.progressPct = 18;
+        job.message = `Pesquisando fatos, entidades e critérios sobre ${nextInterpretation.workTitle}...`;
+        this.saveJob(job);
+
+        if (this.deps.runEditorialResearch) {
+          const dossier = await this.deps.runEditorialResearch(nextInterpretation, signal);
+          const check = validateEditorialResearchDossier(dossier, nextInterpretation);
+          if (!dossier || !check.valid) {
+            job.state = 'paused_pending_research';
+            job.progressPct = 20;
+            job.error = `research_failed: ${check.reasons.join(' | ')}`;
+            job.message =
+              `Pesquisa editorial incompleta (${check.reasons[0] ?? 'sem dossiê válido'}). Nenhum fato foi inventado — clique em Retomar Projeto para tentar novamente.`;
+            this.saveJob(job);
+            return job;
+          }
+          job.researchDossier = dossier;
+        }
+        job.completedStages = [...new Set([...job.completedStages, 'pesquisa'])] as ProductionStageState[];
+        this.saveJob(job);
+      }
+
+      // 3. ROTEIRO BASEADO NA PESQUISA (antes da decupagem e da aquisição)
+      checkCancelled();
+      job.state = 'roteiro';
+      job.progressPct = 32;
+      job.message = 'Desenvolvendo roteiro factual e narrativo baseado na pesquisa...';
+      this.saveJob(job);
+      const activeMemories = this.deps.evolutionCore
+        .retrieveRelevantMemories({
+          text: job.prompt,
+          ...(job.genre ? { genre: job.genre } : {}),
+          projectId: job.projectId,
+        })
+        .map((m) => ({ memoryId: m.memoryId, rule: m.content, directorId: m.directorId }));
+
+      const researchQueries =
+        job.researchDossier?.entities.map((e) => `${job.researchDossier!.workTitle} ${e.entityName}`) ??
+        extractSceneQueriesFromPrompt(
+          job.prompt,
+          Math.max(4, Math.min(16, Math.ceil((job.targetDurationSec ?? 90) / 45))),
+        );
+
+      let externalDirection:
+        | {
+            treatment?: string;
+            beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
+            providerUsed?: string;
+            academyRulesApplied?: string[];
+          }
+        | undefined;
+      if (!job.editorialScript && this.deps.generateAgentScript) {
+        try {
+          const generated = await this.deps.generateAgentScript({
+            projectId: job.projectId,
+            prompt: job.prompt,
+            ...(job.genre ? { genre: job.genre } : {}),
+            ...(job.language ? { language: job.language } : {}),
+            targetDurationSec: job.targetDurationSec,
+            humorIntensity: job.humorIntensity,
+            queries: researchQueries,
+            interpretation: nextInterpretation,
+            ...(job.researchDossier ? { researchDossier: job.researchDossier } : {}),
+          });
+          if (generated && (generated.beats?.length || generated.treatment)) {
+            externalDirection = generated;
+          }
+        } catch {
+          externalDirection = undefined;
+        }
+        if (!externalDirection && !job.allowDeterministicScriptFallback) {
+          job.state = 'paused_pending_script';
+          job.progressPct = 34;
+          job.error = 'script_generation_failed';
+          job.message =
+            'Todos os agentes falharam ao gerar o roteiro. Nenhum template genérico foi usado silenciosamente — clique em Retomar Projeto para tentar novamente.';
+          this.saveJob(job);
+          return job;
+        }
+      }
+      if (externalDirection?.beats?.length) {
+        const beatDur = Math.max(
+          4,
+          Math.round(job.targetDurationSec / externalDirection.beats.length),
+        );
+        job.editorialScript = buildEditorialScript({
+          scriptId: `${job.projectId}_script`,
+          source: 'agent',
+          ...(externalDirection.providerUsed ? { providerUsed: externalDirection.providerUsed } : {}),
+          treatment: externalDirection.treatment ?? job.prompt,
+          academyRulesApplied: externalDirection.academyRulesApplied ?? [],
+          segments: externalDirection.beats.map((b, idx) => ({
+            segmentId: `seg_${idx + 1}`,
+            beatId: `nbeat_${idx + 1}_${b.stage ?? 'progression'}`,
+            stage: b.stage ?? 'progression',
+            title: `Cena ${idx + 1}`,
+            spokenText: b.summary,
+            estimatedDurationSec: beatDur,
+            approved: true,
+          })),
+        });
+      } else if (!job.editorialScript && job.allowDeterministicScriptFallback && job.researchDossier) {
+        const dossier = job.researchDossier;
+        const entityBeats = dossier.entities.map((ent, idx) => ({
+          segmentId: `seg_${idx + 2}`,
+          beatId: `nbeat_${idx + 2}_progression`,
+          stage: (idx === dossier.entities.length - 1 ? 'climax' : 'progression') as NarrativeBeat['stage'],
+          title: ent.rankPosition ? `#${ent.rankPosition} — ${ent.entityName}` : ent.entityName,
+          spokenText: `${ent.entityName} em ${dossier.workTitle}: ${ent.mechanicsOrEvents[0] ?? ent.verifiedFacts[0] ?? ent.role}.`,
+          estimatedDurationSec: Math.max(12, Math.round(job.targetDurationSec / Math.max(2, dossier.entities.length + 2))),
+          approved: true,
+        }));
+        job.editorialScript = buildEditorialScript({
+          scriptId: `${job.projectId}_script`,
+          source: 'deterministic_draft',
+          treatment: `${dossier.workTitle}: ${dossier.theme}`,
+          academyRulesApplied: [],
+          segments: [
+            {
+              segmentId: 'seg_1',
+              beatId: 'nbeat_1_hook',
+              stage: 'hook',
+              title: 'Introdução',
+              spokenText: `Bem-vindo à análise de ${dossier.workTitle}: ${dossier.theme}.`,
+              estimatedDurationSec: 20,
+              approved: true,
+            },
+            ...entityBeats,
+            {
+              segmentId: `seg_${entityBeats.length + 2}`,
+              beatId: `nbeat_${entityBeats.length + 2}_resolution`,
+              stage: 'resolution',
+              title: 'Conclusão',
+              spokenText: `Esses foram os destaques de ${dossier.workTitle} segundo os critérios definidos.`,
+              estimatedDurationSec: 20,
+              approved: true,
+            },
+          ],
+        });
+      }
+      if (job.editorialScript && job.researchDossier) {
+        const scriptCheck = validateScriptAgainstDossier(job.editorialScript, job.researchDossier, nextInterpretation);
+        if (!scriptCheck.valid && !job.allowDeterministicScriptFallback) {
+          job.error = `script_coverage_warning: ${scriptCheck.reasons.join(' | ')}`;
+        }
+      }
+      job.completedStages = [...new Set([...job.completedStages, 'roteiro'])] as ProductionStageState[];
+      this.saveJob(job);
+
+      // 4. DECUPAGEM SEMÂNTICA (gera consultas específicas por cena antes da aquisição)
+      checkCancelled();
+      job.state = 'decupagem';
+      job.progressPct = 44;
+      job.message = 'Gerando decupagem semântica e consultas específicas por cena...';
+      if (job.editorialScript && job.researchDossier) {
+        job.sceneDecupagem = buildSemanticDecupagem(job.editorialScript, job.researchDossier, nextInterpretation);
+      } else if (job.editorialScript) {
+        const syntheticDossier: EditorialResearchDossier = {
+          dossierId: `${job.projectId}_dossier`,
+          dossierHash: nextInterpretation.promptHash,
+          promptHash: nextInterpretation.promptHash,
+          workTitle: nextInterpretation.workTitle,
+          theme: nextInterpretation.theme,
+          rankingCriteria: nextInterpretation.rankingCriteria,
+          entities: [],
+          uncertainties: ['Sem dossiê externo configurado; usando entidades extraídas do roteiro.'],
+          sourcesUsed: ['script_derived'],
+          createdAt: new Date().toISOString(),
+        };
+        job.sceneDecupagem = buildSemanticDecupagem(job.editorialScript, syntheticDossier, nextInterpretation);
+      }
+      job.completedStages = [...new Set([...job.completedStages, 'decupagem'])] as ProductionStageState[];
+      this.saveJob(job);
+
+      const scenesForAcquisition = job.sceneDecupagem ?? [];
+      const queries =
+        scenesForAcquisition.length > 0
+          ? scenesForAcquisition.map((s) => s.mediaQueries[0] ?? `${s.workTitle} ${s.entities[0] ?? s.expectedEvent}`)
+          : researchQueries;
+      const expectedEntities = extractTopicEntities(
+        `${nextInterpretation.workTitle} ${scenesForAcquisition.flatMap((s) => s.entities).join(' ')}`,
+      );
+
+      // 5. AQUISIÇÃO & VALIDAÇÃO VISUAL ORIENTADAS PELA DECUPAGEM
+      if (!job.completedStages.includes('aquisicao')) {
+        checkCancelled();
+        job.state = 'aquisicao';
+        job.progressPct = 56;
+        job.message = 'Adquirindo mídias orientadas pela decupagem semântica...';
         this.saveJob(job);
 
         // Apenas arquivos já pertencentes ao diretório exclusivo DESTE projeto (em caso de retomada)
@@ -601,31 +842,34 @@ export class StagedCinemaPipeline {
           const media = await buildSourceMediaFromFile(f, `${job.projectId}_own_${i + 1}`);
           if (media) job.acquiredMedia.push(media);
         }
-        job.completedStages = [...new Set([...job.completedStages, 'pesquisa'])] as ProductionStageState[];
-
-        checkCancelled();
-        job.state = 'aquisicao';
-        job.progressPct = 32;
-        job.message = 'Adquirindo mídias contextuais no workspace isolado do projeto...';
-        this.saveJob(job);
 
         const pending: PendingMediaSlot[] = [];
         if (this.deps.autonomousAcquisitionDeps && job.acquiredMedia.length < queries.length) {
-          const initialSegments = job.editorialScript
-            ? job.editorialScript.segments.map((s) => ({
-                segmentId: s.segmentId,
-                subject: s.title || s.segmentId,
-                narrationText: s.spokenText,
-                entities: extractTopicEntities(`${s.title ?? ''} ${s.spokenText}`),
-                expectedDurationSec: Math.max(8, s.estimatedDurationSec || 15),
-              }))
-            : queries.map((q, idx) => ({
-                segmentId: `slot_${idx + 1}`,
-                subject: q,
-                narrationText: q,
-                entities: extractTopicEntities(q),
-                expectedDurationSec: Math.max(8, Math.round((job.targetDurationSec ?? 90) / Math.max(1, queries.length))),
-              }));
+          const initialSegments =
+            scenesForAcquisition.length > 0
+              ? scenesForAcquisition.map((s) => ({
+                  segmentId: s.sceneId,
+                  subject: s.entities[0] ? `${s.workTitle} ${s.entities[0]}` : s.expectedEvent,
+                  narrationText: s.narrationText,
+                  entities:
+                    s.matchingCriteria.requiredEntities.length > 0
+                      ? s.matchingCriteria.requiredEntities
+                      : extractTopicEntities(`${s.workTitle} ${s.entities.join(' ')} ${s.narrationText}`),
+                  expectedDurationSec: Math.max(8, s.durationSec),
+                }))
+              : queries.map((q, idx) => ({
+                  segmentId: `slot_${idx + 1}`,
+                  subject: q,
+                  narrationText: q,
+                  entities: extractTopicEntities(q),
+                  expectedDurationSec: Math.max(8, Math.round((job.targetDurationSec ?? 90) / Math.max(1, queries.length))),
+                }));
+
+          checkCancelled();
+          job.state = 'validacao_visual';
+          job.progressPct = 62;
+          job.message = 'Validando mídias por Scene Grounding e evidências por frame...';
+          this.saveJob(job);
 
           const audit = await runAutonomousMediaAcquisition({
             projectId: job.projectId,
@@ -815,91 +1059,26 @@ export class StagedCinemaPipeline {
 
         job.mediaRelevanceDecisions = relevanceDecisions;
         if (pending.length > 0) {
+          const recoveryPlans = pending.map((p) => {
+            const matchedScene = scenesForAcquisition.find((s) => s.sceneId === p.clipId) ?? scenesForAcquisition[p.slotIndex];
+            return {
+              sceneId: matchedScene?.sceneId ?? p.clipId,
+              steps: matchedScene ? buildEditorialRecoveryPlan(matchedScene, matchedScene.mediaQueries) : [],
+            };
+          }).filter((r) => r.steps.length > 0);
+          if (recoveryPlans.length > 0) job.editorialRecoveryPlans = recoveryPlans;
           job.pendingMedia = pending;
           job.state = 'paused_pending_media';
-          job.progressPct = 38;
-          job.message = `${pending.length} mídia(s) pendente(s) antes da montagem final.`;
+          job.progressPct = 64;
+          job.message = `${pending.length} mídia(s) pendente(s) antes da montagem final (nenhum Motion Visual foi autorizado automaticamente).`;
           return this.saveJob(job);
         }
 
         job.pendingMedia = [];
-        job.completedStages = [...new Set([...job.completedStages, 'aquisicao'])] as ProductionStageState[];
+        job.completedStages = [...new Set([...job.completedStages, 'aquisicao', 'validacao_visual'])] as ProductionStageState[];
       }
 
-      // ROTEIRO (agentes RF-07 + diretores + validação proporcional à duração)
-      checkCancelled();
-      job.state = 'roteiro';
-      job.progressPct = 50;
-      job.message = 'Desenvolvendo roteiro proporcional e recuperando memórias dos diretores RF-07...';
-      this.saveJob(job);
-      const activeMemories = this.deps.evolutionCore
-        .retrieveRelevantMemories({
-          text: job.prompt,
-          ...(job.genre ? { genre: job.genre } : {}),
-          projectId: job.projectId,
-        })
-        .map((m) => ({ memoryId: m.memoryId, rule: m.content, directorId: m.directorId }));
-
-      let externalDirection:
-        | {
-            treatment?: string;
-            beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
-            providerUsed?: string;
-            academyRulesApplied?: string[];
-          }
-        | undefined;
-      if (!job.editorialScript && this.deps.generateAgentScript) {
-        try {
-          const generated = await this.deps.generateAgentScript({
-            projectId: job.projectId,
-            prompt: job.prompt,
-            ...(job.genre ? { genre: job.genre } : {}),
-            ...(job.language ? { language: job.language } : {}),
-            targetDurationSec: job.targetDurationSec,
-            humorIntensity: job.humorIntensity,
-            queries,
-          });
-          if (generated && (generated.beats?.length || generated.treatment)) {
-            externalDirection = generated;
-          }
-        } catch {
-          externalDirection = undefined;
-        }
-        if (!externalDirection && !job.allowDeterministicScriptFallback) {
-          job.state = 'paused_pending_script';
-          job.progressPct = 52;
-          job.error = 'script_generation_failed';
-          job.message =
-            'Todos os agentes falharam ao gerar o roteiro. Nenhum template genérico foi usado silenciosamente — clique em Retomar Projeto para tentar novamente.';
-          this.saveJob(job);
-          return job;
-        }
-      }
-      if (externalDirection?.beats?.length) {
-        const beatDur = Math.max(
-          4,
-          Math.round(job.targetDurationSec / externalDirection.beats.length),
-        );
-        job.editorialScript = buildEditorialScript({
-          scriptId: `${job.projectId}_script`,
-          source: 'agent',
-          ...(externalDirection.providerUsed ? { providerUsed: externalDirection.providerUsed } : {}),
-          treatment: externalDirection.treatment ?? job.prompt,
-          academyRulesApplied: externalDirection.academyRulesApplied ?? [],
-          segments: externalDirection.beats.map((b, idx) => ({
-            segmentId: `seg_${idx + 1}`,
-            beatId: `nbeat_${idx + 1}_${b.stage ?? 'progression'}`,
-            stage: b.stage ?? 'progression',
-            title: `Cena ${idx + 1}`,
-            spokenText: b.summary,
-            estimatedDurationSec: beatDur,
-            approved: true,
-          })),
-        });
-      }
-      job.completedStages = [...new Set([...job.completedStages, 'roteiro'])] as ProductionStageState[];
-
-      // PLANEJAMENTO
+      // PLANEJAMENTO (usa activeMemories e job.editorialScript já gerados na etapa de Roteiro)
       checkCancelled();
       job.state = 'planejamento';
       job.progressPct = 62;

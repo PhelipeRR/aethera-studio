@@ -4,6 +4,7 @@ export * from './analysis/media-coverage-planner.js';
 export * from './analysis/resilient-media-sources.js';
 export * from './director/cinematography-director.js';
 export * from './editorial/editorial-integrity.js';
+export * from './editorial/research-and-decupagem.js';
 export * from './comedy/comedy-director.js';
 export * from './edit/editorial-engine.js';
 export * from './edit/prompt-revision.js';
