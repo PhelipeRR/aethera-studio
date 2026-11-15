@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CreativeStudioPanel } from './CreativeStudioPanel.js';
 import { ProductionConsoleAccordion } from './ProductionConsoleAccordion.js';
+import { TtsProviderSelector } from './TtsProviderSelector.js';
 
 interface StagedJobSummary {
   projectId: string;
@@ -76,6 +77,8 @@ export function App() {
     conflicts: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ttsProviderId, setTtsProviderId] = useState<string>('voicestudio');
+  const [ttsVoiceId, setTtsVoiceId] = useState<string>('');
 
   const refresh = async () => {
     if (!window.aetheraBridge) return;
@@ -154,6 +157,17 @@ export function App() {
             <p style={{ fontSize: 12, color: '#99f6e4' }}>
               SQLite: {status?.dbPath} • Agentes: {status?.agents.join(', ') || 'Nenhum'}
             </p>
+            <div style={{ marginBottom: 16, maxWidth: 480 }}>
+              <TtsProviderSelector
+                selectedProviderId={ttsProviderId}
+                selectedVoiceId={ttsVoiceId}
+                onProviderChange={(id) => {
+                  setTtsProviderId(id);
+                  setTtsVoiceId(''); // Reset voice on provider switch to prevent stale selection
+                }}
+                onVoiceChange={setTtsVoiceId}
+              />
+            </div>
             <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
               <input
                 value={prompt}

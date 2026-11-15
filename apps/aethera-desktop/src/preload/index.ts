@@ -150,6 +150,15 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaConsoleExport: (input: { projectId: string; format: 'json' | 'txt' }) =>
     ipcRenderer.invoke('cinema:console-export', input),
   cinemaConsoleClear: (projectId: string) => ipcRenderer.invoke('cinema:console-clear', projectId),
+  ttsListProviders: () => ipcRenderer.invoke('tts:list-providers'),
+  ttsListVoices: (providerId: string) => ipcRenderer.invoke('tts:list-voices', providerId),
+  ttsHealthCheck: (providerId: string) => ipcRenderer.invoke('tts:health-check', providerId),
+  ttsGetPreviewUrl: (input: { providerId: string; voiceId: string }) =>
+    ipcRenderer.invoke('tts:get-preview-url', input),
+  ttsGetCapabilities: (providerId: string) => ipcRenderer.invoke('tts:get-capabilities', providerId),
+  ttsElevenLabsSaveCredentials: (credentials: { apiKey: string; modelId?: string }) =>
+    ipcRenderer.invoke('tts:elevenlabs-save-credentials', credentials),
+  ttsElevenLabsClearCredentials: () => ipcRenderer.invoke('tts:elevenlabs-clear-credentials'),
   onCinemaConsoleLog: (listener: (entry: unknown) => void) => {
     const wrapped = (_event: unknown, entry: unknown) => listener(entry);
     ipcRenderer.on('cinema:console-log', wrapped);

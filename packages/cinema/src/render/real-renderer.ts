@@ -45,6 +45,8 @@ export interface RealRenderInput {
   voiceStudioUrl?: string;
   voiceStudioModelId?: string;
   voiceStudioVoiceId?: string;
+  ttsProviderId?: string;
+  ttsVoiceId?: string;
   evolution?: AetheraEvolutionCore;
   genre?: string;
   prompt?: string;
@@ -64,7 +66,7 @@ export interface RealRenderResult {
   sampleLabel?: string;
   appliedDirectives?: ProductionDirectives;
   renderedHeadlines?: string[];
-  narrationMode: 'voicestudio_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback';
+  narrationMode: 'voicestudio_tts' | 'elevenlabs_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback';
   encoderUsed: string;
   appliedEffects: string[];
   probe: RealMp4ProbeResult;
@@ -158,8 +160,46 @@ async function synthesizeViaVoiceStudio(
 async function synthesizeNarrationWav(
   text: string,
   outWavPath: string,
-  options?: { voiceStudioUrl?: string; voiceStudioModelId?: string; voiceStudioVoiceId?: string },
-): Promise<'voicestudio_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback'> {
+  options?: {
+    voiceStudioUrl?: string;
+    voiceStudioModelId?: string;
+    voiceStudioVoiceId?: string;
+    ttsProviderId?: string;
+    ttsVoiceId?: string;
+  },
+): Promise<'voicestudio_tts' | 'elevenlabs_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback'> {
+  // When ElevenLabs is explicitly selected and configured, use it instead of VoiceStudio
+  if (options?.ttsProviderId === 'elevenlabs' && options?.ttsVoiceId) {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (apiKey) {
+      try {
+        const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${options.ttsVoiceId}`, {
+          method: 'POST',
+          headers: {
+            'xi-api-key': apiKey,
+            'content-type': 'application/json',
+            accept: 'audio/wav',
+          },
+          body: JSON.stringify({
+            text,
+            model_id: 'eleven_multilingual_v2',
+            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+          }),
+          signal: AbortSignal.timeout(60_000),
+        });
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          if (buf.byteLength >= 1024) {
+            writeFileSync(outWavPath, buf);
+            return 'elevenlabs_tts';
+          }
+        }
+      } catch {
+        // Fall through to VoiceStudio/SAPI fallback on network or auth errors
+      }
+    }
+  }
+
   if (
     await synthesizeViaVoiceStudio(text, outWavPath, {
       ...(options?.voiceStudioUrl ? { baseUrl: options.voiceStudioUrl } : {}),
@@ -663,7 +703,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   mkdirSync(voiceCacheDir, { recursive: true });
   const segmentWavPaths: string[] = [];
   const segmentProbes: SynthesizedSegmentProbe[] = [];
-  let narrationMode: 'voicestudio_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback' = 'voicestudio_tts';
+  let narrationMode: 'voicestudio_tts' | 'elevenlabs_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback' = 'voicestudio_tts';
 
   for (const seg of voicePlan.segments) {
     const cachedSegPath = join(voiceCacheDir, `voice_${seg.cacheKey}.wav`);
@@ -675,6 +715,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
         ...(input.voiceStudioUrl ? { voiceStudioUrl: input.voiceStudioUrl } : {}),
         ...(input.voiceStudioModelId ? { voiceStudioModelId: input.voiceStudioModelId } : {}),
         ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
+        ...(input.ttsProviderId ? { ttsProviderId: input.ttsProviderId } : {}),
+        ...(input.ttsVoiceId ? { ttsVoiceId: input.ttsVoiceId } : {}),
       });
       if (mode !== 'voicestudio_tts') narrationMode = mode;
       if (existsSync(segWorkPath) && statSync(segWorkPath).size > 1024) {
@@ -719,6 +761,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       ...(input.voiceStudioUrl ? { voiceStudioUrl: input.voiceStudioUrl } : {}),
       ...(input.voiceStudioModelId ? { voiceStudioModelId: input.voiceStudioModelId } : {}),
       ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
+      ...(input.ttsProviderId ? { ttsProviderId: input.ttsProviderId } : {}),
+      ...(input.ttsVoiceId ? { ttsVoiceId: input.ttsVoiceId } : {}),
     });
   }
 

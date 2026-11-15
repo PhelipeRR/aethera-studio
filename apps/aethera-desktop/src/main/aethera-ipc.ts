@@ -21,6 +21,7 @@ import {
 import { ManagedMediaLibrary } from './managed-media-library.js';
 import { StagedCinemaPipeline, type StagedProductionJob } from './cinema-pipeline.js';
 import { createProductionConsoleService, type ProductionLogStage, type ProductionLogSeverity } from './production-console.js';
+import { TtsProviderRegistry, VoiceStudioProvider, ElevenLabsProvider, elevenLabsCredentialsSchema } from './tts-providers.js';
 import {
   TrendRadarEngine,
   type CinematicBriefing,
@@ -1883,6 +1884,9 @@ export function registerAetheraDomainIpc(options: {
 
   const visionProviderCooldowns = new Map<string, VisionCooldownEntry>();
   const productionConsole = createProductionConsoleService(join(app.getPath('userData'), 'cinema-console-logs'));
+  const ttsRegistry = new TtsProviderRegistry();
+  ttsRegistry.register(new VoiceStudioProvider());
+  ttsRegistry.register(new ElevenLabsProvider(safeStorage, userDataDir));
   const emitProductionLog = (input: {
     projectId: string;
     stage: ProductionLogStage;
@@ -3733,6 +3737,8 @@ export function registerAetheraDomainIpc(options: {
         renderProfile?: 'draft_540p' | 'review_720p' | 'master_1080p';
         useNvenc?: boolean;
         voiceStudioVoiceId?: string;
+        ttsProviderId?: string;
+        ttsVoiceId?: string;
         language?: string;
         seedMediaFiles?: string[];
       },
@@ -3837,6 +3843,64 @@ export function registerAetheraDomainIpc(options: {
     ensureTrusted(event.senderFrame);
     productionConsole.clear(projectId);
     return { cleared: true, projectId };
+  });
+
+  // ─── TTS Provider Registry IPC ──────────────────────────────────────────────
+
+  ipcMain.handle('tts:list-providers', async (event) => {
+    ensureTrusted(event.senderFrame);
+    return ttsRegistry.list();
+  });
+
+  ipcMain.handle('tts:list-voices', async (event, providerId: string) => {
+    ensureTrusted(event.senderFrame);
+    const provider = ttsRegistry.get(providerId);
+    if (!provider) throw new Error(`not_found: Provedor TTS "${providerId}" não encontrado.`);
+    return provider.listVoices();
+  });
+
+  ipcMain.handle('tts:health-check', async (event, providerId: string) => {
+    ensureTrusted(event.senderFrame);
+    const provider = ttsRegistry.get(providerId);
+    if (!provider) throw new Error(`not_found: Provedor TTS "${providerId}" não encontrado.`);
+    return provider.healthCheck();
+  });
+
+  ipcMain.handle('tts:get-preview-url', async (event, input: { providerId: string; voiceId: string }) => {
+    ensureTrusted(event.senderFrame);
+    const provider = ttsRegistry.get(input.providerId);
+    if (!provider) throw new Error(`not_found: Provedor TTS "${input.providerId}" não encontrado.`);
+    return provider.getVoicePreviewUrl(input.voiceId);
+  });
+
+  ipcMain.handle('tts:get-capabilities', async (event, providerId: string) => {
+    ensureTrusted(event.senderFrame);
+    const provider = ttsRegistry.get(providerId);
+    if (!provider) throw new Error(`not_found: Provedor TTS "${providerId}" não encontrado.`);
+    return provider.getCapabilities();
+  });
+
+  ipcMain.handle(
+    'tts:elevenlabs-save-credentials',
+    async (event, credentials: { apiKey: string; modelId?: string }) => {
+      ensureTrusted(event.senderFrame);
+      const provider = ttsRegistry.get('elevenlabs');
+      if (!provider || !(provider instanceof ElevenLabsProvider)) {
+        throw new Error('unavailable: Provedor ElevenLabs não registrado.');
+      }
+      provider.saveCredentials(elevenLabsCredentialsSchema.parse(credentials));
+      return { ok: true as const };
+    },
+  );
+
+  ipcMain.handle('tts:elevenlabs-clear-credentials', async (event) => {
+    ensureTrusted(event.senderFrame);
+    const provider = ttsRegistry.get('elevenlabs');
+    if (!provider || !(provider instanceof ElevenLabsProvider)) {
+      throw new Error('unavailable: Provedor ElevenLabs não registrado.');
+    }
+    provider.clearCredentials();
+    return { ok: true as const };
   });
 
   ipcMain.handle('cinema:inspect-delete-project', async (event, projectId: string) => {

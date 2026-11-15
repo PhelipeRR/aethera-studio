@@ -107,6 +107,8 @@ export interface StagedProductionJob {
   renderProfile: RenderQualityProfile;
   useNvenc: boolean;
   voiceStudioVoiceId?: string;
+  ttsProviderId?: string;
+  ttsVoiceId?: string;
   language?: string;
   allowDeterministicScriptFallback?: boolean;
   acquisitionBudgetMultiplier?: number;
@@ -587,6 +589,8 @@ export class StagedCinemaPipeline {
     renderProfile?: RenderQualityProfile;
     useNvenc?: boolean;
     voiceStudioVoiceId?: string;
+    ttsProviderId?: string;
+    ttsVoiceId?: string;
     language?: string;
     seedMediaFiles?: string[];
   }): Promise<StagedProductionJob> {
@@ -601,6 +605,8 @@ export class StagedCinemaPipeline {
       renderProfile: input.renderProfile ?? 'review_720p',
       useNvenc: input.useNvenc ?? true,
       ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
+      ...(input.ttsProviderId ? { ttsProviderId: input.ttsProviderId } : {}),
+      ...(input.ttsVoiceId ? { ttsVoiceId: input.ttsVoiceId } : {}),
       ...(input.language ? { language: input.language } : {}),
       state: 'prompt',
       progressPct: 5,
@@ -1709,6 +1715,8 @@ export class StagedCinemaPipeline {
         useNvenc: job.useNvenc,
         requireRealMedia: job.acquiredMedia.length > 0,
         voiceStudioVoiceId: job.voiceStudioVoiceId || '9190edfa',
+        ...(job.ttsProviderId ? { ttsProviderId: job.ttsProviderId } : {}),
+        ...(job.ttsVoiceId ? { ttsVoiceId: job.ttsVoiceId } : {}),
         evolution: this.deps.evolutionCore,
         prompt: job.prompt,
         previewQuality: 'fast_preview',
@@ -1893,6 +1901,8 @@ export class StagedCinemaPipeline {
           useNvenc: job.useNvenc,
           requireRealMedia: job.acquiredMedia.length > 0,
           voiceStudioVoiceId: job.voiceStudioVoiceId || '9190edfa',
+          ...(job.ttsProviderId ? { ttsProviderId: job.ttsProviderId } : {}),
+          ...(job.ttsVoiceId ? { ttsVoiceId: job.ttsVoiceId } : {}),
           evolution: this.deps.evolutionCore,
           prompt: job.prompt,
           previewQuality: 'fast_preview',
