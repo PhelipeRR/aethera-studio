@@ -14,6 +14,7 @@ import {
   type ConceptMediaRequirement,
   type ConceptVisualArchetype,
   type CreativeConceptProposal,
+  type CreativeFidelityMode,
   type CreativeLayer,
   type CreativeProjectDocument,
   type ManagedAssetRef,
@@ -34,6 +35,8 @@ export interface ConceptEngineInput {
   extractedFrames?: ExtractedFrameCandidate[];
   /** Explicit provenance of extractedFrames so synthetic AI clips are never labeled authentic gameplay */
   videoSourceType?: 'authentic_gameplay' | 'synthetic_ai_clip' | 'unknown';
+  /** Creative Director fidelity choice: creative freedom vs content-faithful vs authentic gameplay frames */
+  fidelityMode?: CreativeFidelityMode;
   watermarkAsset?: ManagedAssetRef | null;
   sourceCinemaProjectId?: string;
   sourceVideoAssetId?: string;
@@ -277,8 +280,11 @@ export class ConceptDrivenEngine {
     }
 
     const topicFocus = entities.keywords.slice(0, 3).join(' ') || input.prompt.slice(0, 48);
+    const fidelityMode: CreativeFidelityMode = input.fidelityMode ?? 'conceptual_art';
     const hasRealFrames = (input.extractedFrames?.length ?? 0) > 0;
     const isAuthenticGameplay = hasRealFrames && input.videoSourceType === 'authentic_gameplay';
+    const preferVideoFrames =
+      isAuthenticGameplay || (fidelityMode === 'content_faithful' && hasRealFrames && input.videoSourceType !== 'synthetic_ai_clip');
     const bestFrame = input.extractedFrames?.[0];
     const [leftLbl, rightLbl] = entities.comparisonPair;
 
@@ -431,11 +437,11 @@ export class ConceptDrivenEngine {
             {
               id: `req-${label}-action`,
               role: 'primary_scene',
-              acquisitionMode: isAuthenticGameplay ? 'video_frame' : 'ai_generate',
-              provenance: isAuthenticGameplay ? 'real_video_frame' : 'ai_generated',
+              acquisitionMode: preferVideoFrames ? 'video_frame' : 'ai_generate',
+              provenance: preferVideoFrames ? 'real_video_frame' : 'ai_generated',
               queryOrPrompt: `${entities.actionVisualDescriptor}, high energy dynamic angle, crisp action focal point, no static standing portrait, no text`,
               requiresHuman: false,
-              ...(isAuthenticGameplay && bestFrame ? { preferredTimestampSec: bestFrame.timestampSec } : {}),
+              ...(preferVideoFrames && bestFrame ? { preferredTimestampSec: bestFrame.timestampSec } : {}),
             },
           ],
         });
@@ -501,9 +507,26 @@ export class ConceptDrivenEngine {
       });
     };
 
-    const conceptA = buildByArchetype('A', archetypeTriple[0], llmConcepts?.A);
-    const conceptB = buildByArchetype('B', archetypeTriple[1], llmConcepts?.B);
-    const conceptC = buildByArchetype('C', archetypeTriple[2], llmConcepts?.C);
+    // Apply the Creative Director's fidelity choice uniformly to every concept
+    const franchise = (input.title ?? '').split(/[—:-]/)[0]?.trim() ?? '';
+    const applyFidelity = (c: CreativeConceptProposal): CreativeConceptProposal =>
+      creativeConceptProposalSchema.parse({
+        ...c,
+        fidelityMode,
+        editorialRationale: `${c.editorialRationale} [${fidelityMode === 'authentic_gameplay' ? 'Modo Gameplay Autêntico' : fidelityMode === 'content_faithful' ? 'Modo Arte Fiel ao Conteúdo' : 'Modo Arte Conceitual'}]`,
+        mediaRequirements: c.mediaRequirements.map((r) =>
+          fidelityMode === 'content_faithful' && franchise && r.provenance === 'ai_generated'
+            ? {
+                ...r,
+                queryOrPrompt: `${franchise} official in-game art style and recognizable visual language, ${r.queryOrPrompt}`,
+              }
+            : r,
+        ),
+      });
+
+    const conceptA = applyFidelity(buildByArchetype('A', archetypeTriple[0], llmConcepts?.A));
+    const conceptB = applyFidelity(buildByArchetype('B', archetypeTriple[1], llmConcepts?.B));
+    const conceptC = applyFidelity(buildByArchetype('C', archetypeTriple[2], llmConcepts?.C));
 
     return {
       concepts: [conceptA, conceptB, conceptC],
@@ -1275,7 +1298,7 @@ export class ConceptDrivenEngine {
       }
     }
 
-    // 4) Provenance honesty on layers
+    // 4) Provenance honesty & fidelity enforcement
     const aiMismatch = acquired.some(
       (a) =>
         a.provenance === 'real_video_frame' &&
@@ -1283,6 +1306,54 @@ export class ConceptDrivenEngine {
     );
     if (aiMismatch) {
       postRejections.push('Aviso de proveniência detectado na camada de cena.');
+    }
+    if (input.fidelityMode === 'authentic_gameplay' && !acquired.some((a) => a.provenance === 'real_video_frame')) {
+      postRejections.push(
+        'Modo Gameplay Autêntico exige frames verificáveis de gameplay real (não aceita geração sintética como gameplay).',
+      );
+    }
+
+    // 5) Multimodal Semantic Vision Evaluation (CLIP / VLM) on rendered pixels
+    let semanticScore: number | undefined;
+    const evaluator = this.options?.imageAdapter;
+    if (evaluator?.evaluateImageSemantics && (await evaluator.isAvailable().catch(() => false))) {
+      try {
+        const entities = extractNarrativeEntities(input);
+        const positiveConcepts =
+          concept.archetype === 'object_focus'
+            ? [
+                entities.objectVisualDescriptor,
+                `close-up of a glowing cybernetic prosthetic arm or ${entities.primaryObject} device`,
+              ]
+            : concept.archetype === 'before_after_comparison'
+              ? [
+                  `side-by-side before and after comparison of the same ${entities.primaryObject} transforming`,
+                  `split screen showing unpowered vs glowing upgraded ${entities.objectVisualDescriptor}`,
+                ]
+              : [
+                  entities.actionVisualDescriptor,
+                  `dynamic action scene showing ${entities.primaryObject} in active use`,
+                ];
+        const negativeConcepts = [
+          'a plain dark empty black box with no recognizable device',
+          'a static standing character portrait unrelated to any action',
+          'two completely unrelated random objects with no visual connection',
+        ];
+        const sem = await evaluator.evaluateImageSemantics({
+          imageBuffer: rendered,
+          positiveConcepts,
+          negativeConcepts,
+        });
+        semanticScore = Math.round(sem.positiveScore * 100);
+        notes.push(sem.rationale);
+        if (sem.isOffTopic) {
+          postRejections.push(sem.rationale);
+        }
+      } catch (err) {
+        notes.push(`Avaliação multimodal falhou (${err instanceof Error ? err.message : String(err)}); mantendo checagem técnica.`);
+      }
+    } else {
+      notes.push('Avaliação multimodal indisponível no ambiente atual; apenas checagens técnicas de pixel e proveniência executadas.');
     }
 
     const legibilityScore = smallStdev >= 22 ? audit.scorecard.legibility : Math.max(40, audit.scorecard.legibility - 25);
@@ -1299,12 +1370,13 @@ export class ConceptDrivenEngine {
       stage: 'post_render',
       passed,
       isGenericOrWeak: !passed,
-      narrativeRelevanceScore: passed ? 90 : 50,
+      narrativeRelevanceScore: semanticScore ?? (passed ? 90 : 50),
       originalityScore: 92,
       compositionScore,
       legibilityScore,
       focalPointScore,
-      scriptCoherenceScore: 90,
+      scriptCoherenceScore: semanticScore ?? 90,
+      ...(semanticScore !== undefined ? { semanticScore } : {}),
       ...(!passed ? { rejectionReason: postRejections[0] ?? 'Falha nos critérios pós-render do Visual Concept Critic.' } : {}),
       criticNotes: notes,
     });

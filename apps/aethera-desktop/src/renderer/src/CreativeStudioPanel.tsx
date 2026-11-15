@@ -29,7 +29,14 @@ interface CreativeBridge {
       label: 'A' | 'B' | 'C';
       styleTitle: string;
       editorialRationale?: string;
-      concept?: { archetype: string; focalSubject: string; visualNarrative: string };
+      concept?: {
+        archetype: string;
+        focalSubject: string;
+        visualNarrative: string;
+        fidelityMode?: 'conceptual_art' | 'content_faithful' | 'authentic_gameplay';
+        curiosityHook?: string;
+      };
+      postRenderCritique?: { semanticScore?: number; passed: boolean };
       document: CreativeProjectDocument;
       audit: QualityAuditReport;
       previewDataUrl: string;
@@ -80,13 +87,26 @@ export function CreativeStudioPanel() {
   const [bannerPreviewMode, setBannerPreviewMode] = useState<'desktop' | 'mobile' | 'tv'>('desktop');
   const [avatarBackdrop, setAvatarBackdrop] = useState<'dark' | 'light' | 'transparent'>('dark');
   const [useAiGeneration, setUseAiGeneration] = useState<boolean>(true);
+  const [fidelityMode, setFidelityMode] = useState<'conceptual_art' | 'content_faithful' | 'authentic_gameplay'>(
+    'conceptual_art',
+  );
+  const [videoSourceType, setVideoSourceType] = useState<'authentic_gameplay' | 'synthetic_ai_clip' | 'unknown'>(
+    'unknown',
+  );
   const [aiAvailable, setAiAvailable] = useState<boolean>(false);
   const [labVariants, setLabVariants] = useState<
     Array<{
       label: 'A' | 'B' | 'C';
       styleTitle: string;
       editorialRationale?: string;
-      concept?: { archetype: string; focalSubject: string; visualNarrative: string };
+      concept?: {
+        archetype: string;
+        focalSubject: string;
+        visualNarrative: string;
+        fidelityMode?: 'conceptual_art' | 'content_faithful' | 'authentic_gameplay';
+        curiosityHook?: string;
+      };
+      postRenderCritique?: { semanticScore?: number; passed: boolean };
       document: CreativeProjectDocument;
       audit: QualityAuditReport;
       previewDataUrl: string;
@@ -144,6 +164,8 @@ export function CreativeStudioPanel() {
     try {
       const res = await bridge.creativeThumbnailLab({
         prompt: prompt.trim(),
+        fidelityMode,
+        ...(videoPath.trim() ? { videoSourceType } : {}),
         ...(headline.trim() ? { headline: headline.trim() } : {}),
         ...(videoPath.trim() ? { videoPath: videoPath.trim() } : {}),
         ...(selectedBrandKitId ? { brandKitId: selectedBrandKitId } : {}),
@@ -255,9 +277,37 @@ export function CreativeStudioPanel() {
               Gerar Arte Editável
             </button>
             {artType === 'thumbnail' && (
-              <button onClick={handleThumbnailLab} style={{ padding: '8px 14px', background: '#f59e0b', color: '#1f2937', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}>
-                Thumbnail Lab (3 Variações)
-              </button>
+              <>
+                <select
+                  value={fidelityMode}
+                  onChange={(e) =>
+                    setFidelityMode(e.target.value as 'conceptual_art' | 'content_faithful' | 'authentic_gameplay')
+                  }
+                  style={{ padding: 8, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 6 }}
+                  title="Modo de fidelidade da direção criativa"
+                >
+                  <option value="conceptual_art">Fidelidade: Arte Conceitual (Liberdade IA)</option>
+                  <option value="content_faithful">Fidelidade: Fiel ao Conteúdo / Jogo</option>
+                  <option value="authentic_gameplay">Fidelidade: Gameplay Autêntico (Frames Reais)</option>
+                </select>
+                {videoPath.trim() && (
+                  <select
+                    value={videoSourceType}
+                    onChange={(e) =>
+                      setVideoSourceType(e.target.value as 'authentic_gameplay' | 'synthetic_ai_clip' | 'unknown')
+                    }
+                    style={{ padding: 8, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 6 }}
+                    title="Proveniência do arquivo de vídeo"
+                  >
+                    <option value="authentic_gameplay">Vídeo: Gameplay Autêntico</option>
+                    <option value="synthetic_ai_clip">Vídeo: Clipe Sintético / IA</option>
+                    <option value="unknown">Vídeo: Origem Desconhecida</option>
+                  </select>
+                )}
+                <button onClick={handleThumbnailLab} style={{ padding: '8px 14px', background: '#f59e0b', color: '#1f2937', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                  Thumbnail Lab (3 Variações)
+                </button>
+              </>
             )}
             <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, color: aiAvailable ? '#5eead4' : '#94a3b8' }}>
               <input type="checkbox" checked={useAiGeneration} onChange={(e) => setUseAiGeneration(e.target.checked)} />
@@ -326,7 +376,13 @@ export function CreativeStudioPanel() {
                 </div>
                 {v.concept && (
                   <div style={{ fontSize: 11, color: '#99f6e4' }}>
-                    <span>Arquétipo: {v.concept.archetype}</span>
+                    <span>
+                      Arquétipo: {v.concept.archetype}
+                      {v.concept.fidelityMode ? ` • ${v.concept.fidelityMode}` : ''}
+                      {v.postRenderCritique?.semanticScore !== undefined
+                        ? ` • CLIP: ${v.postRenderCritique.semanticScore}%`
+                        : ''}
+                    </span>
                     <div>{v.concept.focalSubject}</div>
                   </div>
                 )}

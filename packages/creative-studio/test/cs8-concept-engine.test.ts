@@ -158,7 +158,63 @@ describe('CS-8 — Concept-Driven Creative Engine', () => {
     });
     expect(replaced.archetype).not.toBe(duplicate.archetype);
     expect(replaced.blueprint).not.toBe(duplicate.blueprint);
-  });
+
+    // Fidelity mode: content_faithful vs authentic_gameplay enforcement + multimodal semantic auto-repair
+    let evalCalls = 0;
+    const semanticAdapter = {
+      id: 'mock-multimodal-clip',
+      isAvailable: async () => true,
+      evaluateImageSemantics: async () => {
+        evalCalls += 1;
+        // First evaluation simulates an off-topic render that must be rejected and auto-repaired
+        if (evalCalls === 1) {
+          return {
+            evaluatorId: 'mock-clip',
+            positiveScore: 0.22,
+            negativeScore: 0.78,
+            margin: -0.56,
+            isOffTopic: true,
+            matchedLabel: 'off-topic box',
+            rationale: 'CLIP multimodal detectou desalinhamento semântico na primeira tentativa.',
+          };
+        }
+        return {
+          evaluatorId: 'mock-clip',
+          positiveScore: 0.88,
+          negativeScore: 0.12,
+          margin: 0.76,
+          isOffTopic: false,
+          matchedLabel: 'on-topic artifact',
+          rationale: 'CLIP multimodal confirmou aderência ao tema após reparo.',
+        };
+      },
+    };
+    const faithfulEngine = new ConceptDrivenEngine(ingestion, engine, gate, {
+      imageAdapter: semanticAdapter,
+    });
+    const faithfulLab = await faithfulEngine.generateConceptLab({
+      title: 'Cyberpunk 2077 — Ripperdoc',
+      headline: 'CYBERWARE FIEL',
+      prompt: 'Cyberware secreto e implante biônico',
+      scriptText: 'Análise fiel ao conteúdo do jogo.',
+      fidelityMode: 'content_faithful',
+    });
+    expect(faithfulLab.proposals[0]?.concept.fidelityMode).toBe('content_faithful');
+    expect(faithfulLab.proposals[0]?.rejectionHistory.length).toBeGreaterThanOrEqual(1);
+    expect(faithfulLab.proposals[0]?.postRenderCritique.passed).toBe(true);
+    expect(faithfulLab.proposals[0]?.postRenderCritique.semanticScore).toBe(88);
+
+    // authentic_gameplay mode must reject synthetic clips that lack real_video_frame provenance
+    const fakeGameplayLab = await conceptEngine.generateConceptLab({
+      title: 'Jogo — Teste',
+      headline: 'GAMEPLAY',
+      prompt: 'Combate de chefe com implante cibernético',
+      fidelityMode: 'authentic_gameplay',
+      videoSourceType: 'synthetic_ai_clip',
+    });
+    expect(fakeGameplayLab.proposals[0]?.postRenderCritique.passed).toBe(false);
+    expect(fakeGameplayLab.proposals[0]?.postRenderCritique.rejectionReason).toContain('Modo Gameplay Autêntico');
+  }, 30_000);
 
   it('supports combining elements from different concepts, natural-language edits, and undo/redo', async () => {
     const storageRoot = makeTempDir();
@@ -278,7 +334,8 @@ describe('CS-8 — Concept-Driven Creative Engine', () => {
     for (let i = 0; i < lab.proposals.length; i += 1) {
       const p = lab.proposals[i]!;
       expect(p.audit.passed, `Concept ${p.concept.label} audit`).toBe(true);
-      expect(p.postRenderCritique.passed, `Concept ${p.concept.label} post-render critic`).toBe(true);
+      expect(p.postRenderCritique.passed, `Concept ${p.concept.label} post-render critic: ${p.postRenderCritique.criticNotes.join(' | ')}`).toBe(true);
+      expect(p.postRenderCritique.semanticScore, `Concept ${p.concept.label} CLIP semanticScore`).toBeGreaterThanOrEqual(48);
       await exporter.exportProject(p.document, {
         outputPath: outFiles[i]!,
         format: 'png',

@@ -25,8 +25,24 @@ export interface BackgroundRemovalRequest {
   featherPx?: number;
 }
 
+export interface SemanticEvaluationRequest {
+  imageBuffer: Buffer;
+  positiveConcepts: string[];
+  negativeConcepts: string[];
+}
+
+export interface SemanticEvaluationResult {
+  evaluatorId: string;
+  positiveScore: number;
+  negativeScore: number;
+  margin: number;
+  isOffTopic: boolean;
+  matchedLabel: string;
+  rationale: string;
+}
+
 /**
- * Optional external AI image generation / segmentation adapter.
+ * Optional external AI image generation / segmentation / multimodal evaluation adapter.
  * Kept strictly separate from deterministic Sharp/SVG layer composition.
  */
 export interface ExternalImageAdapter {
@@ -34,6 +50,7 @@ export interface ExternalImageAdapter {
   isAvailable(): Promise<boolean>;
   generateImage?(request: ImageGenerationRequest): Promise<Buffer>;
   removeBackground?(request: BackgroundRemovalRequest): Promise<Buffer>;
+  evaluateImageSemantics?(request: SemanticEvaluationRequest): Promise<SemanticEvaluationResult>;
 }
 
 function escapeXml(value: string): string {

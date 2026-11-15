@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,8 @@ import type {
   BackgroundRemovalRequest,
   ExternalImageAdapter,
   ImageGenerationRequest,
+  SemanticEvaluationRequest,
+  SemanticEvaluationResult,
 } from './image-generation-adapter.js';
 
 const execFileAsync = promisify(execFile);
@@ -159,6 +161,50 @@ export class LocalPythonAiAdapter implements ExternalImageAdapter {
       rmSync(workDir, { recursive: true, force: true });
     }
   }
+
+  async evaluateImageSemantics(request: SemanticEvaluationRequest): Promise<SemanticEvaluationResult> {
+    const workDir = mkdtempSync(join(tmpdir(), 'aethera-ai-eval-'));
+    const imgPath = join(workDir, 'candidate.png');
+    try {
+      writeFileSync(imgPath, request.imageBuffer);
+      const args = [
+        this.workerScriptPath,
+        'evaluate-semantic',
+        '--image',
+        imgPath,
+        '--positives',
+        request.positiveConcepts.join('|'),
+        '--negatives',
+        request.negativeConcepts.join('|'),
+      ];
+      if (this.forceCpu) args.push('--cpu');
+      const { stdout } = await execFileAsync(this.pythonPath, args, { timeout: this.timeoutMs });
+      const parsed = JSON.parse(stdout.trim().split(/\r?\n/).pop() || '{}') as {
+        positive_prob?: number;
+        negative_prob?: number;
+        margin?: number;
+        is_off_topic?: boolean;
+        best_positive?: string;
+        best_negative?: string;
+      };
+      const pos = parsed.positive_prob ?? 0.5;
+      const neg = parsed.negative_prob ?? 0.5;
+      const isOffTopic = Boolean(parsed.is_off_topic);
+      return {
+        evaluatorId: 'local-clip-vit-base-patch32',
+        positiveScore: pos,
+        negativeScore: neg,
+        margin: parsed.margin ?? pos - neg,
+        isOffTopic,
+        matchedLabel: parsed.best_positive ?? request.positiveConcepts[0] ?? '',
+        rationale: isOffTopic
+          ? `CLIP multimodal detectou desalinhamento semântico (${(pos * 100).toFixed(1)}% positivo vs ${(neg * 100).toFixed(1)}% distrator "${parsed.best_negative ?? ''}").`
+          : `CLIP multimodal confirmou aderência ao tema "${parsed.best_positive ?? ''}" (${(pos * 100).toFixed(1)}% vs ${(neg * 100).toFixed(1)}% distrator).`,
+      };
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  }
 }
 
 /**
@@ -210,5 +256,18 @@ export class ProviderChainImageAdapter implements ExternalImageAdapter {
         ? `Todos os provedores de segmentação falharam: ${errors.join(' | ')}`
         : 'Nenhum provedor de segmentação semântica disponível.',
     );
+  }
+
+  async evaluateImageSemantics(request: SemanticEvaluationRequest): Promise<SemanticEvaluationResult> {
+    for (const p of this.providers) {
+      if (!p.evaluateImageSemantics) continue;
+      if (!(await p.isAvailable())) continue;
+      try {
+        return await p.evaluateImageSemantics(request);
+      } catch {
+        // try next provider
+      }
+    }
+    throw new Error('Nenhum provedor multimodal de avaliação semântica disponível.');
   }
 }

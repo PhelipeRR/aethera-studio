@@ -238,6 +238,58 @@ def run_segment_adaptive(args: argparse.Namespace) -> None:
     )
 
 
+def run_evaluate_semantic(args: argparse.Namespace) -> None:
+    import torch
+    from PIL import Image
+    from transformers import CLIPModel, CLIPProcessor
+
+    device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+    model_id = args.clip_model
+    try:
+        model = CLIPModel.from_pretrained(model_id, local_files_only=True).to(device)
+        processor = CLIPProcessor.from_pretrained(model_id, local_files_only=True)
+    except Exception:
+        model = CLIPModel.from_pretrained(model_id).to(device)
+        processor = CLIPProcessor.from_pretrained(model_id)
+
+    positives = [p.strip() for p in args.positives.split("|") if p.strip()]
+    negatives = [n.strip() for n in args.negatives.split("|") if n.strip()]
+    labels = positives + negatives
+    if not positives or not labels:
+        raise ValueError("At least one positive label is required for semantic evaluation.")
+
+    image = Image.open(str(args.image)).convert("RGB")
+    inputs = processor(text=labels, images=image, return_tensors="pt", padding=True, truncation=True).to(device)
+    with torch.no_grad():
+        outputs = model(**inputs)
+        probs = outputs.logits_per_image.softmax(dim=1)[0].detach().cpu().tolist()
+
+    pos_probs = probs[: len(positives)]
+    neg_probs = probs[len(positives) :]
+    pos_sum = float(sum(pos_probs))
+    neg_sum = float(sum(neg_probs))
+    best_pos_idx = max(range(len(positives)), key=lambda i: pos_probs[i])
+    best_neg_idx = max(range(len(negatives)), key=lambda i: neg_probs[i]) if neg_probs else None
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "mode": "evaluate-semantic",
+                "model": model_id,
+                "device": device,
+                "best_positive": positives[best_pos_idx],
+                "best_negative": negatives[best_neg_idx] if best_neg_idx is not None else None,
+                "positive_prob": round(pos_sum, 4),
+                "negative_prob": round(neg_sum, 4),
+                "margin": round(pos_sum - neg_sum, 4),
+                "is_off_topic": pos_sum < 0.48 or neg_sum > pos_sum,
+                "scores": {labels[i]: round(float(probs[i]), 4) for i in range(len(labels))},
+            }
+        )
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Aethera Creative Studio Local Vision Worker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -266,6 +318,13 @@ def main() -> int:
     seg_adapt.add_argument("--models", default="birefnet-portrait,isnet-general-use")
     seg_adapt.add_argument("--alpha-matting", action="store_true")
 
+    eval_sem = sub.add_parser("evaluate-semantic")
+    eval_sem.add_argument("--image", required=True)
+    eval_sem.add_argument("--positives", required=True)
+    eval_sem.add_argument("--negatives", required=True)
+    eval_sem.add_argument("--clip-model", default="openai/clip-vit-base-patch32")
+    eval_sem.add_argument("--cpu", action="store_true")
+
     args = parser.parse_args()
     if args.command == "generate":
         run_generate(args)
@@ -273,6 +332,8 @@ def main() -> int:
         run_segment(args)
     elif args.command == "segment-adaptive":
         run_segment_adaptive(args)
+    elif args.command == "evaluate-semantic":
+        run_evaluate_semantic(args)
     return 0
 
 

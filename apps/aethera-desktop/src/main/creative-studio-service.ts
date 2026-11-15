@@ -326,6 +326,9 @@ export class AetheraCreativeStudioService {
     brandKitId?: string;
     sourceCinemaProjectId?: string;
     sceneHints?: VideoSceneHint[];
+    fidelityMode?: 'conceptual_art' | 'content_faithful' | 'authentic_gameplay';
+    videoSourceType?: 'authentic_gameplay' | 'synthetic_ai_clip' | 'unknown';
+    title?: string;
   }): Promise<{
     availableEngines: string[];
     extractedFrames: Array<{ timestampSec: number; impactScore: number; asset: ManagedAssetRef }>;
@@ -363,6 +366,10 @@ export class AetheraCreativeStudioService {
       ...(input.sceneHints ? { sceneHints: input.sceneHints } : {}),
       ...(fullCandidates.length > 0 ? { extractedFrames: fullCandidates } : {}),
       ...(input.sourceCinemaProjectId ? { sourceCinemaProjectId: input.sourceCinemaProjectId } : {}),
+      ...(input.fidelityMode ? { fidelityMode: input.fidelityMode } : {}),
+      ...(input.title ? { title: input.title } : {}),
+      // Cinema-rendered videos are composed (often from AI assets): never assume authentic gameplay unless declared
+      videoSourceType: input.videoSourceType ?? (input.sourceCinemaProjectId ? 'synthetic_ai_clip' : 'unknown'),
     });
 
     const variantsWithPreview: Array<

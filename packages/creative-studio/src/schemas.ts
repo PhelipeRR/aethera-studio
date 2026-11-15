@@ -389,6 +389,13 @@ export const conceptBlueprintSchema = z.enum([
 ]);
 export type ConceptBlueprint = z.infer<typeof conceptBlueprintSchema>;
 
+export const creativeFidelityModeSchema = z.enum([
+  'conceptual_art',
+  'content_faithful',
+  'authentic_gameplay',
+]);
+export type CreativeFidelityMode = z.infer<typeof creativeFidelityModeSchema>;
+
 export const mediaProvenanceSchema = z.enum([
   'real_video_frame',
   'synthetic_video_frame',
@@ -435,6 +442,7 @@ export const creativeConceptProposalSchema = z.object({
   visualNarrative: z.string().min(1),
   curiosityHook: z.string().optional(),
   visualProofSummary: z.string().optional(),
+  fidelityMode: creativeFidelityModeSchema.default('conceptual_art'),
   emotion: z.string().min(1),
   usesHumanCharacter: z.boolean(),
   textRole: z.enum(['minimal_complement', 'comparison_labels', 'editorial_headline']),
@@ -458,6 +466,7 @@ export const visualConceptCritiqueSchema = z.object({
   legibilityScore: z.number().min(0).max(100),
   focalPointScore: z.number().min(0).max(100),
   scriptCoherenceScore: z.number().min(0).max(100),
+  semanticScore: z.number().min(0).max(100).optional(),
   rejectionReason: z.string().optional(),
   criticNotes: z.array(z.string()),
 });
