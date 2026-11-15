@@ -588,15 +588,49 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
   });
 
   ipcMain.handle('creative:thumbnail-lab', async (_ev, input: Parameters<AetheraCreativeStudioService['runThumbnailLabFromVideo']>[0]) => {
-    return service.runThumbnailLabFromVideo(input);
+    try {
+      return await service.runThumbnailLabFromVideo(input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('[VisualContentGate]')) {
+        throw new Error(
+          `🚫 Aquisição de mídia bloqueada pelo VisualContentGate.\n\n${message}\n\n💡 Sugestões de recuperação:\n` +
+          `• Verifique se o adapter de IA (SDXL/CLIP) está disponível e configurado.\n` +
+          `• Forneça frames extraídos do vídeo como fonte de mídia autêntica.\n` +
+          `• Ajuste o prompt para incluir termos mais específicos do assunto.\n` +
+          `• Se o modelo local não estiver carregado, aguarde o download ou configure um adapter remoto.`,
+        );
+      }
+      throw err;
+    }
   });
 
   ipcMain.handle('creative:combine-concepts', async (_ev, input: Parameters<AetheraCreativeStudioService['combineThumbnailConcepts']>[0]) => {
-    return service.combineThumbnailConcepts(input);
+    try {
+      return await service.combineThumbnailConcepts(input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('[VisualContentGate]')) {
+        throw new Error(
+          `🚫 Combinação de conceitos bloqueada pelo VisualContentGate.\n\n${message}\n\n💡 Verifique se as mídias de origem são relevantes ao tema e não são placeholders.`,
+        );
+      }
+      throw err;
+    }
   });
 
   ipcMain.handle('creative:typography-lab', async (_ev, input: Parameters<AetheraCreativeStudioService['runTypographyConceptLab']>[0]) => {
-    return service.runTypographyConceptLab(input);
+    try {
+      return await service.runTypographyConceptLab(input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('[VisualContentGate]')) {
+        throw new Error(
+          `🚫 Laboratório de tipografia bloqueado pelo VisualContentGate.\n\n${message}\n\n💡 Forneça mídia real ou verifique a disponibilidade do adapter de IA.`,
+        );
+      }
+      throw err;
+    }
   });
 
   ipcMain.handle(

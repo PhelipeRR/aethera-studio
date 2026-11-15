@@ -28,7 +28,7 @@ export interface VisualContentGateInput {
   /** Concept title for semantic cross-check */
   conceptTitle: string;
   /** Genre hint for subject-expectation calibration */
-  genre?: 'games' | 'anime' | 'documentary' | 'general';
+  genre?: 'games' | 'anime' | 'documentary' | 'general' | undefined;
 }
 
 /**

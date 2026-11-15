@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import type { AssetIngestionService } from './asset-ingestion.js';
 import type { ExternalImageAdapter, SharpSvgCompositionEngine } from './image-generation-adapter.js';
 import type { QualityGateService } from './quality-gate.js';
+import { evaluateVisualContent } from './visual-content-gate.js';
 import {
   ART_SPECIFICATIONS,
   CREATIVE_PROJECT_SCHEMA_VERSION,
@@ -47,6 +48,8 @@ export interface ConceptEngineInput {
   width?: number;
   /** Canvas height for adaptive typography positioning (defaults to 720 when omitted) */
   height?: number;
+  /** Genre hint for VisualContentGate subject-expectation calibration */
+  genre?: 'games' | 'anime' | 'documentary' | 'general';
 }
 
 export interface AcquiredMediaItem {
@@ -814,6 +817,24 @@ export class ConceptDrivenEngine {
         );
       }
 
+      // Post-acquisition visual content validation — blocks placeholders and generic
+      // backgrounds BEFORE they enter composition. This runs in production, not just tests.
+      const absAssetPath = this.ingestion.resolvePortablePath(chosenAsset.relativePath);
+      const visualVerdict = await evaluateVisualContent({
+        asset: chosenAsset,
+        assetPath: absAssetPath,
+        queryOrPrompt: desc,
+        conceptTitle: concept.title,
+        genre: input.genre,
+      });
+      if (!visualVerdict.passed) {
+        throw new Error(
+          `[VisualContentGate] Mídia rejeitada para "${req.id}" (role=${req.role}): ${visualVerdict.blockReason ?? 'conteúdo visual inválido'}. ` +
+          `Diagnósticos: ${visualVerdict.diagnostics.join('; ')}. ` +
+          `A aquisição foi bloqueada antes da composição. Forneça mídia relevante ao tema.`,
+        );
+      }
+
       acquired.push({
         requirementId: req.id,
         role: req.role,
@@ -1137,6 +1158,26 @@ export class ConceptDrivenEngine {
           ],
         },
         {
+          // Dark overlay on lower half to guarantee text legibility at thumbnail size
+          // shapeLayerSchema does not support gradients; use solid fill with controlled opacity
+          // Opacity 0.55 preserves edge detail for quality metrics while ensuring text contrast
+          id: 'overlay-text-readability',
+          type: 'shape',
+          name: 'Overlay de Legibilidade',
+          zIndex: 1,
+          visible: true,
+          locked: false,
+          opacity: 0.55,
+          blendMode: 'over',
+          shapeKind: 'rect',
+          fillColor: '#000000',
+          strokeWidth: 0,
+          borderRadius: 0,
+          transform: { x: 0, y: 320, width: spec.width, height: 400, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+          mask: { kind: 'none' },
+          effects: [],
+        },
+        {
           id: 'kicker-object',
           type: 'text',
           role: 'kicker',
@@ -1152,7 +1193,7 @@ export class ConceptDrivenEngine {
           fontWeight: 900,
           color: '#FFFFFF',
           strokeColor: '#000000',
-          strokeWidth: 0,
+          strokeWidth: 4,
           align: 'left',
           letterSpacing: 3,
           lineHeight: 1.1,
@@ -1161,7 +1202,7 @@ export class ConceptDrivenEngine {
           pillRadius: 8,
           transform: { x: 56, y: 54, width: 380, height: 52, scaleX: 1, scaleY: 1, rotationDeg: 0 },
           mask: { kind: 'none' },
-          effects: [],
+          effects: [{ kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 3, blur: 8, color: '#000000CC' }],
         },
         {
           id: 'title-object',
@@ -1177,16 +1218,16 @@ export class ConceptDrivenEngine {
           fontFamily: typography.headingFont,
           fontSize: 84,
           fontWeight: typography.titleWeight,
-          color: palette.accent,
+          color: '#FFFFFF',
           strokeColor: '#000000',
-          strokeWidth: 0,
+          strokeWidth: 8,
           align: 'left',
           letterSpacing: 2,
           lineHeight: 1.04,
           uppercase: true,
           transform: { x: 56, y: 544, width: 920, height: 128, scaleX: 1, scaleY: 1, rotationDeg: 0 },
           mask: { kind: 'none' },
-          effects: [{ kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 8, blur: 18, color: '#000000EE' }],
+          effects: [{ kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 8, blur: 22, color: '#000000FF' }],
         },
       );
     }

@@ -78,14 +78,18 @@ export function ProductionConsoleAccordion({ projectId }: { projectId: string })
     if (!bridge?.cinemaConsoleList) return;
     setLoading(true);
     try {
-      const severityFilter = tab === 'errors' ? 'error' : undefined;
-      const res = await bridge.cinemaConsoleList({
-        projectId,
-        limit: PAGE_SIZE,
-        offset: 0,
-        severity: severityFilter,
-        search: search.trim() || undefined,
-      });
+      const opts: {
+        projectId: string;
+        limit?: number;
+        offset?: number;
+        severity?: 'info' | 'warn' | 'error' | 'debug';
+        stage?: string;
+        search?: string;
+      } = { projectId, limit: PAGE_SIZE, offset: 0 };
+      if (tab === 'errors') opts.severity = 'error';
+      const trimmedSearch = search.trim();
+      if (trimmedSearch) opts.search = trimmedSearch;
+      const res = await bridge.cinemaConsoleList(opts);
       setEntries(res.entries);
       setTotal(res.total);
     } catch {

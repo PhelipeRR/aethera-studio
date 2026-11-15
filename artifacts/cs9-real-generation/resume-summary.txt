@@ -1,0 +1,9 @@
+SKIPPED | Cyberpunk 2077 A | Visual=✅ | Quality=0 | CLIP=0% | C:\dev\neuralbridge-studio\artifacts\cs9-real-generation\cyberpunk-2077-concept-A-object_focus.png
+SKIPPED | Cyberpunk 2077 B | Visual=✅ | Quality=0 | CLIP=0% | C:\dev\neuralbridge-studio\artifacts\cs9-real-generation\cyberpunk-2077-concept-B-environmental_story.png
+FAILED | Cyberpunk 2077 C | Visual=❌ | Quality=0 | CLIP=0% | NO IMAGE
+FAILED | Elden Ring A | Visual=❌ | Quality=0 | CLIP=0% | NO IMAGE
+FAILED | Elden Ring B | Visual=❌ | Quality=0 | CLIP=0% | NO IMAGE
+FAILED | Elden Ring C | Visual=❌ | Quality=0 | CLIP=0% | NO IMAGE
+FAILED | Hollow Knight: Silksong A | Visual=❌ | Quality=0 | CLIP=0% | NO IMAGE
+FAILED | Hollow Knight: Silksong B | Visual=❌ | Quality=0 | CLIP=0% | NO IMAGE
+FAILED | Hollow Knight: Silksong C | Visual=❌ | Quality=0 | CLIP=0% | NO IMAGE

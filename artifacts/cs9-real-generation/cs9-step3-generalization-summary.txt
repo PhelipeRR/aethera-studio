@@ -1,0 +1,2 @@
+APPROVED | Elden Ring | Visual=✅ | CLIP=89% margin=0.304 | Quality=73 | C:\dev\neuralbridge-studio\artifacts\cs9-real-generation\elden-ring-malenia-step3.png
+REJECTED | Hollow Knight: Silksong | Visual=✅ | CLIP=56% margin=-0.068 | Quality=64 | C:\dev\neuralbridge-studio\artifacts\cs9-real-generation\silksong-hornet-step3.png

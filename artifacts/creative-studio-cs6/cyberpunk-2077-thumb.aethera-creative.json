@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "creative-thumbnail-61b64121-1",
+  "id": "creative-thumbnail-54e0be56-a",
   "title": "Thumbnail (A — Close-Up de Impacto)",
   "artType": "thumbnail",
   "width": 1280,
   "height": 720,
-  "brandKitId": "bk-bdbd4822-9",
+  "brandKitId": "bk-1a2f2c44-7",
   "sourceCinemaProjectId": "cinema-cp2077-cs6",
   "prompt": "Upgrades cibernéticos de Cyberpunk 2077 com Mantis Blades",
   "layers": [
@@ -53,7 +53,7 @@
       ],
       "type": "background",
       "source": "asset",
-      "assetId": "asset-2821a791-b8d",
+      "assetId": "asset-1dd1a8b5-795",
       "fillColor": "#070B14",
       "gradientTo": "#FF006E",
       "gradientAngleDeg": 135,
@@ -125,7 +125,7 @@
         }
       ],
       "type": "subject",
-      "assetId": "asset-7e1e719f-732",
+      "assetId": "asset-207b3b0d-9bc",
       "removeBackground": false,
       "cutoutMethod": "rembg_semantic",
       "rimLightColor": "#00F0FF",
@@ -261,33 +261,33 @@
     }
   ],
   "assetManifest": {
-    "asset-2821a791-b8d": {
-      "id": "asset-2821a791-b8d",
+    "asset-1dd1a8b5-795": {
+      "id": "asset-1dd1a8b5-795",
       "kind": "frame",
-      "relativePath": "assets/frame/asset-2821a791-b8d.png",
+      "relativePath": "assets/frame/asset-1dd1a8b5-795.png",
       "sha256": "e9f661e5fe7864d4dcc2a399ef46c1e484e78134cfb1d4b3ceab1bea3f98209f",
       "mimeType": "image/png",
       "originalName": "frame-0.50s.png",
       "width": 1280,
       "height": 720,
-      "createdAt": "2026-11-15T13:31:52.893Z"
+      "createdAt": "2026-11-15T17:58:44.190Z"
     },
-    "asset-7e1e719f-732": {
-      "id": "asset-7e1e719f-732",
+    "asset-207b3b0d-9bc": {
+      "id": "asset-207b3b0d-9bc",
       "kind": "cutout",
-      "relativePath": "assets/cutout/asset-7e1e719f-732.png",
+      "relativePath": "assets/cutout/asset-207b3b0d-9bc.png",
       "sha256": "293c77729e5a6499a3465dd7426114584e222e65e7ef2df0bd5b42c44513380b",
       "mimeType": "image/png",
       "originalName": "cyberpunk-cutout.png",
       "width": 1280,
       "height": 720,
-      "createdAt": "2026-11-15T13:32:13.261Z"
+      "createdAt": "2026-11-15T17:58:59.300Z"
     }
   },
   "tags": [
     "thumbnail",
     "impact"
   ],
-  "createdAt": "2026-11-15T13:32:13.277Z",
-  "updatedAt": "2026-11-15T13:33:55.150Z"
+  "createdAt": "2026-11-15T17:58:59.313Z",
+  "updatedAt": "2026-11-15T18:00:35.023Z"
 }
