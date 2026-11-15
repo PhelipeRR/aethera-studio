@@ -4,11 +4,13 @@
 
 Quando uma tarefa solicitar a execução de uma fase do plano, continue até concluir os critérios de aceite, esgotar as tarefas seguras executáveis no ambiente atual ou encontrar uma dependência que impeça todo o trabalho restante. Um teste ou comando bloqueado não encerra a fase: identifique a causa, investigue com evidências, corrija problemas dentro do escopo, repita apenas após uma mudança relevante, marque somente a tarefa afetada como bloqueada e continue com tarefas independentes. Não desative testes, reduza a segurança, use bypass de sandbox ou repita indefinidamente o mesmo comando sem mudança de evidência.
 
-Preserve alterações existentes, não crie commits automaticamente e registre comandos, resultados e bloqueios ambientais no plano.
+Não pare entre fases, subfases ou lotes para pedir autorização quando a próxima etapa estiver dentro do objetivo pedido: implemente, edite, rode testes e builds, instale dependências necessárias ao projeto e refatore no escopo sem nova confirmação. Crie um commit local por lote ou subfase concluída e validada, adicionando só os arquivos alterados pela tarefa (`git add <caminhos>`, nunca `-A`). Preserve alterações existentes de outras sessões e registre comandos, resultados e bloqueios ambientais no plano.
+
+Confirmação obrigatória, mesmo no meio da tarefa: push, PR ou publicação externa; deploy; exclusão destrutiva de dados; reset ou descarte de alterações não commitadas (`reset --hard`, `checkout --`, `restore`, `clean`, `stash drop`, force); alteração de credenciais ou configurações sensíveis; operações que afetem trabalho de outras sessões (arquivos, worktrees, branches, processos, bancos compartilhados).
 
 ## Plano ativo — Fase 50: Singularity
 
-Desde 2026-11-08 o único plano em vigor é a Fase 50 (Singularity), registrada no topo de `docs/PLAN.md`, com o briefing em `docs/plans/singularity-master-plan.md`. As seções de fases abaixo (31, 33) e a consolidação enterprise são histórico: não as use para escolher a próxima tarefa. Nenhum lote da Fase 50 é implementado sem aprovação explícita do usuário.
+Desde 2026-11-08 o único plano em vigor é a Fase 50 (Singularity), registrada no topo de `docs/PLAN.md`, com o briefing em `docs/plans/singularity-master-plan.md`. As seções de fases abaixo (31, 33) e a consolidação enterprise são histórico: não as use para escolher a próxima tarefa. A Fase 50 só começa quando o usuário pedir. Depois disso, a execução segue lote a lote até cobrir o objetivo pedido, sem nova aprovação entre lotes. Os pontos de "aprovação" em `docs/PLAN.md` e `docs/plans/*` são limites de escopo: ficam satisfeitos quando o pedido cobre o lote. Lotes opcionais ou fora do pedido (ex.: PoC Paperclip e 50.10) exigem pedido explícito.
 
 ## Fase 31 — Advanced Workflow Orchestration
 
