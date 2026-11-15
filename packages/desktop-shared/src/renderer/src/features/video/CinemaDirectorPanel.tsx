@@ -182,6 +182,17 @@ const STAGE_DISPLAY_LABELS: Record<string, string> = {
   error: 'Erro',
 };
 
+const RESUMABLE_JOB_STATES = new Set([
+  'cancelled',
+  'error',
+  'paused_pending_research',
+  'paused_pending_script',
+]);
+
+function isResumableJobState(state?: string): boolean {
+  return Boolean(state && RESUMABLE_JOB_STATES.has(state));
+}
+
 function isJobReadyForEditor(job: StagedJobView): boolean {
   const requiredStages = ['prompt', 'interpretacao', 'pesquisa', 'roteiro', 'decupagem', 'aquisicao', 'validacao_visual', 'planejamento', 'montagem', 'audio_sfx_vfx', 'previa'];
   return (
@@ -637,16 +648,21 @@ export function CinemaDirectorPanel() {
     setBusy(false);
   }
 
-  async function handleResumeStaged() {
+  async function handleResumeStaged(targetProjectId?: string) {
     const api = bridge();
-    if (!api?.cinemaResumeProduction || !stagedJob) return;
+    const projectId = targetProjectId ?? stagedJob?.projectId;
+    if (!api?.cinemaResumeProduction || !projectId) return;
     setBusy(true);
     setActiveStartMs(Date.now());
     setNowMs(Date.now());
     setError(null);
     try {
-      const updated = await api.cinemaResumeProduction(stagedJob.projectId);
+      const updated = await api.cinemaResumeProduction(projectId);
       setStagedJob(updated);
+      setStagedJobs((prev) => {
+        const next = prev.filter((item) => item.projectId !== updated.projectId);
+        return [updated, ...next];
+      });
       if (updated.state === 'editor') {
         navigate(`/video?projectId=${encodeURIComponent(updated.projectId)}`);
       } else if (updated.state === 'error') {
@@ -1052,10 +1068,10 @@ export function CinemaDirectorPanel() {
                     Cancelar
                   </button>
                 )}
-                {!busy && stagedJob && (stagedJob.state === 'cancelled' || stagedJob.state === 'error' || stagedJob.state === 'paused_pending_script') && (
+                {!busy && stagedJob && isResumableJobState(stagedJob.state) && (
                   <button
                     type="button"
-                    onClick={handleResumeStaged}
+                    onClick={() => void handleResumeStaged()}
                     className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/25"
                   >
                     Retomar Projeto
@@ -1244,6 +1260,21 @@ export function CinemaDirectorPanel() {
                             className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/50 bg-amber-500/20 px-3 py-1.5 text-[11px] font-semibold text-amber-200 hover:bg-amber-500/30"
                           >
                             Resolver Mídias ({job.pendingMedia.length})
+                          </button>
+                        ) : isResumableJobState(job.state) ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => {
+                              setStagedJob(job);
+                              setProgressPct(job.progressPct);
+                              setProgressStage(job.message);
+                              window.scrollTo({ top: 0, behavior: 'smooth' });
+                              void handleResumeStaged(job.projectId);
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/45 bg-emerald-500/20 px-3 py-1.5 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            Retomar Projeto
                           </button>
                         ) : (
                           <button
