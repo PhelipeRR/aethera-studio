@@ -8,3 +8,4 @@ export * from './video-frame-analyzer.js';
 export * from './quality-gate.js';
 export * from './composition-planner.js';
 export * from './creative-orchestrator.js';
+export * from './local-ai-adapter.js';

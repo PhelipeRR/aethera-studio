@@ -283,9 +283,9 @@ export class LayeredDocumentEditor {
       });
     }
 
-    // 2. Hex color update: "cor ... #RRGGBB"
+    // 2. Hex color update: "cor ... #RRGGBB" (skip when explicitly setting neon/rim light)
     const colorMatch = trimmed.match(/#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/);
-    if (colorMatch) {
+    if (colorMatch && !/(?:ilumina[cç][aã]o\s+neon|rim\s*light|luz\s+direcional)/i.test(lower)) {
       const hex = `#${colorMatch[1]!.toUpperCase()}`;
       this.commit((draft) => {
         if (lower.includes('fundo') || lower.includes('background')) {
@@ -364,7 +364,86 @@ export class LayeredDocumentEditor {
       });
     }
 
-    // 6. Add or switch VFX preset
+    // 6. Scale subject: "aumente o personagem" / "diminua o personagem"
+    if (/(?:aumente|aumentar|ampliar|crescer|enlarge|scale up)\s+(?:o\s+)?(?:personagem|sujeito|subject|mascote)/i.test(lower)) {
+      this.commit((draft) => {
+        const subject = draft.layers.find((l) => l.type === 'subject');
+        if (subject) {
+          subject.transform.scaleX = Math.min(2.2, Number((subject.transform.scaleX * 1.18).toFixed(2)));
+          subject.transform.scaleY = Math.min(2.2, Number((subject.transform.scaleY * 1.18).toFixed(2)));
+          affected.push(subject.id);
+          actions.push(`Personagem ampliado (${subject.transform.scaleX}x)`);
+        }
+      });
+    } else if (/(?:diminua|diminuir|reduzir|shrink|scale down)\s+(?:o\s+)?(?:personagem|sujeito|subject|mascote)/i.test(lower)) {
+      this.commit((draft) => {
+        const subject = draft.layers.find((l) => l.type === 'subject');
+        if (subject) {
+          subject.transform.scaleX = Math.max(0.4, Number((subject.transform.scaleX * 0.85).toFixed(2)));
+          subject.transform.scaleY = Math.max(0.4, Number((subject.transform.scaleY * 0.85).toFixed(2)));
+          affected.push(subject.id);
+          actions.push(`Personagem reduzido (${subject.transform.scaleX}x)`);
+        }
+      });
+    }
+
+    // 7. Make title more impactful: "deixe o título mais impactante"
+    if (/(?:t[ií]tulo|texto|title).*(?:impactante|forte|destaque|bold|punchy)/i.test(lower)) {
+      this.commit((draft) => {
+        const textLayer = draft.layers.find((l) => l.type === 'text');
+        if (textLayer && textLayer.type === 'text') {
+          textLayer.fontSize = Math.min(220, Math.round(textLayer.fontSize * 1.12));
+          textLayer.strokeWidth = Math.max(textLayer.strokeWidth, 10);
+          textLayer.effects = [
+            ...textLayer.effects.filter((e) => e.kind !== 'dropShadow' && e.kind !== 'outerGlow'),
+            { kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 10, blur: 18, color: '#000000CC' },
+            { kind: 'outerGlow', enabled: true, radius: 20, intensity: 0.75, color: textLayer.color },
+          ];
+          affected.push(textLayer.id);
+          actions.push('Título reforçado com fonte ampliada, sombra e brilho');
+        }
+      });
+    }
+
+    // 8. Add neon / rim lighting: "adicione iluminação neon"
+    if (/(?:ilumina[cç][aã]o\s+neon|rim\s*light|luz\s+direcional)/i.test(lower)) {
+      this.commit((draft) => {
+        const neonColor = colorMatch ? `#${colorMatch[1]!.toUpperCase()}` : '#00F0FF';
+        const subject = draft.layers.find((l) => l.type === 'subject');
+        if (subject && subject.type === 'subject') {
+          subject.rimLightColor = neonColor;
+          affected.push(subject.id);
+        }
+        const bg = draft.layers.find((l) => l.type === 'background');
+        if (bg) {
+          bg.effects = [
+            ...bg.effects.filter((e) => e.kind !== 'directionalLight'),
+            { kind: 'directionalLight', enabled: true, angleDeg: 35, color: neonColor, intensity: 0.5 },
+          ];
+          affected.push(bg.id);
+        }
+        actions.push(`Iluminação neon (${neonColor}) aplicada`);
+      });
+    }
+
+    // 9. Swap/tint background: "troque o fundo"
+    if (/(?:troque|trocar|mude|mudar|alterar)\s+(?:o\s+)?fundo/i.test(lower) && !colorMatch) {
+      this.commit((draft) => {
+        const bg = draft.layers.find((l) => l.type === 'background');
+        if (bg && bg.type === 'background') {
+          bg.fillColor = lower.includes('vermelho') || lower.includes('red') ? '#450A0A' : lower.includes('roxo') || lower.includes('purple') ? '#2E1065' : '#090D16';
+          bg.gradientTo = lower.includes('neon') || lower.includes('cyber') ? '#0E7490' : '#1E1B4B';
+          bg.effects = [
+            ...bg.effects.filter((e) => e.kind !== 'depthBlur'),
+            { kind: 'depthBlur', enabled: true, radius: 3.5 },
+          ];
+          affected.push(bg.id);
+          actions.push('Fundo atualizado com gradiente e profundidade');
+        }
+      });
+    }
+
+    // 10. Add or switch VFX preset
     const vfxPresets = ['particles', 'speed_lines', 'light_leak', 'cyber_grid', 'rim_glow', 'duotone_wash'] as const;
     for (const preset of vfxPresets) {
       if (lower.includes(preset) || lower.includes(preset.replace('_', ' '))) {

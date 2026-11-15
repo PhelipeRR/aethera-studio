@@ -1,0 +1,131 @@
+{
+  "generatedAt": "2026-11-15T04:54:05.011Z",
+  "thumbnailLabAudits": [
+    {
+      "label": "A",
+      "style": "A — Impacto",
+      "audit": {
+        "projectId": "creative-thumbnail-d44bc935-1",
+        "artType": "thumbnail",
+        "passed": true,
+        "autoApprovable": true,
+        "criticalCount": 0,
+        "warningCount": 0,
+        "findings": [],
+        "scorecard": {
+          "legibility": 88,
+          "contrast": 88,
+          "composition": 94,
+          "brandConsistency": 95,
+          "overall": 91,
+          "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
+        },
+        "checkedAt": "2026-11-15T04:53:18.837Z"
+      }
+    },
+    {
+      "label": "B",
+      "style": "B — Tecnologia",
+      "audit": {
+        "projectId": "creative-thumbnail-70d43360-9",
+        "artType": "thumbnail",
+        "passed": true,
+        "autoApprovable": true,
+        "criticalCount": 0,
+        "warningCount": 0,
+        "findings": [],
+        "scorecard": {
+          "legibility": 88,
+          "contrast": 85,
+          "composition": 94,
+          "brandConsistency": 95,
+          "overall": 90,
+          "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
+        },
+        "checkedAt": "2026-11-15T04:53:21.383Z"
+      }
+    },
+    {
+      "label": "C",
+      "style": "C — Cinematográfica",
+      "audit": {
+        "projectId": "creative-thumbnail-97ecb8c5-b",
+        "artType": "thumbnail",
+        "passed": true,
+        "autoApprovable": true,
+        "criticalCount": 0,
+        "warningCount": 0,
+        "findings": [],
+        "scorecard": {
+          "legibility": 88,
+          "contrast": 91,
+          "composition": 94,
+          "brandConsistency": 95,
+          "overall": 91,
+          "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
+        },
+        "checkedAt": "2026-11-15T04:53:23.892Z"
+      }
+    }
+  ],
+  "bannerAudit": {
+    "projectId": "creative-banner-18ddd4f8-8",
+    "artType": "banner",
+    "passed": true,
+    "autoApprovable": true,
+    "criticalCount": 0,
+    "warningCount": 0,
+    "findings": [],
+    "scorecard": {
+      "legibility": 88,
+      "contrast": 77,
+      "composition": 94,
+      "brandConsistency": 95,
+      "overall": 88,
+      "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
+    },
+    "checkedAt": "2026-11-15T04:53:28.144Z"
+  },
+  "avatarAudit": {
+    "projectId": "creative-avatar-1b779df7-8",
+    "artType": "avatar",
+    "passed": true,
+    "autoApprovable": true,
+    "criticalCount": 0,
+    "warningCount": 0,
+    "findings": [],
+    "scorecard": {
+      "legibility": 88,
+      "contrast": 87,
+      "composition": 94,
+      "brandConsistency": 95,
+      "overall": 90,
+      "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
+    },
+    "checkedAt": "2026-11-15T04:54:04.910Z"
+  },
+  "watermarkAudit": {
+    "projectId": "creative-watermark-38babe85-1",
+    "artType": "watermark",
+    "passed": true,
+    "autoApprovable": true,
+    "criticalCount": 0,
+    "warningCount": 1,
+    "findings": [
+      {
+        "code": "BRAND_KIT_COLOR_DRIFT",
+        "severity": "warning",
+        "message": "Composição não utiliza cores principais do Brand Kit \"CyberEdge BR\"."
+      }
+    ],
+    "scorecard": {
+      "legibility": 88,
+      "contrast": 100,
+      "composition": 87,
+      "brandConsistency": 55,
+      "overall": 86,
+      "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
+    },
+    "checkedAt": "2026-11-15T04:54:05.002Z"
+  }
+}

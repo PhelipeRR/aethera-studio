@@ -42,6 +42,7 @@ interface CreativeBridge {
     promptSummary?: string;
   }>;
   creativeApprove?: (input: { projectId: string; approvedBy: string }) => Promise<CreativeProjectDocument>;
+  creativeAiStatus?: () => Promise<{ available: boolean; provider: string }>;
 }
 
 function getBridge(): CreativeBridge | undefined {
@@ -67,6 +68,8 @@ export function CreativeStudioPanel() {
   const [promptEditInput, setPromptEditInput] = useState('');
   const [bannerPreviewMode, setBannerPreviewMode] = useState<'desktop' | 'mobile' | 'tv'>('desktop');
   const [avatarBackdrop, setAvatarBackdrop] = useState<'dark' | 'light' | 'transparent'>('dark');
+  const [useAiGeneration, setUseAiGeneration] = useState<boolean>(true);
+  const [aiAvailable, setAiAvailable] = useState<boolean>(false);
   const [labVariants, setLabVariants] = useState<
     Array<{
       label: 'A' | 'B' | 'C';
@@ -81,14 +84,16 @@ export function CreativeStudioPanel() {
   const refreshLists = async () => {
     const bridge = getBridge();
     if (!bridge) return;
-    const [eng, kits, projs] = await Promise.all([
+    const [eng, kits, projs, ai] = await Promise.all([
       bridge.creativeEngines?.() ?? Promise.resolve([]),
       bridge.creativeListBrandKits?.() ?? Promise.resolve([]),
       bridge.creativeListProjects?.() ?? Promise.resolve([]),
+      bridge.creativeAiStatus?.() ?? Promise.resolve({ available: false, provider: 'none' }),
     ]);
     setEngines(eng);
     setBrandKits(kits);
     setProjects(projs);
+    setAiAvailable(ai.available);
   };
 
   useEffect(() => {
@@ -106,6 +111,7 @@ export function CreativeStudioPanel() {
         ...(headline.trim() ? { headline: headline.trim() } : {}),
         ...(selectedBrandKitId ? { brandKitId: selectedBrandKitId } : {}),
         ...(artType === 'avatar' ? { avatarBackdrop } : {}),
+        useAiGeneration,
       });
       setActiveDoc(res.document);
       setPreviewUrl(res.previewDataUrl);
@@ -231,7 +237,7 @@ export function CreativeStudioPanel() {
               </select>
             )}
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button onClick={handleCreate} style={{ padding: '8px 14px', background: '#14b8a6', color: '#042f2e', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}>
               Gerar Arte Editável
             </button>
@@ -240,6 +246,10 @@ export function CreativeStudioPanel() {
                 Thumbnail Lab (3 Variações)
               </button>
             )}
+            <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, color: aiAvailable ? '#5eead4' : '#94a3b8' }}>
+              <input type="checkbox" checked={useAiGeneration} onChange={(e) => setUseAiGeneration(e.target.checked)} />
+              IA Local (SDXL-Turbo / rembg {aiAvailable ? 'Pronta' : 'Indisponível'})
+            </label>
           </div>
           {statusMsg && <div style={{ fontSize: 12, color: '#5eead4' }}>{statusMsg}</div>}
         </div>

@@ -8,6 +8,8 @@ import {
   CreativeOrchestrator,
   ExportService,
   LayeredDocumentEditor,
+  LocalPythonAiAdapter,
+  ProviderChainImageAdapter,
   QualityGateService,
   SharpSvgCompositionEngine,
   VideoFrameAnalyzer,
@@ -75,6 +77,7 @@ export class AetheraCreativeStudioService {
   readonly storageRoot: string;
   readonly ingestion: AssetIngestionService;
   readonly brandKits: BrandKitManager;
+  readonly imageAdapter: ProviderChainImageAdapter;
   readonly engine: SharpSvgCompositionEngine;
   readonly exporter: ExportService;
   readonly frameAnalyzer: VideoFrameAnalyzer;
@@ -91,7 +94,8 @@ export class AetheraCreativeStudioService {
       ...(options.ffprobePath ? { ffprobePath: options.ffprobePath } : {}),
     });
     this.brandKits = new BrandKitManager(new SqliteBrandKitStore(this.repo));
-    this.engine = new SharpSvgCompositionEngine(this.ingestion);
+    this.imageAdapter = new ProviderChainImageAdapter([new LocalPythonAiAdapter()]);
+    this.engine = new SharpSvgCompositionEngine(this.ingestion, this.imageAdapter);
     this.exporter = new ExportService(this.engine, {
       ...(options.ffmpegPath ? { ffmpegPath: options.ffmpegPath } : {}),
       ...(options.ffprobePath ? { ffprobePath: options.ffprobePath } : {}),
@@ -219,6 +223,7 @@ export class AetheraCreativeStudioService {
     subjectAssetId?: string;
     sourceCinemaProjectId?: string;
     avatarBackdrop?: 'light' | 'dark' | 'transparent';
+    useAiGeneration?: boolean;
     assetManifest?: Record<string, ManagedAssetRef>;
   }): Promise<{
     document: CreativeProjectDocument;
@@ -227,8 +232,22 @@ export class AetheraCreativeStudioService {
     availableEngines: string[];
   }> {
     const brandKit = input.brandKitId ? this.brandKits.get(input.brandKitId) : null;
-    const backgroundAsset = input.backgroundAssetId ? input.assetManifest?.[input.backgroundAssetId] ?? null : null;
+    let backgroundAsset = input.backgroundAssetId ? input.assetManifest?.[input.backgroundAssetId] ?? null : null;
     const subjectAsset = input.subjectAssetId ? input.assetManifest?.[input.subjectAssetId] ?? null : null;
+
+    if (input.useAiGeneration && !backgroundAsset && (await this.imageAdapter.isAvailable())) {
+      const genBuffer = await this.imageAdapter.generateImage({
+        prompt: input.prompt,
+        width: input.artType === 'avatar' ? 768 : 1024,
+        height: input.artType === 'avatar' ? 768 : 576,
+      });
+      backgroundAsset = await this.ingestion.ingestBuffer({
+        buffer: genBuffer,
+        kind: 'image',
+        extension: 'png',
+        originalName: `ai-gen-${Date.now()}.png`,
+      });
+    }
 
     const result = await this.orchestrator.orchestrateCreation({
       artType: input.artType,
@@ -512,5 +531,12 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
 
   ipcMain.handle('creative:ingest-file', async (_ev, input: { sourcePath: string; kind: ManagedAssetRef['kind'] }) => {
     return service.ingestion.ingestFile(input);
+  });
+
+  ipcMain.handle('creative:ai-status', async () => {
+    return {
+      available: await service.imageAdapter.isAvailable(),
+      provider: service.imageAdapter.id,
+    };
   });
 }

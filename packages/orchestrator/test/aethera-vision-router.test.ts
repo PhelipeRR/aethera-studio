@@ -146,4 +146,42 @@ describe('VisionRouter', () => {
     expect(res2.provider).toBe('claude');
     expect(codexCalls).toBe(1);
   });
+
+  it('places providers on short cooldown after two consecutive timeouts to keep fallback fast', async () => {
+    let slowCalls = 0;
+    const slowProvider: VisualAnalysisProvider = {
+      id: 'claude-gateway',
+      model: 'claude-opus-5-5',
+      capabilities: ['describe'],
+      limits: { maxImagesPerCall: 3 },
+      detect: async () => ({ available: true }),
+      describe: async ({ signal }) => {
+        slowCalls += 1;
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      },
+    };
+    const fastFallback: VisualAnalysisProvider = {
+      id: 'antigravity',
+      model: 'antigravity-default',
+      capabilities: ['describe'],
+      limits: { maxImagesPerCall: 3 },
+      detect: async () => ({ available: true }),
+      describe: async () => ({ description: 'Cyberware gameplay', tags: ['cyberpunk'] }),
+    };
+    const cooldowns = new Map<string, { untilMs: number; reason: string }>();
+    const router = new Router([slowProvider, fastFallback], memoryCache(), [], undefined, undefined, cooldowns);
+    const p = policy({ chain: ['claude-gateway', 'antigravity'], maxLatencyMs: 15 });
+
+    const r1 = await router.describe({ frames: [frames[0]!], policy: p });
+    const r2 = await router.describe({ frames: [frames[1]!], policy: p });
+    const r3 = await router.describe({ frames: [frames[0]!, frames[1]!], policy: p });
+
+    expect(r1.provider).toBe('antigravity');
+    expect(r2.provider).toBe('antigravity');
+    expect(r3.provider).toBe('antigravity');
+    expect(slowCalls).toBe(2);
+    expect(cooldowns.get('claude-gateway')?.reason).toMatch(/timeouts consecutivos/);
+  });
 });

@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 1,
+  "id": "creative-thumbnail-d44bc935-1",
+  "title": "Thumbnail (A — Impacto)",
+  "artType": "thumbnail",
+  "width": 1280,
+  "height": 720,
+  "brandKitId": "bk-aae3d52f-a",
+  "sourceCinemaProjectId": "cinema-cp2077-cs6",
+  "prompt": "Upgrades cibernéticos de Cyberpunk 2077 com Mantis Blades",
+  "layers": [
+    {
+      "id": "bg-main",
+      "name": "Fundo Principal",
+      "zIndex": 0,
+      "visible": true,
+      "locked": false,
+      "opacity": 1,
+      "blendMode": "over",
+      "transform": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720,
+        "scaleX": 1,
+        "scaleY": 1,
+        "rotationDeg": 0
+      },
+      "mask": {
+        "kind": "none"
+      },
+      "effects": [
+        {
+          "kind": "colorGrade",
+          "enabled": true,
+          "brightness": 0.92,
+          "contrast": 1.18,
+          "saturation": 1.25
+        },
+        {
+          "kind": "vignette",
+          "enabled": true,
+          "strength": 0.42,
+          "color": "#000000"
+        },
+        {
+          "kind": "directionalLight",
+          "enabled": true,
+          "angleDeg": 35,
+          "color": "#00F0FF",
+          "intensity": 0.5
+        }
+      ],
+      "type": "background",
+      "assetId": "asset-ba49a33f-a8c",
+      "fillColor": "#070B14",
+      "gradientTo": "#FF006E",
+      "gradientAngleDeg": 135
+    },
+    {
+      "id": "vfx-style",
+      "name": "VFX (impact)",
+      "zIndex": 1,
+      "visible": true,
+      "locked": false,
+      "opacity": 0.85,
+      "blendMode": "screen",
+      "transform": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720,
+        "scaleX": 1,
+        "scaleY": 1,
+        "rotationDeg": 0
+      },
+      "mask": {
+        "kind": "none"
+      },
+      "effects": [],
+      "type": "vfx",
+      "preset": "speed_lines",
+      "primaryColor": "#00F0FF",
+      "secondaryColor": "#FF006E",
+      "intensity": 0.8
+    },
+    {
+      "id": "subject-hero",
+      "name": "Sujeito / Personagem",
+      "zIndex": 2,
+      "visible": true,
+      "locked": false,
+      "opacity": 1,
+      "blendMode": "over",
+      "transform": {
+        "x": 660,
+        "y": 60,
+        "width": 560,
+        "height": 640,
+        "scaleX": 1,
+        "scaleY": 1,
+        "rotationDeg": -2
+      },
+      "mask": {
+        "kind": "none"
+      },
+      "effects": [],
+      "type": "subject",
+      "assetId": "asset-41130658-d68",
+      "removeBackground": false,
+      "cutoutMethod": "rembg_semantic",
+      "rimLightColor": "#00F0FF"
+    },
+    {
+      "id": "title-main",
+      "name": "Título Principal",
+      "zIndex": 3,
+      "visible": true,
+      "locked": false,
+      "opacity": 1,
+      "blendMode": "over",
+      "transform": {
+        "x": 56,
+        "y": 170,
+        "width": 620,
+        "height": 420,
+        "scaleX": 1,
+        "scaleY": 1,
+        "rotationDeg": 0
+      },
+      "mask": {
+        "kind": "none"
+      },
+      "effects": [],
+      "type": "text",
+      "text": "CYBERWARE INSANO",
+      "fontFamily": "Arial Black",
+      "fontSize": 104,
+      "fontWeight": 900,
+      "color": "#FACC15",
+      "strokeColor": "#000000",
+      "strokeWidth": 9,
+      "align": "left",
+      "letterSpacing": 1,
+      "lineHeight": 1.04,
+      "uppercase": true
+    }
+  ],
+  "assetManifest": {
+    "asset-ba49a33f-a8c": {
+      "id": "asset-ba49a33f-a8c",
+      "kind": "frame",
+      "relativePath": "assets/frame/asset-ba49a33f-a8c.png",
+      "sha256": "e9f661e5fe7864d4dcc2a399ef46c1e484e78134cfb1d4b3ceab1bea3f98209f",
+      "mimeType": "image/png",
+      "originalName": "frame-0.50s.png",
+      "width": 1280,
+      "height": 720,
+      "createdAt": "2026-11-15T04:53:12.826Z"
+    },
+    "asset-41130658-d68": {
+      "id": "asset-41130658-d68",
+      "kind": "cutout",
+      "relativePath": "assets/cutout/asset-41130658-d68.png",
+      "sha256": "0ded3f4852e9152db44f4994c65783f034e51fc728c521879ae2b6e4a115ee00",
+      "mimeType": "image/png",
+      "originalName": "cyberpunk-cutout.png",
+      "width": 1280,
+      "height": 720,
+      "createdAt": "2026-11-15T04:53:16.158Z"
+    }
+  },
+  "tags": [
+    "thumbnail",
+    "impact"
+  ],
+  "createdAt": "2026-11-15T04:53:16.174Z",
+  "updatedAt": "2026-11-15T04:53:23.894Z"
+}

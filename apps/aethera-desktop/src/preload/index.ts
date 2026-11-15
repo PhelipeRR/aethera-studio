@@ -142,4 +142,5 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeExport: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:export', input),
   creativeApprove: (input: { projectId: string; approvedBy: string }) => ipcRenderer.invoke('creative:approve', input),
   creativeIngestFile: (input: { sourcePath: string; kind: string }) => ipcRenderer.invoke('creative:ingest-file', input),
+  creativeAiStatus: () => ipcRenderer.invoke('creative:ai-status'),
 });

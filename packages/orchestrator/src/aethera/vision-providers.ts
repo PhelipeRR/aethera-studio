@@ -229,17 +229,24 @@ export function createAntigravityCliVisionProvider(input: {
       `Respond ONLY with valid JSON matching this JSON Schema (no markdown prose): ${schemaJson}`,
     ].join('\n');
 
-    const res = await input.runPrompt({
-      prompt,
-      cwd: realpathSync(input.root),
-      ...(input.model ? { model: input.model } : {}),
-      ...(signal ? { signal } : {}),
-    });
-    if (!res.ok) {
-      throw new Error(res.error || 'Antigravity CLI falhou na análise visual.');
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const res = await input.runPrompt({
+        prompt,
+        cwd: realpathSync(input.root),
+        ...(input.model ? { model: input.model } : {}),
+        ...(signal ? { signal } : {}),
+      });
+      if (!res.ok) {
+        throw new Error(res.error || 'Antigravity CLI falhou na análise visual.');
+      }
+      if (res.model) reportedModel = res.model;
+      try {
+        return schema.parse(extractStructuredJson(res.output));
+      } catch (err) {
+        if (attempt >= 2 || signal?.aborted) throw err;
+      }
     }
-    if (res.model) reportedModel = res.model;
-    return schema.parse(extractStructuredJson(res.output));
+    throw new Error('Antigravity CLI falhou na análise visual.');
   };
 
   return {

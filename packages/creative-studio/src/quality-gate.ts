@@ -162,6 +162,19 @@ export class QualityGateService {
       }
     }
 
+    // 7.5. Subject cutout / segmentation quality check
+    const subjectLayers = doc.layers.filter((l) => l.visible && l.type === 'subject');
+    for (const sLayer of subjectLayers) {
+      if (sLayer.type === 'subject' && sLayer.removeBackground && sLayer.cutoutMethod === 'none') {
+        findings.push({
+          code: 'SUBJECT_CUTOUT_UNSPECIFIED',
+          severity: 'warning',
+          message: `Camada "${sLayer.name}" solicita remoção de fundo sem método semântico definido.`,
+          layerId: sLayer.id,
+        });
+      }
+    }
+
     // 8. Video fidelity check for Cinema Pipeline thumbnails
     if (doc.sourceCinemaProjectId && doc.artType === 'thumbnail') {
       const hasFrameOrSubject = doc.layers.some(

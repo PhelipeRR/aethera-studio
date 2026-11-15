@@ -1,0 +1,199 @@
+import { execFile } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import type {
+  BackgroundRemovalRequest,
+  ExternalImageAdapter,
+  ImageGenerationRequest,
+} from './image-generation-adapter.js';
+
+const execFileAsync = promisify(execFile);
+
+function resolveDefaultWorkerScript(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidate = resolve(here, '..', 'scripts', 'vision_worker.py');
+  if (existsSync(candidate)) return candidate;
+  return resolve(process.cwd(), 'packages', 'creative-studio', 'scripts', 'vision_worker.py');
+}
+
+export interface LocalPythonAiAdapterOptions {
+  pythonPath?: string;
+  workerScriptPath?: string;
+  model?: string;
+  rembgModel?: string;
+  steps?: number;
+  timeoutMs?: number;
+  forceCpu?: boolean;
+}
+
+/**
+ * Local-first AI Image Generation (SDXL-Turbo on CUDA RTX 4060 Ti / CPU fallback)
+ * and Semantic Background Segmentation (rembg U2Net/ISNet) adapter.
+ */
+export class LocalPythonAiAdapter implements ExternalImageAdapter {
+  readonly id = 'local-sdxl-rembg';
+  private readonly pythonPath: string;
+  private readonly workerScriptPath: string;
+  private readonly model: string;
+  private readonly rembgModel: string;
+  private readonly steps: number;
+  private readonly timeoutMs: number;
+  private readonly forceCpu: boolean;
+  private availabilityCache: { checkedAt: number; available: boolean } | null = null;
+
+  constructor(options?: LocalPythonAiAdapterOptions) {
+    this.pythonPath = options?.pythonPath ?? process.env['NB_PYTHON'] ?? 'python';
+    this.workerScriptPath = options?.workerScriptPath ?? resolveDefaultWorkerScript();
+    this.model = options?.model ?? 'stabilityai/sdxl-turbo';
+    this.rembgModel = options?.rembgModel ?? 'u2net';
+    this.steps = options?.steps ?? 3;
+    this.timeoutMs = options?.timeoutMs ?? 180_000;
+    this.forceCpu = options?.forceCpu ?? false;
+  }
+
+  async isAvailable(): Promise<boolean> {
+    if (this.availabilityCache && Date.now() - this.availabilityCache.checkedAt < 60_000) {
+      return this.availabilityCache.available;
+    }
+    if (!existsSync(this.workerScriptPath)) {
+      this.availabilityCache = { checkedAt: Date.now(), available: false };
+      return false;
+    }
+    try {
+      const { stdout } = await execFileAsync(
+        this.pythonPath,
+        [
+          '-c',
+          "import importlib.util; print('OK' if all(importlib.util.find_spec(p) is not None for p in ['torch','diffusers','rembg','PIL']) else 'NO')",
+        ],
+        { timeout: 10_000 },
+      );
+      const ok = stdout.trim() === 'OK';
+      this.availabilityCache = { checkedAt: Date.now(), available: ok };
+      return ok;
+    } catch {
+      this.availabilityCache = { checkedAt: Date.now(), available: false };
+      return false;
+    }
+  }
+
+  async generateImage(request: ImageGenerationRequest): Promise<Buffer> {
+    const workDir = mkdtempSync(join(tmpdir(), 'aethera-ai-gen-'));
+    const outPath = join(workDir, 'generated.png');
+    // Snap dimensions to multiples of 8 (required by SDXL) and cap max side for 8 GB VRAM safety
+    const maxSide = 1024;
+    const scale = Math.min(1, maxSide / Math.max(request.width, request.height));
+    const genW = Math.max(256, Math.round((request.width * scale) / 8) * 8);
+    const genH = Math.max(256, Math.round((request.height * scale) / 8) * 8);
+
+    try {
+      const args = [
+        this.workerScriptPath,
+        'generate',
+        '--prompt',
+        request.prompt,
+        '--output',
+        outPath,
+        '--width',
+        String(genW),
+        '--height',
+        String(genH),
+        '--steps',
+        String(this.steps),
+        '--model',
+        this.model,
+      ];
+      if (this.forceCpu) args.push('--cpu');
+
+      await execFileAsync(this.pythonPath, args, { timeout: this.timeoutMs });
+      if (!existsSync(outPath)) {
+        throw new Error('Local AI worker completed without writing output image.');
+      }
+      return readFileSync(outPath);
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  }
+
+  async removeBackground(request: BackgroundRemovalRequest): Promise<Buffer> {
+    const workDir = mkdtempSync(join(tmpdir(), 'aethera-ai-seg-'));
+    const outPath = join(workDir, 'cutout.png');
+    try {
+      await execFileAsync(
+        this.pythonPath,
+        [
+          this.workerScriptPath,
+          'segment',
+          '--input',
+          resolve(request.inputImagePath),
+          '--output',
+          outPath,
+          '--rembg-model',
+          this.rembgModel,
+        ],
+        { timeout: this.timeoutMs },
+      );
+      if (!existsSync(outPath)) {
+        throw new Error('Local segmentation worker completed without writing cutout PNG.');
+      }
+      return readFileSync(outPath);
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  }
+}
+
+/**
+ * Fallback chain across multiple ExternalImageAdapter providers (e.g. Local RTX 4060 Ti -> External Cloud API).
+ */
+export class ProviderChainImageAdapter implements ExternalImageAdapter {
+  readonly id = 'provider-chain';
+
+  constructor(private readonly providers: ExternalImageAdapter[]) {}
+
+  async isAvailable(): Promise<boolean> {
+    for (const p of this.providers) {
+      if (await p.isAvailable()) return true;
+    }
+    return false;
+  }
+
+  async generateImage(request: ImageGenerationRequest): Promise<Buffer> {
+    const errors: string[] = [];
+    for (const p of this.providers) {
+      if (!p.generateImage) continue;
+      if (!(await p.isAvailable())) continue;
+      try {
+        return await p.generateImage(request);
+      } catch (err) {
+        errors.push(`${p.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    throw new Error(
+      errors.length > 0
+        ? `Todos os provedores de geração de imagem falharam: ${errors.join(' | ')}`
+        : 'Nenhum provedor de geração de imagem por IA disponível.',
+    );
+  }
+
+  async removeBackground(request: BackgroundRemovalRequest): Promise<Buffer> {
+    const errors: string[] = [];
+    for (const p of this.providers) {
+      if (!p.removeBackground) continue;
+      if (!(await p.isAvailable())) continue;
+      try {
+        return await p.removeBackground(request);
+      } catch (err) {
+        errors.push(`${p.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    throw new Error(
+      errors.length > 0
+        ? `Todos os provedores de segmentação falharam: ${errors.join(' | ')}`
+        : 'Nenhum provedor de segmentação semântica disponível.',
+    );
+  }
+}

@@ -150,6 +150,48 @@ export async function removeBorderColorBackground(inputBuffer: Buffer, tolerance
   return sharp(out, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
 }
 
+function parseHexColorRgb(hex: string): { r: number; g: number; b: number; alpha: number } {
+  const clean = hex.replace('#', '');
+  if (clean.length === 3) {
+    return {
+      r: parseInt(clean[0]! + clean[0]!, 16),
+      g: parseInt(clean[1]! + clean[1]!, 16),
+      b: parseInt(clean[2]! + clean[2]!, 16),
+      alpha: 1,
+    };
+  }
+  const r = parseInt(clean.slice(0, 2), 16) || 0;
+  const g = parseInt(clean.slice(2, 4), 16) || 0;
+  const b = parseInt(clean.slice(4, 6), 16) || 0;
+  const a = clean.length === 8 ? (parseInt(clean.slice(6, 8), 16) || 255) / 255 : 1;
+  return { r, g, b, alpha: a };
+}
+
+async function createAlphaSilhouetteLayer(
+  buffer: Buffer,
+  width: number,
+  height: number,
+  colorHex: string,
+  blurRadius: number,
+  opacityScale = 1,
+): Promise<Buffer> {
+  const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const { r, g, b, alpha } = parseHexColorRgb(colorHex);
+  const effectiveAlpha = Math.max(0, Math.min(1, alpha * opacityScale));
+  const tinted = Buffer.alloc(data.length);
+  for (let i = 0; i < data.length; i += 4) {
+    tinted[i] = r;
+    tinted[i + 1] = g;
+    tinted[i + 2] = b;
+    tinted[i + 3] = Math.round((data[i + 3] ?? 0) * effectiveAlpha);
+  }
+  let sil = sharp(tinted, { raw: { width: info.width, height: info.height, channels: 4 } }).png();
+  if (blurRadius >= 0.4) {
+    sil = sil.blur(Math.min(40, blurRadius));
+  }
+  return sil.resize(width, height, { fit: 'fill' }).png().toBuffer();
+}
+
 async function applyLayerEffects(buffer: Buffer, width: number, height: number, effects: LayerEffect[]): Promise<Buffer> {
   let current = buffer;
   for (const effect of effects) {
@@ -163,9 +205,67 @@ async function applyLayerEffects(buffer: Buffer, width: number, height: number, 
         .linear(effect.contrast, -(128 * (effect.contrast - 1)))
         .png()
         .toBuffer();
+    } else if (effect.kind === 'depthBlur' && effect.radius > 0.3) {
+      current = await sharp(current).blur(Math.max(0.4, Math.min(40, effect.radius))).png().toBuffer();
     } else if (effect.kind === 'motionBlur' && effect.distance > 0) {
       const sigma = Math.max(0.4, Math.min(12, effect.distance / 4));
       current = await sharp(current).blur(sigma).png().toBuffer();
+    } else if (effect.kind === 'directionalLight') {
+      const rad = (effect.angleDeg * Math.PI) / 180;
+      const x1 = Math.round(50 - Math.cos(rad) * 50);
+      const y1 = Math.round(50 - Math.sin(rad) * 50);
+      const x2 = Math.round(50 + Math.cos(rad) * 50);
+      const y2 = Math.round(50 + Math.sin(rad) * 50);
+      const op = Math.max(0.05, Math.min(0.95, effect.intensity));
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+        <defs>
+          <linearGradient id="dl" x1="${x1}%" y1="${y1}%" x2="${x2}%" y2="${y2}%">
+            <stop offset="0%" stop-color="${escapeXml(effect.color)}" stop-opacity="${op.toFixed(2)}"/>
+            <stop offset="65%" stop-color="${escapeXml(effect.color)}" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#dl)"/>
+      </svg>`;
+      current = await sharp(current)
+        .composite([{ input: Buffer.from(svg), blend: 'screen' }])
+        .png()
+        .toBuffer();
+    } else if (effect.kind === 'dropShadow') {
+      const shadowBuf = await createAlphaSilhouetteLayer(
+        current,
+        width,
+        height,
+        effect.color,
+        Math.max(1, effect.blur / 2),
+        0.85,
+      );
+      current = await sharp({
+        create: { width, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+      })
+        .composite([
+          { input: shadowBuf, left: Math.round(effect.offsetX), top: Math.round(effect.offsetY), blend: 'over' },
+          { input: current, left: 0, top: 0, blend: 'over' },
+        ])
+        .png()
+        .toBuffer();
+    } else if (effect.kind === 'outerGlow') {
+      const glowBuf = await createAlphaSilhouetteLayer(
+        current,
+        width,
+        height,
+        effect.color,
+        Math.max(1, effect.radius / 2),
+        effect.intensity,
+      );
+      current = await sharp({
+        create: { width, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+      })
+        .composite([
+          { input: glowBuf, left: 0, top: 0, blend: 'screen' },
+          { input: current, left: 0, top: 0, blend: 'over' },
+        ])
+        .png()
+        .toBuffer();
     } else if (effect.kind === 'vignette') {
       const alpha = Math.max(0.1, Math.min(0.95, effect.strength));
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
@@ -237,11 +337,32 @@ export class SharpSvgCompositionEngine {
 
       const x = Math.round(layer.transform.x);
       const y = Math.round(layer.transform.y);
+      const layerMeta = await sharp(rendered).metadata();
+      const lw = layerMeta.width ?? 0;
+      const lh = layerMeta.height ?? 0;
+      if (lw <= 0 || lh <= 0) continue;
+
+      // Clip layer to canvas bounds so scaled/rotated/overflowing layers composite safely
+      const visLeft = Math.max(0, x);
+      const visTop = Math.max(0, y);
+      const visRight = Math.min(doc.width, x + lw);
+      const visBottom = Math.min(doc.height, y + lh);
+      const visW = visRight - visLeft;
+      const visH = visBottom - visTop;
+      if (visW <= 0 || visH <= 0) continue;
+
+      let clipped = rendered;
+      if (visLeft !== x || visTop !== y || visW !== lw || visH !== lh) {
+        clipped = await sharp(rendered)
+          .extract({ left: visLeft - x, top: visTop - y, width: visW, height: visH })
+          .png()
+          .toBuffer();
+      }
 
       composites.push({
-        input: rendered,
-        left: x,
-        top: y,
+        input: clipped,
+        left: visLeft,
+        top: visTop,
         blend: toSharpBlend(layer.blendMode),
       });
     }
@@ -315,6 +436,18 @@ export class SharpSvgCompositionEngine {
           .resize(targetW, targetH, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
           .png()
           .toBuffer();
+        if (layer.rimLightColor) {
+          const rimGlow = await createAlphaSilhouetteLayer(buf, targetW, targetH, layer.rimLightColor, 10, 0.9);
+          buf = await sharp({
+            create: { width: targetW, height: targetH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+          })
+            .composite([
+              { input: rimGlow, left: -4, top: -2, blend: 'screen' },
+              { input: buf, left: 0, top: 0, blend: 'over' },
+            ])
+            .png()
+            .toBuffer();
+        }
         break;
       }
 

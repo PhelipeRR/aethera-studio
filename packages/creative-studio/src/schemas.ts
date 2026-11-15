@@ -171,6 +171,18 @@ export const layerEffectSchema = z.discriminatedUnion('kind', [
     width: z.number().nonnegative().max(24).default(4),
     color: hexColorSchema.default('#000000'),
   }),
+  z.object({
+    kind: z.literal('depthBlur'),
+    enabled: z.boolean().default(true),
+    radius: z.number().nonnegative().max(40).default(6),
+  }),
+  z.object({
+    kind: z.literal('directionalLight'),
+    enabled: z.boolean().default(true),
+    angleDeg: z.number().min(0).max(360).default(45),
+    color: hexColorSchema.default('#00F0FF'),
+    intensity: z.number().min(0).max(1).default(0.45),
+  }),
 ]);
 export type LayerEffect = z.infer<typeof layerEffectSchema>;
 
@@ -230,7 +242,7 @@ export const subjectLayerSchema = z.object({
   type: z.literal('subject'),
   assetId: z.string().min(1),
   removeBackground: z.boolean().default(false),
-  cutoutMethod: z.enum(['none', 'chroma_edge', 'alpha_preserve', 'external_adapter']).default('none'),
+  cutoutMethod: z.enum(['none', 'chroma_edge', 'alpha_preserve', 'rembg_semantic', 'external_adapter']).default('none'),
   rimLightColor: hexColorSchema.optional(),
 });
 

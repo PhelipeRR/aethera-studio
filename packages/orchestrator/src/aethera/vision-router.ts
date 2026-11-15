@@ -42,6 +42,7 @@ class VisionOverBudgetError extends Error { constructor() { super('vision budget
 export class VisionRouter {
   private readonly providers: Map<string, VisualAnalysisProvider>;
   private readonly spend: VisionSpendPort;
+  private readonly consecutiveTimeouts = new Map<string, number>();
   constructor(providers: readonly VisualAnalysisProvider[], private readonly cache: VisionCachePort, private readonly calibrations: readonly ConfidenceCalibration[] = [], spend?: VisionSpendPort, private readonly scheduler: VisualWorkScheduler = visionGpuScheduler, private readonly cooldowns: Map<string, VisionCooldownEntry> = new Map()) {
     this.providers = new Map(providers.map((provider) => [provider.id, provider]));
     const amounts = new Map<string, number>();
@@ -182,6 +183,7 @@ export class VisionRouter {
           } else if (capability === 'analyze') value = results[0];
           else value = results.flat();
           const durationMs = Date.now() - attemptStart;
+          if (!allCached) this.consecutiveTimeouts.delete(id);
           attempts.push({ provider: id, outcome: allCached ? 'cached' : 'ok', durationMs });
           return { value, provider: id, model: provider.model, costUsd, attempts, refs, durationMs, ...(capability === 'analyze' && !allCached ? { reportedModel: provider.lastReportedModel?.() ?? null } : {}) };
         };
@@ -199,6 +201,14 @@ export class VisionRouter {
           const detail = error instanceof Error ? error.message : 'provider error';
           if (isVisionQuotaError(detail)) {
             this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: detail.slice(-160) });
+          } else if (/vision provider timeout/i.test(detail)) {
+            const count = (this.consecutiveTimeouts.get(id) ?? 0) + 1;
+            this.consecutiveTimeouts.set(id, count);
+            if (count >= 2) {
+              this.cooldowns.set(id, { untilMs: Date.now() + 3 * 60_000, reason: `timeouts consecutivos (${count}): ${detail}` });
+            }
+          } else {
+            this.consecutiveTimeouts.delete(id);
           }
           attempts.push({ provider: id, outcome: 'error', detail, durationMs });
         }
