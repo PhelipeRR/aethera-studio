@@ -116,6 +116,12 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaGetProductionState: (projectId: string) => ipcRenderer.invoke('cinema:get-production-state', projectId),
   cinemaResolvePendingMedia: (input: Record<string, unknown>) =>
     ipcRenderer.invoke('cinema:resolve-pending-media', input),
+  cinemaReviewGroundingEvidence: (input: {
+    projectId: string;
+    candidateId: string;
+    decision: 'approved' | 'rejected';
+    note?: string;
+  }) => ipcRenderer.invoke('cinema:review-grounding-evidence', input),
   cinemaUpdateColorGrade: (input: Record<string, unknown>) =>
     ipcRenderer.invoke('cinema:update-color-grade', input),
   cinemaNleOp: (input: Record<string, unknown>) =>

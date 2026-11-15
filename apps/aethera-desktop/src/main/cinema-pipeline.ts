@@ -55,6 +55,14 @@ import {
   type SemanticSceneCut,
   type IncrementalInvalidationReport,
   type EditorialRecoveryStep,
+  buildEditorialTraceabilityGraph,
+  createEmptyEditorialAuditTrail,
+  runEditorialIntegrityChecks,
+  type EditorialAuditTrail,
+  type GroundingEvidenceRecord,
+  type MediaCandidateRecord,
+  type MediaQueryRecord,
+  type TimelinePlacementRecord,
 } from '@neuralbridge/cinema';
 import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
 
@@ -107,6 +115,7 @@ export interface StagedProductionJob {
   sceneDecupagem?: SemanticSceneCut[];
   invalidationReport?: IncrementalInvalidationReport;
   editorialRecoveryPlans?: Array<{ sceneId: string; steps: EditorialRecoveryStep[] }>;
+  editorialAudit?: EditorialAuditTrail;
   state: ProductionStageState;
   progressPct: number;
   message: string;
@@ -404,6 +413,44 @@ export class StagedCinemaPipeline {
     if (!existing) return null;
     existing.state = 'cancelled';
     existing.message = 'Produção cancelada pelo usuário. Progresso preservado para retomada.';
+    return this.saveJob(existing);
+  }
+
+  reviewGroundingEvidence(input: {
+    projectId: string;
+    candidateId: string;
+    decision: 'approved' | 'rejected';
+    note?: string;
+  }): StagedProductionJob | null {
+    const existing = this.loadJob(input.projectId);
+    if (!existing?.editorialAudit) return null;
+    const ev = existing.editorialAudit.groundingEvidences.find((g) => g.candidateId === input.candidateId);
+    if (!ev) return null;
+    const now = new Date().toISOString();
+    ev.humanReview = {
+      status: input.decision,
+      ...(input.note ? { reviewerNote: input.note } : {}),
+      reviewedAt: now,
+    };
+    ev.decision = input.decision;
+    ev.decisionReason = `Revisão humana: ${input.decision}${input.note ? ` — ${input.note}` : ''}`;
+    const cand = existing.editorialAudit.candidates.find((c) => c.candidateId === input.candidateId);
+    if (cand) {
+      cand.status = input.decision;
+      if (input.decision === 'rejected' && input.note) cand.rejectionReason = input.note;
+    }
+    existing.editorialAudit.events.push({
+      eventId: `evt_hr_${Date.now()}`,
+      timestamp: now,
+      stage: 'human_review',
+      sceneId: ev.sceneId,
+      message: `Revisão humana (${input.decision}) para candidato ${input.candidateId}`,
+    });
+    existing.editorialAudit.integrityReport = runEditorialIntegrityChecks({
+      ...(existing.interpretation ? { interpretation: existing.interpretation } : {}),
+      ...(existing.researchDossier ? { dossier: existing.researchDossier } : {}),
+      trail: existing.editorialAudit,
+    });
     return this.saveJob(existing);
   }
 
@@ -814,6 +861,26 @@ export class StagedCinemaPipeline {
         job.sceneDecupagem = buildSemanticDecupagem(job.editorialScript, syntheticDossier, nextInterpretation);
       }
       job.completedStages = [...new Set([...job.completedStages, 'decupagem'])] as ProductionStageState[];
+      if (job.researchDossier && job.editorialScript && job.sceneDecupagem) {
+        job.editorialAudit = buildEditorialTraceabilityGraph({
+          projectId: job.projectId,
+          dossier: job.researchDossier,
+          script: job.editorialScript,
+          decupagem: job.sceneDecupagem,
+          ...(job.editorialAudit ? { previousTrail: job.editorialAudit } : {}),
+        });
+        job.editorialAudit.events.push({
+          eventId: `evt_decupagem_${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          stage: 'decupagem',
+          message: `Rastreabilidade construída: ${job.editorialAudit.sources.length} fontes, ${job.editorialAudit.facts.length} fatos, ${job.editorialAudit.scriptBlocks.length} blocos, ${job.editorialAudit.scenes.length} cenas.`,
+        });
+        job.editorialAudit.integrityReport = runEditorialIntegrityChecks({
+          interpretation: nextInterpretation,
+          dossier: job.researchDossier,
+          trail: job.editorialAudit,
+        });
+      }
       this.saveJob(job);
 
       const scenesForAcquisition = job.sceneDecupagem ?? [];
@@ -871,6 +938,115 @@ export class StagedCinemaPipeline {
           job.message = 'Validando mídias por Scene Grounding e evidências por frame...';
           this.saveJob(job);
 
+          const baseDeps = this.deps.autonomousAcquisitionDeps;
+          const trail = job.editorialAudit ?? createEmptyEditorialAuditTrail(job.projectId);
+          job.editorialAudit = trail;
+
+          const resolveSceneForQuery = (queryText: string) => {
+            const qLower = queryText.toLowerCase();
+            return (
+              trail.scenes.find((s) => s.mediaQueries.some((mq) => mq.toLowerCase() === qLower)) ??
+              trail.scenes.find((s) =>
+                s.entities.some((e) => qLower.includes(e.toLowerCase().split(/[\s,:-]+/)[0] ?? '')),
+              ) ??
+              trail.scenes[0]
+            );
+          };
+
+          const auditedDeps: ResilientAcquisitionDeps = {
+            ...baseDeps,
+            ...(baseDeps.ytDlpSearchFn
+              ? {
+                  ytDlpSearchFn: async (q, count, sig) => {
+                    const matchedScene = resolveSceneForQuery(q);
+                    const startedAt = new Date().toISOString();
+                    const t0 = Date.now();
+                    const prevSameScene = trail.queries.filter((x) => x.sceneId === (matchedScene?.sceneId ?? 'scene_unknown'));
+                    const attemptNumber = prevSameScene.length + 1;
+                    const queryId = `qry_${trail.queries.length + 1}_${Date.now()}`;
+                    try {
+                      const rows = await baseDeps.ytDlpSearchFn!(q, count, sig);
+                      const finishedAt = new Date().toISOString();
+                      const candidateIds: string[] = [];
+                      for (let rIdx = 0; rIdx < rows.length; rIdx += 1) {
+                        const row = rows[rIdx]!;
+                        const candidateId = `cand_${queryId}_${rIdx + 1}`;
+                        candidateIds.push(candidateId);
+                        trail.candidates.push({
+                          candidateId,
+                          queryId,
+                          sceneId: matchedScene?.sceneId ?? 'scene_unknown',
+                          title: row.title ?? row.url,
+                          url: row.url,
+                          provider: 'yt_dlp',
+                          ...(row.durationSec !== undefined ? { durationSec: row.durationSec } : {}),
+                          status: 'pending',
+                        });
+                      }
+                      const qRec: MediaQueryRecord = {
+                        queryId,
+                        sceneId: matchedScene?.sceneId ?? 'scene_unknown',
+                        scriptBlockId: matchedScene?.scriptBlockId ?? 'unlinked',
+                        narrationExcerpt: (matchedScene?.narrationText ?? '').slice(0, 180),
+                        queryText: q,
+                        ...(prevSameScene.length > 0 ? { reformulatedFromQueryId: prevSameScene[prevSameScene.length - 1]!.queryId } : {}),
+                        provider: 'yt_dlp',
+                        attemptNumber,
+                        startedAt,
+                        finishedAt,
+                        durationMs: Date.now() - t0,
+                        status: rows.length > 0 ? 'success' : 'empty',
+                        resultsCount: rows.length,
+                        candidateIds,
+                        isPlannedOnly: false,
+                      };
+                      trail.queries.push(qRec);
+                      trail.events.push({
+                        eventId: `evt_qry_${Date.now()}`,
+                        timestamp: finishedAt,
+                        stage: 'aquisicao',
+                        sceneId: qRec.sceneId,
+                        message: `Consulta executada (${qRec.status}, ${rows.length} resultados): "${q}"`,
+                      });
+                      this.saveJob(job);
+                      return rows;
+                    } catch (err) {
+                      const finishedAt = new Date().toISOString();
+                      const msg = err instanceof Error ? err.message : String(err);
+                      const isTimeout = /timeout|abort/i.test(msg);
+                      const qRec: MediaQueryRecord = {
+                        queryId,
+                        sceneId: matchedScene?.sceneId ?? 'scene_unknown',
+                        scriptBlockId: matchedScene?.scriptBlockId ?? 'unlinked',
+                        narrationExcerpt: (matchedScene?.narrationText ?? '').slice(0, 180),
+                        queryText: q,
+                        provider: 'yt_dlp',
+                        attemptNumber,
+                        startedAt,
+                        finishedAt,
+                        durationMs: Date.now() - t0,
+                        status: isTimeout ? 'timeout' : 'error',
+                        errorMessage: msg,
+                        resultsCount: 0,
+                        candidateIds: [],
+                        isPlannedOnly: false,
+                      };
+                      trail.queries.push(qRec);
+                      trail.events.push({
+                        eventId: `evt_qry_err_${Date.now()}`,
+                        timestamp: finishedAt,
+                        stage: 'aquisicao',
+                        sceneId: qRec.sceneId,
+                        message: `Falha na consulta "${q}": ${msg}`,
+                      });
+                      this.saveJob(job);
+                      throw err;
+                    }
+                  },
+                }
+              : {}),
+          };
+
           const audit = await runAutonomousMediaAcquisition({
             projectId: job.projectId,
             prompt: job.prompt,
@@ -878,7 +1054,7 @@ export class StagedCinemaPipeline {
             format: job.format === 'shorts_9_16' ? 'shorts' : 'analysis',
             segments: initialSegments,
             mediaDir: projectPaths.mediaDir,
-            deps: this.deps.autonomousAcquisitionDeps,
+            deps: auditedDeps,
             probeDurationFn: async (fp) => (await probeRealMp4(fp)).durationSec,
             ...(this.deps.analyzeFrames ? { analyzeFrames: this.deps.analyzeFrames } : {}),
             requireVisualVerification: this.deps.requireVisualVerification ?? true,
@@ -891,6 +1067,101 @@ export class StagedCinemaPipeline {
           job.autonomousAudit = audit;
           relevanceDecisions.push(...audit.relevanceDecisions);
           job.coverageReport = audit.coverageReport;
+
+          // Record Grounding Evidences & Placements into EditorialAuditTrail
+          for (const dec of audit.relevanceDecisions) {
+            const approvedAsset = audit.approvedAssets.find((a) => a.mediaId === dec.mediaId);
+            const matchedScene =
+              trail.scenes.find((s) =>
+                s.entities.some((e) => dec.matchedEntities?.some((me) => me.toLowerCase().includes(e.toLowerCase().split(/[\s,:-]+/)[0] ?? ''))),
+              ) ??
+              trail.scenes[0];
+            const existingCand = trail.candidates.find(
+              (c) => c.candidateId === dec.mediaId || (approvedAsset && c.url === approvedAsset.uri),
+            );
+            const candidateId = existingCand?.candidateId ?? dec.mediaId;
+            if (!existingCand) {
+              const candRec: MediaCandidateRecord = {
+                candidateId,
+                queryId: trail.queries.find((q) => q.sceneId === matchedScene?.sceneId)?.queryId ?? 'local_or_direct',
+                sceneId: matchedScene?.sceneId ?? 'scene_unknown',
+                title: dec.mediaId,
+                url: approvedAsset?.uri ?? dec.mediaId,
+                ...(approvedAsset?.uri ? { localUri: approvedAsset.uri } : {}),
+                provider: approvedAsset?.origin ?? 'local_library',
+                ...(approvedAsset?.durationSec !== undefined ? { durationSec: approvedAsset.durationSec } : {}),
+                status: dec.accepted ? 'approved' : 'rejected',
+                ...(!dec.accepted && dec.reason ? { rejectionReason: dec.reason } : {}),
+              };
+              trail.candidates.push(candRec);
+            } else {
+              existingCand.status = dec.accepted ? 'approved' : 'rejected';
+              if (approvedAsset?.uri) existingCand.localUri = approvedAsset.uri;
+              if (!dec.accepted && dec.reason) existingCand.rejectionReason = dec.reason;
+            }
+
+            const framesAnalyzed = (dec.visualEvidence ?? []).map((ve, vIdx) => ({
+              timestampSec: ve.timestampSec ?? vIdx * 3,
+              summary: ve.description ?? dec.reason ?? '',
+              matchedEntities: ve.detectedEntities ?? [],
+              matchedActions: ve.detectedActions ?? [],
+              isPositive: dec.accepted,
+            }));
+
+            const intervalsFromDec = (dec.matchedIntervals ?? []).map((iv) => ({
+              startSec: iv.startSec,
+              endSec: iv.endSec,
+              reason: dec.reason ?? 'Intervalo analisado',
+            }));
+
+            const evRec: GroundingEvidenceRecord = {
+              evidenceId: `ev_${candidateId}_${Date.now()}`,
+              candidateId,
+              sceneId: matchedScene?.sceneId ?? 'scene_unknown',
+              scriptBlockId: matchedScene?.scriptBlockId ?? 'unlinked',
+              expectedWork: matchedScene?.workTitle ?? nextInterpretation.workTitle,
+              expectedEvent: matchedScene?.expectedEvent ?? '',
+              framesAnalyzed,
+              positiveEvidences: dec.accepted ? [dec.reason ?? 'Correspondência visual confirmada'] : [],
+              negativeEvidences: !dec.accepted ? [dec.reason ?? 'Rejeitado pelo Scene Grounding'] : [],
+              confidence: dec.score,
+              approvedIntervals: dec.accepted
+                ? intervalsFromDec.length > 0
+                  ? intervalsFromDec
+                  : [{ startSec: 0, endSec: Math.max(6, approvedAsset?.durationSec ?? 15), reason: dec.reason ?? 'Intervalo validado' }]
+                : [],
+              rejectedIntervals: !dec.accepted
+                ? [{ startSec: 0, endSec: Math.max(6, approvedAsset?.durationSec ?? 15), reason: dec.reason ?? 'Fora do contexto esperado' }]
+                : [],
+              decision: dec.accepted ? 'approved' : 'rejected',
+              decisionReason: dec.reason ?? (dec.accepted ? 'Aprovado' : 'Rejeitado'),
+              narrationRelation: matchedScene?.narrationText ?? '',
+              humanReview: { status: 'pending' },
+            };
+            trail.groundingEvidences.push(evRec);
+
+            if (dec.accepted && approvedAsset) {
+              const dur = Math.max(6, approvedAsset.durationSec ?? matchedScene?.durationSec ?? 12);
+              const plRec: TimelinePlacementRecord = {
+                placementId: `pl_${candidateId}`,
+                sceneId: evRec.sceneId,
+                candidateId,
+                evidenceId: evRec.evidenceId,
+                clipId: `clip_${candidateId}`,
+                startSec: 0,
+                endSec: dur,
+                durationSec: dur,
+                placementHash: createHash('sha256').update(`${evRec.sceneId}:${candidateId}:${dur}`).digest('hex').slice(0, 12),
+              };
+              trail.timelinePlacements.push(plRec);
+            }
+          }
+          trail.integrityReport = runEditorialIntegrityChecks({
+            interpretation: nextInterpretation,
+            ...(job.researchDossier ? { dossier: job.researchDossier } : {}),
+            trail,
+          });
+          this.saveJob(job);
 
           for (let idx = 0; idx < audit.approvedAssets.length; idx += 1) {
             const approved = audit.approvedAssets[idx]!;

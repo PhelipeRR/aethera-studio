@@ -23,6 +23,11 @@ import { notify } from '@/components/NotificationsOverlay';
 import { TrendRadarPanel, type TrendRadarBridgeApi } from './TrendRadarPanel';
 import { MediaCoveragePanel } from './MediaCoveragePanel';
 import { VoiceDirectorPanel } from './VoiceDirectorPanel';
+import {
+  EditorialAuditPanel,
+  type EditorialAuditTrailView,
+  type EditorialDossierView,
+} from './EditorialAuditPanel';
 
 interface CinemaBridgeApi {
   cinemaCapabilities?: () => Promise<{
@@ -58,6 +63,12 @@ interface CinemaBridgeApi {
   cinemaCancelProduction?: (projectId: string) => Promise<StagedJobView | null>;
   cinemaResumeProduction?: (projectId: string) => Promise<StagedJobView>;
   cinemaResolvePendingMedia?: (input: Record<string, unknown>) => Promise<StagedJobView>;
+  cinemaReviewGroundingEvidence?: (input: {
+    projectId: string;
+    candidateId: string;
+    decision: 'approved' | 'rejected';
+    note?: string;
+  }) => Promise<StagedJobView | null>;
   cinemaListStagedJobs?: () => Promise<StagedJobView[]>;
   cinemaInspectDeleteProject?: (projectId: string) => Promise<{
     projectId: string;
@@ -91,6 +102,8 @@ interface StagedJobView {
   completedStages: string[];
   pendingMedia: PendingMediaSlotView[];
   isTechnicalSample?: boolean;
+  researchDossier?: EditorialDossierView | null;
+  editorialAudit?: EditorialAuditTrailView | null;
   error?: string;
   startedAt?: string;
   updatedAt?: string;
@@ -313,6 +326,7 @@ export function CinemaDirectorPanel() {
   const { agents } = useAgents();
   const readyAgents = (agents ?? []).filter((a) => healthOf(a) === 'ready');
   const [readyExtraCount, setReadyExtraCount] = useState(0);
+  const [workspaceTab, setWorkspaceTab] = useState<'producao' | 'auditoria'>('producao');
 
   useEffect(() => {
     let active = true;
@@ -782,6 +796,71 @@ export function CinemaDirectorPanel() {
           </div>
         </div>
       </section>
+
+      {/* Workspace Tab Bar: Produção vs Auditoria Editorial */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3">
+        <button
+          type="button"
+          onClick={() => setWorkspaceTab('producao')}
+          className={`rounded-xl border px-3.5 py-1.5 text-xs font-medium transition ${
+            workspaceTab === 'producao'
+              ? 'border-primary bg-primary/15 text-primary'
+              : 'border-border bg-card text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          Produção & Direção
+        </button>
+        <button
+          type="button"
+          onClick={() => setWorkspaceTab('auditoria')}
+          className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-1.5 text-xs font-medium transition ${
+            workspaceTab === 'auditoria'
+              ? 'border-primary bg-primary/15 text-primary'
+              : 'border-border bg-card text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          Auditoria Editorial
+          {stagedJob?.editorialAudit?.integrityReport && (
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] ${
+                stagedJob.editorialAudit.integrityReport.passed
+                  ? 'bg-emerald-500/15 text-emerald-300'
+                  : 'bg-rose-500/15 text-rose-300'
+              }`}
+            >
+              {stagedJob.editorialAudit.integrityReport.errorCount} erro(s)
+            </span>
+          )}
+        </button>
+      </div>
+
+      {workspaceTab === 'auditoria' ? (
+        <EditorialAuditPanel
+          projectId={stagedJob?.projectId}
+          jobState={stagedJob?.state}
+          dossier={stagedJob?.researchDossier ?? null}
+          trail={stagedJob?.editorialAudit ?? null}
+          onHumanReview={async (candidateId, decision, note) => {
+            const api = bridge();
+            if (!stagedJob?.projectId || !api?.cinemaReviewGroundingEvidence) return;
+            const updated = await api.cinemaReviewGroundingEvidence({
+              projectId: stagedJob.projectId,
+              candidateId,
+              decision,
+              ...(note ? { note } : {}),
+            });
+            if (updated) {
+              setStagedJob(updated);
+              notify({
+                title: 'Auditoria Editorial',
+                message: `Revisão humana (${decision}) registrada para ${candidateId}.`,
+                type: 'info',
+              });
+            }
+          }}
+        />
+      ) : (
+        <>
 
       <TrendRadarPanel
         api={(bridge() ?? {}) as TrendRadarBridgeApi}
@@ -1491,6 +1570,8 @@ export function CinemaDirectorPanel() {
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

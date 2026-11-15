@@ -3524,6 +3524,17 @@ export function registerAetheraDomainIpc(options: {
     return stagedPipeline.cancel(projectId);
   });
 
+  ipcMain.handle(
+    'cinema:review-grounding-evidence',
+    async (
+      event,
+      input: { projectId: string; candidateId: string; decision: 'approved' | 'rejected'; note?: string },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      return stagedPipeline.reviewGroundingEvidence(input);
+    },
+  );
+
   ipcMain.handle('cinema:resume-production', async (event, projectId: string) => {
     ensureTrusted(event.senderFrame);
     return stagedPipeline.resume(projectId);
