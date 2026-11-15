@@ -1,26 +1,28 @@
 [
   {
     "concept": {
-      "id": "concept-A-dda8478c",
+      "id": "concept-A-69deb27a",
       "label": "A",
-      "title": "O Segredo de CYBERWARE",
+      "title": "Em Destaque: CYBERWARE",
       "archetype": "object_focus",
       "blueprint": "macro_center_object",
-      "focalSubject": "Close-up macro de componente/objeto emblemático ligado a CYBERWARE SECRETO Cyberpunk, isolado com iluminação dramática",
-      "visualNarrative": "O objeto central ligado a CYBERWARE aparece em destaque dramático com energia e detalhes reveladores; o texto mínimo apenas confirma o gancho sem precisar explicar tudo.",
+      "focalSubject": "Close-up macro reconhecível de detailed mechanical cybernetic prosthetic forearm and neural wrist implant with exposed chrome titanium actuators, copper micro-coils and glowing cyan optical circuit veins on a lit surgical tech workbench",
+      "visualNarrative": "O objeto/implante central (CYBERWARE) aparece isolado, nítido e iluminado em bancada técnica para que o espectador o reconheça sem depender do título.",
+      "curiosityHook": "Mostra o mecanismo físico/tecnológico exato em detalhe próximo, fazendo o espectador perguntar o que esse componente faz e onde encontrá-lo.",
+      "visualProofSummary": "Objeto central iluminado e reconhecível sem depender do texto.",
       "emotion": "mystery",
       "usesHumanCharacter": false,
       "textRole": "minimal_complement",
       "headlineText": "CYBERWARE SECRETO",
       "kickerText": "REVELADO",
-      "editorialRationale": "Conceito A evita repetir personagem genérico: coloca o elemento físico/técnico central de \"CYBERWARE SECRETO Cyberpunk\" como protagonista em plano macro dramático, comunicando imediatamente o tema do roteiro.",
+      "editorialRationale": "Coloca o componente físico de \"CYBERWARE SECRETO Cyberpunk\" como protagonista macro bem iluminado, comunicando o tema visualmente antes de qualquer leitura.",
       "mediaRequirements": [
         {
           "id": "req-A-object",
           "role": "hero_object",
           "acquisitionMode": "ai_generate",
           "provenance": "ai_generated",
-          "queryOrPrompt": "dramatic macro studio close-up of a mysterious intricate iconic object representing CYBERWARE SECRETO Cyberpunk, glowing core details, moody rim lighting on dark atmospheric background, high contrast focal point, no people, no faces, no text",
+          "queryOrPrompt": "sharp studio macro product photography of detailed mechanical cybernetic prosthetic forearm and neural wrist implant with exposed chrome titanium actuators, copper micro-coils and glowing cyan optical circuit veins on a lit surgical tech workbench, clean metallic edges, bright cyan and amber rim lighting, clearly recognizable device silhouette, no dark black box, no faces, no text",
           "requiresHuman": false
         }
       ]
@@ -29,11 +31,11 @@
       {
         "role": "hero_object",
         "provenance": "ai_generated",
-        "description": "Gerado por IA para o conceito \"O Segredo de CYBERWARE\""
+        "description": "Gerado por IA para o conceito \"Em Destaque: CYBERWARE\""
       }
     ],
     "preRenderCritique": {
-      "conceptId": "concept-A-dda8478c",
+      "conceptId": "concept-A-69deb27a",
       "stage": "pre_render",
       "passed": true,
       "isGenericOrWeak": false,
@@ -44,11 +46,11 @@
       "focalPointScore": 90,
       "scriptCoherenceScore": 90,
       "criticNotes": [
-        "Conceito distinto (object_focus/macro_center_object) com foco claro em \"Close-up macro de componente/objeto emblemático ligado a CYB\"."
+        "Conceito distinto (object_focus/macro_center_object) com foco claro em \"Close-up macro reconhecível de detailed mechanical cyberneti\"."
       ]
     },
     "postRenderCritique": {
-      "conceptId": "concept-A-dda8478c",
+      "conceptId": "concept-A-69deb27a",
       "stage": "post_render",
       "passed": true,
       "isGenericOrWeak": false,
@@ -56,171 +58,11 @@
       "originalityScore": 92,
       "compositionScore": 87,
       "legibilityScore": 82,
-      "focalPointScore": 86,
+      "focalPointScore": 96,
       "scriptCoherenceScore": 90,
       "criticNotes": [
-        "Miniatura 224×126 stdev=44.4; proveniência: ai_generated."
-      ]
-    },
-    "auditScore": {
-      "legibility": 82,
-      "contrast": 69,
-      "composition": 87,
-      "brandConsistency": 95,
-      "overall": 82,
-      "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
-    }
-  },
-  {
-    "concept": {
-      "id": "concept-B-08b60169",
-      "label": "B",
-      "title": "NORMAL vs APRIMORADO: CYBERWARE",
-      "archetype": "before_after_comparison",
-      "blueprint": "split_comparison",
-      "focalSubject": "Comparação visual lado a lado contrastando estado normal versus estado aprimorado em CYBERWARE SECRETO Cyberpunk",
-      "visualNarrative": "Tela dividida contrastando visualmente o estado comum/inicial à esquerda (dessaturado e contido) contra o estado aprimorado/intenso à direita (vibrante e carregado de efeito), criando curiosidade imediata.",
-      "emotion": "contrast",
-      "usesHumanCharacter": false,
-      "textRole": "comparison_labels",
-      "headlineText": "CYBERWARE SECRETO",
-      "leftComparisonLabel": "NORMAL",
-      "rightComparisonLabel": "APRIMORADO",
-      "editorialRationale": "Conceito B traduz o roteiro em contraste visual direto (NORMAL vs APRIMORADO), permitindo que o espectador entenda a transformação/diferença de CYBERWARE em menos de 1 segundo.",
-      "mediaRequirements": [
-        {
-          "id": "req-B-left",
-          "role": "comparison_left",
-          "acquisitionMode": "video_frame",
-          "provenance": "real_video_frame",
-          "queryOrPrompt": "restrained standard unenhanced scene of CYBERWARE SECRETO Cyberpunk, muted desaturated cool lighting, calm baseline state, no text",
-          "requiresHuman": false,
-          "preferredTimestampSec": 0.8
-        },
-        {
-          "id": "req-B-right",
-          "role": "comparison_right",
-          "acquisitionMode": "ai_generate",
-          "provenance": "ai_generated",
-          "queryOrPrompt": "overcharged upgraded high-energy transformation scene of CYBERWARE SECRETO Cyberpunk, glowing neon energy arcs, intense dynamic lighting and visual power surge, no text",
-          "requiresHuman": false
-        }
-      ]
-    },
-    "provenance": [
-      {
-        "role": "comparison_left",
-        "provenance": "real_video_frame",
-        "description": "Frame real extraído em 0.80s (impactScore=70)"
-      },
-      {
-        "role": "comparison_right",
-        "provenance": "ai_generated",
-        "description": "Gerado por IA para o conceito \"NORMAL vs APRIMORADO: CYBERWARE\""
-      }
-    ],
-    "preRenderCritique": {
-      "conceptId": "concept-B-08b60169",
-      "stage": "pre_render",
-      "passed": true,
-      "isGenericOrWeak": false,
-      "narrativeRelevanceScore": 88,
-      "originalityScore": 92,
-      "compositionScore": 86,
-      "legibilityScore": 88,
-      "focalPointScore": 90,
-      "scriptCoherenceScore": 90,
-      "criticNotes": [
-        "Conceito distinto (before_after_comparison/split_comparison) com foco claro em \"Comparação visual lado a lado contrastando estado normal ver\"."
-      ]
-    },
-    "postRenderCritique": {
-      "conceptId": "concept-B-08b60169",
-      "stage": "post_render",
-      "passed": true,
-      "isGenericOrWeak": false,
-      "narrativeRelevanceScore": 90,
-      "originalityScore": 92,
-      "compositionScore": 55,
-      "legibilityScore": 76,
-      "focalPointScore": 86,
-      "scriptCoherenceScore": 90,
-      "criticNotes": [
-        "Baixa diferença visual entre os lados da comparação (0.0).",
-        "Miniatura 224×126 stdev=54.6; proveniência: real_video_frame, ai_generated."
-      ]
-    },
-    "auditScore": {
-      "legibility": 76,
-      "contrast": 89,
-      "composition": 80,
-      "brandConsistency": 95,
-      "overall": 83,
-      "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
-    }
-  },
-  {
-    "concept": {
-      "id": "concept-C-a1ac29b7",
-      "label": "C",
-      "title": "CYBERWARE em ação em Cena Real",
-      "archetype": "action_moment",
-      "blueprint": "fullscreen_action_hud",
-      "focalSubject": "Frame real de maior impacto do vídeo (0.4s) com o efeito/ação como protagonista",
-      "visualNarrative": "Usa diretamente o momento real capturado do vídeo produzido como imagem principal, realçando o ponto de ação com iluminação cinematográfica e texto enxuto que não cobre a cena.",
-      "emotion": "adrenaline",
-      "usesHumanCharacter": false,
-      "textRole": "minimal_complement",
-      "headlineText": "CYBERWARE SECRETO",
-      "kickerText": "CENA REAL",
-      "editorialRationale": "Conceito C prioriza autenticidade: coloca o momento real de CYBERWARE em ação em tela cheia com mínimo de texto complementar, diferenciando-se radicalmente do close-up de objeto (A) e do comparativo (B).",
-      "mediaRequirements": [
-        {
-          "id": "req-C-action",
-          "role": "primary_scene",
-          "acquisitionMode": "video_frame",
-          "provenance": "real_video_frame",
-          "queryOrPrompt": "wide dynamic cinematic action climax illustrating CYBERWARE SECRETO Cyberpunk, dramatic motion energy and volumetric depth, no text",
-          "requiresHuman": false,
-          "preferredTimestampSec": 0.4
-        }
-      ]
-    },
-    "provenance": [
-      {
-        "role": "primary_scene",
-        "provenance": "real_video_frame",
-        "description": "Frame real extraído em 0.40s (impactScore=70)"
-      }
-    ],
-    "preRenderCritique": {
-      "conceptId": "concept-C-a1ac29b7",
-      "stage": "pre_render",
-      "passed": true,
-      "isGenericOrWeak": false,
-      "narrativeRelevanceScore": 88,
-      "originalityScore": 92,
-      "compositionScore": 86,
-      "legibilityScore": 88,
-      "focalPointScore": 90,
-      "scriptCoherenceScore": 90,
-      "criticNotes": [
-        "Conceito distinto (action_moment/fullscreen_action_hud) com foco claro em \"Frame real de maior impacto do vídeo (0.4s) com o efeito/açã\"."
-      ]
-    },
-    "postRenderCritique": {
-      "conceptId": "concept-C-a1ac29b7",
-      "stage": "post_render",
-      "passed": true,
-      "isGenericOrWeak": false,
-      "narrativeRelevanceScore": 90,
-      "originalityScore": 92,
-      "compositionScore": 87,
-      "legibilityScore": 82,
-      "focalPointScore": 86,
-      "scriptCoherenceScore": 90,
-      "criticNotes": [
-        "Miniatura 224×126 stdev=59.0; proveniência: real_video_frame."
+        "Sujeito central nítido e iluminado (luminância=65.8, stdev=70.1).",
+        "Miniatura 224×126 stdev=56.2; proveniência: ai_generated."
       ]
     },
     "auditScore": {
@@ -229,6 +71,171 @@
       "composition": 87,
       "brandConsistency": 95,
       "overall": 87,
+      "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
+    }
+  },
+  {
+    "concept": {
+      "id": "concept-B-714dc383",
+      "label": "B",
+      "title": "NORMAL vs APRIMORADO: CYBERWARE",
+      "archetype": "before_after_comparison",
+      "blueprint": "split_comparison",
+      "focalSubject": "Mesmo sujeito/implante transformado lado a lado (NORMAL desligado vs APRIMORADO sobrecarregado)",
+      "visualNarrative": "Usa a mesma base visual nos dois lados: à esquerda no estado normal (frio, contido e sem energia) e à direita transformado por edição condicionada no estado aprimorado (energizado e em sobrecarga).",
+      "curiosityHook": "Revela visualmente a transformação direta de um único elemento, despertando a pergunta: como alcançar esse salto de poder/estado?",
+      "visualProofSummary": "Transformação img2img condicionada mantendo o mesmo sujeito com mudança evidente de energia e cor.",
+      "emotion": "contrast",
+      "usesHumanCharacter": false,
+      "textRole": "comparison_labels",
+      "headlineText": "CYBERWARE SECRETO",
+      "leftComparisonLabel": "NORMAL",
+      "rightComparisonLabel": "APRIMORADO",
+      "editorialRationale": "Traduz o roteiro em contraste visual real sobre o mesmo sujeito (NORMAL vs APRIMORADO), evitando duas imagens desconexas.",
+      "mediaRequirements": [
+        {
+          "id": "req-B-left",
+          "role": "comparison_left",
+          "acquisitionMode": "ai_generate",
+          "provenance": "ai_generated",
+          "queryOrPrompt": "unpowered dormant matte grey baseline state of detailed mechanical cybernetic prosthetic forearm and neural wrist implant with exposed chrome titanium actuators, copper micro-coils and glowing cyan optical circuit veins on a lit surgical tech workbench, cool dim neutral clinic light, no glow, no sparks, centered composition, no text",
+          "requiresHuman": false
+        },
+        {
+          "id": "req-B-right",
+          "role": "comparison_right",
+          "acquisitionMode": "ai_img2img",
+          "provenance": "ai_generated",
+          "queryOrPrompt": "overcharged activated glowing state of the exact same detailed mechanical cybernetic prosthetic forearm and neural wrist implant with exposed chrome titanium actuators, copper micro-coils and glowing cyan optical circuit veins on a lit surgical tech workbench, bright electric cyan and crimson plasma arcs, intense neon sparks and power surge, vibrant dramatic contrast, no text",
+          "requiresHuman": false,
+          "transformFromRequirementId": "req-B-left",
+          "strength": 0.62
+        }
+      ]
+    },
+    "provenance": [
+      {
+        "role": "comparison_left",
+        "provenance": "ai_generated",
+        "description": "Gerado por IA para o conceito \"NORMAL vs APRIMORADO: CYBERWARE\""
+      },
+      {
+        "role": "comparison_right",
+        "provenance": "ai_generated",
+        "description": "Transformação img2img condicionada para o conceito \"NORMAL vs APRIMORADO: CYBERWARE\""
+      }
+    ],
+    "preRenderCritique": {
+      "conceptId": "concept-B-714dc383",
+      "stage": "pre_render",
+      "passed": true,
+      "isGenericOrWeak": false,
+      "narrativeRelevanceScore": 88,
+      "originalityScore": 92,
+      "compositionScore": 86,
+      "legibilityScore": 88,
+      "focalPointScore": 90,
+      "scriptCoherenceScore": 90,
+      "criticNotes": [
+        "Conceito distinto (before_after_comparison/split_comparison) com foco claro em \"Mesmo sujeito/implante transformado lado a lado (NORMAL desl\"."
+      ]
+    },
+    "postRenderCritique": {
+      "conceptId": "concept-B-714dc383",
+      "stage": "post_render",
+      "passed": true,
+      "isGenericOrWeak": false,
+      "narrativeRelevanceScore": 90,
+      "originalityScore": 92,
+      "compositionScore": 80,
+      "legibilityScore": 76,
+      "focalPointScore": 86,
+      "scriptCoherenceScore": 90,
+      "criticNotes": [
+        "Transformação visual antes/depois validada (rgbDelta=56.2, sideDelta=18.7).",
+        "Miniatura 224×126 stdev=54.3; proveniência: ai_generated, ai_generated."
+      ]
+    },
+    "auditScore": {
+      "legibility": 76,
+      "contrast": 87,
+      "composition": 80,
+      "brandConsistency": 95,
+      "overall": 83,
+      "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
+    }
+  },
+  {
+    "concept": {
+      "id": "concept-C-c81d37cf",
+      "label": "C",
+      "title": "CYBERWARE em ação em Ação",
+      "archetype": "action_moment",
+      "blueprint": "fullscreen_action_hud",
+      "focalSubject": "Cena dinâmica em primeira pessoa mostrando dynamic first-person combat action shot of a glowing cybernetic forearm blade implant actively slashing through electric cyan and orange sparks in a neon rain street, motion energy",
+      "visualNarrative": "Mostra o elemento central em pleno uso dinâmico (ação, faíscas, movimento), sem recorrer a retrato estático e sem rotular clipe sintético como gameplay real.",
+      "curiosityHook": "Captura o instante exato de impacto/ativação no meio da ação, levando o espectador a clicar para ver a consequência da cena.",
+      "visualProofSummary": "Cena de ação dinâmica mostrando o mecanismo em uso real (proveniência honesta: IA, sem selo falso de cena real).",
+      "emotion": "adrenaline",
+      "usesHumanCharacter": false,
+      "textRole": "minimal_complement",
+      "headlineText": "CYBERWARE SECRETO",
+      "kickerText": "EM AÇÃO",
+      "editorialRationale": "Mostra CYBERWARE em ação ativa em vez de personagem parado, mantendo proveniência honesta (ai_generated).",
+      "mediaRequirements": [
+        {
+          "id": "req-C-action",
+          "role": "primary_scene",
+          "acquisitionMode": "ai_generate",
+          "provenance": "ai_generated",
+          "queryOrPrompt": "dynamic first-person combat action shot of a glowing cybernetic forearm blade implant actively slashing through electric cyan and orange sparks in a neon rain street, motion energy, high energy dynamic angle, crisp action focal point, no static standing portrait, no text",
+          "requiresHuman": false
+        }
+      ]
+    },
+    "provenance": [
+      {
+        "role": "primary_scene",
+        "provenance": "ai_generated",
+        "description": "Gerado por IA para o conceito \"CYBERWARE em ação em Ação\""
+      }
+    ],
+    "preRenderCritique": {
+      "conceptId": "concept-C-c81d37cf",
+      "stage": "pre_render",
+      "passed": true,
+      "isGenericOrWeak": false,
+      "narrativeRelevanceScore": 88,
+      "originalityScore": 92,
+      "compositionScore": 86,
+      "legibilityScore": 88,
+      "focalPointScore": 90,
+      "scriptCoherenceScore": 90,
+      "criticNotes": [
+        "Conceito distinto (action_moment/fullscreen_action_hud) com foco claro em \"Cena dinâmica em primeira pessoa mostrando dynamic first-per\"."
+      ]
+    },
+    "postRenderCritique": {
+      "conceptId": "concept-C-c81d37cf",
+      "stage": "post_render",
+      "passed": true,
+      "isGenericOrWeak": false,
+      "narrativeRelevanceScore": 90,
+      "originalityScore": 92,
+      "compositionScore": 87,
+      "legibilityScore": 82,
+      "focalPointScore": 86,
+      "scriptCoherenceScore": 90,
+      "criticNotes": [
+        "Miniatura 224×126 stdev=52.0; proveniência: ai_generated."
+      ]
+    },
+    "auditScore": {
+      "legibility": 82,
+      "contrast": 81,
+      "composition": 87,
+      "brandConsistency": 95,
+      "overall": 85,
       "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
     }
   }

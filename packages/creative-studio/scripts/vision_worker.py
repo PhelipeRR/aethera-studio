@@ -12,7 +12,8 @@ from pathlib import Path
 
 def run_generate(args: argparse.Namespace) -> None:
     import torch
-    from diffusers import AutoPipelineForText2Image
+    from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
+    from PIL import Image
 
     device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
@@ -21,11 +22,14 @@ def run_generate(args: argparse.Namespace) -> None:
     if device == "cuda":
         load_kwargs["variant"] = "fp16"
 
+    use_img2img = bool(args.init_image)
+    pipeline_cls = AutoPipelineForImage2Image if use_img2img else AutoPipelineForText2Image
+
     try:
-        pipe = AutoPipelineForText2Image.from_pretrained(args.model, **load_kwargs)
+        pipe = pipeline_cls.from_pretrained(args.model, **load_kwargs)
     except Exception:
         load_kwargs.pop("local_files_only", None)
-        pipe = AutoPipelineForText2Image.from_pretrained(args.model, **load_kwargs)
+        pipe = pipeline_cls.from_pretrained(args.model, **load_kwargs)
 
     if device == "cuda":
         # Memory-efficient options for 8 GB VRAM (especially when other apps share VRAM)
@@ -42,14 +46,28 @@ def run_generate(args: argparse.Namespace) -> None:
     if args.seed is not None:
         generator = torch.Generator(device="cpu").manual_seed(args.seed)
 
-    result = pipe(
-        prompt=args.prompt,
-        width=args.width,
-        height=args.height,
-        num_inference_steps=args.steps,
-        guidance_scale=0.0,
-        generator=generator,
-    )
+    if use_img2img:
+        init_img = Image.open(args.init_image).convert("RGB").resize((args.width, args.height), Image.Resampling.LANCZOS)
+        strength = max(0.25, min(0.95, float(args.strength)))
+        # SDXL-Turbo needs int(steps * strength) >= 2 for visible transformation
+        effective_steps = max(4, int(round(max(args.steps, 4) / strength)))
+        result = pipe(
+            prompt=args.prompt,
+            image=init_img,
+            strength=strength,
+            num_inference_steps=effective_steps,
+            guidance_scale=0.0,
+            generator=generator,
+        )
+    else:
+        result = pipe(
+            prompt=args.prompt,
+            width=args.width,
+            height=args.height,
+            num_inference_steps=args.steps,
+            guidance_scale=0.0,
+            generator=generator,
+        )
     image = result.images[0]
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -232,6 +250,8 @@ def main() -> int:
     gen.add_argument("--steps", type=int, default=3)
     gen.add_argument("--seed", type=int, default=None)
     gen.add_argument("--model", default="stabilityai/sdxl-turbo")
+    gen.add_argument("--init-image", default=None)
+    gen.add_argument("--strength", type=float, default=0.55)
     gen.add_argument("--cpu", action="store_true")
 
     seg = sub.add_parser("segment")

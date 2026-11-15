@@ -82,6 +82,7 @@ describe('CS-8 — Concept-Driven Creative Engine', () => {
       },
     ];
 
+    const genreTriples: string[] = [];
     for (const t of topics) {
       const { proposals, enginesUsed } = await conceptEngine.generateConceptLab({
         title: t.title,
@@ -96,16 +97,20 @@ describe('CS-8 — Concept-Driven Creative Engine', () => {
       const blueprints = new Set(proposals.map((p) => p.concept.blueprint));
       expect(archetypes.size).toBe(3);
       expect(blueprints.size).toBe(3);
+      genreTriples.push(proposals.map((p) => p.concept.archetype).join('+'));
 
       for (const p of proposals) {
         expect(p.concept.usesHumanCharacter).toBe(false);
         expect(p.concept.editorialRationale.length).toBeGreaterThan(30);
+        expect(p.concept.curiosityHook?.length ?? 0).toBeGreaterThan(20);
         expect(p.preRenderCritique.passed).toBe(true);
         expect(p.audit.findings.filter((f) => f.severity === 'critical'), `${t.title} (${p.concept.label})`).toEqual([]);
         expect(p.postRenderCritique.criticNotes.join(' | ') && p.postRenderCritique.passed, `${t.title} (${p.concept.label}): ${p.postRenderCritique.criticNotes.join(' | ')}`).toBe(true);
         expect(p.audit.passed).toBe(true);
       }
     }
+    // Anime, documentary, and game must NOT collapse to the exact same 3 archetypes
+    expect(new Set(genreTriples).size).toBe(3);
 
     // Visual Concept Critic rejects duplicate / generic concepts before rendering
     const duplicate = creativeConceptProposalSchema.parse({
@@ -242,9 +247,10 @@ describe('CS-8 — Concept-Driven Creative Engine', () => {
       headline: 'CYBERWARE SECRETO',
       prompt: 'Cyberpunk 2077 implante cibernético secreto, comparação normal vs aprimorado e poder em ação',
       scriptText:
-        'Neste vídeo mostramos o implante cibernético oculto em close-up, a comparação antes e depois da habilidade aprimorada e o poder em ação no gameplay real.',
+        'Neste vídeo mostramos o implante cibernético oculto em close-up, a comparação antes e depois da habilidade aprimorada e o poder em ação.',
       brandKit: kit,
       extractedFrames: analysis.candidates,
+      videoSourceType: 'synthetic_ai_clip',
       sceneHints: [
         { timestampSec: 1.0, label: 'estado normal', emotion: 'calm' },
         { timestampSec: 2.5, label: 'poder cibernético em ação', emotion: 'adrenaline' },
@@ -257,9 +263,11 @@ describe('CS-8 — Concept-Driven Creative Engine', () => {
     expect(propB!.concept.archetype).toBe('before_after_comparison');
     expect(propC!.concept.archetype).toBe('action_moment');
 
-    // Verify provenance honesty: C uses real_video_frame, A uses ai_generated
+    // Verify provenance honesty: synthetic_ai_clip is NEVER labeled real_video_frame / CENA REAL
     expect(propA!.acquiredMedia[0]?.provenance).toBe('ai_generated');
-    expect(propC!.acquiredMedia[0]?.provenance).toBe('real_video_frame');
+    expect(propB!.concept.mediaRequirements[1]?.acquisitionMode).toBe('ai_img2img');
+    expect(propC!.acquiredMedia[0]?.provenance).toBe('ai_generated');
+    expect(propC!.concept.kickerText).not.toBe('CENA REAL');
 
     const outFiles = [
       join(CS8_ARTIFACTS_DIR, 'cyberpunk-2077-concept-A-implante-secreto.png'),

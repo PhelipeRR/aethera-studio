@@ -16,6 +16,8 @@ export interface ImageGenerationRequest {
   height: number;
   style?: string;
   referenceImagePaths?: string[];
+  /** Optional img2img denoising strength (0..1) when referenceImagePaths[0] is provided */
+  strength?: number;
 }
 
 export interface BackgroundRemovalRequest {

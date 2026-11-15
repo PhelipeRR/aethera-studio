@@ -389,7 +389,12 @@ export const conceptBlueprintSchema = z.enum([
 ]);
 export type ConceptBlueprint = z.infer<typeof conceptBlueprintSchema>;
 
-export const mediaProvenanceSchema = z.enum(['real_video_frame', 'ai_generated', 'brand_asset']);
+export const mediaProvenanceSchema = z.enum([
+  'real_video_frame',
+  'synthetic_video_frame',
+  'ai_generated',
+  'brand_asset',
+]);
 export type MediaProvenance = z.infer<typeof mediaProvenanceSchema>;
 
 export const conceptMediaRequirementSchema = z.object({
@@ -403,11 +408,20 @@ export const conceptMediaRequirementSchema = z.object({
     'comparison_right',
     'backdrop',
   ]),
-  acquisitionMode: z.enum(['video_frame', 'video_frame_crop', 'ai_generate', 'ai_segment', 'brand_reference']),
+  acquisitionMode: z.enum([
+    'video_frame',
+    'video_frame_crop',
+    'ai_generate',
+    'ai_img2img',
+    'ai_segment',
+    'brand_reference',
+  ]),
   provenance: mediaProvenanceSchema,
   queryOrPrompt: z.string().min(1),
   requiresHuman: z.boolean().default(false),
   preferredTimestampSec: z.number().nonnegative().optional(),
+  transformFromRequirementId: z.string().min(1).optional(),
+  strength: z.number().min(0.2).max(0.95).optional(),
 });
 export type ConceptMediaRequirement = z.infer<typeof conceptMediaRequirementSchema>;
 
@@ -419,6 +433,8 @@ export const creativeConceptProposalSchema = z.object({
   blueprint: conceptBlueprintSchema,
   focalSubject: z.string().min(1),
   visualNarrative: z.string().min(1),
+  curiosityHook: z.string().optional(),
+  visualProofSummary: z.string().optional(),
   emotion: z.string().min(1),
   usesHumanCharacter: z.boolean(),
   textRole: z.enum(['minimal_complement', 'comparison_labels', 'editorial_headline']),

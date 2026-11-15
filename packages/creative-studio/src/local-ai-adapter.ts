@@ -106,6 +106,12 @@ export class LocalPythonAiAdapter implements ExternalImageAdapter {
         '--model',
         this.model,
       ];
+      if (request.referenceImagePaths?.[0] && existsSync(request.referenceImagePaths[0])) {
+        args.push('--init-image', resolve(request.referenceImagePaths[0]));
+        if (typeof request.strength === 'number') {
+          args.push('--strength', String(request.strength));
+        }
+      }
       if (this.forceCpu) args.push('--cpu');
 
       await execFileAsync(this.pythonPath, args, { timeout: this.timeoutMs });

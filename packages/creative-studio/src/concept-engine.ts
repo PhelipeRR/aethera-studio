@@ -32,6 +32,8 @@ export interface ConceptEngineInput {
   brandKit?: BrandKit | null;
   sceneHints?: VideoSceneHint[];
   extractedFrames?: ExtractedFrameCandidate[];
+  /** Explicit provenance of extractedFrames so synthetic AI clips are never labeled authentic gameplay */
+  videoSourceType?: 'authentic_gameplay' | 'synthetic_ai_clip' | 'unknown';
   watermarkAsset?: ManagedAssetRef | null;
   sourceCinemaProjectId?: string;
   sourceVideoAssetId?: string;
@@ -62,6 +64,9 @@ interface ExtractedScriptEntities {
   comparisonPair: [string, string];
   shortHeadline: string;
   kicker: string;
+  genre: 'games' | 'anime' | 'documentary' | 'general';
+  objectVisualDescriptor: string;
+  actionVisualDescriptor: string;
 }
 
 const STOP_WORDS = new Set([
@@ -169,6 +174,29 @@ export function extractNarrativeEntities(input: ConceptEngineInput): ExtractedSc
           ? 'ANÁLISE'
           : unique[0]?.toUpperCase() ?? 'DESTAQUE';
 
+  const genre: ExtractedScriptEntities['genre'] =
+    /anime|epis[oó]dio|mang[aá]|selo|feiti[cç]|shonen|seinen/.test(lower)
+      ? 'anime'
+      : /document[aá]rio|expedi[cç]|fossa|oceano|arquivo|hist[oó]ria|investiga/.test(lower)
+        ? 'documentary'
+        : /cyberware|implante|gameplay|jogo|game|boss|build|cyberpunk|rpg/.test(lower)
+          ? 'games'
+          : 'general';
+
+  const objectVisualDescriptor = /cyberware|implante|bi[oô]nic|pr[oó]tese|sandevistan|mantis/.test(lower)
+    ? 'detailed mechanical cybernetic prosthetic forearm and neural wrist implant with exposed chrome titanium actuators, copper micro-coils and glowing cyan optical circuit veins on a lit surgical tech workbench'
+    : /selo|amuleto|rel[ií]quia|runa/.test(lower)
+      ? 'intricate ancient carved stone and gold mystic seal artifact with glowing crimson runes cracking open on a dark pedestal'
+      : /submarino|fossa|oceano|marinh/.test(lower)
+        ? 'deep-sea scientific submersible bathysphere spotlighting an encrusted sunken relic on the ocean floor'
+        : `detailed recognizable physical artifact representing ${primaryObject} and ${secondaryTerm} under crisp studio key lighting`;
+
+  const actionVisualDescriptor = /cyberware|implante|bi[oô]nic|pr[oó]tese|sandevistan|mantis/.test(lower)
+    ? 'dynamic first-person combat action shot of a glowing cybernetic forearm blade implant actively slashing through electric cyan and orange sparks in a neon rain street, motion energy'
+    : /selo|amuleto|rel[ií]quia|anime/.test(lower)
+      ? 'dramatic anime climax energy wave erupting from a shattering cursed seal inside an underground station, dynamic speed lines'
+      : `wide dynamic cinematic action climax illustrating ${primaryObject} in active use, dramatic motion energy`;
+
   return {
     keywords: unique.slice(0, 8),
     primaryObject,
@@ -176,6 +204,9 @@ export function extractNarrativeEntities(input: ConceptEngineInput): ExtractedSc
     comparisonPair,
     shortHeadline: headlineBase.toUpperCase().slice(0, 32),
     kicker,
+    genre,
+    objectVisualDescriptor,
+    actionVisualDescriptor,
   };
 }
 
@@ -247,123 +278,232 @@ export class ConceptDrivenEngine {
 
     const topicFocus = entities.keywords.slice(0, 3).join(' ') || input.prompt.slice(0, 48);
     const hasRealFrames = (input.extractedFrames?.length ?? 0) > 0;
+    const isAuthenticGameplay = hasRealFrames && input.videoSourceType === 'authentic_gameplay';
     const bestFrame = input.extractedFrames?.[0];
-    const secondFrame = input.extractedFrames?.[1] ?? bestFrame;
-
-    // Concept A: Object / Artifact Close-Up (explicitly NO human character required)
-    const conceptA = creativeConceptProposalSchema.parse({
-      id: `concept-A-${randomUUID().slice(0, 8)}`,
-      label: 'A',
-      title: llmConcepts?.A?.title || `O Segredo de ${entities.primaryObject}`,
-      archetype: 'object_focus',
-      blueprint: 'macro_center_object',
-      focalSubject:
-        llmConcepts?.A?.focalSubject ||
-        `Close-up macro de componente/objeto emblemático ligado a ${topicFocus}, isolado com iluminação dramática`,
-      visualNarrative:
-        llmConcepts?.A?.visualNarrative ||
-        `O objeto central ligado a ${entities.primaryObject} aparece em destaque dramático com energia e detalhes reveladores; o texto mínimo apenas confirma o gancho sem precisar explicar tudo.`,
-      emotion: 'mystery',
-      usesHumanCharacter: false,
-      textRole: 'minimal_complement',
-      headlineText: (llmConcepts?.A?.headlineText || entities.shortHeadline).slice(0, 48),
-      kickerText: entities.kicker.slice(0, 32),
-      editorialRationale:
-        llmConcepts?.A?.editorialRationale ||
-        `Conceito A evita repetir personagem genérico: coloca o elemento físico/técnico central de "${topicFocus}" como protagonista em plano macro dramático, comunicando imediatamente o tema do roteiro.`,
-      mediaRequirements: [
-        {
-          id: 'req-A-object',
-          role: 'hero_object',
-          acquisitionMode: 'ai_generate',
-          provenance: 'ai_generated',
-          queryOrPrompt: `dramatic macro studio close-up of a mysterious intricate iconic object representing ${topicFocus}, glowing core details, moody rim lighting on dark atmospheric background, high contrast focal point, no people, no faces, no text`,
-          requiresHuman: false,
-        },
-      ],
-    });
-
-    // Concept B: Visual Before vs. After / Contrast Comparison
     const [leftLbl, rightLbl] = entities.comparisonPair;
-    const conceptB = creativeConceptProposalSchema.parse({
-      id: `concept-B-${randomUUID().slice(0, 8)}`,
-      label: 'B',
-      title: llmConcepts?.B?.title || `${leftLbl} vs ${rightLbl}: ${entities.primaryObject}`,
-      archetype: 'before_after_comparison',
-      blueprint: 'split_comparison',
-      focalSubject:
-        llmConcepts?.B?.focalSubject ||
-        `Comparação visual lado a lado contrastando estado ${leftLbl.toLowerCase()} versus estado ${rightLbl.toLowerCase()} em ${topicFocus}`,
-      visualNarrative:
-        llmConcepts?.B?.visualNarrative ||
-        `Tela dividida contrastando visualmente o estado comum/inicial à esquerda (dessaturado e contido) contra o estado aprimorado/intenso à direita (vibrante e carregado de efeito), criando curiosidade imediata.`,
-      emotion: 'contrast',
-      usesHumanCharacter: false,
-      textRole: 'comparison_labels',
-      headlineText: (llmConcepts?.B?.headlineText || entities.shortHeadline).slice(0, 48),
-      leftComparisonLabel: leftLbl,
-      rightComparisonLabel: rightLbl,
-      editorialRationale:
-        llmConcepts?.B?.editorialRationale ||
-        `Conceito B traduz o roteiro em contraste visual direto (${leftLbl} vs ${rightLbl}), permitindo que o espectador entenda a transformação/diferença de ${entities.primaryObject} em menos de 1 segundo.`,
-      mediaRequirements: [
-        {
-          id: 'req-B-left',
-          role: 'comparison_left',
-          acquisitionMode: hasRealFrames ? 'video_frame' : 'ai_generate',
-          provenance: hasRealFrames ? 'real_video_frame' : 'ai_generated',
-          queryOrPrompt: `restrained standard unenhanced scene of ${topicFocus}, muted desaturated cool lighting, calm baseline state, no text`,
-          requiresHuman: false,
-          ...(secondFrame ? { preferredTimestampSec: secondFrame.timestampSec } : {}),
-        },
-        {
-          id: 'req-B-right',
-          role: 'comparison_right',
-          acquisitionMode: 'ai_generate',
-          provenance: 'ai_generated',
-          queryOrPrompt: `overcharged upgraded high-energy transformation scene of ${topicFocus}, glowing neon energy arcs, intense dynamic lighting and visual power surge, no text`,
-          requiresHuman: false,
-        },
-      ],
-    });
 
-    // Concept C: Real Video Action Moment / Environmental Story as Protagonist
-    const conceptC = creativeConceptProposalSchema.parse({
-      id: `concept-C-${randomUUID().slice(0, 8)}`,
-      label: 'C',
-      title: llmConcepts?.C?.title || `${entities.actionPhrase} em Cena Real`,
-      archetype: hasRealFrames ? 'action_moment' : 'transformation_scene',
-      blueprint: 'fullscreen_action_hud',
-      focalSubject:
-        llmConcepts?.C?.focalSubject ||
-        (hasRealFrames
-          ? `Frame real de maior impacto do vídeo (${bestFrame?.timestampSec.toFixed(1)}s) com o efeito/ação como protagonista`
-          : `Cena dinâmica de transformação/ação centrada em ${topicFocus}`),
-      visualNarrative:
-        llmConcepts?.C?.visualNarrative ||
-        (hasRealFrames
-          ? `Usa diretamente o momento real capturado do vídeo produzido como imagem principal, realçando o ponto de ação com iluminação cinematográfica e texto enxuto que não cobre a cena.`
-          : `Cena ampla de ação/acontecimento onde o ambiente e o efeito visual contam o clímax do roteiro sem depender de busto recortado.`),
-      emotion: 'adrenaline',
-      usesHumanCharacter: false,
-      textRole: 'minimal_complement',
-      headlineText: (llmConcepts?.C?.headlineText || entities.shortHeadline).slice(0, 48),
-      kickerText: hasRealFrames ? 'CENA REAL' : entities.kicker.slice(0, 32),
-      editorialRationale:
-        llmConcepts?.C?.editorialRationale ||
-        `Conceito C prioriza autenticidade: coloca o momento real de ${entities.actionPhrase} em tela cheia com mínimo de texto complementar, diferenciando-se radicalmente do close-up de objeto (A) e do comparativo (B).`,
-      mediaRequirements: [
-        {
-          id: 'req-C-action',
-          role: 'primary_scene',
-          acquisitionMode: hasRealFrames ? 'video_frame' : 'ai_generate',
-          provenance: hasRealFrames ? 'real_video_frame' : 'ai_generated',
-          queryOrPrompt: `wide dynamic cinematic action climax illustrating ${topicFocus}, dramatic motion energy and volumetric depth, no text`,
-          requiresHuman: false,
-          ...(bestFrame ? { preferredTimestampSec: bestFrame.timestampSec } : {}),
-        },
-      ],
-    });
+    // Select genre-appropriate archetypes so anime, documentary, and games don't collapse into the same 3 templates
+    const archetypeTriple: [ConceptVisualArchetype, ConceptVisualArchetype, ConceptVisualArchetype] =
+      entities.genre === 'anime'
+        ? ['mystery_reveal', 'transformation_scene', 'action_moment']
+        : entities.genre === 'documentary'
+          ? ['environmental_story', 'object_focus', 'before_after_comparison']
+          : ['object_focus', 'before_after_comparison', 'action_moment'];
+
+    const blueprintFor = (arch: ConceptVisualArchetype): ConceptBlueprint => {
+      switch (arch) {
+        case 'object_focus':
+          return 'macro_center_object';
+        case 'before_after_comparison':
+          return 'split_comparison';
+        case 'action_moment':
+          return 'fullscreen_action_hud';
+        case 'mystery_reveal':
+          return 'mystery_spotlight';
+        case 'transformation_scene':
+        case 'environmental_story':
+          return 'asymmetric_story';
+      }
+    };
+
+    const buildByArchetype = (
+      label: 'A' | 'B' | 'C',
+      archetype: ConceptVisualArchetype,
+      override?: Partial<CreativeConceptProposal>,
+    ): CreativeConceptProposal => {
+      const blueprint = blueprintFor(archetype);
+      if (archetype === 'object_focus') {
+        return creativeConceptProposalSchema.parse({
+          id: `concept-${label}-${randomUUID().slice(0, 8)}`,
+          label,
+          title: override?.title || `Em Destaque: ${entities.primaryObject}`,
+          archetype,
+          blueprint,
+          focalSubject:
+            override?.focalSubject ||
+            `Close-up macro reconhecível de ${entities.objectVisualDescriptor}`,
+          visualNarrative:
+            override?.visualNarrative ||
+            `O objeto/implante central (${entities.primaryObject}) aparece isolado, nítido e iluminado em bancada técnica para que o espectador o reconheça sem depender do título.`,
+          curiosityHook:
+            `Mostra o mecanismo físico/tecnológico exato em detalhe próximo, fazendo o espectador perguntar o que esse componente faz e onde encontrá-lo.`,
+          visualProofSummary: `Objeto central iluminado e reconhecível sem depender do texto.`,
+          emotion: 'mystery',
+          usesHumanCharacter: false,
+          textRole: 'minimal_complement',
+          headlineText: (override?.headlineText || entities.shortHeadline).slice(0, 48),
+          kickerText: entities.kicker.slice(0, 32),
+          editorialRationale:
+            override?.editorialRationale ||
+            `Coloca o componente físico de "${topicFocus}" como protagonista macro bem iluminado, comunicando o tema visualmente antes de qualquer leitura.`,
+          mediaRequirements: [
+            {
+              id: `req-${label}-object`,
+              role: 'hero_object',
+              acquisitionMode: 'ai_generate',
+              provenance: 'ai_generated',
+              queryOrPrompt: `sharp studio macro product photography of ${entities.objectVisualDescriptor}, clean metallic edges, bright cyan and amber rim lighting, clearly recognizable device silhouette, no dark black box, no faces, no text`,
+              requiresHuman: false,
+            },
+          ],
+        });
+      }
+
+      if (archetype === 'before_after_comparison') {
+        return creativeConceptProposalSchema.parse({
+          id: `concept-${label}-${randomUUID().slice(0, 8)}`,
+          label,
+          title: override?.title || `${leftLbl} vs ${rightLbl}: ${entities.primaryObject}`,
+          archetype,
+          blueprint,
+          focalSubject:
+            override?.focalSubject ||
+            `Mesmo sujeito/implante transformado lado a lado (${leftLbl} desligado vs ${rightLbl} sobrecarregado)`,
+          visualNarrative:
+            override?.visualNarrative ||
+            `Usa a mesma base visual nos dois lados: à esquerda no estado ${leftLbl.toLowerCase()} (frio, contido e sem energia) e à direita transformado por edição condicionada no estado ${rightLbl.toLowerCase()} (energizado e em sobrecarga).`,
+          curiosityHook:
+            `Revela visualmente a transformação direta de um único elemento, despertando a pergunta: como alcançar esse salto de poder/estado?`,
+          visualProofSummary: `Transformação img2img condicionada mantendo o mesmo sujeito com mudança evidente de energia e cor.`,
+          emotion: 'contrast',
+          usesHumanCharacter: false,
+          textRole: 'comparison_labels',
+          headlineText: (override?.headlineText || entities.shortHeadline).slice(0, 48),
+          leftComparisonLabel: leftLbl,
+          rightComparisonLabel: rightLbl,
+          editorialRationale:
+            override?.editorialRationale ||
+            `Traduz o roteiro em contraste visual real sobre o mesmo sujeito (${leftLbl} vs ${rightLbl}), evitando duas imagens desconexas.`,
+          mediaRequirements: [
+            {
+              id: `req-${label}-left`,
+              role: 'comparison_left',
+              acquisitionMode: 'ai_generate',
+              provenance: 'ai_generated',
+              queryOrPrompt: `unpowered dormant matte grey baseline state of ${entities.objectVisualDescriptor}, cool dim neutral clinic light, no glow, no sparks, centered composition, no text`,
+              requiresHuman: false,
+            },
+            {
+              id: `req-${label}-right`,
+              role: 'comparison_right',
+              acquisitionMode: 'ai_img2img',
+              provenance: 'ai_generated',
+              transformFromRequirementId: `req-${label}-left`,
+              strength: 0.62,
+              queryOrPrompt: `overcharged activated glowing state of the exact same ${entities.objectVisualDescriptor}, bright electric cyan and crimson plasma arcs, intense neon sparks and power surge, vibrant dramatic contrast, no text`,
+              requiresHuman: false,
+            },
+          ],
+        });
+      }
+
+      if (archetype === 'action_moment') {
+        return creativeConceptProposalSchema.parse({
+          id: `concept-${label}-${randomUUID().slice(0, 8)}`,
+          label,
+          title: override?.title || `${entities.actionPhrase} em Ação`,
+          archetype,
+          blueprint,
+          focalSubject:
+            override?.focalSubject ||
+            (isAuthenticGameplay
+              ? `Frame de gameplay autêntico (${bestFrame?.timestampSec.toFixed(1)}s) mostrando ${entities.actionPhrase}`
+              : `Cena dinâmica em primeira pessoa mostrando ${entities.actionVisualDescriptor}`),
+          visualNarrative:
+            override?.visualNarrative ||
+            (isAuthenticGameplay
+              ? `Usa diretamente o momento de ação capturado do gameplay autêntico em tela cheia, destacando o uso real do recurso no vídeo.`
+              : `Mostra o elemento central em pleno uso dinâmico (ação, faíscas, movimento), sem recorrer a retrato estático e sem rotular clipe sintético como gameplay real.`),
+          curiosityHook:
+            `Captura o instante exato de impacto/ativação no meio da ação, levando o espectador a clicar para ver a consequência da cena.`,
+          visualProofSummary: isAuthenticGameplay
+            ? `Frame de gameplay autêntico em momento de ação.`
+            : `Cena de ação dinâmica mostrando o mecanismo em uso real (proveniência honesta: IA, sem selo falso de cena real).`,
+          emotion: 'adrenaline',
+          usesHumanCharacter: false,
+          textRole: 'minimal_complement',
+          headlineText: (override?.headlineText || entities.shortHeadline).slice(0, 48),
+          kickerText: isAuthenticGameplay ? 'GAMEPLAY REAL' : 'EM AÇÃO',
+          editorialRationale:
+            override?.editorialRationale ||
+            `Mostra ${entities.primaryObject} em ação ativa em vez de personagem parado, mantendo proveniência honesta (${isAuthenticGameplay ? 'real_video_frame' : 'ai_generated'}).`,
+          mediaRequirements: [
+            {
+              id: `req-${label}-action`,
+              role: 'primary_scene',
+              acquisitionMode: isAuthenticGameplay ? 'video_frame' : 'ai_generate',
+              provenance: isAuthenticGameplay ? 'real_video_frame' : 'ai_generated',
+              queryOrPrompt: `${entities.actionVisualDescriptor}, high energy dynamic angle, crisp action focal point, no static standing portrait, no text`,
+              requiresHuman: false,
+              ...(isAuthenticGameplay && bestFrame ? { preferredTimestampSec: bestFrame.timestampSec } : {}),
+            },
+          ],
+        });
+      }
+
+      if (archetype === 'mystery_reveal') {
+        return creativeConceptProposalSchema.parse({
+          id: `concept-${label}-${randomUUID().slice(0, 8)}`,
+          label,
+          title: override?.title || `Mistério Revelado: ${entities.primaryObject}`,
+          archetype,
+          blueprint,
+          focalSubject: `Holofote de mistério sobre ${entities.objectVisualDescriptor}`,
+          visualNarrative: `Ilumina apenas o ponto de ruptura ou detalhe oculto de ${entities.primaryObject} sob facho de luz dramático, sugerindo uma descoberta crítica do roteiro.`,
+          curiosityHook: `O contraste entre sombra e foco iluminado cria tensão narrativa e pergunta o que acabou de despertar.`,
+          visualProofSummary: `Foco dramático de descoberta ligado ao tema ${topicFocus}.`,
+          emotion: 'suspense',
+          usesHumanCharacter: false,
+          textRole: 'minimal_complement',
+          headlineText: (override?.headlineText || entities.shortHeadline).slice(0, 48),
+          kickerText: entities.kicker.slice(0, 32),
+          editorialRationale: `Arquétipo mystery_reveal escolhido para narrativas de suspense/anime/investigação em "${topicFocus}".`,
+          mediaRequirements: [
+            {
+              id: `req-${label}-mystery`,
+              role: 'hero_object',
+              acquisitionMode: 'ai_generate',
+              provenance: 'ai_generated',
+              queryOrPrompt: `dramatic spotlight reveal of ${entities.objectVisualDescriptor}, glowing fracture light rays piercing atmospheric mist, high contrast focal point, no text`,
+              requiresHuman: false,
+            },
+          ],
+        });
+      }
+
+      // transformation_scene or environmental_story
+      return creativeConceptProposalSchema.parse({
+        id: `concept-${label}-${randomUUID().slice(0, 8)}`,
+        label,
+        title: override?.title || `Cenário e Escala: ${entities.primaryObject}`,
+        archetype,
+        blueprint,
+        focalSubject: `Narrativa ambiental ampla destacando ${entities.objectVisualDescriptor}`,
+        visualNarrative: `Composição assimétrica que usa escala, ambiente e iluminação cinematográfica para situar ${topicFocus} no mundo da história.`,
+        curiosityHook: `Estabelece escala e atmosfera imediata, convidando o espectador a explorar o ambiente e o acontecimento central.`,
+        visualProofSummary: `Composição ambiental assimétrica com profundidade e escala narrativa.`,
+        emotion: 'awe',
+        usesHumanCharacter: false,
+        textRole: 'editorial_headline',
+        headlineText: (override?.headlineText || entities.shortHeadline).slice(0, 48),
+        kickerText: entities.kicker.slice(0, 32),
+        editorialRationale: `Arquétipo ${archetype} amplia a variedade narrativa para ${entities.genre} sem repetir retratos genéricos.`,
+        mediaRequirements: [
+          {
+            id: `req-${label}-env`,
+            role: 'primary_scene',
+            acquisitionMode: 'ai_generate',
+            provenance: 'ai_generated',
+            queryOrPrompt: `cinematic wide environmental storytelling shot featuring ${entities.objectVisualDescriptor}, dramatic scale, volumetric depth lighting, no text`,
+            requiresHuman: false,
+          },
+        ],
+      });
+    };
+
+    const conceptA = buildByArchetype('A', archetypeTriple[0], llmConcepts?.A);
+    const conceptB = buildByArchetype('B', archetypeTriple[1], llmConcepts?.B);
+    const conceptC = buildByArchetype('C', archetypeTriple[2], llmConcepts?.C);
 
     return {
       concepts: [conceptA, conceptB, conceptC],
@@ -539,10 +679,19 @@ export class ConceptDrivenEngine {
 
       if (!chosenAsset && adapter && adapter.generateImage && adapterAvailable) {
         try {
+          let refPaths: string[] | undefined;
+          if (req.acquisitionMode === 'ai_img2img' && req.transformFromRequirementId) {
+            const baseItem = acquired.find((a) => a.requirementId === req.transformFromRequirementId);
+            if (baseItem) {
+              const absRef = this.ingestion.resolvePortablePath(baseItem.asset.relativePath);
+              refPaths = [absRef];
+            }
+          }
           const genBuf = await adapter.generateImage({
             prompt: req.queryOrPrompt,
             width: req.role === 'comparison_left' || req.role === 'comparison_right' ? 640 : 1024,
             height: req.role === 'comparison_left' || req.role === 'comparison_right' ? 720 : 576,
+            ...(refPaths ? { referenceImagePaths: refPaths, strength: req.strength ?? 0.62 } : {}),
           });
           chosenAsset = await this.ingestion.ingestBuffer({
             buffer: genBuf,
@@ -551,9 +700,33 @@ export class ConceptDrivenEngine {
             originalName: `${concept.id}-${req.role}.png`,
           });
           actualProvenance = 'ai_generated';
-          desc = `Gerado por IA para o conceito "${concept.title}"`;
+          desc = refPaths
+            ? `Transformação img2img condicionada para o conceito "${concept.title}"`
+            : `Gerado por IA para o conceito "${concept.title}"`;
         } catch {
           // fall through to local fallback render
+        }
+      }
+
+      if (!chosenAsset) {
+        if (req.acquisitionMode === 'ai_img2img' && req.transformFromRequirementId) {
+          const baseItem = acquired.find((a) => a.requirementId === req.transformFromRequirementId);
+          if (baseItem) {
+            const absRef = this.ingestion.resolvePortablePath(baseItem.asset.relativePath);
+            const transformedBuf = await sharp(absRef)
+              .modulate({ brightness: 1.35, saturation: 2.1, hue: 145 })
+              .linear(1.28, -10)
+              .png()
+              .toBuffer();
+            chosenAsset = await this.ingestion.ingestBuffer({
+              buffer: transformedBuf,
+              kind: 'image',
+              extension: 'png',
+              originalName: `${concept.id}-${req.role}-transformed.png`,
+            });
+            actualProvenance = 'ai_generated';
+            desc = `Transformação local condicionada de ${req.transformFromRequirementId}`;
+          }
         }
       }
 
@@ -1043,36 +1216,82 @@ export class ConceptDrivenEngine {
     let focalPointScore = 86;
     let compositionScore = audit.scorecard.composition;
     const notes: string[] = [];
+    const postRejections: string[] = [];
 
-    // Verify split comparison actually has visual contrast between left and right halves
+    // 1) Object focus: ensure central focal subject is well-lit and structurally distinct (not a dark indistinct box)
+    if (concept.archetype === 'object_focus') {
+      const centerBuf = await sharp(rendered).extract({ left: 256, top: 110, width: 768, height: 500 }).toBuffer();
+      const centerStats = await sharp(centerBuf).stats();
+      const centerMean =
+        ((centerStats.channels[0]?.mean ?? 0) +
+          (centerStats.channels[1]?.mean ?? 0) +
+          (centerStats.channels[2]?.mean ?? 0)) /
+        3;
+      const centerStdev =
+        ((centerStats.channels[0]?.stdev ?? 0) +
+          (centerStats.channels[1]?.stdev ?? 0) +
+          (centerStats.channels[2]?.stdev ?? 0)) /
+        3;
+      if (centerMean < 34 || centerStdev < 25) {
+        focalPointScore = 44;
+        postRejections.push(
+          `Sujeito central muito escuro/indistinto (luminância=${centerMean.toFixed(1)}, stdev=${centerStdev.toFixed(1)}) para reconhecimento sem depender do título.`,
+        );
+      } else {
+        focalPointScore = Math.min(96, Math.round(70 + centerStdev * 0.5));
+        notes.push(`Sujeito central nítido e iluminado (luminância=${centerMean.toFixed(1)}, stdev=${centerStdev.toFixed(1)}).`);
+      }
+    }
+
+    // 2) Split comparison: verify clear visual transformation (RGB + luminance delta) between left and right halves
     if (concept.blueprint === 'split_comparison') {
-      const leftHalf = await sharp(rendered).extract({ left: 0, top: 0, width: 620, height: 720 }).stats();
-      const rightHalf = await sharp(rendered).extract({ left: 660, top: 0, width: 620, height: 720 }).stats();
+      const leftBuf = await sharp(rendered).extract({ left: 0, top: 0, width: 620, height: 720 }).toBuffer();
+      const rightBuf = await sharp(rendered).extract({ left: 660, top: 0, width: 620, height: 720 }).toBuffer();
+      const leftHalf = await sharp(leftBuf).stats();
+      const rightHalf = await sharp(rightBuf).stats();
       const leftMean =
         ((leftHalf.channels[0]?.mean ?? 0) + (leftHalf.channels[1]?.mean ?? 0) + (leftHalf.channels[2]?.mean ?? 0)) / 3;
       const rightMean =
         ((rightHalf.channels[0]?.mean ?? 0) + (rightHalf.channels[1]?.mean ?? 0) + (rightHalf.channels[2]?.mean ?? 0)) / 3;
       const sideDelta = Math.abs(leftMean - rightMean);
-      if (sideDelta < 3) {
-        compositionScore = Math.min(compositionScore, 55);
-        notes.push(`Baixa diferença visual entre os lados da comparação (${sideDelta.toFixed(1)}).`);
+      const rgbDelta =
+        Math.abs((leftHalf.channels[0]?.mean ?? 0) - (rightHalf.channels[0]?.mean ?? 0)) +
+        Math.abs((leftHalf.channels[1]?.mean ?? 0) - (rightHalf.channels[1]?.mean ?? 0)) +
+        Math.abs((leftHalf.channels[2]?.mean ?? 0) - (rightHalf.channels[2]?.mean ?? 0));
+      if (rgbDelta < 14 && sideDelta < 5) {
+        compositionScore = Math.min(compositionScore, 52);
+        postRejections.push(
+          `Diferença visual insuficiente entre antes e depois (rgbDelta=${rgbDelta.toFixed(1)}, sideDelta=${sideDelta.toFixed(1)}).`,
+        );
       } else {
-        notes.push(`Contraste comparativo entre esquerda e direita validado (delta luminância ${sideDelta.toFixed(1)}).`);
+        notes.push(`Transformação visual antes/depois validada (rgbDelta=${rgbDelta.toFixed(1)}, sideDelta=${sideDelta.toFixed(1)}).`);
       }
     }
 
-    // Verify provenance honesty: AI generated assets are never tagged as real_video_frame
+    // 3) Action moment: verify provenance honesty (never claim CENA REAL on synthetic AI clips)
+    if (concept.archetype === 'action_moment') {
+      if (input.videoSourceType === 'synthetic_ai_clip' && concept.kickerText === 'CENA REAL') {
+        postRejections.push('Proveniência inválida: clipe sintético não pode ser rotulado como CENA REAL.');
+      }
+    }
+
+    // 4) Provenance honesty on layers
     const aiMismatch = acquired.some(
       (a) =>
         a.provenance === 'real_video_frame' &&
         !doc.layers.some((l) => 'assetId' in l && l.assetId === a.asset.id && l.name.includes('real_video_frame')),
     );
     if (aiMismatch) {
-      notes.push('Aviso de proveniência detectado na camada de cena.');
+      postRejections.push('Aviso de proveniência detectado na camada de cena.');
     }
 
     const legibilityScore = smallStdev >= 22 ? audit.scorecard.legibility : Math.max(40, audit.scorecard.legibility - 25);
-    const passed = audit.passed && !aiMismatch && smallStdev >= 22;
+    if (smallStdev < 22) {
+      postRejections.push(`Baixo contraste na miniatura 224×126 (stdev=${smallStdev.toFixed(1)}).`);
+    }
+
+    const passed = audit.passed && postRejections.length === 0;
+    notes.push(...postRejections);
     notes.push(`Miniatura 224×126 stdev=${smallStdev.toFixed(1)}; proveniência: ${acquired.map((a) => a.provenance).join(', ')}.`);
 
     const critique = visualConceptCritiqueSchema.parse({
@@ -1086,7 +1305,7 @@ export class ConceptDrivenEngine {
       legibilityScore,
       focalPointScore,
       scriptCoherenceScore: 90,
-      ...(!passed ? { rejectionReason: 'Falha nos critérios pós-render do Visual Concept Critic.' } : {}),
+      ...(!passed ? { rejectionReason: postRejections[0] ?? 'Falha nos critérios pós-render do Visual Concept Critic.' } : {}),
       criticNotes: notes,
     });
 
@@ -1094,8 +1313,56 @@ export class ConceptDrivenEngine {
   }
 
   /**
+   * Automatically repairs a concept rejected by the post-render visual audit so it can be re-rendered.
+   */
+  repairPostRenderConcept(
+    concept: CreativeConceptProposal,
+    critique: VisualConceptCritique,
+    input: ConceptEngineInput,
+  ): CreativeConceptProposal {
+    const entities = extractNarrativeEntities(input);
+    const updatedReqs = concept.mediaRequirements.map((req) => {
+      if (concept.archetype === 'object_focus') {
+        return {
+          ...req,
+          queryOrPrompt: `bright well-lit studio macro photography of ${entities.objectVisualDescriptor}, luminous key light, metallic reflections, high contrast details, clearly recognizable device, no dark shadow box, no text`,
+        };
+      }
+      if (concept.archetype === 'before_after_comparison' && req.role === 'comparison_right') {
+        return {
+          ...req,
+          acquisitionMode: 'ai_img2img' as const,
+          transformFromRequirementId: concept.mediaRequirements[0]?.id ?? 'req-B-left',
+          strength: 0.72,
+          queryOrPrompt: `dramatically overcharged glowing transformation of the exact same ${entities.objectVisualDescriptor}, intense bright cyan and fiery orange energy surge, high contrast, no text`,
+        };
+      }
+      if (concept.archetype === 'action_moment') {
+        return {
+          ...req,
+          acquisitionMode: 'ai_generate' as const,
+          provenance: 'ai_generated' as const,
+          queryOrPrompt: `${entities.actionVisualDescriptor}, bright sparks, dynamic motion blur, unmistakable action in progress, no text`,
+        };
+      }
+      return req;
+    });
+
+    return creativeConceptProposalSchema.parse({
+      ...concept,
+      id: `${concept.id}-repaired`,
+      kickerText:
+        concept.archetype === 'action_moment' && input.videoSourceType === 'synthetic_ai_clip'
+          ? 'EM AÇÃO'
+          : concept.kickerText,
+      editorialRationale: `${concept.editorialRationale} [Reparado após auditoria visual: ${critique.rejectionReason ?? 'refino de clareza/contraste'}]`,
+      mediaRequirements: updatedReqs,
+    });
+  }
+
+  /**
    * Full CS-8 Concept-Driven Thumbnail Lab pipeline:
-   * Ideate -> Pre-Render Critic (reject & replace generic) -> Acquire Media -> Build -> Post-Render Critic.
+   * Ideate -> Pre-Render Critic -> Acquire Media -> Build -> Post-Render Visual Audit (with auto-repair & re-render).
    */
   async generateConceptLab(input: ConceptEngineInput): Promise<{
     proposals: ConceptLabProposalResult[];
@@ -1121,16 +1388,29 @@ export class ConceptDrivenEngine {
 
     const proposals: ConceptLabProposalResult[] = [];
     for (let i = 0; i < finalConcepts.length; i += 1) {
-      const concept = finalConcepts[i]!;
+      let concept = finalConcepts[i]!;
       const preRenderCritique = this.critiqueConceptsPreRender([concept], input)[0]!;
-      const acquiredMedia = await this.acquireConceptMedia(concept, input);
-      const document = this.buildConceptDocument(concept, acquiredMedia, input);
-      const { critique: postRenderCritique, audit } = await this.critiqueRenderedConcept(
+      let acquiredMedia = await this.acquireConceptMedia(concept, input);
+      let document = this.buildConceptDocument(concept, acquiredMedia, input);
+      let { critique: postRenderCritique, audit } = await this.critiqueRenderedConcept(
         concept,
         document,
         acquiredMedia,
         input,
       );
+
+      if (!postRenderCritique.passed) {
+        rejectionHistoryByIndex[i]!.push({
+          rejectedTitle: `${concept.title} (pós-render)`,
+          reason: postRenderCritique.rejectionReason ?? 'Falha na auditoria visual pós-render.',
+        });
+        concept = this.repairPostRenderConcept(concept, postRenderCritique, input);
+        acquiredMedia = await this.acquireConceptMedia(concept, input);
+        document = this.buildConceptDocument(concept, acquiredMedia, input);
+        const reAudited = await this.critiqueRenderedConcept(concept, document, acquiredMedia, input);
+        postRenderCritique = reAudited.critique;
+        audit = reAudited.audit;
+      }
 
       proposals.push({
         concept,
