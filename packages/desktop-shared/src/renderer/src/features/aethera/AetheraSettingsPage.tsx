@@ -139,8 +139,13 @@ export function AetheraSettingsPage({ description }: { description: string }) {
   const [calendarMeta, setCalendarMeta] = useState({ timezone: 'America/Sao_Paulo', events: 0, series: 0 });
   const [systemBackupBusy, setSystemBackupBusy] = useState<'export' | 'restore' | null>(null);
 
-  const getAetheraBridge = (): AetheraBridgeLoose =>
-    ((window as unknown as { aethera?: AetheraBridgeLoose }).aethera ?? {}) as AetheraBridgeLoose;
+  const getAetheraBridge = (): AetheraBridgeLoose => {
+    const win = window as unknown as {
+      aetheraBridge?: AetheraBridgeLoose;
+      aethera?: AetheraBridgeLoose;
+    };
+    return (win.aetheraBridge ?? win.aethera ?? {}) as AetheraBridgeLoose;
+  };
 
   const refreshAll = useCallback(async () => {
     const nb = window.neuralbridge;
