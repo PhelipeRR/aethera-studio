@@ -3042,10 +3042,31 @@ export function registerAetheraDomainIpc(options: {
     async (event, input?: { refresh?: boolean }) => {
       ensureTrusted(event.senderFrame);
       const antigravity = await detectAntigravityCli({ refresh: Boolean(input?.refresh) });
+      const gwCfg = claudeGatewaySecretStore.load();
+      const claudeCli = findClientCli('claude');
+      const gwReady = Boolean(gwCfg?.enabled && gwCfg?.authToken && gwCfg?.baseUrl && claudeCli);
+      const claudeGatewayEngine = {
+        id: 'claude-gateway',
+        label: 'Claude Gateway',
+        installed: Boolean(claudeCli && gwCfg?.authToken),
+        path: claudeCli ? [claudeCli.command, ...claudeCli.args].join(' ') : null,
+        version: gwCfg?.model ?? 'claude-opus-5-5',
+        testedVersion: 'gateway',
+        authenticated: gwReady ? true : gwCfg?.authToken ? false : null,
+        authMethod: gwReady ? 'gateway-token' : null,
+        features: ['stream-json', 'vision', 'json-schema'],
+        warnings: gwCfg && !gwCfg.enabled ? ['Gateway salvo, mas desativado nas configurações.'] : [],
+        problems: !gwCfg?.authToken
+          ? ['Token do Claude Gateway não configurado em Configurações → Agentes e IA.']
+          : !claudeCli
+            ? ['Claude CLI (claude.exe) não encontrado para executar o Gateway.']
+            : [],
+        checkedAt: new Date().toISOString(),
+      };
       return {
         directors: listAllDirectors(),
         snapshot: evolutionCore.getSnapshot(),
-        extraEngines: [antigravity],
+        extraEngines: [antigravity, claudeGatewayEngine],
       };
     },
   );

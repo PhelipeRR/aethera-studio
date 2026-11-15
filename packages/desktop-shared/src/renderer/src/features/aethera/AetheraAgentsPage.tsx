@@ -497,10 +497,10 @@ export function AetheraAgentsPage() {
       {tab === 'engines' && (
         <section className="rounded-2xl border border-border bg-card p-5 space-y-4">
           <div>
-            <h2 className="text-sm font-semibold text-foreground">Motores Técnicos Subjacentes (Claude / Codex / Antigravity)</h2>
+            <h2 className="text-sm font-semibold text-foreground">Motores Técnicos Subjacentes (Claude / Codex / Antigravity / Claude Gateway)</h2>
             <p className="text-xs text-muted-foreground">{fallbackMode}</p>
           </div>
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             {allEngines.map((agent) => {
               const health = healthOf(agent as Parameters<typeof healthOf>[0]);
               return (

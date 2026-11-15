@@ -66,6 +66,9 @@ interface AetheraBridgeLoose {
     knowledge: unknown[];
     exercises: unknown[];
   }>;
+  cinemaEvolutionSnapshot?: () => Promise<{
+    extraEngines?: Array<{ installed?: boolean; authenticated?: boolean | null; problems?: string[] }>;
+  }>;
   cinemaCalendarSnapshot?: () => Promise<{
     defaultTimezone: string;
     events: unknown[];
@@ -415,13 +418,21 @@ export function AetheraSettingsPage({ description }: { description: string }) {
         : { ok: false, message: 'FFmpeg ou FFprobe não encontrado no ambiente local.' };
     }
     // ai_agents
-    const agentsRes = await nb.agents?.status?.(false).catch(() => []);
-    const ready = Array.isArray(agentsRes)
+    const [agentsRes, evoSnap] = await Promise.all([
+      nb.agents?.status?.(false).catch(() => []),
+      ab.cinemaEvolutionSnapshot?.().catch(() => null),
+    ]);
+    const baseReady = Array.isArray(agentsRes)
       ? agentsRes.filter((a) => Boolean((a as { installed?: boolean; authenticated?: boolean }).installed)).length
       : 0;
+    const extraEngines = (evoSnap as { extraEngines?: Array<{ installed?: boolean; authenticated?: boolean | null; problems?: string[] }> } | null)?.extraEngines ?? [];
+    const extraReady = extraEngines.filter(
+      (e) => Boolean(e.installed) && e.authenticated !== false && (e.problems?.length ?? 0) === 0,
+    ).length;
+    const ready = baseReady + extraReady;
     return ready > 0
       ? { ok: true, message: `${ready} provedor(es) de IA prontos para roteiro e direção.` }
-      : { ok: false, message: 'Nenhum provedor de IA autenticado no momento. Verifique Claude/Codex/Antigravity CLI.' };
+      : { ok: false, message: 'Nenhum provedor de IA autenticado no momento. Verifique Claude/Codex/Antigravity/Gateway.' };
   };
 
   const visibleCategories = CATEGORIES.filter((c) => AETHERA_ALLOWED_SETTINGS_CATEGORIES.includes(c.id));
