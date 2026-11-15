@@ -205,7 +205,7 @@ export class VisionRouter {
             const count = (this.consecutiveTimeouts.get(id) ?? 0) + 1;
             this.consecutiveTimeouts.set(id, count);
             if (count >= 2) {
-              this.cooldowns.set(id, { untilMs: Date.now() + 3 * 60_000, reason: `timeouts consecutivos (${count}): ${detail}` });
+              this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: `timeouts consecutivos (${count}): ${detail}` });
             }
           } else {
             this.consecutiveTimeouts.delete(id);
