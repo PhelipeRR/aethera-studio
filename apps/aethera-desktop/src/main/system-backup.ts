@@ -23,6 +23,7 @@ const SAFE_JSON_NAME = /^[a-zA-Z0-9._-]+\.json$/;
 export interface AetheraSystemBackupCounts {
   cinemaProjects: number;
   cinemaLibraryFiles?: number;
+  creativeStudioFiles?: number;
   libraryAssets?: number;
   academyMaterials: number;
   academyKnowledge: number;
@@ -48,6 +49,7 @@ export interface AetheraSystemBackupBundle {
   calendar?: ReturnType<EditorialCalendarEngine['getSnapshot']>;
   cinemaProjects?: Record<string, unknown>;
   cinemaLibrary?: Record<string, string>;
+  creativeStudioAssets?: Record<string, string>;
 }
 
 export interface SystemBackupDeps {
@@ -59,6 +61,7 @@ export interface SystemBackupDeps {
   calendarFile: string;
   cinemaProjectsDir: string;
   cinemaLibraryDir?: string;
+  creativeStudioDir?: string;
   academyEngine: AetheraAcademyEngine;
   evolutionCore: AetheraEvolutionCore;
   editorialCalendar: EditorialCalendarEngine;
@@ -190,6 +193,7 @@ export function exportSystemBackup(
   }
 
   const cinemaLibrary = deps.cinemaLibraryDir ? collectDirectoryFilesBase64(deps.cinemaLibraryDir) : undefined;
+  const creativeStudioAssets = deps.creativeStudioDir ? collectDirectoryFilesBase64(deps.creativeStudioDir) : undefined;
 
   let libraryAssets = 0;
   if (deps.databaseHandle?.sqlite) {
@@ -206,6 +210,7 @@ export function exportSystemBackup(
   const counts: AetheraSystemBackupCounts = {
     cinemaProjects: Object.keys(cinemaProjects).filter((k) => !k.endsWith('.render.json')).length,
     cinemaLibraryFiles: cinemaLibrary ? Object.keys(cinemaLibrary).length : 0,
+    creativeStudioFiles: creativeStudioAssets ? Object.keys(creativeStudioAssets).length : 0,
     libraryAssets,
     academyMaterials: academySnap.materials.length,
     academyKnowledge: academySnap.knowledge.length,
@@ -231,6 +236,7 @@ export function exportSystemBackup(
     calendar: calendarSnap,
     cinemaProjects,
     ...(cinemaLibrary ? { cinemaLibrary } : {}),
+    ...(creativeStudioAssets ? { creativeStudioAssets } : {}),
   };
 
   mkdirSync(dirname(targetFilePath), { recursive: true });
@@ -347,6 +353,24 @@ export function restoreSystemBackup(
         writeFileSync(safeTarget, Buffer.from(base64Content, 'base64'));
       }
     }
+    if (
+      deps.creativeStudioDir &&
+      parsed.creativeStudioAssets &&
+      typeof parsed.creativeStudioAssets === 'object' &&
+      !Array.isArray(parsed.creativeStudioAssets)
+    ) {
+      if (existsSync(deps.creativeStudioDir)) {
+        copyDirectoryContents(deps.creativeStudioDir, join(preservedDir, 'creative-studio'));
+      }
+      mkdirSync(deps.creativeStudioDir, { recursive: true });
+      for (const [relPath, base64Content] of Object.entries(parsed.creativeStudioAssets)) {
+        if (typeof base64Content !== 'string') continue;
+        const safeTarget = resolveSafeRelativeTarget(deps.creativeStudioDir, relPath);
+        if (!safeTarget) continue;
+        mkdirSync(dirname(safeTarget), { recursive: true });
+        writeFileSync(safeTarget, Buffer.from(base64Content, 'base64'));
+      }
+    }
   } finally {
     if (verifiedTempDbDir) {
       rmSync(verifiedTempDbDir, { recursive: true, force: true });
@@ -358,6 +382,7 @@ export function restoreSystemBackup(
       ? Object.keys(parsed.cinemaProjects).filter((k) => !k.endsWith('.render.json')).length
       : 0,
     cinemaLibraryFiles: parsed.cinemaLibrary ? Object.keys(parsed.cinemaLibrary).length : 0,
+    creativeStudioFiles: parsed.creativeStudioAssets ? Object.keys(parsed.creativeStudioAssets).length : 0,
     libraryAssets: parsed.counts?.libraryAssets ?? 0,
     academyMaterials: parsed.academy?.materials?.length ?? 0,
     academyKnowledge: parsed.academy?.knowledge?.length ?? 0,

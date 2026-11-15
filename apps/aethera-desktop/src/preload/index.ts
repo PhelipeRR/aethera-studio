@@ -131,4 +131,15 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
     ipcRenderer.on('cinema:production-progress', wrapped);
     return () => ipcRenderer.removeListener('cinema:production-progress', wrapped);
   },
+  creativeEngines: () => ipcRenderer.invoke('creative:engines'),
+  creativeListBrandKits: () => ipcRenderer.invoke('creative:list-brand-kits'),
+  creativeSaveBrandKit: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:save-brand-kit', input),
+  creativeListProjects: (artType?: string) => ipcRenderer.invoke('creative:list-projects', artType),
+  creativeLoadProject: (projectId: string) => ipcRenderer.invoke('creative:load-project', projectId),
+  creativeCreateFromPrompt: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:create-from-prompt', input),
+  creativeThumbnailLab: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:thumbnail-lab', input),
+  creativeEditLayer: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:edit-layer', input),
+  creativeExport: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:export', input),
+  creativeApprove: (input: { projectId: string; approvedBy: string }) => ipcRenderer.invoke('creative:approve', input),
+  creativeIngestFile: (input: { sourcePath: string; kind: string }) => ipcRenderer.invoke('creative:ingest-file', input),
 });

@@ -5,7 +5,8 @@
     "jsx": "react-jsx",
     "types": ["node", "vite/client"],
     "paths": {
-      "@/*": ["../../packages/desktop-shared/src/renderer/src/*"]
+      "@/*": ["../../packages/desktop-shared/src/renderer/src/*"],
+      "@neuralbridge/creative-studio": ["../../packages/creative-studio/src/index.ts"]
     }
   },
   "include": [

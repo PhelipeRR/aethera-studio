@@ -78,7 +78,13 @@ export class BrandKitManager {
     return this.store.save(kit);
   }
 
-  update(id: string, patch: Partial<Omit<BrandKit, 'id' | 'createdAt'>>): BrandKit {
+  update(
+    id: string,
+    patch: Partial<Omit<BrandKit, 'id' | 'createdAt' | 'palette' | 'typography'>> & {
+      palette?: Partial<BrandKit['palette']>;
+      typography?: Partial<BrandKit['typography']>;
+    },
+  ): BrandKit {
     const existing = this.store.get(id);
     if (!existing) {
       throw new Error(`Brand Kit not found: ${id}`);

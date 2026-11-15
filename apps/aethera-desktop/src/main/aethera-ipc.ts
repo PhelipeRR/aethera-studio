@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
+import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { exportSystemBackup, restoreSystemBackup } from './system-backup.js';
 import { StagedCinemaPipeline, type StagedProductionJob } from './cinema-pipeline.js';
 import {
@@ -298,6 +299,16 @@ export function registerAetheraDomainIpc(options: {
   const claude = new ClaudeCliAdapter({ resolveEnv: resolveClaudeGatewayEnv });
   const codex = new CodexCliAdapter();
   const agents = [claude, codex];
+  const creativeStudioService = database.handle
+    ? new AetheraCreativeStudioService({
+        db: database.handle.db,
+        userDataDir,
+        resolveClaudeGatewayEnv,
+      })
+    : null;
+  if (creativeStudioService) {
+    registerCreativeStudioIpc(ipcMain, creativeStudioService);
+  }
 
   registerDiagnosticsReleaseIpcHandlers(
     ipcMain,
@@ -2719,7 +2730,20 @@ export function registerAetheraDomainIpc(options: {
       const enriched = { ...res, mediaUrl: toMediaUrl(res.mp4Path) };
       cinemaRenders.set(input.projectId, enriched);
       persistCinemaRender(input.projectId, enriched);
-      return enriched;
+      let autoThumbnailProjectId: string | undefined;
+      if (creativeStudioService && res.mp4Path) {
+        try {
+          const thumb = await creativeStudioService.generateThumbnailForCinemaVideo({
+            cinemaProjectId: input.projectId,
+            videoPath: res.mp4Path,
+            prompt,
+          });
+          autoThumbnailProjectId = thumb.document.id;
+        } catch {
+          // Non-fatal: video render succeeds even if auto-thumbnail fails.
+        }
+      }
+      return autoThumbnailProjectId ? { ...enriched, autoThumbnailProjectId } : enriched;
     },
   );
   ipcMain.handle(
@@ -3356,6 +3380,7 @@ export function registerAetheraDomainIpc(options: {
     calendarFile: join(app.getPath('userData'), 'calendar', 'editorial-calendar-store.json'),
     cinemaProjectsDir,
     cinemaLibraryDir: join(app.getPath('userData'), 'cinema-library'),
+    ...(creativeStudioService ? { creativeStudioDir: creativeStudioService.storageRoot } : {}),
     academyEngine,
     evolutionCore,
     editorialCalendar,

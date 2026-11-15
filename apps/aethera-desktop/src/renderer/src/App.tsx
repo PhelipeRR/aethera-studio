@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { CreativeStudioPanel } from './CreativeStudioPanel.js';
 
 interface AetheraStatus {
   appId: 'aethera';
@@ -11,7 +12,7 @@ interface AetheraStatus {
   peers: Array<{ appId: string; pid: number; baseUrl: string }>;
 }
 
-type Tab = 'produce' | 'runs' | 'review' | 'calendar' | 'ecosystem';
+type Tab = 'produce' | 'creative' | 'runs' | 'review' | 'calendar' | 'ecosystem';
 
 declare global {
   interface Window {
@@ -87,6 +88,7 @@ export function App() {
 
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: 'produce', label: 'Produção por Prompt' },
+    { id: 'creative', label: 'Creative Studio' },
     { id: 'runs', label: 'Produções & Pipeline' },
     { id: 'review', label: 'Revisão por Prompt' },
     { id: 'calendar', label: 'Canais & Calendário' },
@@ -209,6 +211,8 @@ export function App() {
             )}
           </section>
         )}
+
+        {tab === 'creative' && <CreativeStudioPanel />}
 
         {tab === 'ecosystem' && (
           <section>
