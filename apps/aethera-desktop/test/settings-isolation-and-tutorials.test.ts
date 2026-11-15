@@ -15,11 +15,11 @@ import {
 } from '../../../packages/desktop-shared/src/renderer/src/features/aethera/settings-tutorials.js';
 
 describe('App Settings Isolation & Interactive Tutorials', () => {
-  it('isolates Singularity settings and routes from Aethera Studio while keeping all 10 Aethera categories', () => {
+  it('isolates Singularity settings and routes from Aethera Studio while keeping all 11 Aethera categories', () => {
     expect(resolveAppIdentity({ appName: 'Aethera Studio' })).toBe('aethera');
     expect(resolveAppIdentity({ appName: 'Singularity' })).toBe('singularity');
 
-    expect(AETHERA_ALLOWED_SETTINGS_CATEGORIES).toHaveLength(10);
+    expect(AETHERA_ALLOWED_SETTINGS_CATEGORIES).toHaveLength(11);
     for (const cat of AETHERA_ALLOWED_SETTINGS_CATEGORIES) {
       expect(isSettingsCategoryAllowed('aethera', cat)).toBe(true);
     }

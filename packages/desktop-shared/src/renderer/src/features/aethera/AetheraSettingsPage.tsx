@@ -7,6 +7,7 @@ import {
   Clapperboard,
   Database,
   Download,
+  Film,
   Gamepad2,
   GraduationCap,
   HelpCircle,
@@ -23,6 +24,7 @@ import {
   AETHERA_ALLOWED_SETTINGS_CATEGORIES,
   type AetheraSettingsCategoryId,
 } from '@/app/app-settings-isolation';
+import { MediaSourcesSettings } from './MediaSourcesSettings';
 import { SetupTutorialDrawer } from './SetupTutorialDrawer';
 import type { TutorialIntegrationId } from './settings-tutorials';
 
@@ -38,6 +40,7 @@ const CATEGORIES: CategoryMeta[] = [
   { id: 'youtube', label: 'YouTube', subtitle: 'OAuth, canal, uploads e agendamentos', icon: Tv },
   { id: 'twitch_igdb', label: 'Twitch / IGDB', subtitle: 'Client ID, Client Secret e pesquisa de jogos', icon: Gamepad2 },
   { id: 'rawg', label: 'RAWG e fontes de pesquisa', subtitle: 'Chaves de API e provedores de informações', icon: Database },
+  { id: 'media_sources', label: 'Fontes de mídia', subtitle: 'Steam, YouTube, Pexels, Pixabay, anime e datasets', icon: Film },
   { id: 'ai_agents', label: 'Agentes e IA', subtitle: 'Claude, Codex, Antigravity, modelos e fallback', icon: Bot },
   { id: 'voice_studio', label: 'Narração e voz', subtitle: 'Voice Studio, vozes, TTS e áudio', icon: Mic },
   { id: 'production', label: 'Produção audiovisual', subtitle: 'Renderização, FFmpeg, GPU, SFX, VFX e presets', icon: Clapperboard },
@@ -756,6 +759,8 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                 </form>
               </div>
             )}
+
+            {activeCat === 'media_sources' && <MediaSourcesSettings />}
 
             {activeCat === 'rawg' && (
               <div className="space-y-4">

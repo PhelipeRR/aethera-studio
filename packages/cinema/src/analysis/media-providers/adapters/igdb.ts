@@ -18,13 +18,13 @@ import {
 export interface IgdbGameLike {
   id: number;
   name: string;
-  url?: string;
-  first_release_date?: number;
-  involved_companies?: Array<{ company?: { name: string }; developer?: boolean; publisher?: boolean }>;
-  screenshots?: Array<{ image_id: string }>;
-  artworks?: Array<{ image_id: string }>;
-  parent_game?: number;
-  version_parent?: number;
+  url?: string | undefined;
+  first_release_date?: number | undefined;
+  involved_companies?: Array<{ company?: { name: string } | undefined; developer?: boolean | undefined; publisher?: boolean | undefined }> | undefined;
+  screenshots?: Array<{ image_id: string }> | undefined;
+  artworks?: Array<{ image_id: string }> | undefined;
+  parent_game?: number | undefined;
+  version_parent?: number | undefined;
 }
 
 export interface IgdbPort {

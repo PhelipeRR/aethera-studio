@@ -5,6 +5,7 @@ export type AetheraSettingsCategoryId =
   | 'youtube'
   | 'twitch_igdb'
   | 'rawg'
+  | 'media_sources'
   | 'ai_agents'
   | 'voice_studio'
   | 'production'
@@ -25,6 +26,7 @@ export const AETHERA_ALLOWED_SETTINGS_CATEGORIES: readonly AetheraSettingsCatego
   'youtube',
   'twitch_igdb',
   'rawg',
+  'media_sources',
   'ai_agents',
   'voice_studio',
   'production',
