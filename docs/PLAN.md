@@ -1,5 +1,16 @@
 # NeuralBridge — Plano de Implementação
 
+## FASE PARCIAL — Aethera: expansão das fontes de mídia (2026-11-15)
+
+Detalhes, evidências e justificativas em `docs/aethera/MEDIA-SOURCES.md`.
+
+- [x] Camada de adapters, resiliência, licenciamento, classificação (10 classes) e seleção por contexto em `packages/cinema/src/analysis/media-providers/`, integrada ao pipeline com o Media Relevance Gate preservado. Commit 81df3cd, 30/30 testes.
+- [x] Serviço desktop com credenciais em safeStorage, página "Configurações → Fontes de mídia" e telemetria por job no Console. Commit 49b4399, 6/6 + 1/1 testes.
+- [x] Validação real: Steam (busca, screenshot e trailer HLS), nekos.best, kawaii.red e HF Datasets.
+- [x] Desativados com justificativa: waifu.pics, anime-reaction-api e Mixkit. RAWG fica como legado, desligado por padrão.
+- [ ] Commitar a ligação IPC/preload/pipeline, hoje no working tree junto com WIP de outra sessão.
+- [ ] Validação ao vivo de IGDB, YouTube, Pexels e Pixabay (aguarda chaves).
+
 ## FASE CONCLUÍDA — Aethera Creative Studio (`CS-1` .. `CS-5`, 2026-11-15)
 
 Plano em `docs/plans/aethera-creative-studio.md` implementado full-stack em `packages/creative-studio`, `packages/database` e `apps/aethera-desktop`:
