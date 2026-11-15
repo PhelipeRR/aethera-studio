@@ -6,7 +6,11 @@ Quando uma tarefa solicitar a execução de uma fase do plano, continue até con
 
 Não pare entre fases, subfases ou lotes para pedir autorização quando a próxima etapa estiver dentro do objetivo pedido: implemente, edite, rode testes e builds, instale dependências necessárias ao projeto e refatore no escopo sem nova confirmação. Crie um commit local por lote ou subfase concluída e validada, adicionando só os arquivos alterados pela tarefa (`git add <caminhos>`, nunca `-A`). Preserve alterações existentes de outras sessões e registre comandos, resultados e bloqueios ambientais no plano.
 
-Confirmação obrigatória, mesmo no meio da tarefa: push, PR ou publicação externa; deploy; exclusão destrutiva de dados; reset ou descarte de alterações não commitadas (`reset --hard`, `checkout --`, `restore`, `clean`, `stash drop`, force); alteração de credenciais ou configurações sensíveis; operações que afetem trabalho de outras sessões (arquivos, worktrees, branches, processos, bancos compartilhados).
+Confirmação obrigatória, mesmo no meio da tarefa: push, PR ou publicação externa; deploy; exclusão destrutiva de arquivos ou dados; reset, limpeza ou descarte de alterações existentes (`reset --hard`, `checkout --`, `restore`, `clean`, `stash drop`, force); alteração de credenciais ou configurações sensíveis; merge ou operações que possam sobrescrever trabalho de outra sessão (arquivos, worktrees, branches, processos, bancos compartilhados); demais operações externas irreversíveis.
+
+Execução concorrente: preserve alterações não commitadas e não rastreadas que não são suas, prefira branches e worktrees independentes para agentes simultâneos e nunca inclua alterações de outras sessões em commits sem verificar a origem.
+
+As regras de segurança e arquitetura das fases abaixo continuam válidas. Esta política substitui apenas exigências genéricas de autorização que conflitem com a autonomia já concedida pelo usuário.
 
 ## Plano ativo — Fase 50: Singularity
 
