@@ -12,7 +12,7 @@
   "dependencies": {
     "@neuralbridge/agents": "0.1.0",
     "@neuralbridge/database": "0.1.0",
-    "@neuralbridge/extensions-neura": "0.1.0",
+    "@neuralbridge/extension-neura": "1.0.0",
     "@neuralbridge/integration-contracts": "0.1.0",
     "@neuralbridge/shared": "0.1.0",
     "better-sqlite3": "13.0.3",

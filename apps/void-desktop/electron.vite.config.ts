@@ -13,7 +13,7 @@ const WORKSPACE_PACKAGES = [
   '@neuralbridge/agents',
   '@neuralbridge/orchestrator',
   '@neuralbridge/core',
-  '@neuralbridge/extensions-neura',
+  '@neuralbridge/extension-neura',
 ];
 
 export default defineConfig({
