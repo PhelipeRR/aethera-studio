@@ -50,13 +50,19 @@ export interface SystemBackupDeps {
   tmpRoot?: string;
 }
 
+function createBackupTempDir(deps: SystemBackupDeps, prefix: string): string {
+  const tmpBase = deps.tmpRoot ?? join(deps.userDataDir, 'tmp');
+  mkdirSync(tmpBase, { recursive: true });
+  return mkdtempSync(join(tmpBase, prefix));
+}
+
 export function exportSystemBackup(
   deps: SystemBackupDeps,
   targetFilePath: string,
 ): { ok: true; filePath: string; counts: AetheraSystemBackupCounts } {
   let databaseBase64: string | undefined;
   if (deps.databaseHandle) {
-    const tempDir = mkdtempSync(join(deps.tmpRoot ?? join(deps.userDataDir, 'tmp'), 'sys-backup-'));
+    const tempDir = createBackupTempDir(deps, 'sys-backup-');
     try {
       const tempDbFile = join(tempDir, 'snapshot.db');
       backupDatabase(deps.databaseHandle, tempDbFile);
@@ -161,22 +167,22 @@ export function restoreSystemBackup(
 
   let verifiedTempDbDir: string | null = null;
   let verifiedTempDbFile: string | null = null;
-  if (typeof parsed.databaseBase64 === 'string' && parsed.databaseBase64.length > 0) {
-    verifiedTempDbDir = mkdtempSync(join(deps.tmpRoot ?? join(deps.userDataDir, 'tmp'), 'sys-restore-'));
-    verifiedTempDbFile = join(verifiedTempDbDir, 'restore-verify.db');
-    writeFileSync(verifiedTempDbFile, Buffer.from(parsed.databaseBase64, 'base64'));
-    const check = verifyBackup(verifiedTempDbFile);
-    if (!check.ok) {
-      rmSync(verifiedTempDbDir, { recursive: true, force: true });
-      throw new Error(`Backup do banco de dados recusado na verificação de integridade: ${check.error}`);
-    }
-  }
-
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const preservedDir = join(dirname(deps.databaseFile), 'preserved', `system-restore-${stamp}`);
-  mkdirSync(preservedDir, { recursive: true });
-
+  let preservedDir = '';
   try {
+    if (typeof parsed.databaseBase64 === 'string' && parsed.databaseBase64.length > 0) {
+      verifiedTempDbDir = createBackupTempDir(deps, 'sys-restore-');
+      verifiedTempDbFile = join(verifiedTempDbDir, 'restore-verify.db');
+      writeFileSync(verifiedTempDbFile, Buffer.from(parsed.databaseBase64, 'base64'));
+      const check = verifyBackup(verifiedTempDbFile);
+      if (!check.ok) {
+        throw new Error(`Backup do banco de dados recusado na verificação de integridade: ${check.error}`);
+      }
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    preservedDir = join(dirname(deps.databaseFile), 'preserved', `system-restore-${stamp}`);
+    mkdirSync(preservedDir, { recursive: true });
+
     if (verifiedTempDbFile) {
       try {
         deps.databaseHandle?.close();

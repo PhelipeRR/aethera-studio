@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { openDatabase, type DatabaseHandle } from '@neuralbridge/database';
 import { AetheraAcademyEngine, AetheraEvolutionCore, EditorialCalendarEngine } from '../../../packages/cinema/src/index.js';
 import { exportSystemBackup, restoreSystemBackup } from '../src/main/system-backup.js';
 
@@ -136,5 +137,107 @@ describe('Aethera System Backup & Restore', () => {
     restoreSystemBackup(deps, traversalBackup);
     expect(existsSync(join(userDataDir, 'escaped.json'))).toBe(false);
     expect(existsSync(join(userDataDir, 'cinema-projects', 'safe_proj.json'))).toBe(true);
+  });
+
+  it('creates missing userData/tmp directory automatically during export and restore with real SQLite database and cleans up temp dirs', () => {
+    const root = makeTempDir('aethera-sys-missing-tmp-');
+    const userDataDir = join(root, 'userData');
+    const dbFile = join(userDataDir, 'db', 'brain.db');
+    mkdirSync(join(userDataDir, 'db'), { recursive: true });
+
+    const dbHandle = openDatabase(dbFile, {
+      migrationsFolder: join(import.meta.dirname, '../../../packages/database/migrations'),
+    });
+    try {
+      dbHandle.sqlite.exec("CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, val TEXT); INSERT INTO items VALUES ('1', 'ok');");
+
+      const evolutionCore = new AetheraEvolutionCore(join(userDataDir, 'evolution', 'evolution-store.json'));
+      const academyEngine = new AetheraAcademyEngine(evolutionCore, join(userDataDir, 'evolution', 'academy-store.json'));
+      const editorialCalendar = new EditorialCalendarEngine(join(userDataDir, 'calendar', 'editorial-calendar-store.json'));
+
+      const tmpBase = join(userDataDir, 'tmp');
+      expect(existsSync(tmpBase)).toBe(false);
+
+      const existingUserFile = join(root, 'existing-user-note.txt');
+      writeFileSync(existingUserFile, 'keep me', 'utf8');
+
+      const deps = {
+        appVersion: '0.1.65',
+        userDataDir,
+        databaseFile: dbFile,
+        databaseHandle: dbHandle,
+        preferencesFile: join(userDataDir, 'preferences.json'),
+        calendarFile: join(userDataDir, 'calendar', 'editorial-calendar-store.json'),
+        cinemaProjectsDir: join(userDataDir, 'cinema-projects'),
+        academyEngine,
+        evolutionCore,
+        editorialCalendar,
+      };
+
+      const backupPath = join(root, 'final-backup.json');
+      const exported = exportSystemBackup(deps, backupPath);
+      expect(exported.ok).toBe(true);
+      expect(exported.counts.hasDatabase).toBe(true);
+      expect(existsSync(backupPath)).toBe(true);
+      expect(existsSync(existingUserFile)).toBe(true);
+      expect(existsSync(tmpBase)).toBe(true);
+      expect(readdirSync(tmpBase)).toEqual([]);
+
+      const restored = restoreSystemBackup(deps, backupPath);
+      expect(restored.ok).toBe(true);
+      expect(restored.counts.hasDatabase).toBe(true);
+      expect(existsSync(backupPath)).toBe(true);
+      expect(existsSync(existingUserFile)).toBe(true);
+      expect(readdirSync(tmpBase)).toEqual([]);
+    } finally {
+      try {
+        dbHandle.close();
+      } catch {
+        // closed during restore
+      }
+    }
+  });
+
+  it('cleans up temporary directory on export failure without deleting existing user files or prior backups', () => {
+    const root = makeTempDir('aethera-sys-fail-tmp-');
+    const userDataDir = join(root, 'userData');
+    const dbFile = join(userDataDir, 'db', 'brain.db');
+    mkdirSync(join(userDataDir, 'db'), { recursive: true });
+
+    const priorBackup = join(root, 'prior-backup.json');
+    writeFileSync(priorBackup, '{"keep":true}', 'utf8');
+
+    const failingHandle = {
+      serialize: () => {
+        throw new Error('simulated sqlite backup failure');
+      },
+      backup: () => {
+        throw new Error('simulated sqlite backup failure');
+      },
+      close: () => undefined,
+    } as unknown as DatabaseHandle;
+
+    const evolutionCore = new AetheraEvolutionCore(join(userDataDir, 'evolution', 'evolution-store.json'));
+    const academyEngine = new AetheraAcademyEngine(evolutionCore, join(userDataDir, 'evolution', 'academy-store.json'));
+    const editorialCalendar = new EditorialCalendarEngine(join(userDataDir, 'calendar', 'editorial-calendar-store.json'));
+
+    const deps = {
+      appVersion: '0.1.65',
+      userDataDir,
+      databaseFile: dbFile,
+      databaseHandle: failingHandle,
+      preferencesFile: join(userDataDir, 'preferences.json'),
+      calendarFile: join(userDataDir, 'calendar', 'editorial-calendar-store.json'),
+      cinemaProjectsDir: join(userDataDir, 'cinema-projects'),
+      academyEngine,
+      evolutionCore,
+      editorialCalendar,
+    };
+
+    expect(() => exportSystemBackup(deps, join(root, 'failed-backup.json'))).toThrow();
+    const tmpBase = join(userDataDir, 'tmp');
+    expect(existsSync(tmpBase)).toBe(true);
+    expect(readdirSync(tmpBase)).toEqual([]);
+    expect(existsSync(priorBackup)).toBe(true);
   });
 });
