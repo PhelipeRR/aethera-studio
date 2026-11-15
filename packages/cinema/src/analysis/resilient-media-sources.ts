@@ -638,10 +638,13 @@ export async function runAutonomousMediaAcquisition(input: {
   const startedAt = Date.now();
   const stageMode: AcquisitionStageMode = input.stageMode ?? 'full';
   const maxRounds = Math.max(1, input.limits?.maxRounds ?? 3);
-  const baseMaxDurationMs = Math.max(1_000, input.limits?.maxDurationMs ?? 120_000);
+  const baseMaxDurationMs = Math.max(
+    1_000,
+    input.limits?.maxDurationMs ?? Math.max(120_000, Math.min(600_000, input.segments.length * 45_000)),
+  );
   const budgetMultiplier = Math.max(0.25, input.limits?.budgetMultiplier ?? 1);
   const maxDurationMs = Math.round(baseMaxDurationMs * budgetMultiplier);
-  const perOperationTimeoutMs = Math.max(1_000, input.limits?.perOperationTimeoutMs ?? 25_000);
+  const perOperationTimeoutMs = Math.max(1_000, input.limits?.perOperationTimeoutMs ?? 35_000);
   const maxQueriesTotal = Math.max(input.segments.length, input.limits?.maxQueriesTotal ?? Math.max(28, input.segments.length * 3));
   const maxCandidateDurationSec = input.limits?.maxCandidateDurationSec ?? 600;
   const discoveryConcurrency = Math.max(1, input.limits?.discoveryConcurrency ?? 3);
@@ -896,17 +899,24 @@ export async function runAutonomousMediaAcquisition(input: {
         round === 1
           ? targetSegments.map((s) => ({
               segment: s,
-              query: `${s.subject} ${s.entities?.slice(0, 2).join(' ') ?? ''}`.trim() || input.prompt,
+              query:
+                s.preferredQueries?.[0] ??
+                (`${s.subject} ${s.entities?.slice(0, 2).join(' ') ?? ''}`.trim() || input.prompt),
             }))
-          : expandScriptOrientedQueries({
-              prompt: input.prompt,
-              segments: targetSegments,
-              ...(input.genre ? { genre: input.genre } : {}),
-              uncoveredSegmentIds: targetSegments.map((s) => s.segmentId),
-            }).map((q, idx) => ({
-              segment: targetSegments[idx % targetSegments.length]!,
-              query: round === 3 ? `${q} anime scene` : q,
-            }));
+          : targetSegments.flatMap((s) => {
+              const preferred = s.preferredQueries?.[round - 1];
+              if (preferred) return [{ segment: s, query: preferred }];
+              const expanded = expandScriptOrientedQueries({
+                prompt: s.subject,
+                segments: [s],
+                ...(input.genre ? { genre: input.genre } : {}),
+                uncoveredSegmentIds: [s.segmentId],
+              });
+              return expanded.slice(0, 2).map((q) => ({
+                segment: s,
+                query: round === 3 && input.genre === 'anime' ? `${q} anime scene` : q,
+              }));
+            });
 
       const segmentById = new Map(input.segments.map((s) => [s.segmentId, s]));
       const roundQueries =
@@ -1218,7 +1228,7 @@ export async function runAutonomousMediaAcquisition(input: {
         item,
       }));
       await runWithConcurrency(verificationQueue, verificationConcurrency, async ({ candKey, item }) => {
-        if (input.signal?.aborted || deadlineController.signal.aborted || remainingMs() <= 200) {
+        if (input.signal?.aborted) {
           // Preserve file & keep state as pending_visual_verification (NEVER classify as editorial rejection!)
           return;
         }
@@ -1423,7 +1433,8 @@ export async function runAutonomousMediaAcquisition(input: {
     .map((s) => ({
       segmentId: s.segmentId,
       subject: s.subject,
-      suggestedQuery: `${input.prompt.split(/[—:|]/)[0]?.trim() || input.prompt} ${s.subject}`.trim(),
+      suggestedQuery:
+        input.segments.find((seg) => seg.segmentId === s.segmentId)?.preferredQueries?.[0] ?? s.subject,
       reason: `Cobertura insuficiente após ${roundsExecuted} rodada(s) automática(s): ${s.usableDurationSec}s / ${s.expectedDurationSec}s.`,
     }));
 

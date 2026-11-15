@@ -1493,6 +1493,8 @@ export function CinemaDirectorPanel() {
         <MediaCoveragePanel
           coverage={(stagedJob as unknown as { coverageReport?: Parameters<typeof MediaCoveragePanel>[0]['coverage'] })?.coverageReport ?? null}
           relevanceDecisions={(stagedJob as unknown as { mediaRelevanceDecisions?: Parameters<typeof MediaCoveragePanel>[0]['relevanceDecisions'] })?.mediaRelevanceDecisions ?? []}
+          acquisitionAudit={(stagedJob as unknown as { autonomousAudit?: Parameters<typeof MediaCoveragePanel>[0]['acquisitionAudit'] })?.autonomousAudit ?? null}
+          plannedQueriesCount={(stagedJob as unknown as { sceneDecupagem?: unknown[] })?.sceneDecupagem?.length ?? 0}
           onPromptAction={(actionPrompt) => {
             setPrompt((prev) => (prev ? `${prev}\n\n[Diretriz de Cobertura] ${actionPrompt}` : actionPrompt));
             notify({ title: 'Cobertura', message: 'Diretriz de cobertura adicionada ao prompt.', type: 'info' });

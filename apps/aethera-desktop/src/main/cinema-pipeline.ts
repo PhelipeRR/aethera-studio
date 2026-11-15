@@ -916,8 +916,12 @@ export class StagedCinemaPipeline {
             scenesForAcquisition.length > 0
               ? scenesForAcquisition.map((s) => ({
                   segmentId: s.sceneId,
-                  subject: s.entities[0] ? `${s.workTitle} ${s.entities[0]}` : s.expectedEvent,
+                  subject: s.entities[0]
+                    ? `${s.workTitle} ${s.entities[0].replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim()}`
+                    : s.expectedEvent,
                   narrationText: s.narrationText,
+                  expectedEvent: s.expectedEvent,
+                  preferredQueries: s.mediaQueries,
                   entities:
                     s.matchingCriteria.requiredEntities.length > 0
                       ? s.matchingCriteria.requiredEntities
@@ -955,6 +959,7 @@ export class StagedCinemaPipeline {
 
           const auditedDeps: ResilientAcquisitionDeps = {
             ...baseDeps,
+            localMediaDirs: [...new Set([projectPaths.mediaDir, ...(baseDeps.localMediaDirs ?? [])])],
             ...(baseDeps.ytDlpSearchFn
               ? {
                   ytDlpSearchFn: async (q, count, sig) => {

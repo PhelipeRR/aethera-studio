@@ -244,7 +244,7 @@ describe('Pipeline Research-First & Semantic Decupagem (Elden Ring 12 min)', () 
             visualCategory: 'gameplay',
             detectedEntities: ['malenia', 'elden ring'],
             detectedActions: ['waterfowl dance'],
-            description: 'Gameplay de Elden Ring mostrando Malenia executando Waterfowl Dance.',
+            description: 'Gameplay de Elden Ring mostrando Malenia em luta de chefe executando Waterfowl Dance.',
             confidence: 0.91,
           },
           {

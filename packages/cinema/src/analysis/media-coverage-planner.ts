@@ -19,6 +19,8 @@ export interface ScriptCoverageSegment {
   narrationText: string;
   entities?: string[];
   expectedDurationSec: number;
+  expectedEvent?: string;
+  preferredQueries?: string[];
 }
 
 export interface AcquiredMediaAsset {
@@ -52,6 +54,8 @@ export interface PlannedClipUsage {
 export interface SegmentCoverageRecord {
   segmentId: string;
   subject: string;
+  expectedEvent?: string;
+  narrationExcerpt?: string;
   entities: string[];
   expectedDurationSec: number;
   candidateMediaIds: string[];
@@ -401,6 +405,8 @@ export function planMediaCoverage(input: {
     segments.push({
       segmentId: seg.segmentId,
       subject: seg.subject,
+      ...(seg.expectedEvent ? { expectedEvent: seg.expectedEvent } : {}),
+      ...(seg.narrationText ? { narrationExcerpt: seg.narrationText.slice(0, 160) } : {}),
       entities,
       expectedDurationSec: seg.expectedDurationSec,
       candidateMediaIds: candidates.map((c) => c.mediaId),

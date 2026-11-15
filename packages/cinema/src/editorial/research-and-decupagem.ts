@@ -247,6 +247,10 @@ export function validateEditorialResearchDossier(
   return { valid: reasons.length === 0, reasons };
 }
 
+function cleanEntityForQuery(entityName: string): string {
+  return entityName.replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
+}
+
 function buildSpecificMediaQueries(
   workTitle: string,
   entity: ResearchEntityFact | undefined,
@@ -258,9 +262,10 @@ function buildSpecificMediaQueries(
     const suffix = domain === 'gaming' ? 'gameplay no commentary' : domain === 'anime' ? 'scene clip' : 'footage';
     return [`${workTitle} ${cleanEvent.split(' ').slice(0, 5).join(' ')} ${suffix}`.trim()];
   }
+  const cleanEntity = cleanEntityForQuery(entity.entityName);
   const mechanic = entity.mechanicsOrEvents[0] ?? entity.attackPatternsOrPhases?.[0] ?? '';
   const cleanMechanic = mechanic.replace(/[^\p{L}\p{N}\s-]/gu, ' ').split(/\s+/).slice(0, 5).join(' ').trim();
-  const base = `${workTitle} ${entity.entityName}`.trim();
+  const base = `${workTitle} ${cleanEntity}`.trim();
 
   if (domain === 'gaming') {
     return [
@@ -277,26 +282,65 @@ function buildSpecificMediaQueries(
   }
   return [
     `${base} ${cleanMechanic || 'overview'}`.trim(),
-    `${workTitle} ${entity.entityName} footage`,
+    `${workTitle} ${cleanEntity} footage`,
   ].slice(0, 3);
 }
+
+const GENERIC_ENTITY_STOPWORDS = new Set([
+  'order', 'beast', 'blade', 'black', 'golden', 'consort', 'shadow', 'erdtree',
+  'first', 'lord', 'starscourge', 'scourge', 'omen', 'king', 'queen', 'blood',
+  'fallen', 'general', 'commander', 'knight', 'dragon', 'cleric', 'promised',
+  'ordem', 'aurea', 'áurea', 'fera', 'pristina', 'prístina', 'espada', 'lamina',
+  'lâmina', 'negra', 'consorte', 'prometido', 'chefe', 'boss', 'the', 'and',
+]);
 
 function matchBeatToEntity(
   beat: EditorialSegment,
   beatIndex: number,
   totalBeats: number,
   entities: ResearchEntityFact[],
+  workTitle: string,
+  usedEntities: Set<string>,
 ): ResearchEntityFact | undefined {
   if (entities.length === 0) return undefined;
-  const textLower = beat.spokenText.toLowerCase();
-  const direct = entities.find((e) => {
-    const parts = e.entityName.toLowerCase().split(/[\s,:-]+/).filter((w) => w.length >= 4);
-    return textLower.includes(e.entityName.toLowerCase()) || parts.some((p) => textLower.includes(p));
-  });
-  if (direct) return direct;
-  if (beat.stage === 'hook' || beat.stage === 'promise' || beat.stage === 'cta') {
+  const workTokens = new Set(workTitle.toLowerCase().split(/[\s,:-]+/).filter((w) => w.length >= 3));
+  const titleLower = beat.title.toLowerCase();
+  const textLower = `${beat.title} ${beat.spokenText}`.toLowerCase();
+
+  // 1. Exact primary name match across all entities first (title first, then full text)
+  for (const e of entities) {
+    const primaryName = cleanEntityForQuery(e.entityName).toLowerCase();
+    if (titleLower.includes(primaryName)) return e;
+  }
+  for (const e of entities) {
+    const primaryName = cleanEntityForQuery(e.entityName).toLowerCase();
+    if (textLower.includes(primaryName)) return e;
+  }
+
+  // 2. Distinctive proper-noun token scoring (title weighted 3x higher than body)
+  let bestEntity: ResearchEntityFact | undefined;
+  let bestScore = 0;
+  for (const e of entities) {
+    const primaryName = cleanEntityForQuery(e.entityName).toLowerCase();
+    const tokens = primaryName
+      .split(/[\s,&:/-]+/)
+      .filter((w) => w.length >= 4 && !workTokens.has(w) && !GENERIC_ENTITY_STOPWORDS.has(w));
+    const titleHits = tokens.filter((t) => titleLower.includes(t)).length;
+    const bodyHits = tokens.filter((t) => textLower.includes(t)).length;
+    const score = titleHits * 3 + bodyHits;
+    if (score > bestScore) {
+      bestScore = score;
+      bestEntity = e;
+    }
+  }
+  if (bestEntity && bestScore > 0) return bestEntity;
+
+  if (beat.stage === 'hook' || beat.stage === 'promise' || beat.stage === 'cta' || beat.stage === 'resolution') {
     return undefined;
   }
+  // 2. For progression/climax beats without explicit match, pick next uncovered entity in dossier order
+  const uncovered = entities.find((e) => !usedEntities.has(e.entityName));
+  if (uncovered) return uncovered;
   const middleIdx = Math.max(0, beatIndex - 1);
   return entities[middleIdx % entities.length];
 }
@@ -310,9 +354,11 @@ export function buildSemanticDecupagem(
   const totalBeats = Math.max(1, beats.length);
   const rawTotalDur = beats.reduce((acc, b) => acc + Math.max(4, b.estimatedDurationSec), 0) || interpretation.targetDurationSec;
   const scale = interpretation.targetDurationSec > 0 ? interpretation.targetDurationSec / rawTotalDur : 1;
+  const usedEntities = new Set<string>();
 
   return beats.map((beat, idx) => {
-    const matchedEntity = matchBeatToEntity(beat, idx, totalBeats, dossier.entities);
+    const matchedEntity = matchBeatToEntity(beat, idx, totalBeats, dossier.entities, dossier.workTitle, usedEntities);
+    if (matchedEntity) usedEntities.add(matchedEntity.entityName);
     const entities = matchedEntity ? [matchedEntity.entityName] : [];
     const expectedEvent = matchedEntity
       ? matchedEntity.mechanicsOrEvents[0] ?? matchedEntity.verifiedFacts[0] ?? `Confronto com ${matchedEntity.entityName}`
