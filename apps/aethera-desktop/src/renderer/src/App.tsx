@@ -1,5 +1,27 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { CreativeStudioPanel } from './CreativeStudioPanel.js';
+import { ProductionConsoleAccordion } from './ProductionConsoleAccordion.js';
+
+interface StagedJobSummary {
+  projectId: string;
+  prompt: string;
+  state: string;
+  progressPct: number;
+  message: string;
+  genre?: string;
+  startedAt?: string;
+  updatedAt: string;
+  error?: string;
+}
+
+interface AetheraBridgeExtended {
+  cinemaListStagedJobs?: () => Promise<StagedJobSummary[]>;
+  onCinemaProductionProgress?: (listener: (job: unknown) => void) => () => void;
+}
+
+function getExtendedBridge(): AetheraBridgeExtended | undefined {
+  return (window as unknown as { aetheraBridge?: AetheraBridgeExtended }).aetheraBridge;
+}
 
 interface AetheraStatus {
   appId: 'aethera';
@@ -155,16 +177,7 @@ export function App() {
         )}
 
         {tab === 'runs' && (
-          <section>
-            <h2 style={{ marginTop: 0 }}>Produções Registradas ({status?.runs.length ?? 0})</h2>
-            <ul>
-              {(status?.runs ?? []).map((r) => (
-                <li key={r.id} style={{ fontSize: 13, marginBottom: 6 }}>
-                  [{r.status}] {r.topic} — agente: {r.agent ?? 'n/a'}
-                </li>
-              ))}
-            </ul>
-          </section>
+          <ProductionJobsPanel />
         )}
 
         {tab === 'review' && (
@@ -234,6 +247,129 @@ export function App() {
         )}
       </main>
     </div>
+  );
+}
+
+function ProductionJobsPanel() {
+  const [jobs, setJobs] = useState<StagedJobSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const refreshJobs = useCallback(async () => {
+    const bridge = getExtendedBridge();
+    if (!bridge?.cinemaListStagedJobs) return;
+    setLoading(true);
+    try {
+      const list = await bridge.cinemaListStagedJobs();
+      setJobs(list);
+    } catch {
+      // silent — panel is observational
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshJobs();
+    const bridge = getExtendedBridge();
+    if (!bridge?.onCinemaProductionProgress) return;
+    const unsub = bridge.onCinemaProductionProgress((raw) => {
+      const job = raw as StagedJobSummary;
+      if (!job?.projectId) return;
+      setJobs((prev) => {
+        const idx = prev.findIndex((j) => j.projectId === job.projectId);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = job;
+          return next;
+        }
+        return [job, ...prev];
+      });
+    });
+    return unsub;
+  }, [refreshJobs]);
+
+  const stateColor = (state: string): string => {
+    if (state === 'error') return '#f87171';
+    if (state === 'cancelled') return '#fbbf24';
+    if (state === 'editor' || state === 'previa') return '#34d399';
+    if (state.startsWith('paused')) return '#fbbf24';
+    return '#5eead4';
+  };
+
+  return (
+    <section>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <h2 style={{ margin: 0 }}>Projetos em Produção com IA ({jobs.length})</h2>
+        <button
+          type="button"
+          onClick={() => void refreshJobs()}
+          disabled={loading}
+          style={{
+            padding: '6px 12px',
+            borderRadius: 6,
+            border: '1px solid #115e59',
+            background: '#0f3d3a',
+            color: '#99f6e4',
+            cursor: loading ? 'wait' : 'pointer',
+            fontSize: 12,
+          }}
+        >
+          {loading ? 'Atualizando...' : 'Atualizar'}
+        </button>
+      </div>
+
+      {jobs.length === 0 && !loading && (
+        <p style={{ fontSize: 13, color: '#94a3b8' }}>Nenhuma produção em andamento.</p>
+      )}
+
+      {jobs.map((job) => (
+        <div
+          key={job.projectId}
+          style={{
+            marginBottom: 12,
+            padding: 14,
+            borderRadius: 8,
+            background: '#042f2e',
+            border: '1px solid #0f766e',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: '#ecfdf5', wordBreak: 'break-word' }}>
+                {job.prompt.slice(0, 120)}{job.prompt.length > 120 ? '…' : ''}
+              </div>
+              <div style={{ fontSize: 11, color: '#99f6e4', marginTop: 4 }}>
+                <span style={{ color: stateColor(job.state), fontWeight: 700 }}>{job.state.toUpperCase()}</span>
+                {' • '}
+                {job.progressPct}% concluído
+                {job.genre ? ` • ${job.genre}` : ''}
+                {job.startedAt ? ` • Início: ${new Date(job.startedAt).toLocaleTimeString()}` : ''}
+              </div>
+              {job.message && (
+                <div style={{ fontSize: 12, color: '#ccfbf1', marginTop: 4 }}>{job.message}</div>
+              )}
+              {job.error && (
+                <div style={{ fontSize: 11, color: '#f87171', marginTop: 4 }}>⚠ {job.error}</div>
+              )}
+            </div>
+          </div>
+
+          {/* Progress bar */}
+          <div style={{ height: 4, borderRadius: 2, background: '#134e4a', marginTop: 10, overflow: 'hidden' }}>
+            <div
+              style={{
+                height: '100%',
+                width: `${Math.min(100, Math.max(0, job.progressPct))}%`,
+                background: stateColor(job.state),
+                transition: 'width 0.3s ease',
+              }}
+            />
+          </div>
+
+          <ProductionConsoleAccordion projectId={job.projectId} />
+        </div>
+      ))}
+    </section>
   );
 }
 

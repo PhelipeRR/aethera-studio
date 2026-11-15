@@ -20,6 +20,7 @@ import {
 } from './system-backup.js';
 import { ManagedMediaLibrary } from './managed-media-library.js';
 import { StagedCinemaPipeline, type StagedProductionJob } from './cinema-pipeline.js';
+import { createProductionConsoleService, type ProductionLogStage, type ProductionLogSeverity } from './production-console.js';
 import {
   TrendRadarEngine,
   type CinematicBriefing,
@@ -1881,6 +1882,24 @@ export function registerAetheraDomainIpc(options: {
     ]);
 
   const visionProviderCooldowns = new Map<string, VisionCooldownEntry>();
+  const productionConsole = createProductionConsoleService(join(app.getPath('userData'), 'cinema-console-logs'));
+  const emitProductionLog = (input: {
+    projectId: string;
+    stage: ProductionLogStage;
+    severity: ProductionLogSeverity;
+    source: string;
+    message: string;
+    durationMs?: number;
+    metadata?: Record<string, unknown>;
+  }) => {
+    const entry = productionConsole.emit(input);
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('cinema:console-log', entry);
+      }
+    }
+    return entry;
+  };
   const stagedPipeline = new StagedCinemaPipeline({
     jobsDir: join(app.getPath('userData'), 'cinema-jobs'),
     mediaDir: join(app.getPath('userData'), 'cinema-media'),
@@ -2056,6 +2075,19 @@ export function registerAetheraDomainIpc(options: {
           win.webContents.send('cinema:production-progress', job);
         }
       }
+      emitProductionLog({
+        projectId: job.projectId,
+        stage: (job.state as ProductionLogStage) || 'system',
+        severity: job.state === 'error' ? 'error' : job.state === 'cancelled' ? 'warn' : 'info',
+        source: 'pipeline',
+        message: job.message || `Estado: ${job.state}`,
+        metadata: {
+          progressPct: job.progressPct,
+          state: job.state,
+          completedStages: job.completedStages,
+          ...(job.error ? { error: job.error } : {}),
+        },
+      });
     },
     onPackageReady: (pkg, prompt) => {
       cinemaPackages.set(pkg.timeline.projectId, pkg);
@@ -3761,6 +3793,50 @@ export function registerAetheraDomainIpc(options: {
   ipcMain.handle('cinema:list-staged-jobs', async (event) => {
     ensureTrusted(event.senderFrame);
     return stagedPipeline.listJobs();
+  });
+
+  ipcMain.handle(
+    'cinema:console-list',
+    async (
+      event,
+      input: {
+        projectId: string;
+        limit?: number;
+        offset?: number;
+        severity?: 'info' | 'warn' | 'error' | 'debug';
+        stage?: string;
+        search?: string;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const opts: {
+        limit?: number;
+        offset?: number;
+        severity?: 'info' | 'warn' | 'error' | 'debug';
+        stage?: ProductionLogStage;
+        search?: string;
+      } = {};
+      if (input.limit !== undefined) opts.limit = input.limit;
+      if (input.offset !== undefined) opts.offset = input.offset;
+      if (input.severity !== undefined) opts.severity = input.severity;
+      if (input.stage !== undefined) opts.stage = input.stage as ProductionLogStage;
+      if (input.search !== undefined) opts.search = input.search;
+      return productionConsole.list(input.projectId, opts);
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:console-export',
+    async (event, input: { projectId: string; format: 'json' | 'txt' }) => {
+      ensureTrusted(event.senderFrame);
+      return productionConsole.export(input.projectId, input.format);
+    },
+  );
+
+  ipcMain.handle('cinema:console-clear', async (event, projectId: string) => {
+    ensureTrusted(event.senderFrame);
+    productionConsole.clear(projectId);
+    return { cleared: true, projectId };
   });
 
   ipcMain.handle('cinema:inspect-delete-project', async (event, projectId: string) => {

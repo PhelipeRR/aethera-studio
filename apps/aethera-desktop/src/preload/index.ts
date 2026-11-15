@@ -139,6 +139,22 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
     ipcRenderer.on('cinema:production-progress', wrapped);
     return () => ipcRenderer.removeListener('cinema:production-progress', wrapped);
   },
+  cinemaConsoleList: (input: {
+    projectId: string;
+    limit?: number;
+    offset?: number;
+    severity?: 'info' | 'warn' | 'error' | 'debug';
+    stage?: string;
+    search?: string;
+  }) => ipcRenderer.invoke('cinema:console-list', input),
+  cinemaConsoleExport: (input: { projectId: string; format: 'json' | 'txt' }) =>
+    ipcRenderer.invoke('cinema:console-export', input),
+  cinemaConsoleClear: (projectId: string) => ipcRenderer.invoke('cinema:console-clear', projectId),
+  onCinemaConsoleLog: (listener: (entry: unknown) => void) => {
+    const wrapped = (_event: unknown, entry: unknown) => listener(entry);
+    ipcRenderer.on('cinema:console-log', wrapped);
+    return () => ipcRenderer.removeListener('cinema:console-log', wrapped);
+  },
   creativeEngines: () => ipcRenderer.invoke('creative:engines'),
   creativeListBrandKits: () => ipcRenderer.invoke('creative:list-brand-kits'),
   creativeSaveBrandKit: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:save-brand-kit', input),
