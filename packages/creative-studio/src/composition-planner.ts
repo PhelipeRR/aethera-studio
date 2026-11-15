@@ -11,6 +11,7 @@ import {
   type QualityAuditReport,
 } from './schemas.js';
 import type { QualityGateService } from './quality-gate.js';
+import { CreativeDirectorAgent } from './creative-director.js';
 
 export type ThumbnailVariantStyle = 'impact' | 'tech' | 'cinematic';
 
@@ -68,10 +69,27 @@ export class CompositionPlanner {
       shadowColor: '#000000CC',
     };
 
+    const resolvedSubjectAsset =
+      input.subjectAsset ??
+      (input.brandKit?.mascotAssetId
+        ? (input.brandKit.assetManifest[input.brandKit.mascotAssetId] ?? null)
+        : input.brandKit?.avatarAssetId
+          ? (input.brandKit.assetManifest[input.brandKit.avatarAssetId] ?? null)
+          : null);
+    const resolvedWatermarkAsset =
+      input.watermarkAsset ??
+      (input.brandKit?.watermarkAssetId
+        ? (input.brandKit.assetManifest[input.brandKit.watermarkAssetId] ?? null)
+        : input.brandKit?.logoAssetId
+          ? (input.brandKit.assetManifest[input.brandKit.logoAssetId] ?? null)
+          : input.brandKit?.mascotAssetId
+            ? (input.brandKit.assetManifest[input.brandKit.mascotAssetId] ?? null)
+            : null);
+
     const assetManifest: Record<string, ManagedAssetRef> = {};
     if (input.backgroundAsset) assetManifest[input.backgroundAsset.id] = input.backgroundAsset;
-    if (input.subjectAsset) assetManifest[input.subjectAsset.id] = input.subjectAsset;
-    if (input.watermarkAsset) assetManifest[input.watermarkAsset.id] = input.watermarkAsset;
+    if (resolvedSubjectAsset) assetManifest[resolvedSubjectAsset.id] = resolvedSubjectAsset;
+    if (resolvedWatermarkAsset) assetManifest[resolvedWatermarkAsset.id] = resolvedWatermarkAsset;
 
     const headline = (input.headline?.trim() || deriveShortHeadline(input.prompt, input.title ?? 'AETHERA STUDIO')).slice(
       0,
@@ -89,8 +107,8 @@ export class CompositionPlanner {
         palette,
         typography,
         backgroundAsset: input.backgroundAsset ?? null,
-        subjectAsset: input.subjectAsset ?? null,
-        watermarkAsset: input.watermarkAsset ?? null,
+        subjectAsset: resolvedSubjectAsset ?? null,
+        watermarkAsset: resolvedWatermarkAsset ?? null,
       });
     } else if (input.artType === 'banner') {
       layers = this.buildBannerLayers({
@@ -100,7 +118,7 @@ export class CompositionPlanner {
         palette,
         typography,
         backgroundAsset: input.backgroundAsset ?? null,
-        subjectAsset: input.subjectAsset ?? null,
+        subjectAsset: resolvedSubjectAsset ?? null,
       });
     } else if (input.artType === 'avatar') {
       layers = this.buildAvatarLayers({
@@ -110,14 +128,14 @@ export class CompositionPlanner {
         backdrop: input.avatarBackdrop ?? 'dark',
         palette,
         typography,
-        subjectAsset: input.subjectAsset ?? null,
+        subjectAsset: resolvedSubjectAsset ?? null,
       });
     } else {
       layers = this.buildWatermarkLayers({
         width: spec.width,
         height: spec.height,
         label: (input.headline?.trim() || input.brandKit?.channelName || 'AETHERA').slice(0, 12).toUpperCase(),
-        watermarkAsset: input.watermarkAsset ?? input.subjectAsset ?? null,
+        watermarkAsset: resolvedWatermarkAsset ?? resolvedSubjectAsset ?? null,
       });
     }
 
@@ -150,14 +168,16 @@ export class CompositionPlanner {
       { label: 'C', style: 'cinematic', styleTitle: 'C — Cinematográfica' },
     ];
 
+    const director = new CreativeDirectorAgent();
     const results: ThumbnailLabVariant[] = [];
     for (const v of variants) {
-      const doc = this.buildDocument({
+      const planned = this.buildDocument({
         ...input,
         artType: 'thumbnail',
         variantStyle: v.style,
         title: `${input.title ?? 'Thumbnail'} (${v.styleTitle})`,
       });
+      const doc = director.reviewAndRefine(planned, { brandKit: input.brandKit ?? null }).document;
       const audit = await qualityGate.auditProject(doc, { brandKit: input.brandKit ?? null });
       results.push({
         label: v.label,
@@ -183,6 +203,10 @@ export class CompositionPlanner {
     watermarkAsset: ManagedAssetRef | null;
   }): CreativeLayer[] {
     const { width, height, headline, style, palette, typography, backgroundAsset, subjectAsset, watermarkAsset } = params;
+    // Never place an unblurred background that is the exact same asset as the hero cutout
+    const distinctBackground =
+      backgroundAsset && (!subjectAsset || backgroundAsset.id !== subjectAsset.id) ? backgroundAsset : null;
+
     const layers: CreativeLayer[] = [
       {
         id: 'bg-main',
@@ -193,111 +217,195 @@ export class CompositionPlanner {
         locked: false,
         opacity: 1,
         blendMode: 'over',
-        ...(backgroundAsset ? { assetId: backgroundAsset.id } : {}),
+        ...(distinctBackground ? { assetId: distinctBackground.id } : {}),
+        source: distinctBackground ? 'asset' : 'color',
         fillColor: palette.background,
-        gradientTo: style === 'impact' ? palette.secondary : palette.surface,
-        gradientAngleDeg: style === 'cinematic' ? 180 : 135,
+        gradientTo: style === 'impact' ? palette.secondary : style === 'tech' ? palette.surface : '#050811',
+        gradientAngleDeg: style === 'cinematic' ? 180 : style === 'tech' ? 90 : 135,
+        blurRadius: distinctBackground ? (style === 'cinematic' ? 6 : 3) : 0,
+        brightness: style === 'cinematic' ? 0.78 : 0.88,
         transform: { x: 0, y: 0, width, height, scaleX: 1, scaleY: 1, rotationDeg: 0 },
         mask: { kind: 'none' },
         effects: [
-          { kind: 'colorGrade', enabled: true, brightness: 0.92, contrast: 1.18, saturation: style === 'cinematic' ? 1.1 : 1.25 },
-          { kind: 'vignette', enabled: true, strength: style === 'cinematic' ? 0.62 : 0.42, color: '#000000' },
+          {
+            kind: 'colorGrade',
+            enabled: true,
+            brightness: style === 'cinematic' ? 0.86 : 0.94,
+            contrast: style === 'impact' ? 1.24 : 1.15,
+            saturation: style === 'cinematic' ? 1.08 : 1.22,
+          },
+          { kind: 'vignette', enabled: true, strength: style === 'cinematic' ? 0.68 : 0.45, color: '#000000' },
         ],
+      },
+      {
+        id: 'vfx-scrim',
+        type: 'vfx',
+        name: 'Scrim de Contraste',
+        zIndex: 1,
+        visible: true,
+        locked: false,
+        opacity: style === 'cinematic' ? 0.72 : 0.62,
+        blendMode: 'multiply',
+        preset: 'duotone_wash',
+        primaryColor: '#000000',
+        secondaryColor: palette.background,
+        intensity: 0.75,
+        transform: { x: 0, y: 0, width, height, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+        mask: { kind: 'none' },
+        effects: [],
       },
       {
         id: 'vfx-style',
         type: 'vfx',
         name: `VFX (${style})`,
-        zIndex: 1,
+        zIndex: 2,
         visible: true,
         locked: false,
-        opacity: style === 'cinematic' ? 0.65 : 0.85,
+        opacity: style === 'cinematic' ? 0.55 : 0.78,
         blendMode: 'screen',
         preset: style === 'impact' ? 'speed_lines' : style === 'tech' ? 'cyber_grid' : 'light_leak',
         primaryColor: palette.primary,
         secondaryColor: palette.secondary,
-        intensity: 0.8,
+        intensity: style === 'cinematic' ? 0.65 : 0.82,
         transform: { x: 0, y: 0, width, height, scaleX: 1, scaleY: 1, rotationDeg: 0 },
         mask: { kind: 'none' },
         effects: [],
       },
     ];
 
+    // Layout 1: Impact (Subject Right, Bold Stacked Title Left)
+    // Layout 2: Tech (Subject Left, Telemetry HUD Title Right)
+    // Layout 3: Cinematic (Subject Centered Lower, Top Widescreen Monumental Title + Letterbox Framing)
+    const subjectTransform =
+      style === 'impact'
+        ? { x: 590, y: 20, width: 660, height: 700, scaleX: 1, scaleY: 1, rotationDeg: -1.5 }
+        : style === 'tech'
+          ? { x: 24, y: 30, width: 610, height: 690, scaleX: 1, scaleY: 1, rotationDeg: 0 }
+          : { x: 310, y: 150, width: 660, height: 570, scaleX: 1, scaleY: 1, rotationDeg: 0 };
+
     if (subjectAsset) {
       layers.push({
         id: 'subject-hero',
         type: 'subject',
         name: 'Sujeito / Personagem',
-        zIndex: 2,
+        zIndex: 3,
         visible: true,
         locked: false,
         opacity: 1,
         blendMode: 'over',
         assetId: subjectAsset.id,
         removeBackground: true,
-        cutoutMethod: 'chroma_edge',
-        rimLightColor: palette.primary,
-        transform: {
-          x: style === 'cinematic' ? 680 : 660,
-          y: 60,
-          width: 560,
-          height: 640,
-          scaleX: 1,
-          scaleY: 1,
-          rotationDeg: style === 'impact' ? -2 : 0,
-        },
+        cutoutMethod: 'rembg_semantic',
+        rimLightColor: style === 'impact' ? palette.accent : style === 'tech' ? palette.primary : palette.secondary,
+        transform: subjectTransform,
         mask: { kind: 'none' },
-        effects: [],
+        effects: [
+          {
+            kind: 'dropShadow',
+            enabled: true,
+            offsetX: style === 'tech' ? 10 : -10,
+            offsetY: 12,
+            blur: 24,
+            color: '#000000CC',
+          },
+          {
+            kind: 'directionalLight',
+            enabled: true,
+            angleDeg: style === 'tech' ? 35 : 325,
+            intensity: 0.45,
+            color: style === 'impact' ? palette.accent : palette.primary,
+          },
+        ],
       });
     }
+
+    const titleConfig =
+      style === 'impact'
+        ? {
+            x: 48,
+            y: 125,
+            width: 530,
+            height: 440,
+            align: 'left' as const,
+            fontSize: 98,
+            color: palette.accent,
+            letterSpacing: 1,
+            rotationDeg: -1.5,
+          }
+        : style === 'tech'
+          ? {
+              x: 645,
+              y: 145,
+              width: 585,
+              height: 420,
+              align: 'right' as const,
+              fontSize: 86,
+              color: palette.primary,
+              letterSpacing: 3,
+              rotationDeg: 0,
+            }
+          : {
+              x: 100,
+              y: 28,
+              width: 1080,
+              height: 150,
+              align: 'center' as const,
+              fontSize: 82,
+              color: palette.text,
+              letterSpacing: 5,
+              rotationDeg: 0,
+            };
 
     layers.push({
       id: 'title-main',
       type: 'text',
       name: 'Título Principal',
-      zIndex: 3,
+      zIndex: 4,
       visible: true,
       locked: false,
       opacity: 1,
       blendMode: 'over',
       text: headline,
       fontFamily: typography.headingFont,
-      fontSize: style === 'impact' ? 104 : style === 'tech' ? 92 : 88,
+      fontSize: titleConfig.fontSize,
       fontWeight: typography.titleWeight,
-      color: style === 'impact' ? palette.accent : style === 'tech' ? palette.primary : palette.text,
+      color: titleConfig.color,
       strokeColor: typography.strokeColor,
-      strokeWidth: 9,
-      align: 'left',
-      letterSpacing: style === 'tech' ? 3 : 1,
+      strokeWidth: 8,
+      align: titleConfig.align,
+      letterSpacing: titleConfig.letterSpacing,
       lineHeight: 1.04,
       uppercase: true,
       transform: {
-        x: 56,
-        y: style === 'cinematic' ? 230 : 170,
-        width: 620,
-        height: 420,
+        x: titleConfig.x,
+        y: titleConfig.y,
+        width: titleConfig.width,
+        height: titleConfig.height,
         scaleX: 1,
         scaleY: 1,
-        rotationDeg: 0,
+        rotationDeg: titleConfig.rotationDeg,
       },
       mask: { kind: 'none' },
-      effects: [],
+      effects: [
+        { kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 6, blur: 16, color: '#000000DD' },
+      ],
     });
 
     if (watermarkAsset) {
+      const wmX = style === 'tech' ? width - 130 : style === 'impact' ? 48 : width - 130;
       layers.push({
         id: 'wm-brand',
         type: 'watermark',
         name: 'Marca d\'Água do Canal',
-        zIndex: 4,
+        zIndex: 5,
         visible: true,
         locked: false,
-        opacity: 0.72,
+        opacity: 0.78,
         blendMode: 'over',
         assetId: watermarkAsset.id,
         monochrome: false,
-        anchor: 'bottom-right',
-        transform: { x: width - 130, y: height - 130, width: 96, height: 96, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+        anchor: style === 'impact' ? 'bottom-left' : 'bottom-right',
+        transform: { x: wmX, y: height - 122, width: 88, height: 88, scaleX: 1, scaleY: 1, rotationDeg: 0 },
         mask: { kind: 'none' },
         effects: [],
       });
@@ -317,6 +425,9 @@ export class CompositionPlanner {
   }): CreativeLayer[] {
     const { width, height, headline, palette, typography, backgroundAsset, subjectAsset } = params;
     const safe = ART_SPECIFICATIONS.banner.safeArea!;
+    const distinctBackground =
+      backgroundAsset && (!subjectAsset || backgroundAsset.id !== subjectAsset.id) ? backgroundAsset : null;
+
     const layers: CreativeLayer[] = [
       {
         id: 'bg-banner',
@@ -327,13 +438,16 @@ export class CompositionPlanner {
         locked: false,
         opacity: 1,
         blendMode: 'over',
-        ...(backgroundAsset ? { assetId: backgroundAsset.id } : {}),
+        ...(distinctBackground ? { assetId: distinctBackground.id } : {}),
+        source: distinctBackground ? 'asset' : 'color',
         fillColor: palette.background,
         gradientTo: palette.surface,
         gradientAngleDeg: 120,
+        blurRadius: distinctBackground ? 8 : 0,
+        brightness: 0.75,
         transform: { x: 0, y: 0, width, height, scaleX: 1, scaleY: 1, rotationDeg: 0 },
         mask: { kind: 'none' },
-        effects: [{ kind: 'vignette', enabled: true, strength: 0.5, color: '#000000' }],
+        effects: [{ kind: 'vignette', enabled: true, strength: 0.55, color: '#000000' }],
       },
       {
         id: 'vfx-banner',
@@ -342,12 +456,12 @@ export class CompositionPlanner {
         zIndex: 1,
         visible: true,
         locked: false,
-        opacity: 0.75,
+        opacity: 0.65,
         blendMode: 'screen',
         preset: 'cyber_grid',
         primaryColor: palette.primary,
         secondaryColor: palette.secondary,
-        intensity: 0.75,
+        intensity: 0.7,
         transform: { x: 0, y: 0, width, height, scaleX: 1, scaleY: 1, rotationDeg: 0 },
         mask: { kind: 'none' },
         effects: [],
@@ -358,7 +472,7 @@ export class CompositionPlanner {
       layers.push({
         id: 'subject-banner',
         type: 'subject',
-        name: 'Mascote / Logo (Área Segura)',
+        name: 'Mascote Persistente (Área Segura)',
         zIndex: 2,
         visible: true,
         locked: false,
@@ -366,18 +480,21 @@ export class CompositionPlanner {
         blendMode: 'over',
         assetId: subjectAsset.id,
         removeBackground: true,
-        cutoutMethod: 'chroma_edge',
+        cutoutMethod: 'rembg_semantic',
+        rimLightColor: palette.primary,
         transform: {
-          x: safe.x + 48,
-          y: safe.y + 40,
-          width: 340,
-          height: 340,
+          x: safe.x + safe.width - 420,
+          y: safe.y + 18,
+          width: 385,
+          height: 385,
           scaleX: 1,
           scaleY: 1,
           rotationDeg: 0,
         },
         mask: { kind: 'none' },
-        effects: [],
+        effects: [
+          { kind: 'dropShadow', enabled: true, offsetX: -8, offsetY: 10, blur: 20, color: '#000000CC' },
+        ],
       });
     }
 
@@ -397,21 +514,23 @@ export class CompositionPlanner {
       color: palette.text,
       strokeColor: typography.strokeColor,
       strokeWidth: 8,
-      align: 'center',
+      align: subjectAsset ? 'left' : 'center',
       letterSpacing: 4,
       lineHeight: 1.08,
       uppercase: true,
       transform: {
-        x: subjectAsset ? safe.x + 410 : safe.x + 120,
-        y: safe.y + 130,
-        width: subjectAsset ? safe.width - 460 : safe.width - 240,
+        x: subjectAsset ? safe.x + 56 : safe.x + 120,
+        y: safe.y + 125,
+        width: subjectAsset ? safe.width - 520 : safe.width - 240,
         height: 200,
         scaleX: 1,
         scaleY: 1,
         rotationDeg: 0,
       },
       mask: { kind: 'none' },
-      effects: [],
+      effects: [
+        { kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 6, blur: 16, color: '#000000DD' },
+      ],
     });
 
     return layers;

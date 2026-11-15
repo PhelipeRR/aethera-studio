@@ -109,7 +109,9 @@ export const brandKitSchema = z.object({
   }),
   logoAssetId: z.string().min(1).optional(),
   avatarAssetId: z.string().min(1).optional(),
+  mascotAssetId: z.string().min(1).optional(),
   watermarkAssetId: z.string().min(1).optional(),
+  assetManifest: z.record(z.string(), managedAssetRefSchema).default({}),
   thumbnailStyles: z.array(z.string().min(1)).default(['impact', 'tech', 'cinematic']),
   compositionPresets: z.array(z.string().min(1)).default([]),
   referenceAssetIds: z.array(z.string().min(1)).default([]),
@@ -231,10 +233,14 @@ const baseLayerFields = {
 export const backgroundLayerSchema = z.object({
   ...baseLayerFields,
   type: z.literal('background'),
+  source: z.enum(['asset', 'color', 'ai']).optional(),
   assetId: z.string().min(1).optional(),
   fillColor: hexColorSchema.default('#0B1020'),
   gradientTo: hexColorSchema.optional(),
   gradientAngleDeg: z.number().min(0).max(360).default(135),
+  blurRadius: z.number().min(0).max(100).optional(),
+  brightness: z.number().min(0).max(2).optional(),
+  generatedByAi: z.boolean().optional(),
 });
 
 export const subjectLayerSchema = z.object({

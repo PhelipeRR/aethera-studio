@@ -358,6 +358,21 @@ export function CreativeStudioPanel() {
                 />
               )}
             </div>
+            {previewUrl && activeDoc.artType === 'thumbnail' && (
+              <div style={{ marginTop: 8, padding: 8, background: '#071110', border: '1px solid #134e4a', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 12 }}>
+                <img
+                  src={previewUrl}
+                  alt="Prévia Feed Mobile"
+                  style={{ width: 224, height: 126, objectFit: 'cover', borderRadius: 4, border: '1px solid #134e4a' }}
+                />
+                <div style={{ fontSize: 12, color: '#99f6e4' }}>
+                  <strong>Prévia em Tamanho de Celular (224×126)</strong>
+                  <p style={{ margin: '4px 0 0', opacity: 0.85 }}>
+                    Validação rápida de legibilidade do título, contraste do sujeito e ausência de cortes em feeds mobile.
+                  </p>
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
               <input
                 value={promptEditInput}

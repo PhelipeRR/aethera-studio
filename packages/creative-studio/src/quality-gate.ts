@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import type { SharpSvgCompositionEngine } from './image-generation-adapter.js';
+import { fitTextToBox, type SharpSvgCompositionEngine } from './image-generation-adapter.js';
 import {
   ART_SPECIFICATIONS,
   qualityAuditReportSchema,
@@ -124,6 +124,89 @@ export class QualityGateService {
           message: `Camada de texto "${layer.name}" está cortada fora dos limites do canvas.`,
           layerId: layer.id,
         });
+      }
+
+      const boxW = Math.round(layer.transform.width * layer.transform.scaleX);
+      const boxH = Math.round(layer.transform.height * layer.transform.scaleY);
+      const textFit = fitTextToBox({
+        text: layer.text,
+        targetW: boxW,
+        targetH: boxH,
+        fontSize: layer.fontSize,
+        lineHeight: layer.lineHeight,
+        letterSpacing: layer.letterSpacing,
+        strokeWidth: layer.strokeWidth,
+        uppercase: layer.uppercase,
+      });
+      if (!textFit.fitsAfterAutoScale) {
+        legibility -= 25;
+        findings.push({
+          code: 'TEXT_INTERNAL_OVERFLOW',
+          severity: 'critical',
+          message: `Texto "${layer.text}" excede a caixa (${boxW}×${boxH}) mesmo após redução responsiva para ${textFit.fontSize}px.`,
+          layerId: layer.id,
+        });
+      } else if (!textFit.fitsAtRequestedSize) {
+        legibility -= 6;
+        findings.push({
+          code: 'TEXT_INTERNAL_OVERFLOW',
+          severity: 'warning',
+          message: `Texto "${layer.text}" exigiu auto-ajuste de ${layer.fontSize}px para ${textFit.fontSize}px para não cortar na caixa (${boxW}×${boxH}).`,
+          layerId: layer.id,
+        });
+      }
+    }
+
+    // 5.5. Text vs. Subject overlap & duplicate-subject check
+    const visibleSubjects = doc.layers.filter((l) => l.visible && l.type === 'subject');
+    const visibleBackgrounds = doc.layers.filter((l) => l.visible && l.type === 'background');
+    for (const tLayer of visibleTexts) {
+      const tx1 = tLayer.transform.x;
+      const ty1 = tLayer.transform.y;
+      const tx2 = tx1 + tLayer.transform.width * tLayer.transform.scaleX;
+      const ty2 = ty1 + tLayer.transform.height * tLayer.transform.scaleY;
+      const tArea = Math.max(1, (tx2 - tx1) * (ty2 - ty1));
+
+      for (const sLayer of visibleSubjects) {
+        const sx1 = sLayer.transform.x;
+        const sy1 = sLayer.transform.y;
+        const sx2 = sx1 + sLayer.transform.width * sLayer.transform.scaleX;
+        const sy2 = sy1 + sLayer.transform.height * sLayer.transform.scaleY;
+        const ix = Math.max(0, Math.min(tx2, sx2) - Math.max(tx1, sx1));
+        const iy = Math.max(0, Math.min(ty2, sy2) - Math.max(ty1, sy1));
+        const overlapRatio = (ix * iy) / tArea;
+        if (overlapRatio > 0.32) {
+          legibility -= 18;
+          findings.push({
+            code: 'TEXT_SUBJECT_OVERLAP',
+            severity: 'critical',
+            message: `Título "${tLayer.name}" invade ${(overlapRatio * 100).toFixed(0)}% da área do sujeito "${sLayer.name}".`,
+            layerId: tLayer.id,
+          });
+        } else if (overlapRatio > 0.14) {
+          legibility -= 6;
+          findings.push({
+            code: 'TEXT_SUBJECT_OVERLAP',
+            severity: 'warning',
+            message: `Título "${tLayer.name}" sobrepõe ${(overlapRatio * 100).toFixed(0)}% da zona de proteção do sujeito "${sLayer.name}".`,
+            layerId: tLayer.id,
+          });
+        }
+      }
+    }
+
+    for (const sLayer of visibleSubjects) {
+      if (sLayer.type !== 'subject' || !sLayer.assetId) continue;
+      for (const bLayer of visibleBackgrounds) {
+        if (bLayer.type !== 'background') continue;
+        if (bLayer.assetId && bLayer.assetId === sLayer.assetId && (bLayer.blurRadius ?? 0) < 12 && !bLayer.generatedByAi) {
+          findings.push({
+            code: 'DUPLICATE_SUBJECT_IN_BACKGROUND',
+            severity: 'critical',
+            message: `Sujeito "${sLayer.name}" usa o mesmo asset do fundo "${bLayer.name}" sem separação/desfoque ou fundo limpo, gerando duplicação visual.`,
+            layerId: sLayer.id,
+          });
+        }
       }
     }
 

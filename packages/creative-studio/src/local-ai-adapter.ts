@@ -48,7 +48,7 @@ export class LocalPythonAiAdapter implements ExternalImageAdapter {
     this.pythonPath = options?.pythonPath ?? process.env['NB_PYTHON'] ?? 'python';
     this.workerScriptPath = options?.workerScriptPath ?? resolveDefaultWorkerScript();
     this.model = options?.model ?? 'stabilityai/sdxl-turbo';
-    this.rembgModel = options?.rembgModel ?? 'u2net';
+    this.rembgModel = options?.rembgModel ?? 'adaptive';
     this.steps = options?.steps ?? 3;
     this.timeoutMs = options?.timeoutMs ?? 180_000;
     this.forceCpu = options?.forceCpu ?? false;
@@ -122,20 +122,29 @@ export class LocalPythonAiAdapter implements ExternalImageAdapter {
     const workDir = mkdtempSync(join(tmpdir(), 'aethera-ai-seg-'));
     const outPath = join(workDir, 'cutout.png');
     try {
-      await execFileAsync(
-        this.pythonPath,
-        [
-          this.workerScriptPath,
-          'segment',
-          '--input',
-          resolve(request.inputImagePath),
-          '--output',
-          outPath,
-          '--rembg-model',
-          this.rembgModel,
-        ],
-        { timeout: this.timeoutMs },
-      );
+      const workerArgs =
+        this.rembgModel === 'adaptive'
+          ? [
+              this.workerScriptPath,
+              'segment-adaptive',
+              '--input',
+              resolve(request.inputImagePath),
+              '--output',
+              outPath,
+              '--models',
+              'birefnet-portrait,isnet-general-use',
+            ]
+          : [
+              this.workerScriptPath,
+              'segment',
+              '--input',
+              resolve(request.inputImagePath),
+              '--output',
+              outPath,
+              '--rembg-model',
+              this.rembgModel,
+            ];
+      await execFileAsync(this.pythonPath, workerArgs, { timeout: this.timeoutMs });
       if (!existsSync(outPath)) {
         throw new Error('Local segmentation worker completed without writing cutout PNG.');
       }

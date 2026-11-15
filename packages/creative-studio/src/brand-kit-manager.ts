@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { brandKitSchema, type BrandKit } from './schemas.js';
+import { brandKitSchema, type BrandKit, type ManagedAssetRef } from './schemas.js';
 
 export interface BrandKitStore {
   list(): BrandKit[];
@@ -41,7 +41,9 @@ export class BrandKitManager {
     typography?: Partial<BrandKit['typography']>;
     logoAssetId?: string;
     avatarAssetId?: string;
+    mascotAssetId?: string;
     watermarkAssetId?: string;
+    assetManifest?: Record<string, ManagedAssetRef>;
     thumbnailStyles?: string[];
     compositionPresets?: string[];
     referenceAssetIds?: string[];
@@ -68,7 +70,9 @@ export class BrandKitManager {
       },
       ...(input.logoAssetId ? { logoAssetId: input.logoAssetId } : {}),
       ...(input.avatarAssetId ? { avatarAssetId: input.avatarAssetId } : {}),
+      ...(input.mascotAssetId ? { mascotAssetId: input.mascotAssetId } : {}),
       ...(input.watermarkAssetId ? { watermarkAssetId: input.watermarkAssetId } : {}),
+      assetManifest: input.assetManifest ?? {},
       thumbnailStyles: input.thumbnailStyles ?? ['impact', 'tech', 'cinematic'],
       compositionPresets: input.compositionPresets ?? ['cyber-split', 'hero-center'],
       referenceAssetIds: input.referenceAssetIds ?? [],
@@ -100,9 +104,63 @@ export class BrandKitManager {
         ...existing.typography,
         ...(patch.typography ?? {}),
       },
+      assetManifest: {
+        ...existing.assetManifest,
+        ...(patch.assetManifest ?? {}),
+      },
       updatedAt: new Date().toISOString(),
     });
     return this.store.save(updated);
+  }
+
+  /**
+   * Registers a persistent identity asset (mascot, avatar, logo, or watermark) in the Brand Kit
+   * so all future thumbnails, banners, and watermarks reuse the exact same visual asset.
+   */
+  registerIdentityAsset(
+    brandKitId: string,
+    role: 'mascot' | 'avatar' | 'logo' | 'watermark',
+    asset: ManagedAssetRef,
+  ): BrandKit {
+    const existing = this.store.get(brandKitId);
+    if (!existing) {
+      throw new Error(`Brand Kit not found: ${brandKitId}`);
+    }
+    const roleField =
+      role === 'mascot'
+        ? { mascotAssetId: asset.id }
+        : role === 'avatar'
+          ? { avatarAssetId: asset.id }
+          : role === 'logo'
+            ? { logoAssetId: asset.id }
+            : { watermarkAssetId: asset.id };
+    const nextRefs = existing.referenceAssetIds.includes(asset.id)
+      ? existing.referenceAssetIds
+      : [...existing.referenceAssetIds, asset.id];
+    return this.update(brandKitId, {
+      ...roleField,
+      referenceAssetIds: nextRefs,
+      assetManifest: {
+        ...existing.assetManifest,
+        [asset.id]: asset,
+      },
+    });
+  }
+
+  resolveIdentityAsset(
+    kit: BrandKit,
+    role: 'mascot' | 'avatar' | 'logo' | 'watermark',
+  ): ManagedAssetRef | null {
+    const targetId =
+      role === 'mascot'
+        ? kit.mascotAssetId ?? kit.avatarAssetId
+        : role === 'avatar'
+          ? kit.avatarAssetId ?? kit.mascotAssetId
+          : role === 'logo'
+            ? kit.logoAssetId ?? kit.watermarkAssetId
+            : kit.watermarkAssetId ?? kit.logoAssetId;
+    if (!targetId) return null;
+    return kit.assetManifest[targetId] ?? null;
   }
 
   get(id: string): BrandKit | null {

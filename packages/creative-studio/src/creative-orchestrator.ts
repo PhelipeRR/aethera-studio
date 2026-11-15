@@ -1,4 +1,5 @@
 import type { CompositionPlanner, CreativePlanInput, ThumbnailLabVariant } from './composition-planner.js';
+import { CreativeDirectorAgent, type DirectorCritiqueIssue } from './creative-director.js';
 import type { QualityGateService } from './quality-gate.js';
 import type { CreativeProjectDocument, QualityAuditReport } from './schemas.js';
 
@@ -26,6 +27,7 @@ export interface OrchestrationStepTrace {
 export interface CreativeOrchestrationResult {
   availableEngines: TechnicalEngineId[];
   traces: OrchestrationStepTrace[];
+  directorIssues: DirectorCritiqueIssue[];
   document: CreativeProjectDocument;
   audit: QualityAuditReport;
 }
@@ -49,11 +51,16 @@ export function sanitizeUntrustedCreativeInput(raw: string): string {
 }
 
 export class CreativeOrchestrator {
+  private readonly director: CreativeDirectorAgent;
+
   constructor(
     private readonly providers: ReasoningEngineProvider[],
     private readonly planner: CompositionPlanner,
     private readonly qualityGate: QualityGateService,
-  ) {}
+    director?: CreativeDirectorAgent,
+  ) {
+    this.director = director ?? new CreativeDirectorAgent();
+  }
 
   async detectAvailableEngines(): Promise<TechnicalEngineId[]> {
     const available: TechnicalEngineId[] = [];
@@ -139,16 +146,19 @@ export class CreativeOrchestrator {
       }
     }
 
-    const document = this.planner.buildDocument({
+    const planned = this.planner.buildDocument({
       ...input,
       prompt: safePrompt,
       ...(refinedHeadline ? { headline: refinedHeadline } : {}),
     });
+    const directorReview = this.director.reviewAndRefine(planned, { brandKit: input.brandKit ?? null });
+    const document = directorReview.document;
     const audit = await this.qualityGate.auditProject(document, { brandKit: input.brandKit ?? null });
 
     return {
       availableEngines: availableProviders.map((p) => p.id),
       traces,
+      directorIssues: directorReview.issues,
       document,
       audit,
     };

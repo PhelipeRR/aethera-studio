@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import sharp from 'sharp';
+import sharp, { type Blend, type OverlayOptions } from 'sharp';
 import type { AssetIngestionService } from './asset-ingestion.js';
 import type {
   BlendMode,
@@ -43,7 +43,7 @@ function escapeXml(value: string): string {
     .replace(/'/g, '&apos;');
 }
 
-function toSharpBlend(mode: BlendMode): sharp.Blend {
+function toSharpBlend(mode: BlendMode): Blend {
   switch (mode) {
     case 'multiply':
       return 'multiply';
@@ -75,6 +75,91 @@ function wrapTextLines(text: string, maxCharsPerLine: number): string[] {
   }
   if (current) lines.push(current);
   return lines.length > 0 ? lines : [''];
+}
+
+export interface TextBoxFitResult {
+  fontSize: number;
+  lines: string[];
+  estimatedMaxLineWidth: number;
+  estimatedTotalHeight: number;
+  fitsAtRequestedSize: boolean;
+  fitsAfterAutoScale: boolean;
+}
+
+/**
+ * Estimates glyph metrics conservatively (accounting for wide uppercase display fonts,
+ * letter-spacing, and stroke width) and auto-scales fontSize so no character clips inside targetW/targetH.
+ */
+export function fitTextToBox(params: {
+  text: string;
+  targetW: number;
+  targetH: number;
+  fontSize: number;
+  lineHeight: number;
+  letterSpacing: number;
+  strokeWidth: number;
+  uppercase?: boolean;
+  minFontSize?: number;
+}): TextBoxFitResult {
+  const display = params.uppercase ? params.text.toUpperCase() : params.text;
+  const padX = Math.min(36, Math.round(params.targetW * 0.06));
+  const padY = 16;
+  const availW = Math.max(40, params.targetW - padX);
+  const availH = Math.max(30, params.targetH - padY);
+  const minFont = Math.max(16, params.minFontSize ?? 24);
+
+  const measureAt = (fs: number) => {
+    const charW = fs * 0.72 + Math.max(0, params.letterSpacing) + params.strokeWidth * 0.65;
+    const maxChars = Math.max(4, Math.floor(availW / Math.max(8, charW)));
+    const lines = wrapTextLines(display, maxChars);
+    const maxLen = lines.reduce((m, l) => Math.max(m, l.length), 0);
+    const estW = maxLen * charW;
+    const estH = lines.length * fs * params.lineHeight;
+    return {
+      lines,
+      estW,
+      estH,
+      fits: estW <= availW && estH <= availH,
+    };
+  };
+
+  const initial = measureAt(params.fontSize);
+  if (initial.fits) {
+    return {
+      fontSize: params.fontSize,
+      lines: initial.lines,
+      estimatedMaxLineWidth: Math.round(initial.estW),
+      estimatedTotalHeight: Math.round(initial.estH),
+      fitsAtRequestedSize: true,
+      fitsAfterAutoScale: true,
+    };
+  }
+
+  let currentFs = params.fontSize;
+  let current = initial;
+  while (currentFs > minFont) {
+    currentFs = Math.max(minFont, currentFs - 4);
+    current = measureAt(currentFs);
+    if (current.fits) {
+      return {
+        fontSize: currentFs,
+        lines: current.lines,
+        estimatedMaxLineWidth: Math.round(current.estW),
+        estimatedTotalHeight: Math.round(current.estH),
+        fitsAtRequestedSize: false,
+        fitsAfterAutoScale: true,
+      };
+    }
+  }
+
+  return {
+    fontSize: currentFs,
+    lines: current.lines,
+    estimatedMaxLineWidth: Math.round(current.estW),
+    estimatedTotalHeight: Math.round(current.estH),
+    fitsAtRequestedSize: false,
+    fitsAfterAutoScale: current.fits,
+  };
 }
 
 async function applyMaskToBuffer(buffer: Buffer, width: number, height: number, mask: LayerMask): Promise<Buffer> {
@@ -227,7 +312,7 @@ async function applyLayerEffects(buffer: Buffer, width: number, height: number, 
         <rect width="100%" height="100%" fill="url(#dl)"/>
       </svg>`;
       current = await sharp(current)
-        .composite([{ input: Buffer.from(svg), blend: 'screen' }])
+        .composite([{ input: Buffer.from(svg), blend: 'atop' }])
         .png()
         .toBuffer();
     } else if (effect.kind === 'dropShadow') {
@@ -329,7 +414,7 @@ export class SharpSvgCompositionEngine {
       },
     });
 
-    const composites: sharp.OverlayOptions[] = [];
+    const composites: OverlayOptions[] = [];
 
     for (const layer of orderedLayers) {
       const rendered = await this.renderLayer(doc, layer);
@@ -472,18 +557,27 @@ export class SharpSvgCompositionEngine {
       }
 
       case 'text': {
-        const display = layer.uppercase ? layer.text.toUpperCase() : layer.text;
-        const approxCharWidth = layer.fontSize * 0.56;
-        const maxChars = Math.max(6, Math.floor(targetW / Math.max(10, approxCharWidth)));
-        const lines = wrapTextLines(display, maxChars);
-        const lineHeightPx = Math.round(layer.fontSize * layer.lineHeight);
+        const fit = fitTextToBox({
+          text: layer.text,
+          targetW,
+          targetH,
+          fontSize: layer.fontSize,
+          lineHeight: layer.lineHeight,
+          letterSpacing: layer.letterSpacing,
+          strokeWidth: layer.strokeWidth,
+          uppercase: layer.uppercase,
+        });
+        const fittedFs = fit.fontSize;
+        const lines = fit.lines;
+        const lineHeightPx = Math.round(fittedFs * layer.lineHeight);
         const anchor = layer.align === 'center' ? 'middle' : layer.align === 'right' ? 'end' : 'start';
-        const textX = layer.align === 'center' ? Math.round(targetW / 2) : layer.align === 'right' ? targetW - 16 : 16;
+        const pad = Math.min(18, Math.round(targetW * 0.03));
+        const textX = layer.align === 'center' ? Math.round(targetW / 2) : layer.align === 'right' ? targetW - pad : pad;
 
         const tspans = lines
           .map((line, idx) => {
-            const yPos = Math.round(layer.fontSize + idx * lineHeightPx);
-            return `<text x="${textX}" y="${yPos}" text-anchor="${anchor}" font-family="${escapeXml(layer.fontFamily)}, sans-serif" font-size="${layer.fontSize}" font-weight="${layer.fontWeight}" letter-spacing="${layer.letterSpacing}" fill="${escapeXml(layer.color)}" stroke="${escapeXml(layer.strokeColor)}" stroke-width="${layer.strokeWidth}" paint-order="stroke fill">${escapeXml(line)}</text>`;
+            const yPos = Math.round(fittedFs + idx * lineHeightPx);
+            return `<text x="${textX}" y="${yPos}" text-anchor="${anchor}" font-family="${escapeXml(layer.fontFamily)}, sans-serif" font-size="${fittedFs}" font-weight="${layer.fontWeight}" letter-spacing="${layer.letterSpacing}" fill="${escapeXml(layer.color)}" stroke="${escapeXml(layer.strokeColor)}" stroke-width="${layer.strokeWidth}" paint-order="stroke fill">${escapeXml(line)}</text>`;
           })
           .join('');
 

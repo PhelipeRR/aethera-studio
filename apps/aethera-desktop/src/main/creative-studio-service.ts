@@ -233,7 +233,7 @@ export class AetheraCreativeStudioService {
   }> {
     const brandKit = input.brandKitId ? this.brandKits.get(input.brandKitId) : null;
     let backgroundAsset = input.backgroundAssetId ? input.assetManifest?.[input.backgroundAssetId] ?? null : null;
-    const subjectAsset = input.subjectAssetId ? input.assetManifest?.[input.subjectAssetId] ?? null : null;
+    let subjectAsset = input.subjectAssetId ? input.assetManifest?.[input.subjectAssetId] ?? null : null;
 
     if (input.useAiGeneration && !backgroundAsset && (await this.imageAdapter.isAvailable())) {
       const genBuffer = await this.imageAdapter.generateImage({
@@ -241,20 +241,40 @@ export class AetheraCreativeStudioService {
         width: input.artType === 'avatar' ? 768 : 1024,
         height: input.artType === 'avatar' ? 768 : 576,
       });
-      backgroundAsset = await this.ingestion.ingestBuffer({
+      const generatedAsset = await this.ingestion.ingestBuffer({
         buffer: genBuffer,
         kind: 'image',
         extension: 'png',
         originalName: `ai-gen-${Date.now()}.png`,
       });
+      if (input.artType === 'avatar' && !subjectAsset) {
+        try {
+          const genAbsPath = this.ingestion.resolvePortablePath(generatedAsset.relativePath);
+          const cutoutBuffer = await this.imageAdapter.removeBackground({ inputImagePath: genAbsPath });
+          subjectAsset = await this.ingestion.ingestBuffer({
+            buffer: cutoutBuffer,
+            kind: 'cutout',
+            extension: 'png',
+            originalName: `ai-mascot-cutout-${Date.now()}.png`,
+          });
+          if (brandKit) {
+            this.brandKits.registerIdentityAsset(brandKit.id, 'mascot', subjectAsset);
+          }
+        } catch {
+          backgroundAsset = generatedAsset;
+        }
+      } else {
+        backgroundAsset = generatedAsset;
+      }
     }
 
+    const activeBrandKit = input.brandKitId ? this.brandKits.get(input.brandKitId) : brandKit;
     const result = await this.orchestrator.orchestrateCreation({
       artType: input.artType,
       prompt: input.prompt,
       ...(input.title ? { title: input.title } : {}),
       ...(input.headline ? { headline: input.headline } : {}),
-      brandKit,
+      brandKit: activeBrandKit,
       backgroundAsset,
       subjectAsset,
       ...(input.sourceCinemaProjectId ? { sourceCinemaProjectId: input.sourceCinemaProjectId } : {}),
@@ -263,6 +283,17 @@ export class AetheraCreativeStudioService {
 
     const saved = this.saveDocument(result.document);
     this.editors.set(saved.id, new LayeredDocumentEditor(saved));
+    if (activeBrandKit && (input.artType === 'avatar' || input.artType === 'watermark')) {
+      const renderedPng = await this.engine.renderDocumentToBuffer(saved, 'png');
+      const role = input.artType === 'avatar' ? 'avatar' : 'watermark';
+      const identityRef = await this.ingestion.ingestBuffer({
+        buffer: renderedPng,
+        kind: 'logo',
+        extension: 'png',
+        originalName: `brand-${role}-${Date.now()}.png`,
+      });
+      this.brandKits.registerIdentityAsset(activeBrandKit.id, role, identityRef);
+    }
     const previewDataUrl = await this.renderPreviewDataUrl(saved);
 
     return {
