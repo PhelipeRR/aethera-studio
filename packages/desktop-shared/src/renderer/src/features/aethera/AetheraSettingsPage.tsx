@@ -77,6 +77,7 @@ interface AetheraBridgeLoose {
     filePath?: string;
     counts?: {
       cinemaProjects: number;
+      cinemaLibraryFiles?: number;
       academyMaterials: number;
       evolutionMemories: number;
       calendarEvents: number;
@@ -89,6 +90,7 @@ interface AetheraBridgeLoose {
     relaunching?: boolean;
     counts?: {
       cinemaProjects: number;
+      cinemaLibraryFiles?: number;
       academyMaterials: number;
       evolutionMemories: number;
       calendarEvents: number;
@@ -216,7 +218,7 @@ export function AetheraSettingsPage({ description }: { description: string }) {
       const c = res.counts;
       setStatusMessage({
         kind: 'ok',
-        text: `Backup Geral salvo em ${res.filePath ?? 'arquivo selecionado'} (${c?.cinemaProjects ?? 0} projetos, ${c?.academyMaterials ?? 0} materiais da Academy, ${c?.evolutionMemories ?? 0} memórias, ${c?.calendarEvents ?? 0} eventos).`,
+        text: `Backup Geral salvo em ${res.filePath ?? 'arquivo selecionado'} (${c?.cinemaProjects ?? 0} projetos, ${c?.cinemaLibraryFiles ?? 0} arquivos da biblioteca, ${c?.academyMaterials ?? 0} materiais da Academy, ${c?.evolutionMemories ?? 0} memórias, ${c?.calendarEvents ?? 0} eventos).`,
       });
     } catch (err) {
       setStatusMessage({
@@ -444,8 +446,9 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                     <h3 className="text-sm font-semibold text-foreground">Backup Geral do Sistema</h3>
                     <p className="mt-1 text-muted-foreground">
                       Exporta ou restaura em um único arquivo JSON o banco de dados (canais, projetos e histórico),
-                      preferências do estúdio, Aethera Academy, Memória Evolutiva, Calendário Editorial e projetos do
-                      Cinema. Antes de restaurar, o estado atual é preservado automaticamente em disco.
+                      preferências do estúdio, Biblioteca de Mídia, Aethera Academy, Memória Evolutiva, Calendário
+                      Editorial e projetos do Cinema. Antes de restaurar, o estado atual é preservado automaticamente em
+                      disco.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">

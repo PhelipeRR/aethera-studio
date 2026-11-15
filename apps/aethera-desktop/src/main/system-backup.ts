@@ -1,5 +1,16 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { backupDatabase, verifyBackup, type DatabaseHandle } from '@neuralbridge/database';
 import type { AetheraAcademyEngine, AetheraEvolutionCore, EditorialCalendarEngine } from '@neuralbridge/cinema';
 
@@ -11,6 +22,7 @@ const SAFE_JSON_NAME = /^[a-zA-Z0-9._-]+\.json$/;
 
 export interface AetheraSystemBackupCounts {
   cinemaProjects: number;
+  cinemaLibraryFiles?: number;
   academyMaterials: number;
   academyKnowledge: number;
   academyExercises: number;
@@ -34,6 +46,7 @@ export interface AetheraSystemBackupBundle {
   evolution?: ReturnType<AetheraEvolutionCore['getSnapshot']>;
   calendar?: ReturnType<EditorialCalendarEngine['getSnapshot']>;
   cinemaProjects?: Record<string, unknown>;
+  cinemaLibrary?: Record<string, string>;
 }
 
 export interface SystemBackupDeps {
@@ -44,6 +57,7 @@ export interface SystemBackupDeps {
   preferencesFile: string;
   calendarFile: string;
   cinemaProjectsDir: string;
+  cinemaLibraryDir?: string;
   academyEngine: AetheraAcademyEngine;
   evolutionCore: AetheraEvolutionCore;
   editorialCalendar: EditorialCalendarEngine;
@@ -54,6 +68,76 @@ function createBackupTempDir(deps: SystemBackupDeps, prefix: string): string {
   const tmpBase = deps.tmpRoot ?? join(deps.userDataDir, 'tmp');
   mkdirSync(tmpBase, { recursive: true });
   return mkdtempSync(join(tmpBase, prefix));
+}
+
+function collectDirectoryFilesBase64(rootDir: string): Record<string, string> {
+  const files: Record<string, string> = {};
+  if (!existsSync(rootDir)) return files;
+
+  const walk = (currentDir: string, prefixParts: string[]) => {
+    for (const entry of readdirSync(currentDir)) {
+      const fullPath = join(currentDir, entry);
+      let stat;
+      try {
+        stat = lstatSync(fullPath);
+      } catch {
+        continue;
+      }
+      if (stat.isSymbolicLink()) continue;
+      const nextParts = [...prefixParts, entry];
+      if (stat.isDirectory()) {
+        walk(fullPath, nextParts);
+      } else if (stat.isFile()) {
+        try {
+          files[nextParts.join('/')] = readFileSync(fullPath).toString('base64');
+        } catch {
+          // skip unreadable file
+        }
+      }
+    }
+  };
+
+  walk(rootDir, []);
+  return files;
+}
+
+function resolveSafeRelativeTarget(rootDir: string, relPath: string): string | null {
+  if (!relPath || relPath.includes('\0') || relPath.startsWith('/') || relPath.startsWith('\\')) {
+    return null;
+  }
+  if (/^[a-zA-Z]:/.test(relPath)) return null;
+  const segments = relPath.split(/[\\/]+/).filter(Boolean);
+  if (segments.length === 0 || segments.some((seg) => seg === '.' || seg === '..')) {
+    return null;
+  }
+  const baseResolved = resolve(rootDir);
+  const targetResolved = resolve(baseResolved, ...segments);
+  if (!targetResolved.startsWith(`${baseResolved}${sep}`)) {
+    return null;
+  }
+  return targetResolved;
+}
+
+function copyDirectoryContents(srcDir: string, destDir: string): void {
+  if (!existsSync(srcDir)) return;
+  for (const entry of readdirSync(srcDir)) {
+    const srcPath = join(srcDir, entry);
+    let stat;
+    try {
+      stat = lstatSync(srcPath);
+    } catch {
+      continue;
+    }
+    if (stat.isSymbolicLink()) continue;
+    const destPath = join(destDir, entry);
+    if (stat.isDirectory()) {
+      mkdirSync(destPath, { recursive: true });
+      copyDirectoryContents(srcPath, destPath);
+    } else if (stat.isFile()) {
+      mkdirSync(dirname(destPath), { recursive: true });
+      copyFileSync(srcPath, destPath);
+    }
+  }
 }
 
 export function exportSystemBackup(
@@ -104,8 +188,11 @@ export function exportSystemBackup(
     }
   }
 
+  const cinemaLibrary = deps.cinemaLibraryDir ? collectDirectoryFilesBase64(deps.cinemaLibraryDir) : undefined;
+
   const counts: AetheraSystemBackupCounts = {
     cinemaProjects: Object.keys(cinemaProjects).filter((k) => !k.endsWith('.render.json')).length,
+    cinemaLibraryFiles: cinemaLibrary ? Object.keys(cinemaLibrary).length : 0,
     academyMaterials: academySnap.materials.length,
     academyKnowledge: academySnap.knowledge.length,
     academyExercises: academySnap.exercises.length,
@@ -129,6 +216,7 @@ export function exportSystemBackup(
     evolution: evolutionSnap,
     calendar: calendarSnap,
     cinemaProjects,
+    ...(cinemaLibrary ? { cinemaLibrary } : {}),
   };
 
   mkdirSync(dirname(targetFilePath), { recursive: true });
@@ -227,6 +315,24 @@ export function restoreSystemBackup(
         writeFileSync(join(deps.cinemaProjectsDir, fileName), JSON.stringify(content, null, 2), 'utf8');
       }
     }
+    if (
+      deps.cinemaLibraryDir &&
+      parsed.cinemaLibrary &&
+      typeof parsed.cinemaLibrary === 'object' &&
+      !Array.isArray(parsed.cinemaLibrary)
+    ) {
+      if (existsSync(deps.cinemaLibraryDir)) {
+        copyDirectoryContents(deps.cinemaLibraryDir, join(preservedDir, 'cinema-library'));
+      }
+      mkdirSync(deps.cinemaLibraryDir, { recursive: true });
+      for (const [relPath, base64Content] of Object.entries(parsed.cinemaLibrary)) {
+        if (typeof base64Content !== 'string') continue;
+        const safeTarget = resolveSafeRelativeTarget(deps.cinemaLibraryDir, relPath);
+        if (!safeTarget) continue;
+        mkdirSync(dirname(safeTarget), { recursive: true });
+        writeFileSync(safeTarget, Buffer.from(base64Content, 'base64'));
+      }
+    }
   } finally {
     if (verifiedTempDbDir) {
       rmSync(verifiedTempDbDir, { recursive: true, force: true });
@@ -237,6 +343,7 @@ export function restoreSystemBackup(
     cinemaProjects: parsed.cinemaProjects
       ? Object.keys(parsed.cinemaProjects).filter((k) => !k.endsWith('.render.json')).length
       : 0,
+    cinemaLibraryFiles: parsed.cinemaLibrary ? Object.keys(parsed.cinemaLibrary).length : 0,
     academyMaterials: parsed.academy?.materials?.length ?? 0,
     academyKnowledge: parsed.academy?.knowledge?.length ?? 0,
     academyExercises: parsed.academy?.exercises?.length ?? 0,

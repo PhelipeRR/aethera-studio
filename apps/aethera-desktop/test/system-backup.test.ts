@@ -240,4 +240,78 @@ describe('Aethera System Backup & Restore', () => {
     expect(readdirSync(tmpBase)).toEqual([]);
     expect(existsSync(priorBackup)).toBe(true);
   });
+
+  it('exports and restores cinemaLibrary files including subdirectories and rejects path traversal', () => {
+    const root = makeTempDir('aethera-sys-lib-');
+    const sourceDir = join(root, 'src-userData');
+    const targetDir = join(root, 'dst-userData');
+
+    const srcLibDir = join(sourceDir, 'cinema-library');
+    mkdirSync(join(srcLibDir, 'sfx'), { recursive: true });
+    writeFileSync(join(srcLibDir, 'intro-theme.mp3'), Buffer.from('mp3-binary-sample'));
+    writeFileSync(join(srcLibDir, 'sfx', 'whoosh.wav'), Buffer.from('wav-binary-sample'));
+
+    const srcEvolution = new AetheraEvolutionCore(join(sourceDir, 'evolution', 'evolution-store.json'));
+    const srcAcademy = new AetheraAcademyEngine(srcEvolution, join(sourceDir, 'evolution', 'academy-store.json'));
+    const srcCalendar = new EditorialCalendarEngine(join(sourceDir, 'calendar', 'editorial-calendar-store.json'));
+
+    const backupFile = join(root, 'lib-backup.json');
+    const exported = exportSystemBackup(
+      {
+        appVersion: '0.1.65',
+        userDataDir: sourceDir,
+        databaseFile: join(sourceDir, 'db', 'brain.db'),
+        databaseHandle: null,
+        preferencesFile: join(sourceDir, 'preferences.json'),
+        calendarFile: join(sourceDir, 'calendar', 'editorial-calendar-store.json'),
+        cinemaProjectsDir: join(sourceDir, 'cinema-projects'),
+        cinemaLibraryDir: srcLibDir,
+        academyEngine: srcAcademy,
+        evolutionCore: srcEvolution,
+        editorialCalendar: srcCalendar,
+      },
+      backupFile,
+    );
+
+    expect(exported.counts.cinemaLibraryFiles).toBe(2);
+
+    const parsed = JSON.parse(readFileSync(backupFile, 'utf8')) as {
+      cinemaLibrary: Record<string, string>;
+    };
+    parsed.cinemaLibrary['../escaped.txt'] = Buffer.from('evil').toString('base64');
+    writeFileSync(backupFile, JSON.stringify(parsed, null, 2), 'utf8');
+
+    const dstLibDir = join(targetDir, 'cinema-library');
+    mkdirSync(dstLibDir, { recursive: true });
+    writeFileSync(join(dstLibDir, 'existing-asset.txt'), 'old-lib-file', 'utf8');
+
+    const dstEvolution = new AetheraEvolutionCore(join(targetDir, 'evolution', 'evolution-store.json'));
+    const dstAcademy = new AetheraAcademyEngine(dstEvolution, join(targetDir, 'evolution', 'academy-store.json'));
+    const dstCalendar = new EditorialCalendarEngine(join(targetDir, 'calendar', 'editorial-calendar-store.json'));
+
+    const restored = restoreSystemBackup(
+      {
+        appVersion: '0.1.65',
+        userDataDir: targetDir,
+        databaseFile: join(targetDir, 'db', 'brain.db'),
+        databaseHandle: null,
+        preferencesFile: join(targetDir, 'preferences.json'),
+        calendarFile: join(targetDir, 'calendar', 'editorial-calendar-store.json'),
+        cinemaProjectsDir: join(targetDir, 'cinema-projects'),
+        cinemaLibraryDir: dstLibDir,
+        academyEngine: dstAcademy,
+        evolutionCore: dstEvolution,
+        editorialCalendar: dstCalendar,
+      },
+      backupFile,
+    );
+
+    expect(restored.ok).toBe(true);
+    expect(existsSync(join(targetDir, 'escaped.txt'))).toBe(false);
+    expect(readFileSync(join(dstLibDir, 'intro-theme.mp3')).toString('utf8')).toBe('mp3-binary-sample');
+    expect(readFileSync(join(dstLibDir, 'sfx', 'whoosh.wav')).toString('utf8')).toBe('wav-binary-sample');
+    expect(readFileSync(join(restored.preservedDir, 'cinema-library', 'existing-asset.txt'), 'utf8')).toBe(
+      'old-lib-file',
+    );
+  });
 });

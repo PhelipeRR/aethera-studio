@@ -3243,6 +3243,7 @@ export function registerAetheraDomainIpc(options: {
     preferencesFile,
     calendarFile: join(app.getPath('userData'), 'calendar', 'editorial-calendar-store.json'),
     cinemaProjectsDir,
+    cinemaLibraryDir: join(app.getPath('userData'), 'cinema-library'),
     academyEngine,
     evolutionCore,
     editorialCalendar,
