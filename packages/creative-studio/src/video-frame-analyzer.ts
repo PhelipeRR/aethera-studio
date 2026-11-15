@@ -73,7 +73,7 @@ export interface VideoFrameAnalysisResult {
 export class VideoFrameAnalyzer {
   private readonly ffmpegPath: string;
   private readonly ffprobePath: string;
-  private readonly provenanceResolver?: FrameProvenanceResolver;
+  private readonly provenanceResolver: FrameProvenanceResolver | undefined;
 
   constructor(
     private readonly ingestion: AssetIngestionService,
@@ -150,7 +150,7 @@ export class VideoFrameAnalyzer {
     if (options.identifyAnimeProvenance && bestCandidate && this.provenanceResolver) {
       try {
         const prov = await this.provenanceResolver.identifyFrame({
-          framePath: bestCandidate.asset.storagePath,
+          framePath: this.ingestion.resolvePortablePath(bestCandidate.asset.relativePath),
           mimeType: bestCandidate.asset.mimeType,
         });
         if (prov.status === 'ok' && prov.topMatch) {

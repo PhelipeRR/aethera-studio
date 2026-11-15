@@ -34,3 +34,13 @@
     - **Pass 1 (`maxDurationMs=180000`, `maxRounds=1`):** `stoppedReason: deadline_exceeded`, `12` consultas, `38` candidatos, `4` baixados, `1` aprovado (`coverageRatio: 0.07`), `triageEliminatedCount: 1`, fallback automático `claude-gateway` -> `antigravity`.
     - **Pass 2 (retomada no mesmo checkpoint, `maxDurationMs=300000`, `maxRounds=2`):** `resumedFromCheckpoint: true`, `skippedQueriesFromCheckpoint: 11`, `reusedFilesFromCheckpoint: 4`, `acquiredFilesCount: 11`, `approvedForAssemblyCount: 6`, `coverageRatio: 0.35` (`gatePassed: false`), preservando dependências de SFX (`hud_pulse`, `whoosh_transition`) e VFX (`subtle_vignette`, `lower_third_accent`) por cena.
     - **Lacuna remanescente observada:** `6` cenas com `0s`, `4` cenas parciais (`missingDurationSec: 466.27s`) devido a limite de orçamento por execução e latência/timeouts de CLI multimodal em concorrência.
+- **Anime Source Adapters — `trace.moe` & `Sakugabooru` (2026-11-15):**
+  - **Validação técnica real ao vivo:**
+    - `https://api.trace.moe/me` (`200 OK`, `ratelimit-limit: 100`, `concurrency: 1`) e `POST /search?anilistInfo&cutBorders` validados com fallback e cache em disco.
+    - `https://www.sakugabooru.com/post.json?limit=2&tags=dragon_ball_z` (`200 OK`), `tag.json` (`200 OK`) e `HEAD /data/673378fc55b02f4476a7363cf11eeca4.mp4` (`200 OK`, `video/mp4`, `10.3 MB`, `Accept-Ranges: bytes`) confirmados operacionais.
+  - **Entregas implementadas:**
+    - `packages/cinema/src/analysis/anime-source-adapters.ts`: `AnimeProvenanceAdapter`, `TraceMoeProvenanceAdapter`, `AnimeMediaSourceAdapter`, `SakugabooruSourceAdapter` e `isAnimeSubjectOrGenre`.
+    - `packages/cinema/src/qc/media-relevance-gate.ts`: integração de `animeProvenance` para enriquecer metadados/episódio e rejeitar obras incorretas (`wrong_anime_or_entity`), preservando a obrigatoriedade do `VisionRouter`.
+    - `packages/cinema/src/analysis/resilient-media-sources.ts`: fonte `'sakugabooru'` isolada estritamente para tópicos de anime (sem impactar jogos).
+    - `packages/creative-studio/src/video-frame-analyzer.ts` & `apps/aethera-desktop/src/main/creative-studio-service.ts`: `FrameProvenanceResolver` conectado ao `TraceMoeProvenanceAdapter` com cache persistente em `creative-studio/trace-moe-cache.json`.
+  - **Verificação:** `packages/cinema/test/anime-source-adapters.test.ts` + `media-relevance-coverage-voice.test.ts` (`22/22` aprovados) e validação ao vivo de `SakugabooruSourceAdapter` + `TraceMoeProvenanceAdapter` (incluindo cache hit em disco).

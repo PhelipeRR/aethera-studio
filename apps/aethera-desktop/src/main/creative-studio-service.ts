@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { IpcMain } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
+import { TraceMoeProvenanceAdapter } from '@neuralbridge/cinema';
 import {
   AssetIngestionService,
   BrandKitManager,
@@ -103,6 +104,9 @@ export class AetheraCreativeStudioService {
     this.frameAnalyzer = new VideoFrameAnalyzer(this.ingestion, {
       ...(options.ffmpegPath ? { ffmpegPath: options.ffmpegPath } : {}),
       ...(options.ffprobePath ? { ffprobePath: options.ffprobePath } : {}),
+      provenanceResolver: new TraceMoeProvenanceAdapter({
+        cachePath: join(this.storageRoot, 'trace-moe-cache.json'),
+      }),
     });
     this.qualityGate = new QualityGateService(this.engine);
     this.planner = new CompositionPlanner();

@@ -15,6 +15,11 @@ import {
 import type { AetheraEvolutionCore } from '../evolution/evolution-core.js';
 import { recordSceneGroundingNegativeExample } from '../evolution/production-learning.js';
 import {
+  isAnimeSubjectOrGenre,
+  type AnimeMediaSourceAdapter,
+  type AnimeProvenanceAdapter,
+} from './anime-source-adapters.js';
+import {
   expandScriptOrientedQueries,
   planMediaCoverage,
   type AcquiredMediaAsset,
@@ -28,6 +33,7 @@ export type MediaProviderId =
   | 'youtube_data_api'
   | 'wikimedia_commons'
   | 'internet_archive'
+  | 'sakugabooru'
   | 'yt_dlp';
 
 export interface MediaSourceCandidate {
@@ -58,6 +64,9 @@ export interface ResilientAcquisitionDeps {
   localMediaDirs?: string[];
   youtubeApiKey?: string;
   fetchImpl?: typeof fetch;
+  animeMediaSource?: AnimeMediaSourceAdapter;
+  animeProvenance?: AnimeProvenanceAdapter;
+  extractFrameForProvenance?: (uri: string, timestampSec: number) => Promise<Buffer | null>;
   ytDlpSearchFn?: (
     query: string,
     count: number,
@@ -242,6 +251,7 @@ export async function searchResilientMediaSources(
   query: string,
   deps: ResilientAcquisitionDeps,
   signal?: AbortSignal,
+  options?: { genre?: string; prompt?: string },
 ): Promise<ResilientSearchResult> {
   const fetchFn = deps.fetchImpl ?? fetch;
   const candidates: MediaSourceCandidate[] = [];
@@ -255,6 +265,47 @@ export async function searchResilientMediaSources(
     status: localHits.length > 0 ? 'ok' : 'empty',
     count: localHits.length,
   });
+
+  // 1b. Anime-specific source adapter (e.g. Sakugabooru) — strictly isolated to anime topics
+  if (deps.animeMediaSource && isAnimeSubjectOrGenre(`${options?.prompt ?? ''} ${query}`, options?.genre)) {
+    try {
+      const animeRes = await deps.animeMediaSource.searchClips({
+        query,
+        limit: 6,
+        safeOnly: true,
+        ...(signal ? { signal } : {}),
+      });
+      const mappedAnime: MediaSourceCandidate[] = animeRes.candidates.map((c) => ({
+        url: c.url,
+        title: c.title,
+        description: c.tags.join(' '),
+        origin: 'sakugabooru',
+        license: 'sakugabooru_reference',
+        directDownloadable: true,
+      }));
+      candidates.push(...mappedAnime);
+      providerStatuses.push({
+        provider: 'sakugabooru',
+        status:
+          animeRes.status === 'ok'
+            ? 'ok'
+            : animeRes.status === 'empty'
+              ? 'empty'
+              : animeRes.status === 'rate_limited'
+                ? 'blocked_auth_or_antibot'
+                : 'error',
+        ...(animeRes.error ? { detail: animeRes.error } : {}),
+        count: mappedAnime.length,
+      });
+    } catch (err) {
+      providerStatuses.push({
+        provider: 'sakugabooru',
+        status: 'error',
+        detail: (err as Error).message,
+        count: 0,
+      });
+    }
+  }
 
   // 2. Official YouTube Data API v3 (only when key is configured)
   if (deps.youtubeApiKey) {
@@ -1255,6 +1306,7 @@ export async function runAutonomousMediaAcquisition(input: {
               item.query,
               effectiveDeps(),
               createScopedSignal(perQueryTimeoutMs),
+              { ...(input.genre ? { genre: input.genre } : {}), prompt: input.prompt },
             );
             allStatuses.push(...searchRes.providerStatuses);
             if (searchRes.providerStatuses.some((s) => s.provider === 'yt_dlp' && s.status === 'blocked_auth_or_antibot')) {
@@ -1594,6 +1646,10 @@ export async function runAutonomousMediaAcquisition(input: {
                   ? { requireVisualVerification: input.requireVisualVerification }
                   : {}),
                 ...(input.evolution ? { evolution: input.evolution } : {}),
+                ...(input.deps.animeProvenance ? { animeProvenance: input.deps.animeProvenance } : {}),
+                ...(input.deps.extractFrameForProvenance
+                  ? { extractFrameForProvenance: input.deps.extractFrameForProvenance }
+                  : {}),
               },
             );
             if (!decision.visualVerificationError) {

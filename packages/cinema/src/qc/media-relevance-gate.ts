@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
+import type { AnimeProvenanceAdapter } from '../analysis/anime-source-adapters.js';
 import type { AetheraEvolutionCore } from '../evolution/evolution-core.js';
 import { findMatchingSceneGroundingNegativeExample } from '../evolution/production-learning.js';
 
@@ -104,6 +105,19 @@ export interface MediaRelevanceDecision {
   extractedFramePaths?: string[];
   matchedEntities: string[];
   visualCategory: VisualCategory;
+  animeProvenance?: {
+    origin: string;
+    workTitle: string;
+    episode?: number | string | null;
+    fromSec: number;
+    toSec: number;
+    confidence: number;
+    anilistId?: number;
+    malId?: number;
+    fromCache: boolean;
+    matchesExpectedWork: boolean;
+    provenanceOnly: true;
+  };
 }
 
 export const SCENE_GROUNDING_POLICY_VERSION = 'scene-grounding-v2';
@@ -330,6 +344,9 @@ export async function evaluateMediaRelevance(
     ) => Promise<DistributedFrameAnalysis[]>;
     requireVisualVerification?: boolean;
     evolution?: AetheraEvolutionCore;
+    animeProvenance?: AnimeProvenanceAdapter;
+    provenanceFrameBuffer?: Buffer;
+    extractFrameForProvenance?: (uri: string, timestampSec: number) => Promise<Buffer | null>;
   },
 ): Promise<MediaRelevanceDecision> {
   const sampledTimestampsSec = sampleDistributedFrameTimestamps(candidate.durationSec, 4);
@@ -854,6 +871,73 @@ export async function evaluateMediaRelevance(
       ? 'exact_match'
       : 'contextual_support';
 
+  // Optional Anime Provenance (trace.moe): enriches work/episode/timestamp metadata & catches wrong-anime clips,
+  // NEVER replaces VisionRouter or auto-approves without visual proof of the narrated action.
+  let animeProvenanceMeta: MediaRelevanceDecision['animeProvenance'];
+  if (expectsAnime && options?.animeProvenance) {
+    try {
+      const provBuffer =
+        options.provenanceFrameBuffer ??
+        (await options.extractFrameForProvenance?.(candidate.uri, sampledTimestampsSec[0] ?? 1)) ??
+        null;
+      if (provBuffer && provBuffer.length > 0) {
+        const provRes = await options.animeProvenance.identifyFrame({
+          frameBuffer: provBuffer,
+          minConfidence: 0.78,
+        });
+        if (provRes.status === 'ok' && provRes.topMatch) {
+          const m = provRes.topMatch;
+          const candidateWorkTexts = [
+            m.workTitle,
+            m.titles.english ?? '',
+            m.titles.romaji ?? '',
+            m.titles.native ?? '',
+            ...(m.titles.synonyms ?? []),
+          ]
+            .join(' ')
+            .toLowerCase();
+          const promptWorkTokens = extractTopicEntities(`${segment.prompt} ${expectedEntities.join(' ')}`);
+          const matchesExpectedWork =
+            promptWorkTokens.length === 0 ||
+            promptWorkTokens.some((tok) => tok.length >= 3 && candidateWorkTexts.includes(tok));
+          animeProvenanceMeta = {
+            origin: m.origin,
+            workTitle: m.workTitle,
+            episode: m.episode ?? null,
+            fromSec: m.fromSec,
+            toSec: m.toSec,
+            confidence: m.confidence,
+            ...(m.identifiers.anilistId !== undefined ? { anilistId: m.identifiers.anilistId } : {}),
+            ...(m.identifiers.malId !== undefined ? { malId: m.identifiers.malId } : {}),
+            fromCache: m.evidence.fromCache,
+            matchesExpectedWork,
+            provenanceOnly: true,
+          };
+          if (!matchesExpectedWork && m.confidence >= 0.85) {
+            return {
+              mediaId: candidate.mediaId,
+              accepted: false,
+              score: 0.1,
+              relevanceTier: 'rejected',
+              correspondenceLevel: 'rejected',
+              visualVerificationStatus,
+              visualConfidence,
+              visualEvidence,
+              rejectionCode: 'wrong_anime_or_entity',
+              reason: `Proveniência (${m.origin}) identificou outra obra (${m.workTitle}, conf=${m.confidence}) incompatível com o roteiro.`,
+              sampledTimestampsSec,
+              matchedEntities: effectiveMatched,
+              visualCategory: dominantVisualCategory,
+              animeProvenance: animeProvenanceMeta,
+            };
+          }
+        }
+      }
+    } catch {
+      // graceful fallback: provenance unavailability never breaks Scene Grounding
+    }
+  }
+
   return {
     mediaId: candidate.mediaId,
     accepted: true,
@@ -873,5 +957,6 @@ export async function evaluateMediaRelevance(
     sampledTimestampsSec,
     matchedEntities: effectiveMatched,
     visualCategory: dominantVisualCategory,
+    ...(animeProvenanceMeta ? { animeProvenance: animeProvenanceMeta } : {}),
   };
 }
