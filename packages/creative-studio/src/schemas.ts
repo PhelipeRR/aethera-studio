@@ -92,6 +92,8 @@ export const brandKitSchema = z.object({
   id: z.string().min(1),
   channelId: z.string().min(1).optional(),
   channelName: z.string().min(1).max(120),
+  slogan: z.string().max(160).optional(),
+  niche: z.string().max(80).optional(),
   palette: z.object({
     primary: hexColorSchema,
     secondary: hexColorSchema,
@@ -252,6 +254,8 @@ export const subjectLayerSchema = z.object({
   rimLightColor: hexColorSchema.optional(),
   anchorBottom: z.boolean().optional(),
   groundFade: z.boolean().optional(),
+  framing: z.enum(['full', 'medium', 'closeup']).optional(),
+  fitMode: z.enum(['contain', 'cover']).optional(),
 });
 
 export const textLayerSchema = z.object({

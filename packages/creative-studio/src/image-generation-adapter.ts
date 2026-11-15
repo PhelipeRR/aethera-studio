@@ -407,8 +407,8 @@ async function applyLayerEffects(buffer: Buffer, width: number, height: number, 
         width,
         height,
         effect.color,
-        Math.max(1, effect.radius / 2),
-        effect.intensity,
+        Math.min(5, Math.max(1, effect.radius / 4)),
+        Math.min(0.32, effect.intensity * 0.45),
       );
       current = await sharp({
         create: { width, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
@@ -615,10 +615,29 @@ export class SharpSvgCompositionEngine {
           subjectBuf = await sharp(assetPath).ensureAlpha().png().toBuffer();
         }
         // Trim transparent padding so the subject fills the editorial frame instead of shrinking inside empty margins
-        const trimmedSubject = await trimTransparentBounds(subjectBuf, 6);
-        buf = await sharp(trimmedSubject)
+        let framedSubject = await trimTransparentBounds(subjectBuf, 6);
+        if (layer.framing === 'closeup' || layer.framing === 'medium') {
+          const sMeta = await sharp(framedSubject).metadata();
+          const sw = sMeta.width ?? targetW;
+          const sh = sMeta.height ?? targetH;
+          if (sw >= 32 && sh >= 32) {
+            const cropH = layer.framing === 'closeup' ? Math.max(32, Math.round(sh * 0.56)) : Math.max(32, Math.round(sh * 0.76));
+            const targetRatio = targetW / Math.max(1, targetH);
+            const maxRatioW = Math.round(cropH * targetRatio);
+            const cropW =
+              layer.framing === 'closeup'
+                ? Math.max(32, Math.min(sw, Math.round(sw * 0.82), maxRatioW))
+                : Math.max(32, Math.min(sw, maxRatioW));
+            const cropLeft = Math.max(0, Math.round((sw - cropW) / 2));
+            framedSubject = await sharp(framedSubject)
+              .extract({ left: cropLeft, top: 0, width: Math.min(cropW, sw - cropLeft), height: Math.min(cropH, sh) })
+              .png()
+              .toBuffer();
+          }
+        }
+        buf = await sharp(framedSubject)
           .resize(targetW, targetH, {
-            fit: 'contain',
+            fit: layer.fitMode ?? 'contain',
             position: layer.anchorBottom ? 'south' : 'centre',
             background: { r: 0, g: 0, b: 0, alpha: 0 },
           })
@@ -647,13 +666,27 @@ export class SharpSvgCompositionEngine {
         }
 
         if (layer.rimLightColor) {
-          const rimGlow = await createAlphaSilhouetteLayer(buf, targetW, targetH, layer.rimLightColor, 10, 0.9);
+          // Subtle, natural rim highlight (thin 2px edge, low opacity) + gentle ambient wrap instead of an exaggerated neon halo
+          const rimGlow = await createAlphaSilhouetteLayer(buf, targetW, targetH, layer.rimLightColor, 2.2, 0.28);
+          const wrapSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${targetW}" height="${targetH}">
+            <defs>
+              <linearGradient id="rimwrap" x1="0%" y1="0%" x2="100%" y2="25%">
+                <stop offset="0%" stop-color="${escapeXml(layer.rimLightColor)}" stop-opacity="0.18"/>
+                <stop offset="45%" stop-color="${escapeXml(layer.rimLightColor)}" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            <rect width="100%" height="100%" fill="url(#rimwrap)"/>
+          </svg>`;
+          const litSubject = await sharp(buf)
+            .composite([{ input: Buffer.from(wrapSvg), blend: 'atop' }])
+            .png()
+            .toBuffer();
           buf = await sharp({
             create: { width: targetW, height: targetH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
           })
             .composite([
-              { input: rimGlow, left: -4, top: -2, blend: 'screen' },
-              { input: buf, left: 0, top: 0, blend: 'over' },
+              { input: rimGlow, left: -2, top: -1, blend: 'screen' },
+              { input: litSubject, left: 0, top: 0, blend: 'over' },
             ])
             .png()
             .toBuffer();

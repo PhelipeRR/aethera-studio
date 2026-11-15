@@ -16,6 +16,39 @@ export interface VideoSceneHint {
   narrationExcerpt?: string;
 }
 
+export interface FrameProvenanceSummary {
+  origin: string;
+  workTitle: string;
+  episode?: number | string | null;
+  fromSec: number;
+  toSec: number;
+  confidence: number;
+  anilistId?: number;
+  malId?: number;
+  fromCache: boolean;
+}
+
+export interface FrameProvenanceResolver {
+  identifyFrame(input: {
+    framePath?: string;
+    frameBuffer?: Buffer;
+    mimeType?: string;
+    signal?: AbortSignal;
+  }): Promise<{
+    status: string;
+    topMatch?: {
+      origin: string;
+      workTitle: string;
+      episode?: number | string | null;
+      fromSec: number;
+      toSec: number;
+      confidence: number;
+      identifiers?: { anilistId?: number; malId?: number };
+      evidence: { fromCache: boolean };
+    };
+  }>;
+}
+
 export interface ExtractedFrameCandidate {
   timestampSec: number;
   asset: ManagedAssetRef;
@@ -25,6 +58,7 @@ export interface ExtractedFrameCandidate {
   saturationScore: number;
   isBlackFrame: boolean;
   sceneHint?: VideoSceneHint;
+  provenance?: FrameProvenanceSummary;
 }
 
 export interface VideoFrameAnalysisResult {
@@ -39,19 +73,26 @@ export interface VideoFrameAnalysisResult {
 export class VideoFrameAnalyzer {
   private readonly ffmpegPath: string;
   private readonly ffprobePath: string;
+  private readonly provenanceResolver?: FrameProvenanceResolver;
 
   constructor(
     private readonly ingestion: AssetIngestionService,
-    options?: { ffmpegPath?: string; ffprobePath?: string },
+    options?: {
+      ffmpegPath?: string;
+      ffprobePath?: string;
+      provenanceResolver?: FrameProvenanceResolver;
+    },
   ) {
     this.ffmpegPath = options?.ffmpegPath ?? process.env['NB_FFMPEG'] ?? 'ffmpeg';
     this.ffprobePath = options?.ffprobePath ?? process.env['NB_FFPROBE'] ?? 'ffprobe';
+    this.provenanceResolver = options?.provenanceResolver;
   }
 
   async analyzeAndExtractFrames(options: {
     videoPath: string;
     sampleCount?: number;
     sceneHints?: VideoSceneHint[];
+    identifyAnimeProvenance?: boolean;
   }): Promise<VideoFrameAnalysisResult> {
     const absVideo = resolve(options.videoPath);
     if (!existsSync(absVideo)) {
@@ -105,6 +146,31 @@ export class VideoFrameAnalyzer {
 
     candidates.sort((a, b) => b.impactScore - a.impactScore);
     const bestCandidate = candidates.find((c) => !c.isBlackFrame) ?? candidates[0] ?? null;
+
+    if (options.identifyAnimeProvenance && bestCandidate && this.provenanceResolver) {
+      try {
+        const prov = await this.provenanceResolver.identifyFrame({
+          framePath: bestCandidate.asset.storagePath,
+          mimeType: bestCandidate.asset.mimeType,
+        });
+        if (prov.status === 'ok' && prov.topMatch) {
+          const m = prov.topMatch;
+          bestCandidate.provenance = {
+            origin: m.origin,
+            workTitle: m.workTitle,
+            episode: m.episode ?? null,
+            fromSec: m.fromSec,
+            toSec: m.toSec,
+            confidence: m.confidence,
+            ...(m.identifiers?.anilistId !== undefined ? { anilistId: m.identifiers.anilistId } : {}),
+            ...(m.identifiers?.malId !== undefined ? { malId: m.identifiers.malId } : {}),
+            fromCache: m.evidence.fromCache,
+          };
+        }
+      } catch {
+        // non-fatal provenance fallback
+      }
+    }
 
     return {
       videoPath: absVideo,

@@ -276,8 +276,54 @@ export class QualityGateService {
         findings.push({
           code: 'BANNER_LACKS_EDITORIAL_STRUCTURE',
           severity: 'critical',
-          message: 'Banner sem estrutura editorial (necessita subtítulo/tagline de canal além do título principal).',
+          message: 'Banner sem estrutura editorial (necessita subtítulo/slogan de canal além do título principal).',
         });
+      }
+
+      // Check Desktop / Mobile / TV universal safe area (1546x423 centered in 2560x1440)
+      const safe = ART_SPECIFICATIONS.banner.safeArea!;
+      for (const layer of [...visibleTexts, ...visibleSubjects]) {
+        const lx1 = layer.transform.x;
+        const ly1 = layer.transform.y;
+        const lx2 = lx1 + layer.transform.width * layer.transform.scaleX;
+        const ly2 = ly1 + layer.transform.height * layer.transform.scaleY;
+        if (lx1 < safe.x || ly1 < safe.y || lx2 > safe.x + safe.width || ly2 > safe.y + safe.height) {
+          findings.push({
+            code: 'BANNER_SAFE_AREA_VIOLATION',
+            severity: 'critical',
+            message: `Camada "${layer.name}" ultrapassa a área segura universal do banner (1546×423) para Desktop, Celular e TV.`,
+            layerId: layer.id,
+          });
+        }
+      }
+
+      // Check brand-name redundancy across banner text layers (e.g. channel name repeated in kicker/subtitle)
+      const headlineLayer = visibleTexts.find((l) => l.type === 'text' && l.role === 'headline') ?? visibleTexts[0];
+      if (headlineLayer && headlineLayer.type === 'text') {
+        const headlineTokens = headlineLayer.text
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+          .split(/\s+/)
+          .filter((w) => w.length >= 3);
+        if (headlineTokens.length > 0) {
+          for (const other of visibleTexts) {
+            if (other.id === headlineLayer.id || other.type !== 'text') continue;
+            const otherTokens = other.text
+              .toLowerCase()
+              .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+              .split(/\s+/)
+              .filter((w) => w.length >= 3);
+            const overlap = otherTokens.filter((t) => headlineTokens.includes(t));
+            if (otherTokens.length > 0 && overlap.length / otherTokens.length >= 0.5) {
+              findings.push({
+                code: 'BANNER_BRAND_REDUNDANCY',
+                severity: 'critical',
+                message: `Camada "${other.name}" ("${other.text}") repete o nome do canal presente em "${headlineLayer.text}"; use um slogan distinto.`,
+                layerId: other.id,
+              });
+            }
+          }
+        }
       }
     }
 
@@ -301,22 +347,36 @@ export class QualityGateService {
       if (!matched) {
         findings.push({
           code: 'LOW_SEMANTIC_RELEVANCE',
-          severity: 'warning',
-          message: `Baixa relevância semântica: elementos visuais/textuais não refletem termos centrais do tema (${topicTokens.slice(0, 3).join(', ')}).`,
+          severity: 'critical',
+          message: `Composição semanticamente genérica: elementos visuais/textuais não refletem termos centrais do tema (${topicTokens.slice(0, 3).join(', ')}).`,
         });
       }
     }
 
-    // 6. Contrast score from real image stats
+    // 6. Contrast score from real image stats (original resolution + reduced mobile preview resolution)
     const stats = await sharp(rendered).stats();
     const meanStdev =
       ((stats.channels[0]?.stdev ?? 0) + (stats.channels[1]?.stdev ?? 0) + (stats.channels[2]?.stdev ?? 0)) / 3;
+    const smallW = doc.artType === 'banner' ? 320 : 224;
+    const smallH = doc.artType === 'banner' ? 180 : 126;
+    const smallBuf = await sharp(rendered).resize(smallW, smallH, { fit: 'fill' }).png().toBuffer();
+    const smallStats = await sharp(smallBuf).stats();
+    const smallStdev =
+      ((smallStats.channels[0]?.stdev ?? 0) + (smallStats.channels[1]?.stdev ?? 0) + (smallStats.channels[2]?.stdev ?? 0)) / 3;
     const contrast = Math.min(100, Math.max(20, Math.round((meanStdev / 68) * 100)));
     if (contrast < 35) {
       findings.push({
         code: 'LOW_VISUAL_CONTRAST',
         severity: 'warning',
         message: 'Contraste visual baixo detectado na composição final.',
+      });
+    }
+    if (smallStdev < 22) {
+      legibility -= 15;
+      findings.push({
+        code: 'THUMBNAIL_LOW_LEGIBILITY_AT_SMALL_SIZE',
+        severity: 'warning',
+        message: `Legibilidade e contraste reduzidos na prévia em miniatura (${smallW}×${smallH}, stdev ${smallStdev.toFixed(1)}).`,
       });
     }
 

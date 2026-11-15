@@ -82,7 +82,9 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
       bgLayer.assetId = asset.id;
       bgLayer.blurRadius = 0;
     }
-    const textLayer = brokenDoc.layers.find((l) => l.type === 'text')!;
+    const textLayer =
+      brokenDoc.layers.find((l) => l.type === 'text' && l.role === 'headline') ??
+      brokenDoc.layers.find((l) => l.type === 'text')!;
     if (textLayer.type === 'text') {
       textLayer.fontSize = 140;
       textLayer.transform = { ...textLayer.transform, x: 450, y: 100, width: 600, height: 300 };
@@ -100,6 +102,7 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
     expect(refined.issues.some((i) => i.code === 'TEXT_SUBJECT_COLLISION')).toBe(true);
 
     const fixedAudit = await gate.auditProject(refined.document);
+    expect(fixedAudit.findings.filter((f) => f.severity === 'critical')).toEqual([]);
     expect(fixedAudit.criticalCount).toBe(0);
     expect(fixedAudit.passed).toBe(true);
 
@@ -145,6 +148,7 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
     const brandManager = new BrandKitManager();
     const kit = brandManager.create({
       channelName: 'CyberEdge BR',
+      slogan: 'BUILDS, SEGREDOS E ANÁLISES SEM SPOILERS',
       palette: { primary: '#00F0FF', secondary: '#FF006E', accent: '#FACC15', background: '#070B14', surface: '#111827', text: '#FFFFFF' },
     });
     const updatedKit = brandManager.registerIdentityAsset(kit.id, 'mascot', mascotRef);
@@ -159,6 +163,11 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
     });
     const bannerSubject = bannerDoc.layers.find((l) => l.type === 'subject');
     expect(bannerSubject && 'assetId' in bannerSubject ? bannerSubject.assetId : null).toBe(mascotRef.id);
+    const bannerTexts = bannerDoc.layers
+      .filter((l): l is Extract<(typeof bannerDoc.layers)[number], { type: 'text' }> => l.type === 'text')
+      .map((l) => l.text);
+    expect(bannerTexts).toContain('BUILDS, SEGREDOS E ANÁLISES SEM SPOILERS');
+    expect(bannerTexts.filter((t) => t.toUpperCase().includes('CYBEREDGE'))).toHaveLength(1);
 
     const wmDoc = planner.buildDocument({
       artType: 'watermark',
@@ -167,6 +176,87 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
     });
     const wmLayer = wmDoc.layers.find((l) => l.type === 'watermark');
     expect(wmLayer && 'assetId' in wmLayer ? wmLayer.assetId : null).toBe(mascotRef.id);
+  });
+
+  it('works generically across anime, documentary, and game topics and rejects generic or redundant banner layouts', async () => {
+    const storageRoot = makeTempDir();
+    const ingestion = new AssetIngestionService({ storageRoot });
+    const engine = new SharpSvgCompositionEngine(ingestion);
+    const gate = new QualityGateService(engine);
+    const planner = new CompositionPlanner();
+
+    const subjectPng = await sharp({
+      create: { width: 420, height: 640, channels: 4, background: { r: 210, g: 90, b: 60, alpha: 1 } },
+    })
+      .png()
+      .toBuffer();
+    const subjectRef = await ingestion.ingestBuffer({
+      buffer: subjectPng,
+      kind: 'cutout',
+      extension: 'png',
+      originalName: 'generic-subject.png',
+    });
+
+    const topics = [
+      {
+        title: 'Anime Shibuya',
+        headline: 'ARCO DE SHIBUYA',
+        prompt: 'Análise profunda do arco final de Shibuya no anime e a virada do protagonista',
+        scriptText: 'Neste roteiro analisamos as batalhas subterrâneas, maldições antigas e sacrifícios do arco.',
+      },
+      {
+        title: 'Documentário Espacial',
+        headline: 'CORRIDA ESPACIAL',
+        prompt: 'Documentário histórico sobre os arquivos secretos da corrida espacial e foguetes lunares',
+        scriptText: 'Documentos desclassificados revelam falhas críticas de engenharia nos primeiros lançamentos orbitais.',
+      },
+      {
+        title: 'Guia de Jogo',
+        headline: 'CHEFE SECRETO',
+        prompt: 'Guia definitivo para derrotar o chefe secreto com build de sangramento',
+        scriptText: 'Mostramos os melhores talismãs, janelas de esquiva e status necessários na arena oculta.',
+      },
+    ];
+
+    for (const topic of topics) {
+      const variants = await planner.generateThumbnailLabVariations(
+        {
+          title: topic.title,
+          headline: topic.headline,
+          prompt: topic.prompt,
+          scriptText: topic.scriptText,
+          subjectAsset: subjectRef,
+        },
+        gate,
+      );
+      expect(variants).toHaveLength(3);
+      for (const v of variants) {
+        expect(v.editorialRationale.length).toBeGreaterThan(40);
+        expect(v.audit.passed, `${topic.title} variant ${v.label}`).toBe(true);
+      }
+    }
+
+    // Banner redundancy & safe-area rejection check
+    const brandManager = new BrandKitManager();
+    const kit = brandManager.create({
+      channelName: 'AETHERA DOCS',
+      slogan: 'HISTÓRIAS REAIS E ARQUIVOS',
+    });
+    const redundantBanner = planner.buildDocument({
+      artType: 'banner',
+      headline: 'AETHERA DOCS',
+      prompt: 'Banner do canal AETHERA DOCS',
+      brandKit: kit,
+    });
+    const subtitleLayer = redundantBanner.layers.find((l) => l.type === 'text' && l.role === 'subtitle');
+    if (subtitleLayer && subtitleLayer.type === 'text') {
+      subtitleLayer.text = 'AETHERA DOCS OFICIAL';
+      subtitleLayer.transform.x = 120; // outside 507..2053 safe area
+    }
+    const bannerAudit = await gate.auditProject(redundantBanner, { brandKit: kit });
+    expect(bannerAudit.findings.some((f) => f.code === 'BANNER_BRAND_REDUNDANCY' && f.severity === 'critical')).toBe(true);
+    expect(bannerAudit.findings.some((f) => f.code === 'BANNER_SAFE_AREA_VIOLATION' && f.severity === 'critical')).toBe(true);
+    expect(bannerAudit.passed).toBe(false);
   });
 
   it('regenerates real CS-7 artifacts with adaptive segmentation, clean AI background, distinct A/B/C layouts, and persistent mascot identity', async () => {
@@ -194,25 +284,45 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
     });
     writeFileSync(join(CS7_ARTIFACTS_DIR, 'cyberpunk-2077-character-cutout-adaptive.png'), cutoutBuffer);
 
-    // 2. Topic-relevant clean atmospheric background (cyberware / implants theme, no duplicate character) via SDXL-Turbo
-    const cleanBgBuffer = await ai.generateImage({
-      prompt:
-        'futuristic high-tech cyberware workshop and ripperdoc lab, glowing holographic neural implants and robotic arm schematics on dark glass workbench, cyan and magenta volumetric lighting, shallow depth of field, no people, no characters, wide angle',
-      width: 1024,
-      height: 576,
-    });
+    // 2. Three distinct topic-relevant AI backgrounds for Concepts A, B, and C (no duplicate character) via SDXL-Turbo
+    const bgPrompts = {
+      impact:
+        'dark dramatic close-up of glowing cybernetic neural implant chip and surgical optic lens on black obsidian table, intense magenta and cyan rim lighting, high contrast, no people, no text',
+      tech:
+        'clean futuristic cyberware engineering workbench with glowing holographic arm schematic and diagnostic display, sharp architectural lighting, teal and amber accents, no people, no text',
+      cinematic:
+        'wide atmospheric futuristic laboratory corridor at night with rain streaks on glass, deep teal and magenta volumetric light beams, cinematic depth, no people, no characters, no text',
+    } as const;
+
+    const cleanBgBuffer = await ai.generateImage({ prompt: bgPrompts.tech, width: 1024, height: 576 });
+    const bgImpactBuffer = await ai.generateImage({ prompt: bgPrompts.impact, width: 1024, height: 576 });
+    const bgCinematicBuffer = await ai.generateImage({ prompt: bgPrompts.cinematic, width: 1024, height: 576 });
+
     const cleanBgAsset = await ingestion.ingestBuffer({
       buffer: cleanBgBuffer,
       kind: 'image',
       extension: 'png',
       originalName: 'cyberpunk-2077-clean-bg.png',
     });
+    const bgImpactAsset = await ingestion.ingestBuffer({
+      buffer: bgImpactBuffer,
+      kind: 'image',
+      extension: 'png',
+      originalName: 'cyberpunk-2077-bg-impact.png',
+    });
+    const bgCinematicAsset = await ingestion.ingestBuffer({
+      buffer: bgCinematicBuffer,
+      kind: 'image',
+      extension: 'png',
+      originalName: 'cyberpunk-2077-bg-cinematic.png',
+    });
     writeFileSync(join(CS7_ARTIFACTS_DIR, 'cyberpunk-2077-clean-bg.png'), cleanBgBuffer);
 
-    // 3. Persistent Brand Kit + AI Mascot Avatar (reused across thumbs, banner, watermark)
+    // 3. Persistent Brand Kit with configurable slogan + AI Mascot Avatar (reused across thumbs, banner, watermark)
     const brandManager = new BrandKitManager();
     let kit = brandManager.create({
       channelName: 'CYBEREDGE BR',
+      slogan: 'BUILDS, SEGREDOS E ANÁLISES SEM SPOILERS',
       palette: {
         primary: '#00F0FF',
         secondary: '#FF006E',
@@ -262,18 +372,26 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
       format: 'png',
     });
 
-    // 4. Thumbnail Lab A / B / C (with real cutout + clean AI bg + persistent watermark mascot)
+    // 4. Thumbnail Lab A / B / C (with distinct AI backgrounds, distinct framings, script evidence, & persistent watermark mascot)
     const lab = await orchestrator.orchestrateThumbnailLab({
       title: 'Cyberpunk 2077 CS7',
       headline: 'CYBERWARE SECRETO',
-      prompt: 'Cyberpunk 2077 builds secretas com alto impacto visual',
+      prompt: 'Cyberpunk 2077 implantes e builds secretas com alto impacto visual',
+      scriptText:
+        'Neste vídeo revelamos o implante neural secreto, os melhores cyberwares de combate e como montar a build oculta na bancada.',
       brandKit: kit,
       backgroundAsset: cleanBgAsset,
+      variantBackgroundAssets: {
+        impact: bgImpactAsset,
+        tech: cleanBgAsset,
+        cinematic: bgCinematicAsset,
+      },
       subjectAsset: cutoutAsset,
       watermarkAsset: mascotCutoutAsset,
     });
     expect(lab.variants).toHaveLength(3);
     for (const v of lab.variants) {
+      expect(v.editorialRationale.length).toBeGreaterThan(40);
       expect(v.audit.findings.filter((f) => f.severity === 'critical'), `Variant ${v.label} findings`).toEqual([]);
       expect(v.audit.passed).toBe(true);
       expect(v.audit.findings.some((f) => f.code === 'TEXT_INTERNAL_OVERFLOW' && f.severity === 'critical')).toBe(false);

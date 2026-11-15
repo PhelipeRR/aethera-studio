@@ -37,6 +37,8 @@ export class BrandKitManager {
     id?: string;
     channelId?: string;
     channelName: string;
+    slogan?: string;
+    niche?: string;
     palette?: Partial<BrandKit['palette']>;
     typography?: Partial<BrandKit['typography']>;
     logoAssetId?: string;
@@ -53,6 +55,8 @@ export class BrandKitManager {
       id: input.id ?? `bk-${randomUUID().slice(0, 10)}`,
       ...(input.channelId ? { channelId: input.channelId } : {}),
       channelName: input.channelName,
+      ...(input.slogan?.trim() ? { slogan: input.slogan.trim() } : {}),
+      ...(input.niche?.trim() ? { niche: input.niche.trim() } : {}),
       palette: {
         primary: input.palette?.primary ?? '#00F0FF',
         secondary: input.palette?.secondary ?? '#FF006E',

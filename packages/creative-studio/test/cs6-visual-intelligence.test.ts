@@ -99,7 +99,7 @@ describe('CS-6 Visual Intelligence: Local AI Probe, Provider Chain, Cinematic Ef
       artType: 'thumbnail',
       width: 1280,
       height: 720,
-      prompt: 'Cyberpunk 2077 character',
+      prompt: 'Cyberware character guide',
       brandKitId: brandKit.id,
       assetManifest: { [charRef.id]: charRef },
       layers: [

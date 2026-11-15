@@ -44,6 +44,7 @@ export interface ArtDirectorLoopResult {
   iterations: number;
   issues: DirectorCritiqueIssue[];
   critiqueHistory: ArtDirectionRoundRecord[];
+  editorialRationale: string;
 }
 
 function boxesOverlapRatio(
@@ -273,6 +274,11 @@ export class CreativeDirectorAgent {
           scoreOverall: latestAudit.scorecard.overall,
           criticalCount: 0,
         });
+        const visibleTexts = currentDoc.layers
+          .filter((l): l is TextLayer => l.visible && l.type === 'text')
+          .map((l) => l.text)
+          .join(' | ');
+        const editorialRationale = `Aprovado na iteração ${iteration} (score ${latestAudit.scorecard.overall}/100): composição ${currentDoc.artType} com sujeito integrado, contraste verificado em resolução original e miniatura reduzida, e narrativa textual "${visibleTexts}".`;
         return {
           document: currentDoc,
           audit: latestAudit,
@@ -280,6 +286,7 @@ export class CreativeDirectorAgent {
           iterations: iteration,
           issues: allIssues,
           critiqueHistory,
+          editorialRationale,
         };
       }
 
@@ -430,6 +437,39 @@ export class CreativeDirectorAgent {
         }
       }
 
+      if (codes.has('BANNER_BRAND_REDUNDANCY') && currentDoc.artType === 'banner') {
+        const fallbackSlogan = brandKit?.slogan?.trim() || 'CONTEÚDO ORIGINAL • ANÁLISES E HISTÓRIAS';
+        for (const f of criticalFindings) {
+          if (f.code !== 'BANNER_BRAND_REDUNDANCY' || !f.layerId) continue;
+          const redundant = nextLayers.find((l): l is TextLayer => l.id === f.layerId && l.type === 'text');
+          if (!redundant) continue;
+          if (redundant.role === 'kicker') {
+            redundant.visible = false;
+            appliedActions.push(`Removido kicker redundante "${redundant.text}" do banner.`);
+          } else {
+            redundant.text = fallbackSlogan;
+            appliedActions.push(`Substituído subtítulo redundante pelo slogan "${fallbackSlogan}".`);
+          }
+        }
+      }
+
+      if (codes.has('LOW_SEMANTIC_RELEVANCE')) {
+        const stop = new Set(['thumbnail', 'banner', 'avatar', 'canal', 'video', 'vídeo', 'sobre', 'para', 'com', 'alto', 'impacto', 'visual', 'gamer', 'oficial', 'estilo']);
+        const topicTerm = currentDoc.prompt
+          .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+          .split(/\s+/)
+          .find((w) => w.length >= 5 && !stop.has(w.toLowerCase()));
+        if (topicTerm) {
+          const subtitle = nextLayers.find((l): l is TextLayer => l.visible && l.type === 'text' && l.role === 'subtitle');
+          if (subtitle && !subtitle.text.toLowerCase().includes(topicTerm.toLowerCase())) {
+            subtitle.text = `${topicTerm.toUpperCase()} • ${subtitle.text}`.slice(0, 48);
+          } else {
+            currentDoc = { ...currentDoc, tags: [...currentDoc.tags, topicTerm.toLowerCase()] };
+          }
+          appliedActions.push(`Reforçada relevância semântica com termo central "${topicTerm}".`);
+        }
+      }
+
       critiqueHistory.push({
         iteration,
         rejected: true,
@@ -456,6 +496,7 @@ export class CreativeDirectorAgent {
       iterations: maxIterations,
       issues: allIssues,
       critiqueHistory,
+      editorialRationale: `Revisão concluída após ${maxIterations} iterações (score ${latestAudit.scorecard.overall}/100, críticos: ${latestAudit.criticalCount}).`,
     };
   }
 }
