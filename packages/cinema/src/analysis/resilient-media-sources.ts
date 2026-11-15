@@ -577,6 +577,11 @@ export function scoreCandidateRelevancePriority(
       : extractTopicEntities(`${segment.subject} ${segment.narrationText}`);
   const promptEntities = extractTopicEntities(prompt);
 
+  const isGamingTopic =
+    /\b(game|jogo|jogos|boss|chefe|gameplay|elden ring|dark souls|sekiro|bloodborne|rpg|playstation|xbox|nintendo|steam)\b/i.test(
+      `${prompt} ${segment.subject} ${segment.narrationText}`,
+    );
+
   let score = 0;
   for (const e of segEntities) {
     if (text.includes(e)) score += 3;
@@ -588,7 +593,13 @@ export function scoreCandidateRelevancePriority(
   if (/\b(anime|cena|scene|clip|episodio|episode|dublado|legendado|luta|fight|transforma)\b/i.test(text)) {
     score += 2;
   }
-  if (/\b(live[- ]action|fan film|podcast|react|reaction|gameplay|roblox|fortnite|minecraft|unboxing)\b/i.test(text)) {
+  if (isGamingTopic && /\b(gameplay|boss\s+fight|showcase|cutscene|walkthrough|no\s+commentary)\b/i.test(text)) {
+    score += 3;
+  }
+  if (
+    /\b(live[- ]action|fan film|podcast|react|reaction|unboxing)\b/i.test(text) ||
+    (!isGamingTopic && /\b(gameplay|roblox|fortnite|minecraft)\b/i.test(text))
+  ) {
     score -= 5;
   }
   if (cand.durationSec && cand.durationSec > 180) score -= 2;
@@ -645,10 +656,10 @@ export async function runAutonomousMediaAcquisition(input: {
   const budgetMultiplier = Math.max(0.25, input.limits?.budgetMultiplier ?? 1);
   const maxDurationMs = Math.round(baseMaxDurationMs * budgetMultiplier);
   const perOperationTimeoutMs = Math.max(1_000, input.limits?.perOperationTimeoutMs ?? 35_000);
-  const maxQueriesTotal = Math.max(input.segments.length, input.limits?.maxQueriesTotal ?? Math.max(28, input.segments.length * 3));
+  const maxQueriesTotal = Math.max(input.segments.length, input.limits?.maxQueriesTotal ?? Math.max(36, input.segments.length * 4));
   const maxCandidateDurationSec = input.limits?.maxCandidateDurationSec ?? 600;
   const discoveryConcurrency = Math.max(1, input.limits?.discoveryConcurrency ?? 3);
-  const acquisitionConcurrency = Math.max(1, input.limits?.acquisitionConcurrency ?? 1);
+  const acquisitionConcurrency = Math.max(1, input.limits?.acquisitionConcurrency ?? 2);
   const verificationConcurrency = Math.max(1, input.limits?.verificationConcurrency ?? 1);
   const discoveryBudgetRatio = Math.min(0.6, Math.max(0.15, input.limits?.discoveryBudgetRatio ?? 0.3));
   const acquisitionBudgetRatio = Math.min(0.6, Math.max(0.2, input.limits?.acquisitionBudgetRatio ?? 0.4));
@@ -885,10 +896,11 @@ export async function runAutonomousMediaAcquisition(input: {
       }
 
       roundsExecuted = round;
+      const coveredSegIds = new Set(latestCoverage.segments.filter((c) => c.covered).map((c) => c.segmentId));
       const targetSegments =
         round === 1
           ? input.segments
-          : input.segments.filter((s) => latestCoverage.uncoveredSubjects.includes(s.subject));
+          : input.segments.filter((s) => !coveredSegIds.has(s.segmentId));
 
       if (targetSegments.length === 0) {
         stoppedReason = 'coverage_satisfied';
@@ -904,18 +916,24 @@ export async function runAutonomousMediaAcquisition(input: {
                 (`${s.subject} ${s.entities?.slice(0, 2).join(' ') ?? ''}`.trim() || input.prompt),
             }))
           : targetSegments.flatMap((s) => {
+              const out: Array<{ segment: ScriptCoverageSegment; query: string }> = [];
               const preferred = s.preferredQueries?.[round - 1];
-              if (preferred) return [{ segment: s, query: preferred }];
+              if (preferred) out.push({ segment: s, query: preferred });
               const expanded = expandScriptOrientedQueries({
-                prompt: s.subject,
+                prompt: input.prompt,
                 segments: [s],
                 ...(input.genre ? { genre: input.genre } : {}),
                 uncoveredSegmentIds: [s.segmentId],
+                maxQueries: 4,
               });
-              return expanded.slice(0, 2).map((q) => ({
-                segment: s,
-                query: round === 3 && input.genre === 'anime' ? `${q} anime scene` : q,
-              }));
+              for (const q of expanded) {
+                if (out.length >= 3) break;
+                const finalQ = round === 3 && input.genre === 'anime_essay' ? `${q} anime scene` : q;
+                if (!out.some((x) => x.query.toLowerCase() === finalQ.toLowerCase())) {
+                  out.push({ segment: s, query: finalQ });
+                }
+              }
+              return out;
             });
 
       const segmentById = new Map(input.segments.map((s) => [s.segmentId, s]));
@@ -1048,7 +1066,7 @@ export async function runAutonomousMediaAcquisition(input: {
           list.sort((a, b) => b.priorityScore - a.priorityScore);
         }
         const acquisitionQueue: Array<{ segment: ScriptCoverageSegment; cand: MediaSourceCandidate }> = [];
-        const maxPerSegThisRound = 2;
+        const maxPerSegThisRound = round === 1 ? 2 : 3;
         for (let rank = 0; rank < maxPerSegThisRound; rank += 1) {
           for (const s of targetSegments) {
             const entry = discoveredBySegment.get(s.segmentId)?.[rank];

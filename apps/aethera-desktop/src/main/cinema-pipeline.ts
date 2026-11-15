@@ -922,10 +922,20 @@ export class StagedCinemaPipeline {
                   narrationText: s.narrationText,
                   expectedEvent: s.expectedEvent,
                   preferredQueries: s.mediaQueries,
-                  entities:
-                    s.matchingCriteria.requiredEntities.length > 0
-                      ? s.matchingCriteria.requiredEntities
-                      : extractTopicEntities(`${s.workTitle} ${s.entities.join(' ')} ${s.narrationText}`),
+                  entities: (() => {
+                    const raw =
+                      s.matchingCriteria.requiredEntities.length > 0
+                        ? [s.workTitle, ...s.matchingCriteria.requiredEntities]
+                        : extractTopicEntities(`${s.workTitle} ${s.entities.join(' ')} ${s.narrationText}`);
+                    const expanded = new Set<string>();
+                    for (const item of raw) {
+                      const clean = item.replace(/\([^)]*\)/g, '').trim();
+                      if (clean) expanded.add(clean);
+                      const shortName = clean.split(',')[0]?.trim();
+                      if (shortName && shortName.length >= 2) expanded.add(shortName);
+                    }
+                    return [...expanded];
+                  })(),
                   expectedDurationSec: Math.max(8, s.durationSec),
                 }))
               : queries.map((q, idx) => ({
@@ -1476,42 +1486,82 @@ export class StagedCinemaPipeline {
         const semanticMatches = matchNarrationSegmentsToMedia(segments, mediaDescriptors);
         const matchByClipId = new Map(semanticMatches.map((m) => [m.segmentId, m]));
         const decisionByMediaId = new Map(relevanceDecisions.map((d) => [d.mediaId, d]));
+        const covSegById = new Map((job.coverageReport?.segments ?? []).map((cs) => [cs.segmentId, cs]));
+        const nextClips: typeof pkg.timeline.clips = [];
+        for (const c of pkg.timeline.clips) {
+          if (c.trackId !== 'v1') {
+            nextClips.push(c);
+            continue;
+          }
+          const clipIdx = videoTrackClips.findIndex((vc) => vc.clipId === c.clipId);
+          const expectedSegId = pkg.editorialScript?.segments[clipIdx]?.segmentId ?? `slot_${clipIdx + 1}`;
+          const covSeg = covSegById.get(expectedSegId);
+          if (covSeg && covSeg.relevantIntervals.length > 1) {
+            const totalTimelineTicks = c.timelineRange.duration.value;
+            const tlRate = Math.max(1, c.timelineRange.duration.rate);
+            const startTickBase = c.timelineRange.start.value;
+            const totalIntervalSec = covSeg.relevantIntervals.reduce(
+              (acc, iv) => acc + Math.max(1, iv.endSec - iv.startSec),
+              0,
+            );
+            let cursorTick = startTickBase;
+            for (let pIdx = 0; pIdx < covSeg.relevantIntervals.length; pIdx += 1) {
+              const iv = covSeg.relevantIntervals[pIdx]!;
+              const ivSec = Math.max(1, iv.endSec - iv.startSec);
+              const isLast = pIdx === covSeg.relevantIntervals.length - 1;
+              const partTicks = isLast
+                ? Math.max(1, startTickBase + totalTimelineTicks - cursorTick)
+                : Math.max(1, Math.round((ivSec / Math.max(1, totalIntervalSec)) * totalTimelineTicks));
+              nextClips.push({
+                ...c,
+                clipId: pIdx === 0 ? c.clipId : `${c.clipId}_p${pIdx + 1}`,
+                mediaId: iv.mediaId,
+                timelineRange: {
+                  start: { value: cursorTick, rate: tlRate },
+                  duration: { value: partTicks, rate: tlRate },
+                },
+                sourceRange: {
+                  start: { value: Math.round(iv.startSec * 30), rate: 30 },
+                  duration: { value: Math.round(Math.max(2, ivSec) * 30), rate: 30 },
+                },
+              });
+              cursorTick += partTicks;
+            }
+            continue;
+          }
+          const hit = matchByClipId.get(c.clipId);
+          const candidateMediaId = hit && hit.mediaId && hit.score > 0 ? hit.mediaId : c.mediaId;
+          const decision = decisionByMediaId.get(candidateMediaId);
+          const isEligibleForSegment =
+            !decision ||
+            (decision.accepted &&
+              decision.correspondenceLevel !== 'universe_only_coincidence' &&
+              decision.correspondenceLevel !== 'unverified' &&
+              (!decision.eligibleSegmentIds ||
+                decision.eligibleSegmentIds.length === 0 ||
+                decision.eligibleSegmentIds.includes(expectedSegId) ||
+                decision.eligibleSegmentIds.includes(c.clipId)));
+          const finalMediaId = isEligibleForSegment ? candidateMediaId : c.mediaId;
+          const finalDecision = decisionByMediaId.get(finalMediaId);
+          const matchedInterval =
+            finalDecision?.matchedIntervals?.find((iv) => iv.segmentId === expectedSegId || iv.segmentId === c.clipId) ??
+            finalDecision?.matchedIntervals?.[0];
+          const nextSourceRange = matchedInterval
+            ? {
+                start: { value: Math.round(matchedInterval.startSec * 30), rate: 30 },
+                duration: {
+                  value: Math.round(Math.max(2, matchedInterval.endSec - matchedInterval.startSec) * 30),
+                  rate: 30,
+                },
+              }
+            : c.sourceRange;
+          nextClips.push({ ...c, mediaId: finalMediaId, sourceRange: nextSourceRange });
+        }
         pkg = {
           ...pkg,
           timeline: {
             ...pkg.timeline,
-            clips: pkg.timeline.clips.map((c) => {
-              if (c.trackId !== 'v1') return c;
-              const hit = matchByClipId.get(c.clipId);
-              const candidateMediaId = hit && hit.mediaId && hit.score > 0 ? hit.mediaId : c.mediaId;
-              const decision = decisionByMediaId.get(candidateMediaId);
-              const clipIdx = videoTrackClips.findIndex((vc) => vc.clipId === c.clipId);
-              const expectedSegId = pkg.editorialScript?.segments[clipIdx]?.segmentId ?? `slot_${clipIdx + 1}`;
-              const isEligibleForSegment =
-                !decision ||
-                (decision.accepted &&
-                  decision.correspondenceLevel !== 'universe_only_coincidence' &&
-                  decision.correspondenceLevel !== 'unverified' &&
-                  (!decision.eligibleSegmentIds ||
-                    decision.eligibleSegmentIds.length === 0 ||
-                    decision.eligibleSegmentIds.includes(expectedSegId) ||
-                    decision.eligibleSegmentIds.includes(c.clipId)));
-              const finalMediaId = isEligibleForSegment ? candidateMediaId : c.mediaId;
-              const finalDecision = decisionByMediaId.get(finalMediaId);
-              const matchedInterval =
-                finalDecision?.matchedIntervals?.find((iv) => iv.segmentId === expectedSegId || iv.segmentId === c.clipId) ??
-                finalDecision?.matchedIntervals?.[0];
-              const nextSourceRange = matchedInterval
-                ? {
-                    start: { value: Math.round(matchedInterval.startSec * 30), rate: 30 },
-                    duration: {
-                      value: Math.round(Math.max(2, matchedInterval.endSec - matchedInterval.startSec) * 30),
-                      rate: 30,
-                    },
-                  }
-                : c.sourceRange;
-              return { ...c, mediaId: finalMediaId, sourceRange: nextSourceRange };
-            }),
+            clips: nextClips,
           },
         };
       }

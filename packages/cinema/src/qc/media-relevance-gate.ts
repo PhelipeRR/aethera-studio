@@ -162,14 +162,14 @@ export function extractTopicEntities(text: string): string[] {
 }
 
 const NARRATIVE_ACTION_PATTERNS: Array<{ key: string; regex: RegExp }> = [
-  { key: 'transformacao', regex: /\b(transforma\w*|despert\w*|super saiyajin|ssj|forma final|aura dourada|cabelo loiro|cabelo dourado)\b/i },
-  { key: 'fusao', regex: /\b(fusao|funde|fundir)\b/i },
+  { key: 'transformacao', regex: /\b(transforma\w*|transform\w*|despert\w*|awaken\w*|super saiyajin|ssj|forma final|final form|phase\s*2|second phase|segunda fase|aura dourada|golden aura|cabelo loiro|cabelo dourado)\b/i },
+  { key: 'fusao', regex: /\b(fusao|fusion|funde|fundir|fuse)\b/i },
   { key: 'genki_dama', regex: /\b(genki dama|spirit bomb)\b/i },
-  { key: 'morte_sacrificio', regex: /\b(morte|morre\w*|morto|caido|sacrific\w*|cai diante)\b/i },
-  { key: 'batalha_confronto', regex: /\b(luta\w*|batalha\w*|enfrent\w*|confront\w*|derrot\w*|ataque|golpe\w*|chute|soco|energia|ki|vs)\b/i },
-  { key: 'chegada_desembarque', regex: /\b(chegada|chegam|chega\w*|desembarc\w*|esconder|nave|capsula|pouso|aterriss\w*)\b/i },
-  { key: 'explosao', regex: /\b(explos\w*|destruic\w*)\b/i },
-  { key: 'treinamento', regex: /\b(trein\w*|gravidade)\b/i },
+  { key: 'morte_sacrificio', regex: /\b(morte|morre\w*|morto|death|die\w*|dead|sacrific\w*|caido|cai diante|fallen)\b/i },
+  { key: 'batalha_confronto', regex: /\b(luta\w*|batalha\w*|enfrent\w*|confront\w*|derrot\w*|defeat\w*|ataque|attack\w*|golpe\w*|strike\w*|slash\w*|chute|soco|energia|ki|vs|fight\w*|combat\w*|battle\w*|boss\s+fight|duel\w*|clash\w*)\b/i },
+  { key: 'chegada_desembarque', regex: /\b(chegada|chegam|chega\w*|arriv\w*|desembarc\w*|esconder|nave|capsula|pouso|aterriss\w*|land\w*)\b/i },
+  { key: 'explosao', regex: /\b(explos\w*|explod\w*|destruic\w*|destruct\w*)\b/i },
+  { key: 'treinamento', regex: /\b(trein\w*|train\w*|gravidade|gravity)\b/i },
 ];
 
 /**

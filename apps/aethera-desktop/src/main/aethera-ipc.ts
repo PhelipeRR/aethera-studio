@@ -1789,7 +1789,7 @@ export function registerAetheraDomainIpc(options: {
       })(),
       ytDlpSearchFn: (q, count, sig) => ytDlpSearch(ytDlp, q, count, sig),
       ytDlpAcquireFn: async (targetUrl, idx, dir, sig) => {
-        const relativeDir = `acq_${idx + 1}`;
+        const relativeDir = `acq_${idx + 1}_${Date.now().toString(36)}`;
         mkdirSync(join(dir, relativeDir), { recursive: true });
         const out = await acquireWithYtDlp({
           ytDlp,
@@ -1798,8 +1798,8 @@ export function registerAetheraDomainIpc(options: {
           relativeDir,
           fileStem: `slot_${idx + 1}`,
           maxHeight: 720,
-          downloadSection: '*0:00-0:45',
-          maxFilesize: '60M',
+          downloadSection: '*0:00-1:30',
+          maxFilesize: '90M',
           ...(sig ? { signal: sig } : {}),
           ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),
         });

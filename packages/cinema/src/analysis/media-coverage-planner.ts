@@ -470,7 +470,9 @@ export function planMediaCoverage(input: {
 }
 
 /**
- * Generates script-oriented search queries per segment and expands alternative queries when coverage is low.
+ * Generates script-oriented search queries per segment with multi-strategy expansion:
+ * original/English names, translated PT-BR terms, synonyms/epithet-free names,
+ * gameplay/boss fight/showcase/cutscene variants, and broader fallbacks.
  */
 export function expandScriptOrientedQueries(input: {
   prompt: string;
@@ -479,15 +481,20 @@ export function expandScriptOrientedQueries(input: {
   uncoveredSegmentIds?: string[];
   maxQueries?: number;
 }): string[] {
-  const maxQueries = Math.max(4, Math.min(24, input.maxQueries ?? Math.max(6, input.segments.length)));
+  const maxQueries = Math.max(4, Math.min(48, input.maxQueries ?? Math.max(8, input.segments.length * 3)));
   const isAnime =
     input.genre === 'anime_essay' || /\b(anime|mang[aá]|epis[oó]dio|personagem)\b/i.test(input.prompt);
+  const isGaming =
+    input.genre === 'gameplay_essay' ||
+    /\b(game|jogo|jogos|boss|chefes?|chefe|gameplay|elden ring|dark souls|sekiro|bloodborne|rpg|playstation|xbox|nintendo|steam)\b/i.test(
+      `${input.prompt} ${input.segments.map((s) => `${s.subject} ${s.narrationText}`).join(' ')}`,
+    );
   const queries: string[] = [];
   const seen = new Set<string>();
 
   const pushQuery = (q: string) => {
     const clean = q.replace(/\s+/g, ' ').trim();
-    if (!clean || seen.has(clean.toLowerCase())) return;
+    if (!clean || clean.length < 3 || seen.has(clean.toLowerCase())) return;
     seen.add(clean.toLowerCase());
     queries.push(clean);
   };
@@ -498,18 +505,40 @@ export function expandScriptOrientedQueries(input: {
       : input.segments;
 
   for (const seg of targetSegments) {
-    const entities =
+    const rawEntities =
       seg.entities && seg.entities.length > 0 ? seg.entities : extractTopicEntities(`${seg.subject} ${seg.narrationText}`);
-    const core = entities.slice(0, 3).join(' ') || seg.subject;
+    const cleanEntities = rawEntities
+      .map((e) => e.replace(/\([^)]*\)/g, '').split(',')[0]?.trim() ?? '')
+      .filter((e) => e.length >= 2);
+    const core = cleanEntities.slice(0, 3).join(' ') || seg.subject.replace(/\([^)]*\)/g, '').trim();
+    const primaryEntity = cleanEntities[0] ?? core;
+    const workEntity = cleanEntities.length > 1 ? cleanEntities[0] : '';
+
+    for (const pq of seg.preferredQueries ?? []) {
+      pushQuery(pq);
+    }
+
     if (isAnime) {
       pushQuery(`${core} anime official trailer pv scene`);
-      if (input.uncoveredSegmentIds?.length) {
-        pushQuery(`${core} anime sakuga clip opening`);
+      pushQuery(`${core} anime fight clip sakuga`);
+      pushQuery(`${core} cena anime dublado legendado`);
+      if (workEntity && primaryEntity !== workEntity) {
+        pushQuery(`${workEntity} ${primaryEntity} anime`);
+      }
+    } else if (isGaming) {
+      pushQuery(`${core} boss fight gameplay no commentary`);
+      pushQuery(`${core} gameplay showcase 4k`);
+      pushQuery(`${core} luta chefe gameplay`);
+      pushQuery(`${primaryEntity} boss fight cutscene`);
+      if (workEntity && primaryEntity !== workEntity) {
+        pushQuery(`${workEntity} ${primaryEntity} gameplay`);
       }
     } else {
-      pushQuery(`${core} official gameplay trailer`);
-      if (input.uncoveredSegmentIds?.length) {
-        pushQuery(`${core} showcase cutscene no commentary`);
+      pushQuery(`${core} official footage showcase`);
+      pushQuery(`${core} documentary explained demonstration`);
+      pushQuery(`${core} demonstracao cenas`);
+      if (workEntity && primaryEntity !== workEntity) {
+        pushQuery(`${workEntity} ${primaryEntity}`);
       }
     }
     if (queries.length >= maxQueries) break;

@@ -20,6 +20,7 @@ import {
   findMatchingSceneGroundingNegativeExample,
   runAutonomousMediaAcquisition,
   sampleDistributedFrameTimestamps,
+  scoreCandidateRelevancePriority,
   searchResilientMediaSources,
 } from '../src/index.js';
 
@@ -1002,5 +1003,103 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
       genre: 'anime',
     });
     expect(lookupAfterUndo.matched).toBe(false);
+  });
+
+  it('boosts gaming gameplay/boss-fight candidates, generates multi-strategy queries, and combines multiple clips to fill 60s scene coverage', async () => {
+    const seg = {
+      segmentId: 'scene_malenia',
+      subject: 'Malenia, Blade of Miquella',
+      narrationText: 'Malenia enfrenta o jogador com Waterfowl Dance na segunda fase de Elden Ring.',
+      entities: ['Elden Ring', 'Malenia, Blade of Miquella'],
+      expectedDurationSec: 60,
+    };
+    const prompt = 'Crie um vídeo cinematográfico sobre os 10 chefes mais difíceis de Elden Ring';
+
+    const gameplayScore = scoreCandidateRelevancePriority(
+      {
+        url: 'https://example.com/malenia-gameplay',
+        title: 'Elden Ring Malenia Boss Fight Gameplay No Commentary 4K',
+        origin: 'yt_dlp',
+        license: 'external_reference',
+        directDownloadable: false,
+        durationSec: 45,
+      },
+      seg,
+      prompt,
+    );
+    const nonGameplayScore = scoreCandidateRelevancePriority(
+      {
+        url: 'https://example.com/podcast',
+        title: 'Podcast react Elden Ring',
+        origin: 'yt_dlp',
+        license: 'external_reference',
+        directDownloadable: false,
+        durationSec: 45,
+      },
+      seg,
+      prompt,
+    );
+    expect(gameplayScore).toBeGreaterThan(nonGameplayScore);
+    expect(gameplayScore).toBeGreaterThan(5);
+
+    const expandedQueries = expandScriptOrientedQueries({
+      prompt,
+      segments: [seg],
+      genre: 'gameplay_essay',
+      uncoveredSegmentIds: ['scene_malenia'],
+      maxQueries: 8,
+    });
+    expect(expandedQueries.some((q) => /boss fight|gameplay/i.test(q))).toBe(true);
+    expect(expandedQueries.some((q) => /luta chefe/i.test(q))).toBe(true);
+
+    const dir = mkdtempSync(join(tmpdir(), 'aethera-multiclip-'));
+    const clipA = join(dir, 'malenia_part1.mp4');
+    const clipB = join(dir, 'malenia_part2.mp4');
+    writeFileSync(clipA, Buffer.from('malenia-clip-part-1-bytes'.repeat(80)));
+    writeFileSync(clipB, Buffer.from('malenia-clip-part-2-bytes'.repeat(80)));
+
+    const audit = await runAutonomousMediaAcquisition({
+      projectId: 'proj_elden_multiclip',
+      prompt,
+      genre: 'gameplay_essay',
+      format: 'analysis',
+      segments: [seg],
+      mediaDir: dir,
+      checkpointPath: false,
+      requireVisualVerification: true,
+      probeDurationFn: async () => 32,
+      analyzeFrames: async (_uri, timestampsSec) =>
+        timestampsSec.map((t) => ({
+          timestampSec: t,
+          summary: 'Elden Ring Malenia boss fight gameplay combat in Haligtree',
+          detectedEntities: ['Elden Ring', 'Malenia'],
+          detectedActions: ['boss fight', 'combat'],
+          visualCategory: 'gameplay',
+          confidence: 0.9,
+          provider: 'test_vision',
+        })),
+      deps: {
+        ytDlpSearchFn: async () => [
+          {
+            url: 'https://example.com/malenia-1',
+            title: 'Elden Ring Malenia Boss Fight Part 1',
+            durationSec: 32,
+          },
+          {
+            url: 'https://example.com/malenia-2',
+            title: 'Elden Ring Malenia Phase 2 Gameplay',
+            durationSec: 32,
+          },
+        ],
+        ytDlpAcquireFn: async (targetUrl) => (targetUrl.endsWith('-1') ? clipA : clipB),
+        fetchImpl: async () => new Response(JSON.stringify({}), { status: 200 }),
+      },
+    });
+
+    expect(audit.approvedAssets.length).toBe(2);
+    expect(audit.coverageReport.segments[0]?.covered).toBe(true);
+    expect(audit.coverageReport.segments[0]?.usableDurationSec).toBe(60);
+    expect(audit.coverageReport.segments[0]?.relevantIntervals.length).toBe(2);
+    expect(audit.unresolvedGapsForReview).toEqual([]);
   });
 });
