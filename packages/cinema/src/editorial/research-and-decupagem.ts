@@ -1,8 +1,29 @@
 import { createHash } from 'node:crypto';
 import type { EditorialScript, EditorialSegment } from './editorial-integrity.js';
 
-export type PromptDomain = 'gaming' | 'anime' | 'documentary' | 'general';
+export type PromptDomain = 'gaming' | 'anime' | 'technology' | 'documentary' | 'general';
 export type PromptFormatIntent = 'top_ranking' | 'narrative_essay' | 'documentary' | 'trailer';
+
+export type SemanticVisualIntent =
+  | 'cinematic_intro'
+  | 'cinematic_outro'
+  | 'gameplay_showcase'
+  | 'cyberware_demonstration'
+  | 'stealth_demonstration'
+  | 'mobility_demonstration'
+  | 'combat_demonstration'
+  | 'item_comparison'
+  | 'interface_explanation'
+  | 'cinematic_transition'
+  | 'gameplay_boss_fight'
+  | 'product_demonstration'
+  | 'hardware_benchmark'
+  | 'cinematic_cutscene'
+  | 'mechanic_breakdown'
+  | 'archival_footage'
+  | 'historical_context'
+  | 'title_graphic'
+  | (string & {});
 
 export interface PromptInterpretation {
   promptHash: string;
@@ -66,7 +87,9 @@ export interface SemanticSceneCut {
   entities: string[];
   expectedEvent: string;
   durationSec: number;
-  visualIntent: 'gameplay_boss_fight' | 'cinematic_cutscene' | 'mechanic_breakdown' | 'archival_footage' | 'title_graphic';
+  startSec?: number;
+  endSec?: number;
+  visualIntent: SemanticVisualIntent;
   mediaQueries: string[];
   matchingCriteria: {
     requiredEntities: string[];
@@ -122,8 +145,8 @@ export function interpretProductionPrompt(
   const cleaned = prompt.trim();
   const lower = cleaned.toLowerCase();
 
-  // Detect requested item count (e.g., "10 chefes", "top 10", "5 momentos")
-  const countMatch = /\b(?:top\s+)?(\d{1,2})\s+(?:chefes|bosses|jogos|lutas|momentos|fatos|itens|personagens|batalhas)\b/i.exec(cleaned);
+  // Detect requested item count (e.g., "10 chefes", "top 10", "10 melhores upgrades", "5 produtos")
+  const countMatch = /\b(?:top\s+)?(\d{1,2})\s+(?:melhores\s+|maiores\s+|principais\s+|piores\s+)?(?:chefes|bosses|upgrades|implantes|cyberwares|cibern[eé]tic[oa]s?|produtos|tecnologias|ferramentas|recursos|armas|builds|jogos|lutas|momentos|fatos|itens|personagens|batalhas|epis[oó]dios)\b/iu.exec(cleaned);
   const requestedCount = countMatch?.[1] ? Math.max(1, Math.min(25, Number(countMatch[1]))) : undefined;
 
   // Detect duration in prompt if not explicitly provided
@@ -135,11 +158,13 @@ export function interpretProductionPrompt(
 
   // Detect domain
   let domain: PromptDomain = 'general';
-  if (/\b(elden ring|dark souls|sekiro|bloodborne|gameplay|boss|chefe|jogo|game|soulslike|zelda|minecraft)\b/i.test(lower)) {
+  if (/\b(elden ring|cyberpunk\s*2077|cyberpunk|dark souls|sekiro|bloodborne|witcher|baldur|hollow knight|god of war|zelda|minecraft|gameplay|boss|chefe|cyberware|implante|cibern[eé]tica|jogo|game|soulslike)\b/i.test(lower)) {
     domain = 'gaming';
   } else if (/\b(dragon ball|naruto|one piece|anime|manga|bleach|jujutsu|attack on titan)\b/i.test(lower)) {
     domain = 'anime';
-  } else if (/\b(document[aá]rio|hist[oó]ria|guerra|biografia|ci[eê]ncia)\b/i.test(lower)) {
+  } else if (/\b(tecnologia|produto|hardware|software|smartphone|iphone|notebook|laptop|placa de v[ií]deo|gpu|rtx|nvidia|amd|intel|apple|samsung|review|benchmark)\b/i.test(lower)) {
+    domain = 'technology';
+  } else if (/\b(document[aá]rio|hist[oó]ria|guerra|biografia|ci[eê]ncia|apollo|espa[çc]o|civiliza[çc][ãa]o)\b/i.test(lower)) {
     domain = 'documentary';
   }
 
@@ -147,6 +172,8 @@ export function interpretProductionPrompt(
   let workTitle = '';
   const knownWorks: Array<[RegExp, string]> = [
     [/\belden ring\b/i, 'Elden Ring'],
+    [/\bcyberpunk\s*2077\b/i, 'Cyberpunk 2077'],
+    [/\bcyberpunk\b/i, 'Cyberpunk 2077'],
     [/\bdragon ball z\b/i, 'Dragon Ball Z'],
     [/\bdragon ball super\b/i, 'Dragon Ball Super'],
     [/\bdragon ball\b/i, 'Dragon Ball'],
@@ -166,22 +193,37 @@ export function interpretProductionPrompt(
   }
 
   const formatIntent: PromptFormatIntent =
-    requestedCount !== undefined || options?.genre === 'top_list' || /\b(ranking|top\s*\d+|mais dif[ií]ceis)\b/i.test(lower)
+    requestedCount !== undefined || options?.genre === 'top_list' || /\b(ranking|top\s*\d+|mais dif[ií]ceis|melhores)\b/i.test(lower)
       ? 'top_ranking'
-      : options?.genre === 'documentary'
+      : options?.genre === 'documentary' || domain === 'documentary'
         ? 'documentary'
         : options?.genre === 'trailer'
           ? 'trailer'
           : 'narrative_essay';
 
+  const isBossTheme = /\b(chefe|chefes|boss|bosses|luta|lutas|batalha)\b/i.test(lower);
+  const isUpgradeOrTechTheme = /\b(upgrade|upgrades|implante|implantes|cyberware|cibern[eé]tica|build|armas|produto|tecnologia|hardware)\b/i.test(lower);
   const rankingCriteria =
     formatIntent === 'top_ranking'
-      ? [
-          'Complexidade mecânica e leitura de padrões de ataque',
-          'Transições de fase e punição de erros',
-          'Agressividade, alcance e pressão sobre o jogador',
-          'Consenso histórico de dificuldade na comunidade',
-        ]
+      ? isBossTheme
+        ? [
+            'Complexidade mecânica e leitura de padrões de ataque',
+            'Transições de fase e punição de erros',
+            'Agressividade, alcance e pressão sobre o jogador',
+            'Consenso histórico de dificuldade na comunidade',
+          ]
+        : isUpgradeOrTechTheme
+          ? [
+              'Impacto prático e ganho de desempenho ou combate',
+              'Sinergia com estilos de jogo, builds ou ecossistema',
+              'Custo de implementação, limitações e risco operacional',
+              'Versatilidade e relevância no estado atual',
+            ]
+          : [
+              'Relevância factual e impacto no tema',
+              'Qualidade técnica e consistência de execução',
+              'Diferencial prático em relação às alternativas',
+            ]
       : ['Relevância factual para o tema', 'Impacto narrativo na obra'];
 
   const theme = cleaned
@@ -251,82 +293,272 @@ function cleanEntityForQuery(entityName: string): string {
   return entityName.replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
 }
 
+function normalizeMatchText(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+const ENTITY_BILINGUAL_ALIASES: Array<[string, string[]]> = [
+  ['mantis blades', ['laminas louva-a-deus', 'laminas mantis', 'mantis blade']],
+  ['gorilla arms', ['bracos de gorila', 'braco de gorila']],
+  ['projectile launch system', ['sistema de lancamento de projeteis', 'lancador de projeteis', 'lancador no braco']],
+  ['optical camo', ['camuflagem optica', 'camuflagem otica']],
+  ['monowire', ['fio monomolecular', 'monofio']],
+  ['sandevistan', ['sandevistan', 'apogee sandevistan', 'militech falcon']],
+  ['kerenzikov', ['kerenzikov']],
+  ['cyberdeck', ['ciberdeck', 'cyberdeck', 'netrunner deck', 'tetratronic rippler']],
+  ['cyberpsychosis', ['ciberpsicose', 'cyberpsychosis', 'ciberpsicopata']],
+  ['reinforced tendons', ['tendoes reforcados', 'salto duplo', 'double jump']],
+  ['blood pump', ['bomba de sangue']],
+  ['biomonitor', ['biomonitor']],
+  ['subdermal armor', ['armadura subdermica', 'pele subdermica']],
+];
+
+export function getEntityAliases(entityName: string): string[] {
+  const norm = normalizeMatchText(cleanEntityForQuery(entityName));
+  const out = new Set<string>([norm]);
+  for (const [canonical, aliases] of ENTITY_BILINGUAL_ALIASES) {
+    if (norm.includes(canonical) || aliases.some((a) => norm.includes(a))) {
+      out.add(canonical);
+      for (const a of aliases) out.add(a);
+    }
+  }
+  return [...out];
+}
+
+export function classifySceneVisualIntent(input: {
+  beat: EditorialSegment;
+  entity?: ResearchEntityFact;
+  workTitle: string;
+  domain: PromptDomain;
+  expectedEvent: string;
+}): SemanticVisualIntent {
+  const text = normalizeMatchText(
+    `${input.beat.title} ${input.beat.spokenText} ${input.expectedEvent} ${input.entity?.entityName ?? ''} ${input.entity?.role ?? ''} ${input.entity?.mechanicsOrEvents.join(' ') ?? ''}`,
+  );
+
+  if (!input.entity) {
+    if (input.beat.stage === 'hook' || input.beat.stage === 'promise') return 'cinematic_intro';
+    if (input.beat.stage === 'cta' || input.beat.stage === 'resolution') return 'cinematic_outro';
+  }
+
+  if (/\b(stealth|camo|camuflagem|furtiv|infiltra|silencios|escond)\b/.test(text)) {
+    return 'stealth_demonstration';
+  }
+  if (/\b(sandevistan|kerenzikov|dash|double jump|salto duplo|tendoes reforcados|mobilidade|parkour|velocidade|deslocamento)\b/.test(text)) {
+    return 'mobility_demonstration';
+  }
+  if (/\b(cyberware|implante|implant|mantis blade|gorilla arm|monowire|projectile launch|cyberdeck|ciberdeck|quickhack|ripperdoc|ciberpsicose|cyberpsychosis|subdermal|biomonitor|blood pump)\b/.test(text)) {
+    return 'cyberware_demonstration';
+  }
+  if (/\b(compar|versus|\bvs\b|diferenca entre|alternativa|melhor que|custo[- ]beneficio)\b/.test(text)) {
+    return 'item_comparison';
+  }
+  if (/\b(menu|interface|hud|arvore de habilidades|skill tree|atributos|especificac|specs|status)\b/.test(text)) {
+    return 'interface_explanation';
+  }
+  if (/\b(boss|chefe|phase 2|fase 2|segunda fase|waterfowl|arena do chefe|confronto final)\b/.test(text)) {
+    return 'gameplay_boss_fight';
+  }
+  if (input.domain === 'technology') {
+    return /\b(benchmark|fps|desempenho|teste|throughput|latencia|bateria)\b/.test(text)
+      ? 'hardware_benchmark'
+      : 'product_demonstration';
+  }
+  if (input.domain === 'documentary') {
+    return /\b(arquivo|historico|epoca|decada|evento|documental|registro)\b/.test(text)
+      ? 'archival_footage'
+      : 'historical_context';
+  }
+  if (input.domain === 'anime') {
+    return /\b(luta|batalha|golpe|ataque|transforma)\b/.test(text)
+      ? 'combat_demonstration'
+      : 'cinematic_cutscene';
+  }
+  if (/\b(combate|luta|ataque|golpe|dano|tiro|espada|fight|batalha)\b/.test(text)) {
+    return input.entity && /boss|chefe/i.test(input.entity.role) ? 'gameplay_boss_fight' : 'combat_demonstration';
+  }
+  if (!input.entity) {
+    return 'cinematic_transition';
+  }
+  return input.domain === 'gaming' ? 'gameplay_showcase' : 'product_demonstration';
+}
+
 function buildSpecificMediaQueries(
   workTitle: string,
   entity: ResearchEntityFact | undefined,
   expectedEvent: string,
   domain: PromptDomain,
+  visualIntent: SemanticVisualIntent,
 ): string[] {
   const cleanEvent = expectedEvent.replace(/[^\p{L}\p{N}\s-]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const shortEvent = cleanEvent.split(/\s+/).slice(0, 5).join(' ').trim();
+
   if (!entity) {
-    const suffix = domain === 'gaming' ? 'gameplay no commentary' : domain === 'anime' ? 'scene clip' : 'footage';
-    return [`${workTitle} ${cleanEvent.split(' ').slice(0, 5).join(' ')} ${suffix}`.trim()];
+    if (visualIntent === 'cinematic_intro' || visualIntent === 'cinematic_outro') {
+      if (domain === 'gaming') {
+        return [
+          `${workTitle} official trailer 4k`,
+          `${workTitle} cinematic gameplay showcase`,
+        ];
+      }
+      if (domain === 'technology') {
+        return [`${workTitle} product keynote overview`, `${workTitle} hands on showcase`];
+      }
+      if (domain === 'documentary') {
+        return [`${workTitle} documentary archival footage`, `${workTitle} historical overview`];
+      }
+    }
+    const suffix =
+      domain === 'gaming'
+        ? 'gameplay showcase no commentary'
+        : domain === 'anime'
+          ? 'scene clip'
+          : domain === 'technology'
+            ? 'hands on demonstration'
+            : 'documentary footage';
+    return [`${workTitle} ${shortEvent} ${suffix}`.replace(/\s+/g, ' ').trim()];
   }
+
   const cleanEntity = cleanEntityForQuery(entity.entityName);
   const mechanic = entity.mechanicsOrEvents[0] ?? entity.attackPatternsOrPhases?.[0] ?? '';
   const cleanMechanic = mechanic.replace(/[^\p{L}\p{N}\s-]/gu, ' ').split(/\s+/).slice(0, 5).join(' ').trim();
   const base = `${workTitle} ${cleanEntity}`.trim();
 
-  if (domain === 'gaming') {
-    return [
-      `${base} boss fight no commentary`,
-      ...(cleanMechanic ? [`${base} ${cleanMechanic}`] : []),
-      `${base} phase 2 cutscene gameplay`,
-    ].slice(0, 3);
+  switch (visualIntent) {
+    case 'gameplay_boss_fight':
+      return [
+        `${base} boss fight no commentary`,
+        ...(cleanMechanic ? [`${base} ${cleanMechanic}`] : []),
+        `${base} phase 2 cutscene gameplay`,
+      ].slice(0, 3);
+    case 'stealth_demonstration':
+      return [
+        `${base} stealth gameplay demonstration`,
+        `${base} stealth showcase no commentary`,
+        ...(cleanMechanic ? [`${base} ${cleanMechanic}`] : []),
+      ].slice(0, 3);
+    case 'mobility_demonstration':
+      return [
+        `${base} mobility movement gameplay demonstration`,
+        `${base} showcase gameplay`,
+        ...(cleanMechanic ? [`${base} ${cleanMechanic}`] : []),
+      ].slice(0, 3);
+    case 'cyberware_demonstration':
+      return [
+        `${base} cyberware gameplay showcase`,
+        `${base} implant demonstration gameplay`,
+        ...(cleanMechanic ? [`${base} ${cleanMechanic}`] : [`${base} combat showcase`]),
+      ].slice(0, 3);
+    case 'combat_demonstration':
+      return [
+        `${base} combat gameplay demonstration`,
+        ...(cleanMechanic ? [`${base} ${cleanMechanic}`] : []),
+        `${base} gameplay showcase no commentary`,
+      ].slice(0, 3);
+    case 'item_comparison':
+      return [
+        `${base} comparison showcase`,
+        `${base} vs alternatives gameplay`,
+      ].slice(0, 3);
+    case 'interface_explanation':
+      return [
+        `${base} menu stats build showcase`,
+        `${base} ui explanation`,
+      ].slice(0, 3);
+    case 'product_demonstration':
+    case 'hardware_benchmark':
+      return [
+        `${base} hands on review`,
+        `${base} ${visualIntent === 'hardware_benchmark' ? 'benchmark performance test' : 'feature demonstration'}`.trim(),
+        ...(cleanMechanic ? [`${base} ${cleanMechanic}`] : []),
+      ].slice(0, 3);
+    case 'archival_footage':
+    case 'historical_context':
+      return [
+        `${base} archival footage`,
+        `${base} documentary history footage`,
+      ].slice(0, 3);
+    default:
+      if (domain === 'anime') {
+        return [
+          `${base} ${cleanMechanic || 'scene'} anime clip`,
+          `${base} scene`,
+        ].slice(0, 3);
+      }
+      return [
+        `${base} gameplay showcase`,
+        ...(cleanMechanic ? [`${base} ${cleanMechanic}`] : []),
+        `${base} demonstration`,
+      ].slice(0, 3);
   }
-  if (domain === 'anime') {
-    return [
-      `${base} ${cleanMechanic || 'scene'} anime clip`,
-      `${base} fight scene`,
-    ].slice(0, 3);
-  }
-  return [
-    `${base} ${cleanMechanic || 'overview'}`.trim(),
-    `${workTitle} ${cleanEntity} footage`,
-  ].slice(0, 3);
 }
 
 const GENERIC_ENTITY_STOPWORDS = new Set([
-  'order', 'beast', 'blade', 'black', 'golden', 'consort', 'shadow', 'erdtree',
+  'order', 'beast', 'blade', 'blades', 'black', 'golden', 'consort', 'shadow', 'erdtree',
   'first', 'lord', 'starscourge', 'scourge', 'omen', 'king', 'queen', 'blood',
   'fallen', 'general', 'commander', 'knight', 'dragon', 'cleric', 'promised',
-  'ordem', 'aurea', 'áurea', 'fera', 'pristina', 'prístina', 'espada', 'lamina',
-  'lâmina', 'negra', 'consorte', 'prometido', 'chefe', 'boss', 'the', 'and',
+  'ordem', 'aurea', 'áurea', 'fera', 'pristina', 'prístina', 'espada', 'lamina', 'laminas',
+  'lâmina', 'lâminas', 'negra', 'consorte', 'prometido', 'chefe', 'boss', 'the', 'and',
+  'system', 'sistema', 'launch', 'lancamento', 'projectile', 'projeteis', 'arms', 'bracos',
+  'cyberware', 'upgrade', 'upgrades', 'implante', 'implantes', 'implant', 'item', 'modo',
+  'arma', 'armas', 'build', 'builds', 'review', 'teste', 'product', 'produto', 'nova', 'novo',
 ]);
+
+export function doesNarrationMatchEntity(
+  narrationAndTitle: string,
+  entityName: string,
+  workTitle: string,
+): boolean {
+  const textNorm = normalizeMatchText(narrationAndTitle);
+  const aliases = getEntityAliases(entityName);
+  for (const alias of aliases) {
+    if (alias.length >= 4 && textNorm.includes(alias)) return true;
+  }
+  const workTokens = new Set(normalizeMatchText(workTitle).split(/[\s,:-]+/).filter((w) => w.length >= 3));
+  const tokens = aliases
+    .flatMap((a) => a.split(/[\s,&:/-]+/))
+    .filter((w) => w.length >= 4 && !workTokens.has(w) && !GENERIC_ENTITY_STOPWORDS.has(w));
+  if (tokens.length === 0) return false;
+  return tokens.some((t) => textNorm.includes(t));
+}
 
 function matchBeatToEntity(
   beat: EditorialSegment,
-  beatIndex: number,
-  totalBeats: number,
   entities: ResearchEntityFact[],
   workTitle: string,
-  usedEntities: Set<string>,
 ): ResearchEntityFact | undefined {
   if (entities.length === 0) return undefined;
-  const workTokens = new Set(workTitle.toLowerCase().split(/[\s,:-]+/).filter((w) => w.length >= 3));
-  const titleLower = beat.title.toLowerCase();
-  const textLower = `${beat.title} ${beat.spokenText}`.toLowerCase();
+  const workTokens = new Set(normalizeMatchText(workTitle).split(/[\s,:-]+/).filter((w) => w.length >= 3));
+  const titleNorm = normalizeMatchText(beat.title);
+  const textNorm = normalizeMatchText(`${beat.title} ${beat.spokenText}`);
 
-  // 1. Exact primary name match across all entities first (title first, then full text)
+  // 1. Exact primary name or known bilingual alias match (title first, then full text)
   for (const e of entities) {
-    const primaryName = cleanEntityForQuery(e.entityName).toLowerCase();
-    if (titleLower.includes(primaryName)) return e;
+    const aliases = getEntityAliases(e.entityName);
+    if (aliases.some((a) => a.length >= 4 && titleNorm.includes(a))) return e;
   }
   for (const e of entities) {
-    const primaryName = cleanEntityForQuery(e.entityName).toLowerCase();
-    if (textLower.includes(primaryName)) return e;
+    const aliases = getEntityAliases(e.entityName);
+    if (aliases.some((a) => a.length >= 4 && textNorm.includes(a))) return e;
   }
 
   // 2. Distinctive proper-noun token scoring (title weighted 3x higher than body)
   let bestEntity: ResearchEntityFact | undefined;
   let bestScore = 0;
   for (const e of entities) {
-    const primaryName = cleanEntityForQuery(e.entityName).toLowerCase();
-    const tokens = primaryName
-      .split(/[\s,&:/-]+/)
-      .filter((w) => w.length >= 4 && !workTokens.has(w) && !GENERIC_ENTITY_STOPWORDS.has(w));
-    const titleHits = tokens.filter((t) => titleLower.includes(t)).length;
-    const bodyHits = tokens.filter((t) => textLower.includes(t)).length;
+    const aliases = getEntityAliases(e.entityName);
+    const tokens = [
+      ...new Set(
+        aliases
+          .flatMap((a) => a.split(/[\s,&:/-]+/))
+          .filter((w) => w.length >= 4 && !workTokens.has(w) && !GENERIC_ENTITY_STOPWORDS.has(w)),
+      ),
+    ];
+    const titleHits = tokens.filter((t) => titleNorm.includes(t)).length;
+    const bodyHits = tokens.filter((t) => textNorm.includes(t)).length;
     const score = titleHits * 3 + bodyHits;
     if (score > bestScore) {
       bestScore = score;
@@ -335,14 +567,8 @@ function matchBeatToEntity(
   }
   if (bestEntity && bestScore > 0) return bestEntity;
 
-  if (beat.stage === 'hook' || beat.stage === 'promise' || beat.stage === 'cta' || beat.stage === 'resolution') {
-    return undefined;
-  }
-  // 2. For progression/climax beats without explicit match, pick next uncovered entity in dossier order
-  const uncovered = entities.find((e) => !usedEntities.has(e.entityName));
-  if (uncovered) return uncovered;
-  const middleIdx = Math.max(0, beatIndex - 1);
-  return entities[middleIdx % entities.length];
+  // Never blindly recycle or invent an entity when the beat narration does not mention one.
+  return undefined;
 }
 
 export function buildSemanticDecupagem(
@@ -351,44 +577,50 @@ export function buildSemanticDecupagem(
   interpretation: PromptInterpretation,
 ): SemanticSceneCut[] {
   const beats = Array.isArray(script.segments) ? script.segments : [];
-  const totalBeats = Math.max(1, beats.length);
   const rawTotalDur = beats.reduce((acc, b) => acc + Math.max(4, b.estimatedDurationSec), 0) || interpretation.targetDurationSec;
   const scale = interpretation.targetDurationSec > 0 ? interpretation.targetDurationSec / rawTotalDur : 1;
-  const usedEntities = new Set<string>();
+  let cursorSec = 0;
 
   return beats.map((beat, idx) => {
-    const matchedEntity = matchBeatToEntity(beat, idx, totalBeats, dossier.entities, dossier.workTitle, usedEntities);
-    if (matchedEntity) usedEntities.add(matchedEntity.entityName);
+    const matchedEntity = matchBeatToEntity(beat, dossier.entities, dossier.workTitle);
     const entities = matchedEntity ? [matchedEntity.entityName] : [];
     const expectedEvent = matchedEntity
-      ? matchedEntity.mechanicsOrEvents[0] ?? matchedEntity.verifiedFacts[0] ?? `Confronto com ${matchedEntity.entityName}`
-      : beat.stage === 'hook'
+      ? matchedEntity.mechanicsOrEvents[0] ?? matchedEntity.verifiedFacts[0] ?? `Demonstração de ${matchedEntity.entityName}`
+      : beat.stage === 'hook' || beat.stage === 'promise'
         ? `Abertura temática de ${dossier.workTitle}`
         : beat.stage === 'cta' || beat.stage === 'resolution'
           ? `Conclusão e síntese de ${dossier.workTitle}`
-          : `Contexto narrativo de ${dossier.workTitle}`;
+          : beat.title.trim() || `Contexto narrativo de ${dossier.workTitle}`;
+
+    const visualIntent = classifySceneVisualIntent({
+      beat,
+      ...(matchedEntity ? { entity: matchedEntity } : {}),
+      workTitle: dossier.workTitle,
+      domain: interpretation.domain,
+      expectedEvent,
+    });
 
     const mediaQueries = buildSpecificMediaQueries(
       dossier.workTitle,
       matchedEntity,
       expectedEvent,
       interpretation.domain,
+      visualIntent,
     ).filter((q) => q.toLowerCase() !== interpretation.originalPrompt.toLowerCase());
 
     const durationSec = Math.max(6, Math.round(beat.estimatedDurationSec * scale));
-    const visualIntent: SemanticSceneCut['visualIntent'] = matchedEntity
-      ? interpretation.domain === 'gaming'
-        ? 'gameplay_boss_fight'
-        : 'cinematic_cutscene'
-      : beat.stage === 'hook' || beat.stage === 'resolution' || beat.stage === 'cta'
-        ? 'cinematic_cutscene'
-        : 'archival_footage';
+    const startSec = cursorSec;
+    const endSec = cursorSec + durationSec;
+    cursorSec = endSec;
 
     const entityTokens = matchedEntity
-      ? matchedEntity.entityName
-          .toLowerCase()
-          .split(/[\s,:-]+/)
-          .filter((w) => w.length >= 4)
+      ? [
+          ...new Set(
+            getEntityAliases(matchedEntity.entityName)
+              .flatMap((a) => a.split(/[\s,:-]+/))
+              .filter((w) => w.length >= 4 && !GENERIC_ENTITY_STOPWORDS.has(w)),
+          ),
+        ]
       : dossier.workTitle
           .toLowerCase()
           .split(/\s+/)
@@ -400,9 +632,11 @@ export function buildSemanticDecupagem(
       : `scene_${String(idx + 1).padStart(2, '0')}_${beat.stage}`;
 
     const sfxCues =
-      interpretation.domain === 'gaming'
+      visualIntent === 'gameplay_boss_fight'
         ? ['impact_hit', 'boss_whoosh', 'sub_drop']
-        : ['whoosh_transition', 'ambient_riser'];
+        : interpretation.domain === 'gaming'
+          ? ['hud_pulse', 'whoosh_transition']
+          : ['whoosh_transition', 'ambient_riser'];
     const vfxEffects =
       beat.stage === 'hook' || beat.stage === 'climax'
         ? ['subtle_vignette', 'lower_third_accent']
@@ -416,6 +650,7 @@ export function buildSemanticDecupagem(
       narrationText: beat.spokenText,
       entities,
       expectedEvent,
+      visualIntent,
       durationSec,
       mediaQueries,
     });
@@ -429,6 +664,8 @@ export function buildSemanticDecupagem(
       entities,
       expectedEvent,
       durationSec,
+      startSec,
+      endSec,
       visualIntent,
       mediaQueries,
       matchingCriteria: {
@@ -529,6 +766,16 @@ export function buildEditorialRecoveryPlan(
   failedQueries: string[],
 ): EditorialRecoveryStep[] {
   const entityLabel = scene.entities[0] ?? scene.workTitle;
+  const intentSuffix =
+    scene.visualIntent === 'gameplay_boss_fight'
+      ? 'boss fight'
+      : scene.visualIntent === 'stealth_demonstration'
+        ? 'stealth gameplay'
+        : scene.visualIntent === 'mobility_demonstration'
+          ? 'movement gameplay'
+          : scene.visualIntent === 'cyberware_demonstration'
+            ? 'cyberware demonstration'
+            : 'showcase';
   return [
     {
       step: 1,
@@ -536,8 +783,8 @@ export function buildEditorialRecoveryPlan(
       description: `Reformular consulta para "${entityLabel}" focando no evento "${scene.expectedEvent}" sem repetir o prompt completo.`,
       autoApproveMotionVisual: false,
       suggestedQueries: [
-        `${scene.workTitle} ${entityLabel} boss fight`,
-        `${scene.workTitle} ${entityLabel} showcase`,
+        `${scene.workTitle} ${entityLabel} ${intentSuffix}`.trim(),
+        `${scene.workTitle} ${entityLabel} demonstration`.trim(),
       ].filter((q) => !failedQueries.includes(q)),
     },
     {

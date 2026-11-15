@@ -58,6 +58,7 @@ import {
   buildEditorialTraceabilityGraph,
   createEmptyEditorialAuditTrail,
   runEditorialIntegrityChecks,
+  repairSemanticDecupagem,
   type EditorialAuditTrail,
   type GroundingEvidenceRecord,
   type MediaCandidateRecord,
@@ -862,24 +863,27 @@ export class StagedCinemaPipeline {
       }
       job.completedStages = [...new Set([...job.completedStages, 'decupagem'])] as ProductionStageState[];
       if (job.researchDossier && job.editorialScript && job.sceneDecupagem) {
-        job.editorialAudit = buildEditorialTraceabilityGraph({
+        const repaired = repairSemanticDecupagem({
           projectId: job.projectId,
           dossier: job.researchDossier,
           script: job.editorialScript,
+          interpretation: nextInterpretation,
           decupagem: job.sceneDecupagem,
           ...(job.editorialAudit ? { previousTrail: job.editorialAudit } : {}),
+          maxAttempts: 2,
         });
+        job.sceneDecupagem = repaired.decupagem;
+        job.editorialAudit = repaired.trail;
         job.editorialAudit.events.push({
           eventId: `evt_decupagem_${Date.now()}`,
           timestamp: new Date().toISOString(),
           stage: 'decupagem',
-          message: `Rastreabilidade construída: ${job.editorialAudit.sources.length} fontes, ${job.editorialAudit.facts.length} fatos, ${job.editorialAudit.scriptBlocks.length} blocos, ${job.editorialAudit.scenes.length} cenas.`,
+          message:
+            repaired.repairedSceneIds.length > 0
+              ? `Rastreabilidade construída e reparo editorial aplicado em ${repaired.repairedSceneIds.length} cena(s) (${repaired.attempts} tentativa(s)): ${job.editorialAudit.sources.length} fontes, ${job.editorialAudit.facts.length} fatos, ${job.editorialAudit.scriptBlocks.length} blocos, ${job.editorialAudit.scenes.length} cenas.`
+              : `Rastreabilidade construída: ${job.editorialAudit.sources.length} fontes, ${job.editorialAudit.facts.length} fatos, ${job.editorialAudit.scriptBlocks.length} blocos, ${job.editorialAudit.scenes.length} cenas.`,
         });
-        job.editorialAudit.integrityReport = runEditorialIntegrityChecks({
-          interpretation: nextInterpretation,
-          dossier: job.researchDossier,
-          trail: job.editorialAudit,
-        });
+        job.editorialAudit.integrityReport = repaired.report;
       }
       this.saveJob(job);
 

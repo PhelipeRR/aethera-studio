@@ -5,6 +5,10 @@ import type {
   PromptInterpretation,
   SemanticSceneCut,
 } from './research-and-decupagem.js';
+import {
+  buildSemanticDecupagem,
+  doesNarrationMatchEntity,
+} from './research-and-decupagem.js';
 
 function sha12(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 12);
@@ -132,6 +136,8 @@ export type EditorialIntegrityCheckCode =
   | 'query_contains_full_prompt'
   | 'scene_without_script_link'
   | 'entity_missing_in_dossier'
+  | 'entity_narration_divergence'
+  | 'incompatible_visual_intent'
   | 'boss_repetition_without_justification'
   | 'ranking_count_mismatch'
   | 'narration_media_divergence'
@@ -331,7 +337,11 @@ export function runEditorialIntegrityChecks(input: {
     }
   }
 
-  // 3 & 4. Scene without script link + entity missing in dossier + repeated boss check (only without event distinction)
+  // 3 & 4. Scene without script link + entity missing in dossier + narration/entity divergence + incompatible visual intent + repeated entity check
+  const blockById = new Map(input.trail.scriptBlocks.map((b) => [b.blockId, b]));
+  const dossierEntityByLower = new Map(
+    (input.dossier?.entities ?? []).map((e) => [e.entityName.toLowerCase(), e]),
+  );
   const seenEntityEvents = new Map<string, Array<{ sceneId: string; expectedEvent: string }>>();
   for (const scene of input.trail.scenes) {
     if (!scene.scriptBlockId || !blockIds.has(scene.scriptBlockId)) {
@@ -342,6 +352,39 @@ export function runEditorialIntegrityChecks(input: {
         message: `Cena ${scene.sceneId} não possui vínculo explícito com um bloco do roteiro.`,
       });
     }
+    const linkedBlock = scene.scriptBlockId ? blockById.get(scene.scriptBlockId) : undefined;
+    const blockNarrationAndTitle = `${linkedBlock?.title ?? ''} ${linkedBlock?.narrationText ?? scene.narrationText}`;
+    const hasBossRole = scene.entities.some((ent) => {
+      const role = dossierEntityByLower.get(ent.toLowerCase())?.role ?? '';
+      return /\b(boss|chefe)\b/i.test(role);
+    });
+    const hasBossContext =
+      hasBossRole ||
+      /\b(boss|chefe|chefes|bosses|phase\s*2|fase\s*2|segunda\s*fase)\b/i.test(
+        `${blockNarrationAndTitle} ${scene.expectedEvent}`,
+      );
+    if (
+      scene.visualIntent === 'gameplay_boss_fight' &&
+      !hasBossContext
+    ) {
+      issues.push({
+        code: 'incompatible_visual_intent',
+        severity: 'error',
+        sceneId: scene.sceneId,
+        message: `Cena ${scene.sceneId} classificada como "gameplay_boss_fight" sem contexto de chefe/boss na narração.`,
+      });
+    } else if (
+      scene.visualIntent !== 'gameplay_boss_fight' &&
+      scene.mediaQueries.some((q) => /\b(boss fight|phase 2)\b/i.test(q))
+    ) {
+      issues.push({
+        code: 'incompatible_visual_intent',
+        severity: 'error',
+        sceneId: scene.sceneId,
+        message: `Cena ${scene.sceneId} (${scene.visualIntent}) contém consultas de boss fight/phase 2 incompatíveis com a intenção visual.`,
+      });
+    }
+
     for (const ent of scene.entities) {
       if (dossierEntities.size > 0 && !dossierEntities.has(ent.toLowerCase())) {
         issues.push({
@@ -349,6 +392,14 @@ export function runEditorialIntegrityChecks(input: {
           severity: 'error',
           sceneId: scene.sceneId,
           message: `Entidade "${ent}" na cena ${scene.sceneId} não existe no dossiê factual.`,
+        });
+      }
+      if (!doesNarrationMatchEntity(blockNarrationAndTitle, ent, scene.workTitle)) {
+        issues.push({
+          code: 'entity_narration_divergence',
+          severity: 'error',
+          sceneId: scene.sceneId,
+          message: `Entidade "${ent}" na cena ${scene.sceneId} não corresponde ao conteúdo narrado no bloco correspondente.`,
         });
       }
       const key = ent.toLowerCase();
@@ -416,5 +467,91 @@ export function runEditorialIntegrityChecks(input: {
     errorCount,
     warningCount,
     issues,
+  };
+}
+
+const REPAIRABLE_CODES = new Set<EditorialIntegrityCheckCode>([
+  'incompatible_visual_intent',
+  'entity_narration_divergence',
+  'boss_repetition_without_justification',
+  'query_contains_full_prompt',
+  'entity_missing_in_dossier',
+]);
+
+/**
+ * Bounded auto-repair for semantic decupagem: rebuilds only scenes flagged by editorial integrity checks,
+ * re-runs traceability + integrity audit up to `maxAttempts` (default 2), and never loops indefinitely.
+ */
+export function repairSemanticDecupagem(input: {
+  projectId: string;
+  script: EditorialScript;
+  dossier: EditorialResearchDossier;
+  interpretation: PromptInterpretation;
+  decupagem: SemanticSceneCut[];
+  previousTrail?: EditorialAuditTrail;
+  maxAttempts?: number;
+}): {
+  decupagem: SemanticSceneCut[];
+  trail: EditorialAuditTrail;
+  report: EditorialIntegrityReport;
+  attempts: number;
+  repairedSceneIds: string[];
+} {
+  const maxAttempts = Math.max(1, Math.min(3, input.maxAttempts ?? 2));
+  let currentDecupagem = input.decupagem;
+  const repairedSet = new Set<string>();
+  let attempts = 0;
+
+  let trail = buildEditorialTraceabilityGraph({
+    projectId: input.projectId,
+    dossier: input.dossier,
+    script: input.script,
+    decupagem: currentDecupagem,
+    ...(input.previousTrail ? { previousTrail: input.previousTrail } : {}),
+  });
+  let report = runEditorialIntegrityChecks({
+    interpretation: input.interpretation,
+    dossier: input.dossier,
+    trail,
+  });
+
+  while (attempts < maxAttempts) {
+    const affectedSceneIds = new Set(
+      report.issues
+        .filter((i) => i.sceneId && REPAIRABLE_CODES.has(i.code))
+        .map((i) => i.sceneId as string),
+    );
+    if (affectedSceneIds.size === 0) break;
+
+    attempts += 1;
+    const rebuilt = buildSemanticDecupagem(input.script, input.dossier, input.interpretation);
+    currentDecupagem = currentDecupagem.map((scene, idx) => {
+      if (!affectedSceneIds.has(scene.sceneId)) return scene;
+      const fresh = rebuilt[idx];
+      if (!fresh) return scene;
+      repairedSet.add(fresh.sceneId);
+      return fresh;
+    });
+
+    trail = buildEditorialTraceabilityGraph({
+      projectId: input.projectId,
+      dossier: input.dossier,
+      script: input.script,
+      decupagem: currentDecupagem,
+      previousTrail: trail,
+    });
+    report = runEditorialIntegrityChecks({
+      interpretation: input.interpretation,
+      dossier: input.dossier,
+      trail,
+    });
+  }
+
+  return {
+    decupagem: currentDecupagem,
+    trail,
+    report,
+    attempts,
+    repairedSceneIds: [...repairedSet],
   };
 }
