@@ -4,7 +4,8 @@
 
 - [x] **CS-1 — Fundação (`@neuralbridge/creative-studio` + `@neuralbridge/database`):** schemas portáveis v1, `AssetIngestionService` (SHA-256, sem traversal), `BrandKitManager`, `SharpSvgCompositionEngine` (com `sharp` + SVG e interface `ExternalImageAdapter`), `ExportService` (PNG/JPG/WebP/`.aethera-creative.json` + prévia animada + marca d'água idempotente em vídeo) e migração `0121_aethera_creative_studio.sql`. Validado em `packages/creative-studio/test/cs1-foundation.test.ts` (5/5) e `tsc`.
 - [x] **CS-2 — Editor por Camadas (`LayeredDocumentEditor`):** histórico undo/redo, alinhamento em área segura, máscaras, efeitos não destrutivos, edição localizada por prompt e dirty-tracking. Validado em `packages/creative-studio/test/cs2-editor.test.ts` (1/1) e `tsc`.
-- [ ] **CS-3 .. CS-5:** `VideoFrameAnalyzer`, `CreativeOrchestrator` (4 motores + fallback), `QualityGateService`, Thumbnail Lab, UI interativa no `aethera-desktop`, os 4 criadores, integração ao `CinemaPipeline` e Backup Geral, e validação E2E real.
+- [x] **CS-3 — Frame Analyzer, Orquestrador 4 Motores, Quality Gate & Thumbnail Lab:** `VideoFrameAnalyzer` (ffmpeg/ffprobe + sharp stats), `CreativeOrchestrator` (Claude Code, Codex CLI, Antigravity CLI, Claude Gateway + fallback RF-07 para 1 agente), `QualityGateService` (bloqueio em falhas críticas + scorecard heurístico sem previsão de CTR) e `CompositionPlanner` (3 variações no Thumbnail Lab). Validado em `packages/creative-studio/test/cs3-orchestrator-lab.test.ts` (3/3) e `tsc`.
+- [ ] **CS-4 .. CS-5:** Integração full-stack no `apps/aethera-desktop` (IPC, UI por camadas, Brand Kit, 4 criadores, gancho automático no `CinemaPipeline`, Backup Geral) e validação E2E real.
 
 ## Aethera Cinema AI (`CINEMA-00` .. `CINEMA-10`) (2026-11-13)
 

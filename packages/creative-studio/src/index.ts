@@ -4,3 +4,7 @@ export * from './brand-kit-manager.js';
 export * from './image-generation-adapter.js';
 export * from './export-service.js';
 export * from './layered-editor.js';
+export * from './video-frame-analyzer.js';
+export * from './quality-gate.js';
+export * from './composition-planner.js';
+export * from './creative-orchestrator.js';

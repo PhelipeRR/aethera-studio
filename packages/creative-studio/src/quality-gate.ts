@@ -1,0 +1,205 @@
+import sharp from 'sharp';
+import type { SharpSvgCompositionEngine } from './image-generation-adapter.js';
+import {
+  ART_SPECIFICATIONS,
+  qualityAuditReportSchema,
+  type BrandKit,
+  type CreativeProjectDocument,
+  type QualityAuditFinding,
+  type QualityAuditReport,
+} from './schemas.js';
+
+export class QualityGateService {
+  constructor(private readonly engine: SharpSvgCompositionEngine) {}
+
+  async auditProject(
+    doc: CreativeProjectDocument,
+    options?: { brandKit?: BrandKit | null },
+  ): Promise<QualityAuditReport> {
+    const findings: QualityAuditFinding[] = [];
+    const spec = ART_SPECIFICATIONS[doc.artType];
+
+    // 1. Resolution & aspect ratio
+    if (doc.width < spec.minWidth || doc.height < spec.minHeight) {
+      findings.push({
+        code: 'RESOLUTION_TOO_LOW',
+        severity: 'critical',
+        message: `Resolução ${doc.width}×${doc.height} abaixo do mínimo ${spec.minWidth}×${spec.minHeight} para ${doc.artType}.`,
+      });
+    }
+
+    // 2. Render actual buffer and inspect real pixels
+    const rendered = await this.engine.renderDocumentToBuffer(doc, 'png');
+    const meta = await sharp(rendered).metadata();
+    if (meta.width !== doc.width || meta.height !== doc.height) {
+      findings.push({
+        code: 'RENDER_DIMENSION_MISMATCH',
+        severity: 'critical',
+        message: `Imagem renderizada (${meta.width}×${meta.height}) diverge do documento (${doc.width}×${doc.height}).`,
+      });
+    }
+
+    // 3. Watermark transparency check
+    if (doc.artType === 'watermark') {
+      const { data } = await sharp(rendered).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      let transparentPixels = 0;
+      const totalPixels = Math.max(1, data.length / 4);
+      for (let i = 3; i < data.length; i += 4) {
+        if ((data[i] ?? 255) < 250) transparentPixels += 1;
+      }
+      const transparentRatio = transparentPixels / totalPixels;
+      if (transparentRatio < 0.15) {
+        findings.push({
+          code: 'WATERMARK_NOT_TRANSPARENT',
+          severity: 'critical',
+          message: `Marca d'água possui apenas ${(transparentRatio * 100).toFixed(1)}% de área transparente.`,
+        });
+      }
+    }
+
+    // 4. Banner safe-area check (1546x423)
+    if (doc.artType === 'banner' && spec.safeArea) {
+      const safe = spec.safeArea;
+      for (const layer of doc.layers) {
+        if (!layer.visible || (layer.type !== 'text' && layer.type !== 'subject')) continue;
+        const lx1 = layer.transform.x;
+        const ly1 = layer.transform.y;
+        const lx2 = lx1 + layer.transform.width * layer.transform.scaleX;
+        const ly2 = ly1 + layer.transform.height * layer.transform.scaleY;
+        const outsideSafe =
+          lx1 < safe.x || ly1 < safe.y || lx2 > safe.x + safe.width || ly2 > safe.y + safe.height;
+        if (outsideSafe) {
+          findings.push({
+            code: 'BANNER_OUTSIDE_SAFE_AREA',
+            severity: layer.type === 'text' ? 'critical' : 'warning',
+            message: `Camada "${layer.name}" ultrapassa a área segura do banner (${safe.width}×${safe.height}).`,
+            layerId: layer.id,
+          });
+        }
+      }
+    }
+
+    // 5. Text legibility & bounds check
+    const visibleTexts = doc.layers.filter((l) => l.visible && l.type === 'text');
+    let legibility = 88;
+    if (doc.artType === 'thumbnail' && visibleTexts.length === 0) {
+      legibility = 62;
+      findings.push({
+        code: 'THUMBNAIL_MISSING_TITLE',
+        severity: 'warning',
+        message: 'Thumbnail sem camada de título visível.',
+      });
+    }
+    for (const layer of visibleTexts) {
+      if (layer.type !== 'text') continue;
+      if (doc.artType === 'thumbnail' && layer.fontSize < 56) {
+        legibility -= 25;
+        findings.push({
+          code: 'TITLE_TOO_SMALL_FOR_FEED',
+          severity: 'critical',
+          message: `Título "${layer.text}" com fonte ${layer.fontSize}px pode ficar ilegível em miniaturas mobile.`,
+          layerId: layer.id,
+        });
+      }
+      const wordCount = layer.text.trim().split(/\s+/).length;
+      if (doc.artType === 'thumbnail' && wordCount > 6) {
+        legibility -= 15;
+        findings.push({
+          code: 'TITLE_TOO_LONG',
+          severity: 'warning',
+          message: `Título com ${wordCount} palavras; recomenda-se até 5 palavras para leitura instantânea.`,
+          layerId: layer.id,
+        });
+      }
+      if (
+        layer.transform.x < 0 ||
+        layer.transform.y < 0 ||
+        layer.transform.x + layer.transform.width * layer.transform.scaleX > doc.width ||
+        layer.transform.y + layer.transform.height * layer.transform.scaleY > doc.height
+      ) {
+        legibility -= 20;
+        findings.push({
+          code: 'CLIPPED_ELEMENT',
+          severity: 'critical',
+          message: `Camada de texto "${layer.name}" está cortada fora dos limites do canvas.`,
+          layerId: layer.id,
+        });
+      }
+    }
+
+    // 6. Contrast score from real image stats
+    const stats = await sharp(rendered).stats();
+    const meanStdev =
+      ((stats.channels[0]?.stdev ?? 0) + (stats.channels[1]?.stdev ?? 0) + (stats.channels[2]?.stdev ?? 0)) / 3;
+    const contrast = Math.min(100, Math.max(20, Math.round((meanStdev / 68) * 100)));
+    if (contrast < 35) {
+      findings.push({
+        code: 'LOW_VISUAL_CONTRAST',
+        severity: 'warning',
+        message: 'Contraste visual baixo detectado na composição final.',
+      });
+    }
+
+    // 7. Brand Kit consistency
+    let brandConsistency = 85;
+    if (options?.brandKit) {
+      const paletteSet = new Set(Object.values(options.brandKit.palette).map((c) => c.toUpperCase()));
+      const usesBrandColor = doc.layers.some((l) => {
+        if (l.type === 'text') return paletteSet.has(l.color.toUpperCase());
+        if (l.type === 'background') return paletteSet.has(l.fillColor.toUpperCase());
+        if (l.type === 'vfx') return paletteSet.has(l.primaryColor.toUpperCase());
+        return false;
+      });
+      if (!usesBrandColor) {
+        brandConsistency = 55;
+        findings.push({
+          code: 'BRAND_KIT_COLOR_DRIFT',
+          severity: 'warning',
+          message: `Composição não utiliza cores principais do Brand Kit "${options.brandKit.channelName}".`,
+        });
+      } else {
+        brandConsistency = 95;
+      }
+    }
+
+    // 8. Video fidelity check for Cinema Pipeline thumbnails
+    if (doc.sourceCinemaProjectId && doc.artType === 'thumbnail') {
+      const hasFrameOrSubject = doc.layers.some(
+        (l) => l.visible && (l.type === 'background' || l.type === 'subject') && 'assetId' in l && Boolean(l.assetId),
+      );
+      if (!hasFrameOrSubject) {
+        findings.push({
+          code: 'THUMBNAIL_NO_REAL_VIDEO_FRAME',
+          severity: 'warning',
+          message: 'Thumbnail vinculada ao Cinema Pipeline não referencia frame extraído do vídeo.',
+        });
+      }
+    }
+
+    const criticalCount = findings.filter((f) => f.severity === 'critical').length;
+    const warningCount = findings.filter((f) => f.severity === 'warning').length;
+    const composition = Math.max(20, 94 - criticalCount * 25 - warningCount * 7);
+    const overall = Math.round(
+      Math.max(0, Math.min(100, legibility * 0.35 + contrast * 0.25 + composition * 0.25 + brandConsistency * 0.15)),
+    );
+
+    return qualityAuditReportSchema.parse({
+      projectId: doc.id,
+      artType: doc.artType,
+      passed: criticalCount === 0,
+      autoApprovable: criticalCount === 0,
+      criticalCount,
+      warningCount,
+      findings,
+      scorecard: {
+        legibility: Math.max(0, Math.min(100, legibility)),
+        contrast,
+        composition,
+        brandConsistency,
+        overall,
+        disclaimer: 'Heuristic visual quality score only; does not predict actual CTR.',
+      },
+      checkedAt: new Date().toISOString(),
+    });
+  }
+}
