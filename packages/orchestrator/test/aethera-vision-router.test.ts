@@ -181,7 +181,17 @@ describe('VisionRouter', () => {
     expect(r1.provider).toBe('antigravity');
     expect(r2.provider).toBe('antigravity');
     expect(r3.provider).toBe('antigravity');
-    expect(slowCalls).toBe(2);
-    expect(cooldowns.get('claude-gateway')?.reason).toMatch(/timeouts consecutivos/);
+    expect(slowCalls).toBe(1);
+
+    const telemetry = router.getProviderTelemetry();
+    const gwStats = telemetry.find((t) => t.provider === 'claude-gateway');
+    const agyStats = telemetry.find((t) => t.provider === 'antigravity');
+    expect(gwStats?.timeouts).toBe(1);
+    expect(agyStats?.successes).toBe(3);
+
+    // Telemetry keeps antigravity ahead of timed-out claude-gateway
+    const r4 = await router.describe({ frames: [frames[0]!], policy: policy({ chain: ['claude-gateway', 'antigravity'], maxLatencyMs: 15 }) });
+    expect(r4.provider).toBe('antigravity');
+    expect(slowCalls).toBe(1);
   });
 });

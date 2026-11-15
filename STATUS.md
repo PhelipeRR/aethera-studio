@@ -1,6 +1,6 @@
 # Status do Projeto — Aethera Studio & Singularity
 
-**Última atualização:** 2026-11-14
+**Última atualização:** 2026-11-15
 
 ## Entregas Concluídas e Verificadas
 
@@ -21,3 +21,16 @@
     - **Voice Studio (`0.5.7`, `cuda`, voz `9190edfa`):** WAVs reais gerados para `"cabeça"` e comparação de pronúncia (`pronuncia_original_9190edfa.wav` `4,362 s` vs. `pronuncia_corrigida_9190edfa.wav` `4,502 s` com dicionário sem alterar o texto editorial).
     - **Aquisição autônoma auditada (10 min Dragon Ball Z):** prazo rígido `45.000 ms` respeitado (`elapsedMs: 45.003 ms`, `stoppedReason: "deadline_exceeded"`), filtro de `.svg` e downloads > 420 s, deduplicação por SHA-256 (`2` duplicatas descartadas), aprovação contextual de `"DBZ Vegeta fica muito irado !"` (`same_universe_context`), `4` ativos únicos aprovados com procedência/intervalos úteis (`61%` de cobertura) e envio exclusivo das `4` lacunas não resolvidas para a Sala de Revisão (`AetheraReviewRoomPage.tsx`).
     - **Limitações conhecidas:** `youtube_data_api` sem chave OAuth/API configurada foi ignorada (`skipped_no_auth`), e em sessões sem cookies do YouTube o `yt-dlp` pode sofrer bloqueio anti-bot (`blocked_auth_or_antibot`), exigindo fontes alternativas ou resolução humana na Sala de Revisão. A aprovação editorial final permanece bloqueada até audição e revisão humana.
+- **Recuperação Incremental & Otimização do Scene Grounding (2026-11-15):**
+  - **Entregas implementadas:**
+    - `VisionRouter` (`packages/orchestrator/src/aethera/vision-router.ts`): telemetria de latência/timeouts (`getProviderTelemetry`) e ordenação dinâmica (`prioritizedChain`) priorizando `antigravity` após timeouts de `claude-gateway`.
+    - `media-relevance-gate.ts`: `SCENE_GROUNDING_POLICY_VERSION = 'scene-grounding-v2'`, `computeVisionDecisionCacheKey`, gate estrito de `exact_match` (`score >= 0.65` + evidência visual), e remoção de extrapolação `[0, durationSec]` sem frames comprovadores.
+    - `resilient-media-sources.ts`: `triageCandidateMetadata` (triagem barata pré-download que nunca aprova sozinha), checkpoint atômico com `visionCacheEntries`, retomada incremental ignorando cenas já cobertas e consultas concluídas, priorização de lacunas (`0s` primeiro) e `observability`.
+  - **Verificação automatizada:**
+    - `packages/orchestrator/test/aethera-vision-router.test.ts`: `11/11` aprovados.
+    - `packages/cinema/test/media-relevance-coverage-voice.test.ts`: `19/19` aprovados.
+    - `npm run build:aethera`: concluído com êxito (`exit 0`).
+  - **Validação E2E real (12 cenas Cyberpunk 2077, `requireVisualVerification: true`):**
+    - **Pass 1 (`maxDurationMs=180000`, `maxRounds=1`):** `stoppedReason: deadline_exceeded`, `12` consultas, `38` candidatos, `4` baixados, `1` aprovado (`coverageRatio: 0.07`), `triageEliminatedCount: 1`, fallback automático `claude-gateway` -> `antigravity`.
+    - **Pass 2 (retomada no mesmo checkpoint, `maxDurationMs=300000`, `maxRounds=2`):** `resumedFromCheckpoint: true`, `skippedQueriesFromCheckpoint: 11`, `reusedFilesFromCheckpoint: 4`, `acquiredFilesCount: 11`, `approvedForAssemblyCount: 6`, `coverageRatio: 0.35` (`gatePassed: false`), preservando dependências de SFX (`hud_pulse`, `whoosh_transition`) e VFX (`subtle_vignette`, `lower_third_accent`) por cena.
+    - **Lacuna remanescente observada:** `6` cenas com `0s`, `4` cenas parciais (`missingDurationSec: 466.27s`) devido a limite de orçamento por execução e latência/timeouts de CLI multimodal em concorrência.

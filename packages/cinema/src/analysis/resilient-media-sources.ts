@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import {
+  computeVisionDecisionCacheKey,
   evaluateMediaRelevance,
   extractTopicEntities,
+  SCENE_GROUNDING_POLICY_VERSION,
   type DistributedFrameAnalysis,
   type MediaCorrespondenceLevel,
   type MediaRelevanceDecision,
@@ -564,6 +566,25 @@ export interface AutonomousAcquisitionAuditReport {
   approvedAssets: AcquiredMediaAsset[];
   approvedMediaDetails: ApprovedMediaAuditDetail[];
   relevanceDecisions: MediaRelevanceDecision[];
+  observability?: {
+    stageTimingsMs: {
+      discoveryMs: number;
+      acquisitionMs: number;
+      verificationMs: number;
+      coverageMs: number;
+    };
+    cacheHits: number;
+    cacheMisses: number;
+    triageEliminatedCount: number;
+    skippedQueriesFromCheckpoint: number;
+    reusedFilesFromCheckpoint: number;
+    estimatedRemainingWork: {
+      uncoveredSegments: number;
+      partiallyCoveredSegments: number;
+      missingDurationSec: number;
+      estimatedRemainingMs: number;
+    };
+  };
 }
 
 async function runWithConcurrency<T>(
@@ -746,6 +767,44 @@ export function scoreCandidateRelevancePriority(
 }
 
 /**
+ * Two-stage cheap metadata triage: eliminates clearly irrelevant or off-topic
+ * candidates before download/vision. NEVER approves media on its own.
+ */
+export function triageCandidateMetadata(
+  cand: MediaSourceCandidate,
+  segment: ScriptCoverageSegment,
+  prompt: string,
+): { pass: boolean; score: number; reason?: string } {
+  const score = scoreCandidateRelevancePriority(cand, segment, prompt);
+  const text = `${cand.title ?? ''} ${cand.description ?? ''}`.toLowerCase();
+  const segEntities =
+    segment.entities && segment.entities.length > 0
+      ? segment.entities.map((e) => e.toLowerCase())
+      : extractTopicEntities(`${segment.subject} ${segment.narrationText}`);
+
+  if (score <= -3) {
+    return {
+      pass: false,
+      score,
+      reason: `Triagem barata rejeitou candidato irrelevante (score=${score}).`,
+    };
+  }
+  if (
+    cand.origin !== 'local_library' &&
+    segEntities.length > 0 &&
+    score <= 0 &&
+    /\b(reaction|react|podcast|unboxing|tier\s*list|clickbait|music\s*video)\b/i.test(text)
+  ) {
+    return {
+      pass: false,
+      score,
+      reason: `Triagem barata eliminou candidato off-topic/spam sem entidade do segmento (score=${score}).`,
+    };
+  }
+  return { pass: true, score };
+}
+
+/**
  * Autonomous multi-round coverage-driven acquisition:
  * expands queries across all available sources for uncovered segments within configurable limits,
  * never reuses incompatible media, and sends only truly unresolved gaps to the Review Room.
@@ -765,6 +824,7 @@ export async function runAutonomousMediaAcquisition(input: {
     segment: ScriptSegmentExpectation,
   ) => Promise<DistributedFrameAnalysis[]>;
   requireVisualVerification?: boolean;
+  visionModelVersion?: string;
   evolution?: AetheraEvolutionCore;
   stageMode?: AcquisitionStageMode;
   limits?: {
@@ -873,6 +933,18 @@ export async function runAutonomousMediaAcquisition(input: {
     callsFailed: 0,
     providerErrors: [],
   };
+  const visionCache = new Map<string, MediaRelevanceDecision>();
+  const stageTimingsMs = {
+    discoveryMs: 0,
+    acquisitionMs: 0,
+    verificationMs: 0,
+    coverageMs: 0,
+  };
+  let cacheHits = 0;
+  let cacheMisses = 0;
+  let triageEliminatedCount = 0;
+  let skippedQueriesFromCheckpoint = 0;
+  let reusedFilesFromCheckpoint = 0;
 
   const segMetricsMap = new Map<string, SegmentAcquisitionMetrics>();
   for (const s of input.segments) {
@@ -924,6 +996,13 @@ export async function runAutonomousMediaAcquisition(input: {
         rejectedCandidates?: AutonomousAcquisitionAuditReport['rejectedCandidates'];
         relevanceDecisions?: MediaRelevanceDecision[];
         segmentMetrics?: SegmentAcquisitionMetrics[];
+        visionCacheEntries?: Array<[string, MediaRelevanceDecision]>;
+        stageTimingsMs?: {
+          discoveryMs?: number;
+          acquisitionMs?: number;
+          verificationMs?: number;
+          coverageMs?: number;
+        };
       };
       if (saved.projectId === input.projectId) {
         resumedFromCheckpoint = true;
@@ -956,6 +1035,16 @@ export async function runAutonomousMediaAcquisition(input: {
         for (const sm of saved.segmentMetrics ?? []) {
           segMetricsMap.set(sm.segmentId, sm);
         }
+        for (const [k, dec] of saved.visionCacheEntries ?? []) {
+          visionCache.set(k, dec);
+        }
+        if (saved.stageTimingsMs) {
+          stageTimingsMs.discoveryMs += saved.stageTimingsMs.discoveryMs ?? 0;
+          stageTimingsMs.acquisitionMs += saved.stageTimingsMs.acquisitionMs ?? 0;
+          stageTimingsMs.verificationMs += saved.stageTimingsMs.verificationMs ?? 0;
+          stageTimingsMs.coverageMs += saved.stageTimingsMs.coverageMs ?? 0;
+        }
+        reusedFilesFromCheckpoint = approvedAssets.length + pendingVerificationAssets.size;
       }
     } catch {
       // ignore corrupted checkpoint
@@ -966,8 +1055,9 @@ export async function runAutonomousMediaAcquisition(input: {
     if (!checkpointFile) return;
     try {
       mkdirSync(input.mediaDir, { recursive: true });
+      const tmpFile = `${checkpointFile}.tmp`;
       writeFileSync(
-        checkpointFile,
+        tmpFile,
         JSON.stringify(
           {
             projectId: input.projectId,
@@ -989,12 +1079,15 @@ export async function runAutonomousMediaAcquisition(input: {
             rejectedCandidates,
             relevanceDecisions,
             segmentMetrics: [...segMetricsMap.values()],
+            visionCacheEntries: [...visionCache.entries()],
+            stageTimingsMs,
           },
           null,
           2,
         ),
         'utf8',
       );
+      renameSync(tmpFile, checkpointFile);
     } catch {
       // non-fatal
     }
@@ -1036,11 +1129,18 @@ export async function runAutonomousMediaAcquisition(input: {
       }
 
       roundsExecuted = round;
+      const covBySegId = new Map(latestCoverage.segments.map((c) => [c.segmentId, c]));
       const coveredSegIds = new Set(latestCoverage.segments.filter((c) => c.covered).map((c) => c.segmentId));
-      const targetSegments =
-        round === 1
-          ? input.segments
-          : input.segments.filter((s) => !coveredSegIds.has(s.segmentId));
+      const targetSegments = input.segments
+        .filter((s) => !coveredSegIds.has(s.segmentId))
+        .sort((a, b) => {
+          const covA = covBySegId.get(a.segmentId)?.usableDurationSec ?? 0;
+          const covB = covBySegId.get(b.segmentId)?.usableDurationSec ?? 0;
+          if ((covA === 0) !== (covB === 0)) return covA === 0 ? -1 : 1;
+          const gapA = (covBySegId.get(a.segmentId)?.expectedDurationSec ?? a.expectedDurationSec) - covA;
+          const gapB = (covBySegId.get(b.segmentId)?.expectedDurationSec ?? b.expectedDurationSec) - covB;
+          return gapB - gapA;
+        });
 
       if (targetSegments.length === 0) {
         stoppedReason = 'coverage_satisfied';
@@ -1077,12 +1177,18 @@ export async function runAutonomousMediaAcquisition(input: {
             });
 
       const segmentById = new Map(input.segments.map((s) => [s.segmentId, s]));
+      const uncompletedQueries = rawRoundQueries.filter((item) => {
+        const key = `${item.segment.segmentId}:${item.query.toLowerCase()}`;
+        if (completedQueryKeys.has(key)) {
+          skippedQueriesFromCheckpoint += 1;
+          return false;
+        }
+        return true;
+      });
       const roundQueries =
         stageMode === 'verify_pending_only'
           ? []
-          : rawRoundQueries
-              .filter((item) => !completedQueryKeys.has(`${item.segment.segmentId}:${item.query.toLowerCase()}`))
-              .slice(0, Math.max(0, maxQueriesTotal - queriesExecuted.length));
+          : uncompletedQueries.slice(0, Math.max(0, maxQueriesTotal - queriesExecuted.length));
 
       // Distribute time budget across segments with reserve for additional rounds
       const remTotal = remainingMs();
@@ -1180,7 +1286,21 @@ export async function runAutonomousMediaAcquisition(input: {
                 continue;
               }
 
-              const priorityScore = scoreCandidateRelevancePriority(cand, item.segment, input.prompt);
+              const triage = triageCandidateMetadata(cand, item.segment, input.prompt);
+              if (!triage.pass) {
+                triageEliminatedCount += 1;
+                candidateStates.set(candKey, 'rejected');
+                sm.rejectedCount += 1;
+                rejectedCandidates.push({
+                  mediaId: `cand_${candidatesFoundCount}`,
+                  title: cand.title ?? cand.url,
+                  origin: cand.origin,
+                  rejectionCode: 'triage_irrelevant_metadata',
+                  reason: triage.reason ?? 'Eliminado na triagem de metadados.',
+                });
+                continue;
+              }
+              const priorityScore = triage.score;
               candidateStates.set(candKey, 'discovered');
               discoveredPool.set(candKey, { segmentId: item.segment.segmentId, cand, priorityScore });
               const list = discoveredBySegment.get(item.segment.segmentId) ?? [];
@@ -1198,13 +1318,15 @@ export async function runAutonomousMediaAcquisition(input: {
           }
         });
       }
+      stageTimingsMs.discoveryMs += Date.now() - discoveryStartedAt;
+      saveCheckpoint();
 
       if (stageMode === 'discover_only') {
-        saveCheckpoint();
         continue;
       }
 
       // STAGE 2: Prioritized Breadth-First Acquisition Queue (round-robin top candidates across segments)
+      const acqStageStartedAt = Date.now();
       if (stageMode !== 'verify_pending_only') {
         for (const list of discoveredBySegment.values()) {
           list.sort((a, b) => b.priorityScore - a.priorityScore);
@@ -1394,8 +1516,11 @@ export async function runAutonomousMediaAcquisition(input: {
           }
         });
       }
+      stageTimingsMs.acquisitionMs += Date.now() - acqStageStartedAt;
+      saveCheckpoint();
 
       // STAGE 3: Visual Verification Queue (resumes pending_visual_verification assets FIRST)
+      const verStageStartedAt = Date.now();
       const verificationQueue = [...pendingVerificationAssets.entries()].map(([candKey, item]) => ({
         candKey,
         item,
@@ -1409,44 +1534,82 @@ export async function runAutonomousMediaAcquisition(input: {
         if (!seg) return;
         const vStart = Date.now();
         const sm = segMetricsMap.get(item.segmentId)!;
-        if (input.analyzeFrames) visionDiagnostics.callsAttempted += 1;
+        const cacheTimestamps = [
+          0,
+          Number((item.durationSec * 0.5).toFixed(2)),
+          Number(Math.max(0, item.durationSec - 1).toFixed(2)),
+        ];
+        const visionCacheKey = computeVisionDecisionCacheKey({
+          sha256: item.sha256,
+          timestampsSec: cacheTimestamps,
+          visualIntent: (seg as { visualIntent?: string }).visualIntent ?? input.genre ?? '',
+          expectedEntities: seg.entities ?? [],
+          modelVersion: input.visionModelVersion ?? 'default-vision-v1',
+          policyVersion: SCENE_GROUNDING_POLICY_VERSION,
+        });
+        const cachedDecision = visionCache.get(visionCacheKey);
+        const canUseCachedDecision =
+          cachedDecision !== undefined &&
+          (!input.requireVisualVerification || cachedDecision.visualVerificationStatus === 'visually_verified');
+
+        if (!canUseCachedDecision && input.analyzeFrames) visionDiagnostics.callsAttempted += 1;
         try {
-          const decision = await evaluateMediaRelevance(
-            {
+          let decision: MediaRelevanceDecision;
+          if (canUseCachedDecision) {
+            cacheHits += 1;
+            decision = {
+              ...cachedDecision,
               mediaId: item.mediaId,
-              uri: item.filePath,
-              ...(item.cand.title ? { title: item.cand.title } : {}),
-              ...(item.cand.description ? { description: item.cand.description } : {}),
-              origin: item.cand.origin,
-              durationSec: item.durationSec,
-              projectId: input.projectId,
-              sha256: item.sha256,
-            },
-            {
-              segmentId: seg.segmentId,
-              prompt: input.prompt,
-              narrationText: seg.narrationText,
-              ...(input.genre ? { genre: input.genre } : {}),
-              ...(seg.entities ? { expectedEntities: seg.entities } : {}),
-            },
-            {
-              ...(input.analyzeFrames ? { analyzeFrames: input.analyzeFrames } : {}),
-              ...(input.requireVisualVerification !== undefined
-                ? { requireVisualVerification: input.requireVisualVerification }
+              ...(cachedDecision.accepted
+                ? {
+                    eligibleSegmentIds: [
+                      ...new Set([...(cachedDecision.eligibleSegmentIds ?? []), seg.segmentId]),
+                    ],
+                  }
                 : {}),
-              ...(input.evolution ? { evolution: input.evolution } : {}),
-            },
-          );
+            };
+          } else {
+            cacheMisses += 1;
+            decision = await evaluateMediaRelevance(
+              {
+                mediaId: item.mediaId,
+                uri: item.filePath,
+                ...(item.cand.title ? { title: item.cand.title } : {}),
+                ...(item.cand.description ? { description: item.cand.description } : {}),
+                origin: item.cand.origin,
+                durationSec: item.durationSec,
+                projectId: input.projectId,
+                sha256: item.sha256,
+              },
+              {
+                segmentId: seg.segmentId,
+                prompt: input.prompt,
+                narrationText: seg.narrationText,
+                ...(input.genre ? { genre: input.genre } : {}),
+                ...(seg.entities ? { expectedEntities: seg.entities } : {}),
+              },
+              {
+                ...(input.analyzeFrames ? { analyzeFrames: input.analyzeFrames } : {}),
+                ...(input.requireVisualVerification !== undefined
+                  ? { requireVisualVerification: input.requireVisualVerification }
+                  : {}),
+                ...(input.evolution ? { evolution: input.evolution } : {}),
+              },
+            );
+            if (!decision.visualVerificationError) {
+              visionCache.set(visionCacheKey, decision);
+            }
+          }
 
           if (decision.visualVerificationError) {
-            if (input.analyzeFrames) visionDiagnostics.callsFailed += 1;
+            if (!canUseCachedDecision && input.analyzeFrames) visionDiagnostics.callsFailed += 1;
             visionDiagnostics.providerErrors.push(decision.visualVerificationError.slice(0, 200));
             // Infra/provider failure during verification: keep file in pending_visual_verification to resume later!
             candidateStates.set(candKey, 'pending_visual_verification');
             return;
           }
 
-          if (input.analyzeFrames) visionDiagnostics.callsSucceeded += 1;
+          if (!canUseCachedDecision && input.analyzeFrames) visionDiagnostics.callsSucceeded += 1;
           pendingVerificationAssets.delete(candKey);
           relevanceDecisions.push(decision);
 
@@ -1523,8 +1686,10 @@ export async function runAutonomousMediaAcquisition(input: {
           sm.timeConsumedMs += Date.now() - vStart;
         }
       });
+      stageTimingsMs.verificationMs += Date.now() - verStageStartedAt;
 
       // STAGE 4: Coverage update & Checkpoint persistence
+      const covStartedAt = Date.now();
       latestCoverage = planMediaCoverage({
         segments: input.segments,
         assets: approvedAssets,
@@ -1532,6 +1697,7 @@ export async function runAutonomousMediaAcquisition(input: {
         relevanceDecisions,
         requireRelevanceApproval: true,
       });
+      stageTimingsMs.coverageMs += Date.now() - covStartedAt;
 
       for (const segCov of latestCoverage.segments) {
         const sm = segMetricsMap.get(segCov.segmentId);
@@ -1693,5 +1859,36 @@ export async function runAutonomousMediaAcquisition(input: {
     approvedAssets,
     approvedMediaDetails,
     relevanceDecisions,
+    observability: {
+      stageTimingsMs: { ...stageTimingsMs },
+      cacheHits,
+      cacheMisses,
+      triageEliminatedCount,
+      skippedQueriesFromCheckpoint,
+      reusedFilesFromCheckpoint,
+      estimatedRemainingWork: (() => {
+        const uncoveredSegments = latestCoverage.segments.filter((s) => s.usableDurationSec === 0).length;
+        const partiallyCoveredSegments = latestCoverage.segments.filter(
+          (s) => !s.covered && s.usableDurationSec > 0,
+        ).length;
+        const missingDurationSec = Number(
+          latestCoverage.segments
+            .reduce((acc, s) => acc + Math.max(0, s.expectedDurationSec - s.usableDurationSec), 0)
+            .toFixed(2),
+        );
+        const totalCoveredSec = latestCoverage.segments.reduce((acc, s) => acc + s.usableDurationSec, 0);
+        const avgMsPerSec =
+          totalCoveredSec > 0 ? Math.round((Date.now() - startedAt) / totalCoveredSec) : 2_000;
+        const estimatedRemainingMs = Math.round(
+          missingDurationSec * Math.min(10_000, Math.max(500, avgMsPerSec)),
+        );
+        return {
+          uncoveredSegments,
+          partiallyCoveredSegments,
+          missingDurationSec,
+          estimatedRemainingMs,
+        };
+      })(),
+    },
   };
 }

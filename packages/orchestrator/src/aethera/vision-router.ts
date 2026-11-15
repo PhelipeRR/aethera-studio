@@ -26,6 +26,15 @@ export interface VisionCachePort { get(key: VisionCacheKey): unknown; put(key: V
 export interface VisionSpendPort { get(key: string): number; add(key: string, amount: number): number }
 export type VisionAttemptOutcome = 'ok' | 'cached' | 'low_confidence' | 'unavailable' | 'over_budget' | 'error';
 export interface VisionCooldownEntry { untilMs: number; reason: string }
+export interface VisionProviderTelemetry {
+  provider: string;
+  calls: number;
+  successes: number;
+  failures: number;
+  timeouts: number;
+  avgLatencyMs: number;
+  lastError?: string;
+}
 export function isVisionQuotaError(message: string): boolean {
   return /usage limit|quota|rate[- ]limit|too many requests|\b429\b|try again at|insufficient[_ ]quota|credit balance/i.test(message);
 }
@@ -43,6 +52,7 @@ export class VisionRouter {
   private readonly providers: Map<string, VisualAnalysisProvider>;
   private readonly spend: VisionSpendPort;
   private readonly consecutiveTimeouts = new Map<string, number>();
+  private readonly telemetry = new Map<string, { calls: number; successes: number; failures: number; timeouts: number; totalLatencyMs: number; lastError?: string }>();
   constructor(providers: readonly VisualAnalysisProvider[], private readonly cache: VisionCachePort, private readonly calibrations: readonly ConfidenceCalibration[] = [], spend?: VisionSpendPort, private readonly scheduler: VisualWorkScheduler = visionGpuScheduler, private readonly cooldowns: Map<string, VisionCooldownEntry> = new Map()) {
     this.providers = new Map(providers.map((provider) => [provider.id, provider]));
     const amounts = new Map<string, number>();
@@ -99,12 +109,43 @@ export class VisionRouter {
   /** One segment, all its frames in one call; the cache key covers frames, timestamps, context, provider, model and prompt. */
   async analyze(input: Request & { frames: readonly VisionFrame[] }): Promise<VisionResult<SegmentAnalysis>> { return this.route('analyze', input) as Promise<VisionResult<SegmentAnalysis>>; }
 
+  /** Returns observed latency, success, failure and timeout telemetry per vision provider. */
+  getProviderTelemetry(): VisionProviderTelemetry[] {
+    return [...this.telemetry.entries()].map(([provider, s]) => ({
+      provider,
+      calls: s.calls,
+      successes: s.successes,
+      failures: s.failures,
+      timeouts: s.timeouts,
+      avgLatencyMs: s.successes > 0 ? Math.round(s.totalLatencyMs / s.successes) : 0,
+      ...(s.lastError ? { lastError: s.lastError } : {}),
+    }));
+  }
+
+  private prioritizedChain(chain: readonly string[]): string[] {
+    if (this.telemetry.size === 0) return [...chain];
+    const indexOf = new Map(chain.map((id, idx) => [id, idx]));
+    const scoreOf = (id: string): number => {
+      if (id === 'ffmpeg-heuristics') return 10_000;
+      const st = this.telemetry.get(id);
+      if (!st || st.calls === 0) return 0;
+      // Penalize timeouts and failures so healthy low-latency providers (e.g. antigravity) run first
+      const failureRate = st.failures / st.calls;
+      return st.timeouts * 100 + failureRate * 50 + (st.successes > 0 ? Math.min(20, (st.totalLatencyMs / st.successes) / 5000) : 25);
+    };
+    return [...chain].sort((a, b) => {
+      const diff = scoreOf(a) - scoreOf(b);
+      if (Math.abs(diff) > 0.5) return diff;
+      return (indexOf.get(a) ?? 0) - (indexOf.get(b) ?? 0);
+    });
+  }
+
   private async route(capability: VisionCapability, input: Request): Promise<VisionResult<unknown>> {
     const attempts: Attempt[] = [];
     let costUsd = 0;
     const empty = (): VisionResult<unknown> => ({ value: null, provider: null, model: null, costUsd, attempts, refs: [] });
     const budgetKey = input.budgetKey ?? `${input.policy.scope}:${input.policy.version}`;
-    for (const id of input.policy.chain) {
+    for (const id of this.prioritizedChain(input.policy.chain)) {
       if (input.signal?.aborted) throw new Error('cancelled: visual analysis interrupted.');
       const cd = this.cooldowns.get(id);
       if (cd && cd.untilMs > Date.now()) {
@@ -183,7 +224,14 @@ export class VisionRouter {
           } else if (capability === 'analyze') value = results[0];
           else value = results.flat();
           const durationMs = Date.now() - attemptStart;
-          if (!allCached) this.consecutiveTimeouts.delete(id);
+          if (!allCached) {
+            this.consecutiveTimeouts.delete(id);
+            const t = this.telemetry.get(id) ?? { calls: 0, successes: 0, failures: 0, timeouts: 0, totalLatencyMs: 0 };
+            t.calls += 1;
+            t.successes += 1;
+            t.totalLatencyMs += durationMs;
+            this.telemetry.set(id, t);
+          }
           attempts.push({ provider: id, outcome: allCached ? 'cached' : 'ok', durationMs });
           return { value, provider: id, model: provider.model, costUsd, attempts, refs, durationMs, ...(capability === 'analyze' && !allCached ? { reportedModel: provider.lastReportedModel?.() ?? null } : {}) };
         };
@@ -199,9 +247,16 @@ export class VisionRouter {
         if (error instanceof VisionOverBudgetError) attempts.push({ provider: id, outcome: 'over_budget', durationMs });
         else {
           const detail = error instanceof Error ? error.message : 'provider error';
+          const isTimeout = /vision provider timeout/i.test(detail);
+          const t = this.telemetry.get(id) ?? { calls: 0, successes: 0, failures: 0, timeouts: 0, totalLatencyMs: 0 };
+          t.calls += 1;
+          t.failures += 1;
+          if (isTimeout) t.timeouts += 1;
+          t.lastError = detail.slice(-160);
+          this.telemetry.set(id, t);
           if (isVisionQuotaError(detail)) {
             this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: detail.slice(-160) });
-          } else if (/vision provider timeout/i.test(detail)) {
+          } else if (isTimeout) {
             const count = (this.consecutiveTimeouts.get(id) ?? 0) + 1;
             this.consecutiveTimeouts.set(id, count);
             if (count >= 2) {

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   AetheraEvolutionCore,
+  computeVisionDecisionCacheKey,
   DEFAULT_PT_BR_PRONUNCIATION_ENTRIES,
   directNarrationSegments,
   evaluateMediaRelevance,
@@ -20,9 +21,11 @@ import {
   findMatchingSceneGroundingNegativeExample,
   runAutonomousMediaAcquisition,
   sampleDistributedFrameTimestamps,
+  SCENE_GROUNDING_POLICY_VERSION,
   scoreCandidateRelevancePriority,
   searchResilientMediaSources,
   selectRelevantDownloadWindow,
+  triageCandidateMetadata,
 } from '../src/index.js';
 
 describe('Media Relevance Gate & Visual Critic Blocking', () => {
@@ -416,7 +419,8 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
 
     expect(audit.roundsExecuted).toBe(2);
     expect(audit.candidatesFoundCount).toBe(3);
-    expect(audit.acquiredFilesCount).toBe(3);
+    expect(audit.acquiredFilesCount).toBe(2);
+    expect(audit.observability?.triageEliminatedCount).toBe(1);
     expect(audit.approvedForAssemblyCount).toBe(2);
     expect(audit.rejectedCandidates).toHaveLength(1);
     expect(audit.autoResolvedGaps.some((g) => g.segmentId === 's2' && g.resolvedInRound === 2)).toBe(true);
@@ -1197,5 +1201,204 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     );
     expect(genericCombatDecision.correspondenceLevel).toBe('universe_only_coincidence');
     expect(genericCombatDecision.eligibleSegmentIds).toEqual([]);
+  });
+
+  it('enforces strict exact_match threshold, no whole-video extrapolation, triage, vision cache keys, and incremental checkpoint resume', async () => {
+    // 1. Zero proving frames must NOT extrapolate [0, durationSec] when visually_verified, and score < 0.65 / universe-only must NOT be promoted to exact_match
+    const noProvingFramesDecision = await evaluateMediaRelevance(
+      {
+        mediaId: 'cp_partial_1',
+        uri: 'cp_sandevistan.mp4',
+        title: 'Cyberpunk 2077 Sandevistan',
+        origin: 'yt_dlp',
+        durationSec: 60,
+      },
+      {
+        segmentId: 'seg_sandevistan',
+        prompt: 'Cyberpunk 2077',
+        narrationText: 'O implante desacelera o tempo.',
+        genre: 'cyberware_demonstration',
+        expectedEntities: [],
+      },
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async (_uri, timestampsSec) =>
+          timestampsSec.map((t) => ({
+            timestampSec: t,
+            description: 'Menu settings screen unrelated to gameplay',
+            detectedEntities: [],
+            detectedActions: [],
+            visualCategory: 'other',
+            confidence: 0.75,
+            provider: 'test_vision',
+          })),
+      },
+    );
+    expect(noProvingFramesDecision.accepted).toBe(false);
+    expect(noProvingFramesDecision.correspondenceLevel).toBe('rejected');
+    expect(noProvingFramesDecision.matchedIntervals ?? []).toEqual([]);
+
+    const universeOnlyDecision = await evaluateMediaRelevance(
+      {
+        mediaId: 'cp_universe_only',
+        uri: 'cp_generic.mp4',
+        title: 'Cyberpunk 2077 gameplay',
+        origin: 'yt_dlp',
+        durationSec: 60,
+      },
+      {
+        segmentId: 'seg_sandevistan',
+        prompt: 'Os 10 melhores upgrades de cibernética em Cyberpunk 2077',
+        narrationText: 'O Sandevistan desacelera o tempo durante o combate em Night City.',
+        genre: 'cyberware_demonstration',
+        expectedEntities: ['Cyberpunk 2077', 'Sandevistan'],
+      },
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async (_uri, timestampsSec) =>
+          timestampsSec.map((t) => ({
+            timestampSec: t,
+            description: 'Night City street driving in Cyberpunk 2077',
+            detectedEntities: ['Cyberpunk 2077'],
+            detectedActions: ['driving'],
+            visualCategory: 'gameplay',
+            confidence: 0.8,
+            provider: 'test_vision',
+          })),
+      },
+    );
+    expect(universeOnlyDecision.correspondenceLevel).toBe('universe_only_coincidence');
+    expect(universeOnlyDecision.eligibleSegmentIds).toEqual([]);
+
+    // 2. Vision cache key invalidates whenever hash, timestamps, intent, entities, model, or policy changes
+    const baseKeyInput = {
+      sha256: 'abc123',
+      timestampsSec: [0, 30, 59],
+      visualIntent: 'cyberware_demonstration',
+      expectedEntities: ['Cyberpunk 2077', 'Sandevistan'],
+      modelVersion: 'agy-vision-1',
+      policyVersion: SCENE_GROUNDING_POLICY_VERSION,
+    };
+    const kBase = computeVisionDecisionCacheKey(baseKeyInput);
+    expect(computeVisionDecisionCacheKey({ ...baseKeyInput })).toBe(kBase);
+    expect(computeVisionDecisionCacheKey({ ...baseKeyInput, sha256: 'def456' })).not.toBe(kBase);
+    expect(computeVisionDecisionCacheKey({ ...baseKeyInput, visualIntent: 'gameplay_boss_fight' })).not.toBe(kBase);
+    expect(computeVisionDecisionCacheKey({ ...baseKeyInput, expectedEntities: ['Cyberpunk 2077', 'Mantis Blades'] })).not.toBe(kBase);
+    expect(computeVisionDecisionCacheKey({ ...baseKeyInput, modelVersion: 'claude-vision-2' })).not.toBe(kBase);
+    expect(computeVisionDecisionCacheKey({ ...baseKeyInput, policyVersion: 'scene-grounding-v1' })).not.toBe(kBase);
+
+    // 3. Two-stage triage eliminates obvious spam without ever approving media alone
+    const spamTriage = triageCandidateMetadata(
+      {
+        url: 'https://example.com/react',
+        title: 'My reaction unboxing podcast tier list',
+        origin: 'yt_dlp',
+        license: 'external_reference',
+        durationSec: 240,
+      },
+      {
+        segmentId: 'seg_1',
+        subject: 'Sandevistan',
+        narrationText: 'O Sandevistan desacelera o tempo em Cyberpunk 2077.',
+        expectedDurationSec: 20,
+        entities: ['Cyberpunk 2077', 'Sandevistan'],
+      },
+      'Os 10 melhores upgrades de cibernética em Cyberpunk 2077',
+    );
+    expect(spamTriage.pass).toBe(false);
+
+    // 4. Incremental checkpoint resume: Pass 1 covers seg_1, Pass 2 resumes seg_2 without re-downloading/re-analyzing seg_1
+    const workDir = mkdtempSync(join(tmpdir(), 'aethera-ckpt-resume-'));
+    const f1 = join(workDir, 'sandevistan.mp4');
+    const f2 = join(workDir, 'mantis.mp4');
+    writeFileSync(f1, Buffer.alloc(2048, 1));
+    writeFileSync(f2, Buffer.alloc(2048, 2));
+
+    let downloadCalls = 0;
+    let visionCalls = 0;
+    let allowSeg2 = false;
+    const segments = [
+      {
+        segmentId: 'seg_1',
+        subject: 'Sandevistan',
+        narrationText: 'O Sandevistan desacelera o tempo em Cyberpunk 2077.',
+        expectedDurationSec: 20,
+        entities: ['Cyberpunk 2077', 'Sandevistan'],
+        preferredQueries: ['Cyberpunk 2077 Sandevistan gameplay'],
+      },
+      {
+        segmentId: 'seg_2',
+        subject: 'Mantis Blades',
+        narrationText: 'As Mantis Blades cortam inimigos em combate próximo em Cyberpunk 2077.',
+        expectedDurationSec: 20,
+        entities: ['Cyberpunk 2077', 'Mantis Blades'],
+        preferredQueries: ['Cyberpunk 2077 Mantis Blades gameplay'],
+      },
+    ];
+    const sharedDeps = {
+      localMediaDirs: [],
+      fetchImpl: (async () => new Response(JSON.stringify({}), { status: 404 })) as unknown as typeof fetch,
+      ytDlpSearchFn: async (query: string) => {
+        if (query.toLowerCase().includes('sandevistan')) {
+          return [{ url: 'https://yt.test/sande', title: 'Cyberpunk 2077 Sandevistan Gameplay', origin: 'yt_dlp' as const, license: 'external_reference', durationSec: 25 }];
+        }
+        if (!allowSeg2) return [];
+        return [{ url: 'https://yt.test/mantis', title: 'Cyberpunk 2077 Mantis Blades Gameplay', origin: 'yt_dlp' as const, license: 'external_reference', durationSec: 25 }];
+      },
+      ytDlpAcquireFn: async (url: string) => {
+        downloadCalls += 1;
+        return url.includes('sande') ? f1 : f2;
+      },
+    };
+    const sharedAnalyzeFrames = async (uri: string, timestampsSec: number[], seg: { expectedEntities?: string[] }) => {
+      visionCalls += 1;
+      const isSande = uri.includes('sande') || (seg.expectedEntities ?? []).includes('Sandevistan');
+      return timestampsSec.map((t) => ({
+        timestampSec: t,
+        description: isSande ? 'Cyberpunk 2077 Sandevistan slow motion combat' : 'Cyberpunk 2077 Mantis Blades melee slash',
+        detectedEntities: isSande ? ['Cyberpunk 2077', 'Sandevistan'] : ['Cyberpunk 2077', 'Mantis Blades'],
+        detectedActions: ['combat', 'showcase'],
+        visualCategory: 'gameplay',
+        confidence: 0.9,
+        provider: 'test_vision',
+      }));
+    };
+
+    const pass1 = await runAutonomousMediaAcquisition({
+      projectId: 'cp2077_resume_test',
+      prompt: 'Os 10 melhores upgrades de cibernética em Cyberpunk 2077',
+      genre: 'cyberware_demonstration',
+      segments,
+      mediaDir: workDir,
+      deps: sharedDeps,
+      probeDurationFn: async () => 25,
+      analyzeFrames: sharedAnalyzeFrames,
+      requireVisualVerification: true,
+      limits: { maxRounds: 1, maxQueriesTotal: 1, discoveryConcurrency: 1, acquisitionConcurrency: 1, verificationConcurrency: 1 },
+    });
+    expect(pass1.coverageReport.segments.find((s) => s.segmentId === 'seg_1')?.covered).toBe(true);
+    expect(pass1.coverageReport.segments.find((s) => s.segmentId === 'seg_2')?.covered).toBe(false);
+    expect(downloadCalls).toBe(1);
+    const visionCallsAfterPass1 = visionCalls;
+    expect(visionCallsAfterPass1).toBeGreaterThanOrEqual(1);
+
+    allowSeg2 = true;
+    const pass2 = await runAutonomousMediaAcquisition({
+      projectId: 'cp2077_resume_test',
+      prompt: 'Os 10 melhores upgrades de cibernética em Cyberpunk 2077',
+      genre: 'cyberware_demonstration',
+      segments,
+      mediaDir: workDir,
+      deps: sharedDeps,
+      probeDurationFn: async () => 25,
+      analyzeFrames: sharedAnalyzeFrames,
+      requireVisualVerification: true,
+      limits: { maxRounds: 2, maxQueriesTotal: 4, discoveryConcurrency: 1, acquisitionConcurrency: 1, verificationConcurrency: 1 },
+    });
+    expect(pass2.budgetBreakdown?.resumedFromCheckpoint).toBe(true);
+    expect(pass2.coverageReport.gatePassed).toBe(true);
+    expect(pass2.observability?.reusedFilesFromCheckpoint).toBeGreaterThanOrEqual(1);
+    expect(downloadCalls).toBe(2); // only 1 new download in Pass 2 (seg_1 was NOT re-downloaded)
+    expect(visionCalls).toBe(visionCallsAfterPass1 * 2); // seg_1 was NOT re-analyzed
   });
 });

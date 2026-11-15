@@ -106,6 +106,32 @@ export interface MediaRelevanceDecision {
   visualCategory: VisualCategory;
 }
 
+export const SCENE_GROUNDING_POLICY_VERSION = 'scene-grounding-v2';
+
+export interface VisionDecisionCacheInput {
+  sha256: string;
+  timestampsSec: number[];
+  visualIntent?: string;
+  expectedEntities: string[];
+  modelVersion?: string;
+  policyVersion?: string;
+}
+
+export function computeVisionDecisionCacheKey(input: VisionDecisionCacheInput): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        sha256: input.sha256,
+        timestampsSec: input.timestampsSec.map((t) => Number(t.toFixed(2))),
+        visualIntent: input.visualIntent ?? '',
+        expectedEntities: [...input.expectedEntities].map((e) => e.toLowerCase().trim()).sort(),
+        modelVersion: input.modelVersion ?? 'default',
+        policyVersion: input.policyVersion ?? SCENE_GROUNDING_POLICY_VERSION,
+      }),
+    )
+    .digest('hex');
+}
+
 export interface CacheIsolationContext {
   projectId: string;
   prompt: string;
@@ -666,13 +692,9 @@ export async function evaluateMediaRelevance(
   }
 
   const effectiveMatched = matchedEntities.length > 0 ? matchedEntities : matchedUniverseEntities;
-  const correspondenceLevel: MediaCorrespondenceLevel =
-    matchedEntities.length > 0 && (!expectation.requiresSpecificEventVisual || matchedActions.length > 0)
-      ? 'exact_match'
-      : 'contextual_support';
 
   const entityScore = isSameUniverseOnly
-    ? 0.6
+    ? 0.55
     : expectedEntities.length > 0
       ? Math.min(1, matchedEntities.length / Math.min(3, expectedEntities.length))
       : 0.6;
@@ -764,7 +786,7 @@ export async function evaluateMediaRelevance(
   }
   groupedIntervals.sort((a, b) => b.weight - a.weight);
 
-  const matchedIntervals =
+  let matchedIntervals =
     groupedIntervals.length > 0
       ? groupedIntervals.map(({ startSec, endSec, segmentId, provingTimestampsSec, provingDescriptions }) => ({
           startSec,
@@ -773,13 +795,70 @@ export async function evaluateMediaRelevance(
           provingTimestampsSec,
           provingDescriptions,
         }))
-      : [{ startSec: 0, endSec: Number(candidate.durationSec.toFixed(2)), segmentId: segment.segmentId }];
+      : [];
+
+  if (matchedIntervals.length === 0) {
+    if (visualVerificationStatus === 'visually_verified') {
+      // Never extrapolate to the entire video when vision ran: only use frames with positive visual evidence
+      const confidentFrames = (visualEvidence ?? []).filter(
+        (ev) => ev.confidence >= 0.4 && (ev.detectedEntities.length > 0 || (ev.detectedActions?.length ?? 0) > 0),
+      );
+      if (confidentFrames.length > 0 && isSameUniverseOnly) {
+        matchedIntervals = confidentFrames.map((ev) => ({
+          startSec: Number(Math.max(0, ev.timestampSec - 1.5).toFixed(2)),
+          endSec: Number(Math.min(candidate.durationSec, ev.timestampSec + 2.5).toFixed(2)),
+          segmentId: segment.segmentId,
+          provingTimestampsSec: [ev.timestampSec],
+          provingDescriptions: [ev.description.slice(0, 140)],
+        }));
+      } else {
+        return {
+          mediaId: candidate.mediaId,
+          accepted: false,
+          score: Number(Math.min(score, 0.34).toFixed(2)),
+          relevanceTier: 'rejected',
+          correspondenceLevel: 'rejected',
+          visualVerificationStatus,
+          visualConfidence,
+          visualEvidence,
+          rejectionCode: 'insufficient_metadata_and_visual_match',
+          reason:
+            'Nenhum intervalo temporal comprovou visualmente o assunto/evento esperado (não extrapolado para o vídeo inteiro).',
+          sampledTimestampsSec,
+          matchedEntities: effectiveMatched,
+          visualCategory: dominantVisualCategory,
+        };
+      }
+    } else {
+      matchedIntervals = [
+        {
+          startSec: 0,
+          endSec: Number(Math.min(candidate.durationSec, 30).toFixed(2)),
+          segmentId: segment.segmentId,
+          provingTimestampsSec: [],
+          provingDescriptions: [],
+        },
+      ];
+    }
+  }
+
+  // Strict exact_match gate: low scores or universe-only matches stay contextual_support
+  const hasProvingIntervals =
+    visualVerificationStatus !== 'visually_verified' || groupedIntervals.length > 0;
+  const correspondenceLevel: MediaCorrespondenceLevel =
+    score >= 0.65 &&
+    !isSameUniverseOnly &&
+    matchedEntities.length > 0 &&
+    hasProvingIntervals &&
+    (!expectation.requiresSpecificEventVisual || matchedActions.length > 0)
+      ? 'exact_match'
+      : 'contextual_support';
 
   return {
     mediaId: candidate.mediaId,
     accepted: true,
     score,
-    relevanceTier: isSameUniverseOnly ? 'same_universe_context' : 'exact_segment_match',
+    relevanceTier: correspondenceLevel === 'exact_match' ? 'exact_segment_match' : 'same_universe_context',
     correspondenceLevel,
     visualVerificationStatus,
     visualConfidence,
