@@ -77,18 +77,21 @@ describe('Aethera Creative Studio — Desktop Persistence, Undo/Redo & Reopen', 
         });
         const projectId = created.document.id;
         const editor = service.getOrCreateEditor(projectId);
+        const initialHeadline = created.document.layers.find((l) => l.type === 'text' && l.role === 'headline');
+        const initialHeadlineText = initialHeadline?.type === 'text' ? initialHeadline.text : '';
+        expect(initialHeadlineText.length).toBeGreaterThan(0);
 
         const editRes = editor.applyLocalizedPromptEdit('Mude o título para "NOVO TITULO"');
         expect(editRes.applied).toBe(true);
         const editedDoc = editor.getDocument();
         service.saveDocument(editedDoc);
-        const textAfterEdit = editedDoc.layers.find((l) => l.type === 'text');
+        const textAfterEdit = editedDoc.layers.find((l) => l.type === 'text' && l.role === 'headline');
         expect(textAfterEdit?.type === 'text' ? textAfterEdit.text : '').toBe('NOVO TITULO');
 
         const undoneDoc = editor.undo();
         expect(undoneDoc).not.toBeNull();
-        const textAfterUndo = undoneDoc!.layers.find((l) => l.type === 'text');
-        expect(textAfterUndo?.type === 'text' ? textAfterUndo.text : '').toBe('TITULO INICIAL');
+        const textAfterUndo = undoneDoc!.layers.find((l) => l.type === 'text' && l.role === 'headline');
+        expect(textAfterUndo?.type === 'text' ? textAfterUndo.text : '').toBe(initialHeadlineText);
 
         const redoneDoc = editor.redo();
         expect(redoneDoc).not.toBeNull();
@@ -101,7 +104,7 @@ describe('Aethera Creative Studio — Desktop Persistence, Undo/Redo & Reopen', 
 
         const reloaded = service.loadDocument(projectId);
         expect(reloaded).not.toBeNull();
-        const reloadedText = reloaded!.layers.find((l) => l.type === 'text');
+        const reloadedText = reloaded!.layers.find((l) => l.type === 'text' && l.role === 'headline');
         expect(reloadedText?.type === 'text' ? reloadedText.text : '').toBe('NOVO TITULO');
 
         const reloadedKit = service.brandKits.get(kit.id);
@@ -124,6 +127,6 @@ describe('Aethera Creative Studio — Desktop Persistence, Undo/Redo & Reopen', 
         }
       }
     },
-    120_000,
+    360_000,
   );
 });

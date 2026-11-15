@@ -250,11 +250,14 @@ export const subjectLayerSchema = z.object({
   removeBackground: z.boolean().default(false),
   cutoutMethod: z.enum(['none', 'chroma_edge', 'alpha_preserve', 'rembg_semantic', 'external_adapter']).default('none'),
   rimLightColor: hexColorSchema.optional(),
+  anchorBottom: z.boolean().optional(),
+  groundFade: z.boolean().optional(),
 });
 
 export const textLayerSchema = z.object({
   ...baseLayerFields,
   type: z.literal('text'),
+  role: z.enum(['headline', 'kicker', 'subtitle']).optional(),
   text: z.string().min(1),
   fontFamily: z.string().min(1).default('Arial Black'),
   fontSize: z.number().positive().max(400).default(96),
@@ -266,6 +269,8 @@ export const textLayerSchema = z.object({
   letterSpacing: z.number().min(-10).max(40).default(0),
   lineHeight: z.number().positive().max(3).default(1.05),
   uppercase: z.boolean().default(true),
+  pillColor: hexColorSchema.optional(),
+  pillRadius: z.number().nonnegative().max(40).optional(),
 });
 
 export const vfxLayerSchema = z.object({

@@ -195,6 +195,74 @@ async function applyMaskToBuffer(buffer: Buffer, width: number, height: number, 
   return removeBorderColorBackground(buffer, mask.threshold);
 }
 
+export interface AlphaBounds {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  canvasWidth: number;
+  canvasHeight: number;
+  nonTransparentPixels: number;
+}
+
+/**
+ * Measures the tight bounding box of non-transparent pixels (alpha >= threshold) in a PNG/RGBA buffer.
+ */
+export async function measureAlphaBounds(buffer: Buffer, alphaThreshold = 18): Promise<AlphaBounds | null> {
+  const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const w = info.width;
+  const h = info.height;
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+  let count = 0;
+
+  for (let y = 0; y < h; y += 1) {
+    const rowOffset = y * w * 4;
+    for (let x = 0; x < w; x += 1) {
+      const alpha = data[rowOffset + x * 4 + 3] ?? 0;
+      if (alpha >= alphaThreshold) {
+        count += 1;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY || count === 0) return null;
+  return {
+    left: minX,
+    top: minY,
+    width: maxX - minX + 1,
+    height: maxY - minY + 1,
+    canvasWidth: w,
+    canvasHeight: h,
+    nonTransparentPixels: count,
+  };
+}
+
+/**
+ * Crops away empty transparent margins around a segmented subject so scaling fills the editorial box cleanly.
+ */
+export async function trimTransparentBounds(buffer: Buffer, padding = 4): Promise<Buffer> {
+  const bounds = await measureAlphaBounds(buffer, 18);
+  if (!bounds) return buffer;
+  const left = Math.max(0, bounds.left - padding);
+  const top = Math.max(0, bounds.top - padding);
+  const right = Math.min(bounds.canvasWidth, bounds.left + bounds.width + padding);
+  const bottom = Math.min(bounds.canvasHeight, bounds.top + bounds.height + padding);
+  const extractW = Math.max(1, right - left);
+  const extractH = Math.max(1, bottom - top);
+  return sharp(buffer)
+    .ensureAlpha()
+    .extract({ left, top, width: extractW, height: extractH })
+    .png()
+    .toBuffer();
+}
+
 /**
  * Deterministic local cutout: samples the 4 corners and makes near-matching border pixels transparent.
  */
@@ -464,6 +532,34 @@ export class SharpSvgCompositionEngine {
     return pipeline.toBuffer();
   }
 
+  async measureRenderedLayerAlphaBounds(
+    doc: CreativeProjectDocument,
+    layer: CreativeLayer,
+  ): Promise<{
+    bounds: AlphaBounds;
+    canvasLeft: number;
+    canvasTop: number;
+    canvasBottomGap: number;
+    heightCoverage: number;
+    areaCoverage: number;
+  } | null> {
+    const buf = await this.renderLayer(doc, layer);
+    if (!buf) return null;
+    const bounds = await measureAlphaBounds(buf, 12);
+    if (!bounds) return null;
+    const canvasLeft = Math.round(layer.transform.x) + bounds.left;
+    const canvasTop = Math.round(layer.transform.y) + bounds.top;
+    const canvasBottom = canvasTop + bounds.height;
+    return {
+      bounds,
+      canvasLeft,
+      canvasTop,
+      canvasBottomGap: doc.height - canvasBottom,
+      heightCoverage: bounds.height / Math.max(1, doc.height),
+      areaCoverage: bounds.nonTransparentPixels / Math.max(1, doc.width * doc.height),
+    };
+  }
+
   private async renderLayer(doc: CreativeProjectDocument, layer: CreativeLayer): Promise<Buffer | null> {
     const targetW = Math.max(1, Math.round(layer.transform.width * layer.transform.scaleX));
     const targetH = Math.max(1, Math.round(layer.transform.height * layer.transform.scaleY));
@@ -474,11 +570,16 @@ export class SharpSvgCompositionEngine {
       case 'background': {
         const assetPath = this.resolveAssetFile(doc, layer.assetId);
         if (assetPath) {
-          buf = await sharp(assetPath)
+          let bgPipe = sharp(assetPath)
             .resize(targetW, targetH, { fit: 'cover', position: 'centre' })
-            .ensureAlpha()
-            .png()
-            .toBuffer();
+            .ensureAlpha();
+          if (layer.blurRadius && layer.blurRadius > 0.3) {
+            bgPipe = bgPipe.blur(Math.min(40, layer.blurRadius));
+          }
+          if (layer.brightness !== undefined && Math.abs(layer.brightness - 1) > 0.02) {
+            bgPipe = bgPipe.modulate({ brightness: layer.brightness });
+          }
+          buf = await bgPipe.png().toBuffer();
         } else {
           const toColor = layer.gradientTo ?? layer.fillColor;
           const rad = (layer.gradientAngleDeg * Math.PI) / 180;
@@ -511,16 +612,40 @@ export class SharpSvgCompositionEngine {
             );
           }
         } else {
-          subjectBuf = await sharp(assetPath)
-            .resize(targetW, targetH, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+          subjectBuf = await sharp(assetPath).ensureAlpha().png().toBuffer();
+        }
+        // Trim transparent padding so the subject fills the editorial frame instead of shrinking inside empty margins
+        const trimmedSubject = await trimTransparentBounds(subjectBuf, 6);
+        buf = await sharp(trimmedSubject)
+          .resize(targetW, targetH, {
+            fit: 'contain',
+            position: layer.anchorBottom ? 'south' : 'centre',
+            background: { r: 0, g: 0, b: 0, alpha: 0 },
+          })
+          .png()
+          .toBuffer();
+
+        if (layer.groundFade) {
+          // Soft bottom fade so waist/hip-cropped subjects integrate naturally instead of ending in a hard horizontal cut
+          const fadeH = Math.max(16, Math.round(targetH * 0.16));
+          const fadeY = targetH - fadeH;
+          const fadeSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${targetW}" height="${targetH}">
+            <defs>
+              <linearGradient id="gf" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" stop-color="#ffffff" stop-opacity="1"/>
+                <stop offset="100%" stop-color="#ffffff" stop-opacity="0.18"/>
+              </linearGradient>
+            </defs>
+            <rect x="0" y="0" width="${targetW}" height="${fadeY}" fill="#ffffff"/>
+            <rect x="0" y="${fadeY}" width="${targetW}" height="${fadeH}" fill="url(#gf)"/>
+          </svg>`;
+          buf = await sharp(buf)
             .ensureAlpha()
+            .composite([{ input: Buffer.from(fadeSvg), blend: 'dest-in' }])
             .png()
             .toBuffer();
         }
-        buf = await sharp(subjectBuf)
-          .resize(targetW, targetH, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-          .png()
-          .toBuffer();
+
         if (layer.rimLightColor) {
           const rimGlow = await createAlphaSilhouetteLayer(buf, targetW, targetH, layer.rimLightColor, 10, 0.9);
           buf = await sharp({
@@ -574,14 +699,32 @@ export class SharpSvgCompositionEngine {
         const pad = Math.min(18, Math.round(targetW * 0.03));
         const textX = layer.align === 'center' ? Math.round(targetW / 2) : layer.align === 'right' ? targetW - pad : pad;
 
+        let pillSvg = '';
+        if (layer.pillColor) {
+          const pillW = Math.min(targetW, Math.max(80, fit.estimatedMaxLineWidth + pad * 2.2));
+          const pillH = Math.min(targetH, Math.max(28, Math.round(fit.estimatedTotalHeight + 14)));
+          const pillX =
+            layer.align === 'center'
+              ? Math.round((targetW - pillW) / 2)
+              : layer.align === 'right'
+                ? targetW - pillW
+                : 0;
+          const rx = layer.pillRadius ?? 8;
+          pillSvg = `<rect x="${pillX}" y="0" width="${Math.round(pillW)}" height="${pillH}" rx="${rx}" ry="${rx}" fill="${escapeXml(layer.pillColor)}"/>`;
+        }
+
         const tspans = lines
           .map((line, idx) => {
-            const yPos = Math.round(fittedFs + idx * lineHeightPx);
-            return `<text x="${textX}" y="${yPos}" text-anchor="${anchor}" font-family="${escapeXml(layer.fontFamily)}, sans-serif" font-size="${fittedFs}" font-weight="${layer.fontWeight}" letter-spacing="${layer.letterSpacing}" fill="${escapeXml(layer.color)}" stroke="${escapeXml(layer.strokeColor)}" stroke-width="${layer.strokeWidth}" paint-order="stroke fill">${escapeXml(line)}</text>`;
+            const yPos = Math.round(fittedFs + (layer.pillColor ? 4 : 0) + idx * lineHeightPx);
+            const strokeAttrs =
+              layer.strokeWidth > 0
+                ? `stroke="${escapeXml(layer.strokeColor)}" stroke-width="${layer.strokeWidth}" paint-order="stroke fill"`
+                : '';
+            return `<text x="${textX}" y="${yPos}" text-anchor="${anchor}" font-family="${escapeXml(layer.fontFamily)}, sans-serif" font-size="${fittedFs}" font-weight="${layer.fontWeight}" letter-spacing="${layer.letterSpacing}" fill="${escapeXml(layer.color)}" ${strokeAttrs}>${escapeXml(line)}</text>`;
           })
           .join('');
 
-        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${targetW}" height="${targetH}">${tspans}</svg>`;
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${targetW}" height="${targetH}">${pillSvg}${tspans}</svg>`;
         buf = await sharp(Buffer.from(svg)).png().toBuffer();
         break;
       }

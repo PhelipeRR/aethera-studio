@@ -274,7 +274,9 @@ export class LayeredDocumentEditor {
     if (titleMatch?.[1]) {
       const newText = titleMatch[1].trim();
       this.commit((draft) => {
-        const textLayer = draft.layers.find((l) => l.type === 'text');
+        const textLayer =
+          draft.layers.find((l) => l.type === 'text' && l.role === 'headline') ??
+          draft.layers.find((l) => l.type === 'text');
         if (textLayer && textLayer.type === 'text') {
           textLayer.text = newText;
           affected.push(textLayer.id);
@@ -296,7 +298,9 @@ export class LayeredDocumentEditor {
             actions.push(`Cor de fundo alterada para ${hex}`);
           }
         } else {
-          const textLayer = draft.layers.find((l) => l.type === 'text');
+          const textLayer =
+            draft.layers.find((l) => l.type === 'text' && l.role === 'headline') ??
+            draft.layers.find((l) => l.type === 'text');
           if (textLayer && textLayer.type === 'text') {
             textLayer.color = hex;
             affected.push(textLayer.id);

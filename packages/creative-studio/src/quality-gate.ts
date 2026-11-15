@@ -92,7 +92,12 @@ export class QualityGateService {
     }
     for (const layer of visibleTexts) {
       if (layer.type !== 'text') continue;
-      if (doc.artType === 'thumbnail' && layer.fontSize < 56) {
+      if (
+        doc.artType === 'thumbnail' &&
+        layer.role !== 'kicker' &&
+        layer.role !== 'subtitle' &&
+        layer.fontSize < 56
+      ) {
         legibility -= 25;
         findings.push({
           code: 'TITLE_TOO_SMALL_FOR_FEED',
@@ -137,6 +142,7 @@ export class QualityGateService {
         letterSpacing: layer.letterSpacing,
         strokeWidth: layer.strokeWidth,
         uppercase: layer.uppercase,
+        minFontSize: layer.role === 'kicker' || layer.role === 'subtitle' ? 18 : 24,
       });
       if (!textFit.fitsAfterAutoScale) {
         legibility -= 25;
@@ -207,6 +213,97 @@ export class QualityGateService {
             layerId: sLayer.id,
           });
         }
+      }
+    }
+
+    // 5.6. Editorial dominance, floating-sticker detection, typographic hierarchy & empty-space audit
+    let totalSubjectAreaCoverage = 0;
+    if (doc.artType === 'thumbnail') {
+      for (const sLayer of visibleSubjects) {
+        if (sLayer.type !== 'subject') continue;
+        const measured = await this.engine.measureRenderedLayerAlphaBounds(doc, sLayer);
+        if (!measured) continue;
+        totalSubjectAreaCoverage += measured.areaCoverage;
+        if (measured.heightCoverage < 0.48 || measured.areaCoverage < 0.08) {
+          findings.push({
+            code: 'SUBJECT_TOO_SMALL',
+            severity: 'critical',
+            message: `Sujeito "${sLayer.name}" ocupa apenas ${(measured.heightCoverage * 100).toFixed(0)}% da altura e ${(measured.areaCoverage * 100).toFixed(1)}% da área; precisa de enquadramento editorial dominante (>= 48% altura).`,
+            layerId: sLayer.id,
+          });
+        }
+        if (measured.canvasBottomGap > 28) {
+          findings.push({
+            code: 'FLOATING_STICKER_SUBJECT',
+            severity: 'critical',
+            message: `Sujeito "${sLayer.name}" termina ${measured.canvasBottomGap}px acima da base, parecendo adesivo flutuante; ancore na base ou faça close-up integrado.`,
+            layerId: sLayer.id,
+          });
+        }
+      }
+
+      const textSizes = visibleTexts
+        .filter((l): l is Extract<typeof l, { type: 'text' }> => l.type === 'text')
+        .map((l) => l.fontSize);
+      const maxFs = textSizes.length > 0 ? Math.max(...textSizes) : 0;
+      const minFs = textSizes.length > 0 ? Math.min(...textSizes) : 0;
+      const hasHierarchy =
+        visibleTexts.length >= 2 && (maxFs >= minFs * 1.25 || visibleTexts.some((l) => l.type === 'text' && (l.role === 'kicker' || l.role === 'subtitle')));
+      if (!hasHierarchy) {
+        legibility -= 15;
+        findings.push({
+          code: 'MISSING_TYPOGRAPHIC_HIERARCHY',
+          severity: 'critical',
+          message: 'Thumbnail sem hierarquia tipográfica editorial (exige kicker/subtítulo + título de impacto com contraste de escala).',
+        });
+      }
+
+      const textAreaCoverage =
+        visibleTexts.reduce((acc, l) => acc + l.transform.width * l.transform.scaleX * l.transform.height * l.transform.scaleY, 0) /
+        Math.max(1, doc.width * doc.height);
+      if (visibleSubjects.length > 0 && totalSubjectAreaCoverage + textAreaCoverage < 0.24) {
+        findings.push({
+          code: 'EXCESSIVE_EMPTY_SPACE',
+          severity: 'warning',
+          message: `Composição com excesso de espaço vazio (${((1 - (totalSubjectAreaCoverage + textAreaCoverage)) * 100).toFixed(0)}% sem foco visual).`,
+        });
+      }
+    }
+
+    if (doc.artType === 'banner') {
+      const hasBannerSubtitle = visibleTexts.some((l) => l.type === 'text' && (l.role === 'subtitle' || l.role === 'kicker')) || visibleTexts.length >= 2;
+      if (!hasBannerSubtitle) {
+        findings.push({
+          code: 'BANNER_LACKS_EDITORIAL_STRUCTURE',
+          severity: 'critical',
+          message: 'Banner sem estrutura editorial (necessita subtítulo/tagline de canal além do título principal).',
+        });
+      }
+    }
+
+    // 5.7. Semantic relevance between prompt topic and visual layers/tags
+    const stopWords = new Set(['thumbnail', 'banner', 'avatar', 'canal', 'video', 'vídeo', 'sobre', 'para', 'com', 'alto', 'impacto', 'visual', 'gamer', 'oficial', 'estilo']);
+    const topicTokens = doc.prompt
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 5 && !stopWords.has(w));
+    if (topicTokens.length > 0) {
+      const visualCorpus = [
+        doc.title,
+        ...doc.tags,
+        ...visibleTexts.map((l) => (l.type === 'text' ? l.text : '')),
+        ...doc.layers.map((l) => l.name),
+      ]
+        .join(' ')
+        .toLowerCase();
+      const matched = topicTokens.some((tok) => visualCorpus.includes(tok));
+      if (!matched) {
+        findings.push({
+          code: 'LOW_SEMANTIC_RELEVANCE',
+          severity: 'warning',
+          message: `Baixa relevância semântica: elementos visuais/textuais não refletem termos centrais do tema (${topicTokens.slice(0, 3).join(', ')}).`,
+        });
       }
     }
 

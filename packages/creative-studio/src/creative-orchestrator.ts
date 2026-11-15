@@ -151,16 +151,17 @@ export class CreativeOrchestrator {
       prompt: safePrompt,
       ...(refinedHeadline ? { headline: refinedHeadline } : {}),
     });
-    const directorReview = this.director.reviewAndRefine(planned, { brandKit: input.brandKit ?? null });
-    const document = directorReview.document;
-    const audit = await this.qualityGate.auditProject(document, { brandKit: input.brandKit ?? null });
+    const directorLoop = await this.director.directWithIterativeReview(planned, this.qualityGate, {
+      brandKit: input.brandKit ?? null,
+      maxIterations: 3,
+    });
 
     return {
       availableEngines: availableProviders.map((p) => p.id),
       traces,
-      directorIssues: directorReview.issues,
-      document,
-      audit,
+      directorIssues: directorLoop.issues,
+      document: directorLoop.document,
+      audit: directorLoop.audit,
     };
   }
 

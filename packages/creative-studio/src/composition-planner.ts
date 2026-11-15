@@ -48,6 +48,85 @@ function deriveShortHeadline(prompt: string, fallback: string): string {
   return cleaned.slice(0, 4).join(' ').toUpperCase();
 }
 
+export interface TopicVisualBrief {
+  kickerText: string;
+  leadLine: string;
+  impactLine: string;
+  subtitleText: string;
+  topicKeywords: string[];
+}
+
+/**
+ * Extracts generic editorial hierarchy and subject-matter keywords from any video prompt/headline
+ * without hardcoding any specific franchise or game.
+ */
+export function extractTopicVisualBrief(prompt: string, headline: string, title?: string): TopicVisualBrief {
+  const cleanWords = headline
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const stop = new Set([
+    'thumbnail',
+    'banner',
+    'avatar',
+    'video',
+    'vídeo',
+    'sobre',
+    'para',
+    'como',
+    'com',
+    'alto',
+    'impacto',
+    'visual',
+    'gamer',
+    'oficial',
+    'canal',
+    'estilo',
+    'melhores',
+    'melhor',
+  ]);
+  const promptTokens = `${prompt} ${title ?? ''}`
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length >= 4 && !stop.has(w.toLowerCase()));
+  const uniqueTokens = Array.from(new Set(promptTokens.map((t) => t.toUpperCase()))).slice(0, 4);
+
+  const lowerPrompt = `${prompt} ${headline}`.toLowerCase();
+  const kickerText = /guia|build|tutorial|dica|como/.test(lowerPrompt)
+    ? 'GUIA & BUILD'
+    : /segredo|secret|ocult|rar[oa]|escondid/.test(lowerPrompt)
+      ? 'REVELADO'
+      : /an[aá]lise|review|teste|compar/.test(lowerPrompt)
+        ? 'ANÁLISE PRO'
+        : uniqueTokens[0] ?? 'DESTAQUE';
+
+  let leadLine = '';
+  let impactLine = headline.toUpperCase();
+  if (cleanWords.length >= 2) {
+    const splitIdx = Math.ceil(cleanWords.length / 2);
+    leadLine = cleanWords.slice(0, splitIdx).join(' ').toUpperCase();
+    impactLine = cleanWords.slice(splitIdx).join(' ').toUpperCase();
+  } else {
+    leadLine = uniqueTokens.find((t) => t !== impactLine) ?? 'EDIÇÃO';
+  }
+
+  const subtitleTokens = uniqueTokens.slice(0, 3);
+  const subtitleText =
+    subtitleTokens.length >= 2
+      ? subtitleTokens.join(' • ')
+      : `${kickerText} • ${impactLine}`;
+
+  return {
+    kickerText,
+    leadLine,
+    impactLine,
+    subtitleText,
+    topicKeywords: uniqueTokens,
+  };
+}
+
 export class CompositionPlanner {
   buildDocument(input: CreativePlanInput): CreativeProjectDocument {
     const spec = ART_SPECIFICATIONS[input.artType];
@@ -96,6 +175,8 @@ export class CompositionPlanner {
       48,
     );
 
+    const brief = extractTopicVisualBrief(input.prompt, headline, input.title);
+
     let layers: CreativeLayer[] = [];
 
     if (input.artType === 'thumbnail') {
@@ -103,6 +184,7 @@ export class CompositionPlanner {
         width: spec.width,
         height: spec.height,
         headline,
+        brief,
         style: input.variantStyle ?? 'impact',
         palette,
         typography,
@@ -115,6 +197,7 @@ export class CompositionPlanner {
         width: spec.width,
         height: spec.height,
         headline: input.headline?.trim() || input.brandKit?.channelName || headline,
+        brief,
         palette,
         typography,
         backgroundAsset: input.backgroundAsset ?? null,
@@ -177,14 +260,16 @@ export class CompositionPlanner {
         variantStyle: v.style,
         title: `${input.title ?? 'Thumbnail'} (${v.styleTitle})`,
       });
-      const doc = director.reviewAndRefine(planned, { brandKit: input.brandKit ?? null }).document;
-      const audit = await qualityGate.auditProject(doc, { brandKit: input.brandKit ?? null });
+      const directed = await director.directWithIterativeReview(planned, qualityGate, {
+        brandKit: input.brandKit ?? null,
+        maxIterations: 3,
+      });
       results.push({
         label: v.label,
         style: v.style,
         styleTitle: v.styleTitle,
-        document: doc,
-        audit,
+        document: directed.document,
+        audit: directed.audit,
       });
     }
 
@@ -195,6 +280,7 @@ export class CompositionPlanner {
     width: number;
     height: number;
     headline: string;
+    brief: TopicVisualBrief;
     style: ThumbnailVariantStyle;
     palette: BrandKit['palette'];
     typography: BrandKit['typography'];
@@ -202,7 +288,7 @@ export class CompositionPlanner {
     subjectAsset: ManagedAssetRef | null;
     watermarkAsset: ManagedAssetRef | null;
   }): CreativeLayer[] {
-    const { width, height, headline, style, palette, typography, backgroundAsset, subjectAsset, watermarkAsset } = params;
+    const { width, height, brief, style, palette, typography, backgroundAsset, subjectAsset, watermarkAsset } = params;
     // Never place an unblurred background that is the exact same asset as the hero cutout
     const distinctBackground =
       backgroundAsset && (!subjectAsset || backgroundAsset.id !== subjectAsset.id) ? backgroundAsset : null;
@@ -211,7 +297,7 @@ export class CompositionPlanner {
       {
         id: 'bg-main',
         type: 'background',
-        name: 'Fundo Principal',
+        name: `Fundo Temático (${brief.topicKeywords[0] ?? style})`,
         zIndex: 0,
         visible: true,
         locked: false,
@@ -222,8 +308,8 @@ export class CompositionPlanner {
         fillColor: palette.background,
         gradientTo: style === 'impact' ? palette.secondary : style === 'tech' ? palette.surface : '#050811',
         gradientAngleDeg: style === 'cinematic' ? 180 : style === 'tech' ? 90 : 135,
-        blurRadius: distinctBackground ? (style === 'cinematic' ? 6 : 3) : 0,
-        brightness: style === 'cinematic' ? 0.78 : 0.88,
+        blurRadius: distinctBackground ? (style === 'cinematic' ? 9 : style === 'tech' ? 6 : 4) : 0,
+        brightness: style === 'cinematic' ? 0.68 : style === 'tech' ? 0.74 : 0.80,
         transform: { x: 0, y: 0, width, height, scaleX: 1, scaleY: 1, rotationDeg: 0 },
         mask: { kind: 'none' },
         effects: [
@@ -231,64 +317,45 @@ export class CompositionPlanner {
             kind: 'colorGrade',
             enabled: true,
             brightness: style === 'cinematic' ? 0.86 : 0.94,
-            contrast: style === 'impact' ? 1.24 : 1.15,
-            saturation: style === 'cinematic' ? 1.08 : 1.22,
+            contrast: style === 'impact' ? 1.25 : 1.18,
+            saturation: style === 'cinematic' ? 1.08 : 1.24,
           },
-          { kind: 'vignette', enabled: true, strength: style === 'cinematic' ? 0.68 : 0.45, color: '#000000' },
+          { kind: 'vignette', enabled: true, strength: style === 'cinematic' ? 0.72 : 0.52, color: '#000000' },
         ],
       },
       {
-        id: 'vfx-scrim',
+        id: 'vfx-atmosphere',
         type: 'vfx',
-        name: 'Scrim de Contraste',
+        name: `Atmosfera (${style})`,
         zIndex: 1,
         visible: true,
         locked: false,
-        opacity: style === 'cinematic' ? 0.72 : 0.62,
-        blendMode: 'multiply',
-        preset: 'duotone_wash',
-        primaryColor: '#000000',
-        secondaryColor: palette.background,
-        intensity: 0.75,
-        transform: { x: 0, y: 0, width, height, scaleX: 1, scaleY: 1, rotationDeg: 0 },
-        mask: { kind: 'none' },
-        effects: [],
-      },
-      {
-        id: 'vfx-style',
-        type: 'vfx',
-        name: `VFX (${style})`,
-        zIndex: 2,
-        visible: true,
-        locked: false,
-        opacity: style === 'cinematic' ? 0.55 : 0.78,
+        opacity: style === 'cinematic' ? 0.5 : 0.65,
         blendMode: 'screen',
-        preset: style === 'impact' ? 'speed_lines' : style === 'tech' ? 'cyber_grid' : 'light_leak',
+        preset: style === 'impact' ? 'speed_lines' : style === 'tech' ? 'particles' : 'light_leak',
         primaryColor: palette.primary,
         secondaryColor: palette.secondary,
-        intensity: style === 'cinematic' ? 0.65 : 0.82,
+        intensity: style === 'cinematic' ? 0.55 : 0.72,
         transform: { x: 0, y: 0, width, height, scaleX: 1, scaleY: 1, rotationDeg: 0 },
         mask: { kind: 'none' },
         effects: [],
       },
     ];
 
-    // Layout 1: Impact (Subject Right, Bold Stacked Title Left)
-    // Layout 2: Tech (Subject Left, Telemetry HUD Title Right)
-    // Layout 3: Cinematic (Subject Centered Lower, Top Widescreen Monumental Title + Letterbox Framing)
+    // Dominant, bottom-anchored editorial subject framing (no floating stickers!)
     const subjectTransform =
       style === 'impact'
-        ? { x: 590, y: 20, width: 660, height: 700, scaleX: 1, scaleY: 1, rotationDeg: -1.5 }
+        ? { x: 560, y: 24, width: 700, height: 696, scaleX: 1, scaleY: 1, rotationDeg: 0 }
         : style === 'tech'
-          ? { x: 24, y: 30, width: 610, height: 690, scaleX: 1, scaleY: 1, rotationDeg: 0 }
-          : { x: 310, y: 150, width: 660, height: 570, scaleX: 1, scaleY: 1, rotationDeg: 0 };
+          ? { x: 16, y: 36, width: 650, height: 684, scaleX: 1, scaleY: 1, rotationDeg: 0 }
+          : { x: 240, y: 175, width: 800, height: 545, scaleX: 1, scaleY: 1, rotationDeg: 0 };
 
     if (subjectAsset) {
       layers.push({
         id: 'subject-hero',
         type: 'subject',
-        name: 'Sujeito / Personagem',
-        zIndex: 3,
+        name: 'Sujeito Principal Dominante',
+        zIndex: 2,
         visible: true,
         locked: false,
         opacity: 1,
@@ -297,102 +364,294 @@ export class CompositionPlanner {
         removeBackground: true,
         cutoutMethod: 'rembg_semantic',
         rimLightColor: style === 'impact' ? palette.accent : style === 'tech' ? palette.primary : palette.secondary,
+        anchorBottom: true,
+        groundFade: true,
         transform: subjectTransform,
         mask: { kind: 'none' },
         effects: [
           {
             kind: 'dropShadow',
             enabled: true,
-            offsetX: style === 'tech' ? 10 : -10,
-            offsetY: 12,
-            blur: 24,
-            color: '#000000CC',
+            offsetX: style === 'tech' ? 12 : -12,
+            offsetY: 10,
+            blur: 28,
+            color: '#000000DD',
           },
           {
             kind: 'directionalLight',
             enabled: true,
             angleDeg: style === 'tech' ? 35 : 325,
-            intensity: 0.45,
+            intensity: 0.42,
             color: style === 'impact' ? palette.accent : palette.primary,
           },
         ],
       });
     }
 
-    const titleConfig =
-      style === 'impact'
-        ? {
-            x: 48,
-            y: 125,
-            width: 530,
-            height: 440,
-            align: 'left' as const,
-            fontSize: 98,
-            color: palette.accent,
-            letterSpacing: 1,
-            rotationDeg: -1.5,
-          }
-        : style === 'tech'
-          ? {
-              x: 645,
-              y: 145,
-              width: 585,
-              height: 420,
-              align: 'right' as const,
-              fontSize: 86,
-              color: palette.primary,
-              letterSpacing: 3,
-              rotationDeg: 0,
-            }
-          : {
-              x: 100,
-              y: 28,
-              width: 1080,
-              height: 150,
-              align: 'center' as const,
-              fontSize: 82,
-              color: palette.text,
-              letterSpacing: 5,
-              rotationDeg: 0,
-            };
-
-    layers.push({
-      id: 'title-main',
-      type: 'text',
-      name: 'Título Principal',
-      zIndex: 4,
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blendMode: 'over',
-      text: headline,
-      fontFamily: typography.headingFont,
-      fontSize: titleConfig.fontSize,
-      fontWeight: typography.titleWeight,
-      color: titleConfig.color,
-      strokeColor: typography.strokeColor,
-      strokeWidth: 8,
-      align: titleConfig.align,
-      letterSpacing: titleConfig.letterSpacing,
-      lineHeight: 1.04,
-      uppercase: true,
-      transform: {
-        x: titleConfig.x,
-        y: titleConfig.y,
-        width: titleConfig.width,
-        height: titleConfig.height,
-        scaleX: 1,
-        scaleY: 1,
-        rotationDeg: titleConfig.rotationDeg,
-      },
-      mask: { kind: 'none' },
-      effects: [
-        { kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 6, blur: 16, color: '#000000DD' },
-      ],
-    });
+    if (style === 'impact') {
+      // A — Editorial Impact: Kicker Pill + Two-Tier Asymmetric Display Left
+      layers.push(
+        {
+          id: 'kicker-badge',
+          type: 'text',
+          role: 'kicker',
+          name: 'Tag Editorial (Kicker)',
+          zIndex: 3,
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blendMode: 'over',
+          text: brief.kickerText,
+          fontFamily: typography.headingFont,
+          fontSize: 30,
+          fontWeight: 900,
+          color: '#FFFFFF',
+          strokeColor: '#000000',
+          strokeWidth: 0,
+          align: 'left',
+          letterSpacing: 3,
+          lineHeight: 1.1,
+          uppercase: true,
+          pillColor: palette.secondary,
+          pillRadius: 8,
+          transform: { x: 52, y: 92, width: 420, height: 54, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+          mask: { kind: 'none' },
+          effects: [],
+        },
+        {
+          id: 'title-lead',
+          type: 'text',
+          role: 'subtitle',
+          name: 'Linha de Apoio Editorial',
+          zIndex: 3,
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blendMode: 'over',
+          text: brief.leadLine,
+          fontFamily: typography.headingFont,
+          fontSize: 66,
+          fontWeight: 900,
+          color: '#FFFFFF',
+          strokeColor: typography.strokeColor,
+          strokeWidth: 7,
+          align: 'left',
+          letterSpacing: 2,
+          lineHeight: 1.05,
+          uppercase: true,
+          transform: { x: 52, y: 170, width: 520, height: 110, scaleX: 1, scaleY: 1, rotationDeg: -1 },
+          mask: { kind: 'none' },
+          effects: [{ kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 5, blur: 12, color: '#000000DD' }],
+        },
+        {
+          id: 'title-main',
+          type: 'text',
+          role: 'headline',
+          name: 'Palavra de Impacto Principal',
+          zIndex: 4,
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blendMode: 'over',
+          text: brief.impactLine,
+          fontFamily: typography.headingFont,
+          fontSize: 112,
+          fontWeight: typography.titleWeight,
+          color: palette.accent,
+          strokeColor: typography.strokeColor,
+          strokeWidth: 9,
+          align: 'left',
+          letterSpacing: 1,
+          lineHeight: 1.02,
+          uppercase: true,
+          transform: { x: 52, y: 270, width: 530, height: 260, scaleX: 1, scaleY: 1, rotationDeg: -1.5 },
+          mask: { kind: 'none' },
+          effects: [{ kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 8, blur: 18, color: '#000000EE' }],
+        },
+      );
+    } else if (style === 'tech') {
+      // B — Technical HUD Split: Thin Accent Bar + Kicker + High-Contrast Telemetry Typography Right
+      layers.push(
+        {
+          id: 'accent-bar-tech',
+          type: 'shape',
+          name: 'Barra Editorial Tech',
+          zIndex: 3,
+          visible: true,
+          locked: false,
+          opacity: 0.95,
+          blendMode: 'over',
+          shapeKind: 'rect',
+          fillColor: palette.primary,
+          strokeWidth: 0,
+          borderRadius: 4,
+          transform: { x: 662, y: 108, width: 8, height: 390, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+          mask: { kind: 'none' },
+          effects: [],
+        },
+        {
+          id: 'kicker-badge',
+          type: 'text',
+          role: 'kicker',
+          name: 'Tag Técnica',
+          zIndex: 3,
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blendMode: 'over',
+          text: brief.kickerText,
+          fontFamily: typography.headingFont,
+          fontSize: 28,
+          fontWeight: 900,
+          color: '#070B14',
+          strokeColor: '#070B14',
+          strokeWidth: 0,
+          align: 'left',
+          letterSpacing: 3,
+          lineHeight: 1.1,
+          uppercase: true,
+          pillColor: palette.primary,
+          pillRadius: 6,
+          transform: { x: 690, y: 108, width: 420, height: 50, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+          mask: { kind: 'none' },
+          effects: [],
+        },
+        {
+          id: 'title-lead',
+          type: 'text',
+          role: 'subtitle',
+          name: 'Título Técnico Superior',
+          zIndex: 3,
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blendMode: 'over',
+          text: brief.leadLine,
+          fontFamily: typography.headingFont,
+          fontSize: 64,
+          fontWeight: 900,
+          color: '#FFFFFF',
+          strokeColor: typography.strokeColor,
+          strokeWidth: 7,
+          align: 'left',
+          letterSpacing: 2,
+          lineHeight: 1.05,
+          uppercase: true,
+          transform: { x: 690, y: 184, width: 540, height: 100, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+          mask: { kind: 'none' },
+          effects: [{ kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 5, blur: 12, color: '#000000DD' }],
+        },
+        {
+          id: 'title-main',
+          type: 'text',
+          role: 'headline',
+          name: 'Título Principal HUD',
+          zIndex: 4,
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blendMode: 'over',
+          text: brief.impactLine,
+          fontFamily: typography.headingFont,
+          fontSize: 102,
+          fontWeight: typography.titleWeight,
+          color: palette.primary,
+          strokeColor: typography.strokeColor,
+          strokeWidth: 8,
+          align: 'left',
+          letterSpacing: 2,
+          lineHeight: 1.02,
+          uppercase: true,
+          transform: { x: 690, y: 276, width: 540, height: 170, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+          mask: { kind: 'none' },
+          effects: [{ kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 7, blur: 16, color: '#000000EE' }],
+        },
+        {
+          id: 'subtitle-topic',
+          type: 'text',
+          role: 'subtitle',
+          name: 'Contexto Temático',
+          zIndex: 4,
+          visible: true,
+          locked: false,
+          opacity: 0.95,
+          blendMode: 'over',
+          text: brief.subtitleText,
+          fontFamily: typography.bodyFont,
+          fontSize: 30,
+          fontWeight: 800,
+          color: palette.accent,
+          strokeColor: '#000000',
+          strokeWidth: 4,
+          align: 'left',
+          letterSpacing: 3,
+          lineHeight: 1.1,
+          uppercase: true,
+          transform: { x: 690, y: 454, width: 540, height: 84, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+          mask: { kind: 'none' },
+          effects: [],
+        },
+      );
+    } else {
+      // C — Cinematic Poster: Monumental Top Two-Tier Typography + Centered Hero Close-Up
+      layers.push(
+        {
+          id: 'kicker-badge',
+          type: 'text',
+          role: 'kicker',
+          name: 'Tag Cinematográfica',
+          zIndex: 3,
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blendMode: 'over',
+          text: brief.kickerText,
+          fontFamily: typography.headingFont,
+          fontSize: 26,
+          fontWeight: 900,
+          color: '#FFFFFF',
+          strokeColor: '#000000',
+          strokeWidth: 0,
+          align: 'center',
+          letterSpacing: 4,
+          lineHeight: 1.1,
+          uppercase: true,
+          pillColor: palette.secondary,
+          pillRadius: 8,
+          transform: { x: 440, y: 20, width: 400, height: 46, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+          mask: { kind: 'none' },
+          effects: [],
+        },
+        {
+          id: 'title-main',
+          type: 'text',
+          role: 'headline',
+          name: 'Título Monumental Poster',
+          zIndex: 4,
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blendMode: 'over',
+          text: `${brief.leadLine} ${brief.impactLine}`,
+          fontFamily: typography.headingFont,
+          fontSize: 88,
+          fontWeight: typography.titleWeight,
+          color: palette.text,
+          strokeColor: typography.strokeColor,
+          strokeWidth: 9,
+          align: 'center',
+          letterSpacing: 4,
+          lineHeight: 1.04,
+          uppercase: true,
+          transform: { x: 80, y: 74, width: 1120, height: 120, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+          mask: { kind: 'none' },
+          effects: [{ kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 8, blur: 20, color: '#000000EE' }],
+        },
+      );
+    }
 
     if (watermarkAsset) {
-      const wmX = style === 'tech' ? width - 130 : style === 'impact' ? 48 : width - 130;
+      const wmX = style === 'tech' ? width - 122 : style === 'impact' ? 52 : width - 122;
       layers.push({
         id: 'wm-brand',
         type: 'watermark',
@@ -400,12 +659,12 @@ export class CompositionPlanner {
         zIndex: 5,
         visible: true,
         locked: false,
-        opacity: 0.78,
+        opacity: 0.85,
         blendMode: 'over',
         assetId: watermarkAsset.id,
         monochrome: false,
         anchor: style === 'impact' ? 'bottom-left' : 'bottom-right',
-        transform: { x: wmX, y: height - 122, width: 88, height: 88, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+        transform: { x: wmX, y: height - 116, width: 84, height: 84, scaleX: 1, scaleY: 1, rotationDeg: 0 },
         mask: { kind: 'none' },
         effects: [],
       });
@@ -418,12 +677,13 @@ export class CompositionPlanner {
     width: number;
     height: number;
     headline: string;
+    brief: TopicVisualBrief;
     palette: BrandKit['palette'];
     typography: BrandKit['typography'];
     backgroundAsset: ManagedAssetRef | null;
     subjectAsset: ManagedAssetRef | null;
   }): CreativeLayer[] {
-    const { width, height, headline, palette, typography, backgroundAsset, subjectAsset } = params;
+    const { width, height, headline, brief, palette, typography, backgroundAsset, subjectAsset } = params;
     const safe = ART_SPECIFICATIONS.banner.safeArea!;
     const distinctBackground =
       backgroundAsset && (!subjectAsset || backgroundAsset.id !== subjectAsset.id) ? backgroundAsset : null;
@@ -432,7 +692,7 @@ export class CompositionPlanner {
       {
         id: 'bg-banner',
         type: 'background',
-        name: 'Fundo Banner 2560×1440',
+        name: 'Fundo Panorâmico Banner 2560×1440',
         zIndex: 0,
         visible: true,
         locked: false,
@@ -443,25 +703,25 @@ export class CompositionPlanner {
         fillColor: palette.background,
         gradientTo: palette.surface,
         gradientAngleDeg: 120,
-        blurRadius: distinctBackground ? 8 : 0,
-        brightness: 0.75,
+        blurRadius: distinctBackground ? 7 : 0,
+        brightness: 0.72,
         transform: { x: 0, y: 0, width, height, scaleX: 1, scaleY: 1, rotationDeg: 0 },
         mask: { kind: 'none' },
-        effects: [{ kind: 'vignette', enabled: true, strength: 0.55, color: '#000000' }],
+        effects: [{ kind: 'vignette', enabled: true, strength: 0.62, color: '#000000' }],
       },
       {
         id: 'vfx-banner',
         type: 'vfx',
-        name: 'Grid Futurista',
+        name: 'Partículas Panorâmicas',
         zIndex: 1,
         visible: true,
         locked: false,
-        opacity: 0.65,
+        opacity: 0.55,
         blendMode: 'screen',
-        preset: 'cyber_grid',
+        preset: 'particles',
         primaryColor: palette.primary,
         secondaryColor: palette.secondary,
-        intensity: 0.7,
+        intensity: 0.65,
         transform: { x: 0, y: 0, width, height, scaleX: 1, scaleY: 1, rotationDeg: 0 },
         mask: { kind: 'none' },
         effects: [],
@@ -482,56 +742,133 @@ export class CompositionPlanner {
         removeBackground: true,
         cutoutMethod: 'rembg_semantic',
         rimLightColor: palette.primary,
+        anchorBottom: true,
         transform: {
           x: safe.x + safe.width - 420,
           y: safe.y + 18,
-          width: 385,
-          height: 385,
+          width: 390,
+          height: 390,
           scaleX: 1,
           scaleY: 1,
           rotationDeg: 0,
         },
         mask: { kind: 'none' },
-        effects: [
-          { kind: 'dropShadow', enabled: true, offsetX: -8, offsetY: 10, blur: 20, color: '#000000CC' },
-        ],
+        effects: [{ kind: 'dropShadow', enabled: true, offsetX: -10, offsetY: 12, blur: 24, color: '#000000DD' }],
       });
     }
 
-    layers.push({
-      id: 'title-banner',
-      type: 'text',
-      name: 'Título do Canal (Área Segura)',
-      zIndex: 3,
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blendMode: 'over',
-      text: headline,
-      fontFamily: typography.headingFont,
-      fontSize: 108,
-      fontWeight: typography.titleWeight,
-      color: palette.text,
-      strokeColor: typography.strokeColor,
-      strokeWidth: 8,
-      align: subjectAsset ? 'left' : 'center',
-      letterSpacing: 4,
-      lineHeight: 1.08,
-      uppercase: true,
-      transform: {
-        x: subjectAsset ? safe.x + 56 : safe.x + 120,
-        y: safe.y + 125,
-        width: subjectAsset ? safe.width - 520 : safe.width - 240,
-        height: 200,
-        scaleX: 1,
-        scaleY: 1,
-        rotationDeg: 0,
+    layers.push(
+      {
+        id: 'banner-accent-bar',
+        type: 'shape',
+        name: 'Barra Editorial do Canal',
+        zIndex: 3,
+        visible: true,
+        locked: false,
+        opacity: 1,
+        blendMode: 'over',
+        shapeKind: 'rect',
+        fillColor: palette.primary,
+        strokeWidth: 0,
+        borderRadius: 4,
+        transform: { x: safe.x + 48, y: safe.y + 78, width: 10, height: 268, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+        mask: { kind: 'none' },
+        effects: [],
       },
-      mask: { kind: 'none' },
-      effects: [
-        { kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 6, blur: 16, color: '#000000DD' },
-      ],
-    });
+      {
+        id: 'banner-kicker',
+        type: 'text',
+        role: 'kicker',
+        name: 'Tag de Identidade do Canal',
+        zIndex: 3,
+        visible: true,
+        locked: false,
+        opacity: 1,
+        blendMode: 'over',
+        text: brief.kickerText,
+        fontFamily: typography.headingFont,
+        fontSize: 32,
+        fontWeight: 900,
+        color: '#070B14',
+        strokeColor: '#070B14',
+        strokeWidth: 0,
+        align: 'left',
+        letterSpacing: 3,
+        lineHeight: 1.1,
+        uppercase: true,
+        pillColor: palette.accent,
+        pillRadius: 6,
+        transform: { x: safe.x + 80, y: safe.y + 76, width: 420, height: 54, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+        mask: { kind: 'none' },
+        effects: [],
+      },
+      {
+        id: 'title-banner',
+        type: 'text',
+        role: 'headline',
+        name: 'Título do Canal (Área Segura)',
+        zIndex: 4,
+        visible: true,
+        locked: false,
+        opacity: 1,
+        blendMode: 'over',
+        text: headline,
+        fontFamily: typography.headingFont,
+        fontSize: 104,
+        fontWeight: typography.titleWeight,
+        color: palette.text,
+        strokeColor: typography.strokeColor,
+        strokeWidth: 8,
+        align: 'left',
+        letterSpacing: 4,
+        lineHeight: 1.06,
+        uppercase: true,
+        transform: {
+          x: safe.x + 80,
+          y: safe.y + 148,
+          width: subjectAsset ? safe.width - 540 : safe.width - 180,
+          height: 130,
+          scaleX: 1,
+          scaleY: 1,
+          rotationDeg: 0,
+        },
+        mask: { kind: 'none' },
+        effects: [{ kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 8, blur: 18, color: '#000000EE' }],
+      },
+      {
+        id: 'subtitle-banner',
+        type: 'text',
+        role: 'subtitle',
+        name: 'Subtítulo do Canal (Área Segura)',
+        zIndex: 4,
+        visible: true,
+        locked: false,
+        opacity: 0.95,
+        blendMode: 'over',
+        text: brief.subtitleText,
+        fontFamily: typography.bodyFont,
+        fontSize: 36,
+        fontWeight: 800,
+        color: palette.primary,
+        strokeColor: '#000000',
+        strokeWidth: 4,
+        align: 'left',
+        letterSpacing: 4,
+        lineHeight: 1.1,
+        uppercase: true,
+        transform: {
+          x: safe.x + 80,
+          y: safe.y + 286,
+          width: subjectAsset ? safe.width - 540 : safe.width - 180,
+          height: 60,
+          scaleX: 1,
+          scaleY: 1,
+          rotationDeg: 0,
+        },
+        mask: { kind: 'none' },
+        effects: [],
+      },
+    );
 
     return layers;
   }

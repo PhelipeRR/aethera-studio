@@ -102,7 +102,30 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
     const fixedAudit = await gate.auditProject(refined.document);
     expect(fixedAudit.criticalCount).toBe(0);
     expect(fixedAudit.passed).toBe(true);
-  });
+
+    // Art Director iterative loop: reject floating small subject + flat typography and recompose until approved
+    const flawedDoc = planner.buildDocument({
+      artType: 'thumbnail',
+      prompt: 'CYBERWARE SECRETO',
+      headline: 'CYBERWARE SECRETO',
+      subjectAsset: asset,
+    });
+    // Strip kicker/subtitle and shrink subject into a floating sticker
+    flawedDoc.layers = flawedDoc.layers.filter((l) => l.type !== 'text' || l.id === 'title-main');
+    const sLayer = flawedDoc.layers.find((l) => l.type === 'subject')!;
+    if (sLayer.type === 'subject') {
+      sLayer.anchorBottom = false;
+      sLayer.transform = { ...sLayer.transform, x: 750, y: 120, width: 280, height: 260 };
+    }
+    const loopResult = await director.directWithIterativeReview(flawedDoc, gate, { maxIterations: 3 });
+    expect(loopResult.critiqueHistory.length).toBeGreaterThanOrEqual(2);
+    expect(loopResult.critiqueHistory[0]?.rejected).toBe(true);
+    expect(loopResult.critiqueHistory[0]?.rejectionReasons.some((r) => r.includes('SUBJECT_TOO_SMALL'))).toBe(true);
+    expect(loopResult.critiqueHistory[0]?.rejectionReasons.some((r) => r.includes('FLOATING_STICKER_SUBJECT'))).toBe(true);
+    expect(loopResult.critiqueHistory[0]?.rejectionReasons.some((r) => r.includes('MISSING_TYPOGRAPHIC_HIERARCHY'))).toBe(true);
+    expect(loopResult.approved).toBe(true);
+    expect(loopResult.audit.passed).toBe(true);
+  }, 30_000);
 
   it('persists Brand Kit mascot/avatar/watermark across thumbnail, banner, avatar, and watermark', async () => {
     const storageRoot = makeTempDir();
@@ -171,10 +194,10 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
     });
     writeFileSync(join(CS7_ARTIFACTS_DIR, 'cyberpunk-2077-character-cutout-adaptive.png'), cutoutBuffer);
 
-    // 2. Clean atmospheric background (no duplicate character) via SDXL-Turbo
+    // 2. Topic-relevant clean atmospheric background (cyberware / implants theme, no duplicate character) via SDXL-Turbo
     const cleanBgBuffer = await ai.generateImage({
       prompt:
-        'empty futuristic neon cyberpunk alleyway at night, rainy reflections, cyan and magenta volumetric fog, blurred bokeh city lights, no people, no characters, wide angle background',
+        'futuristic high-tech cyberware workshop and ripperdoc lab, glowing holographic neural implants and robotic arm schematics on dark glass workbench, cyan and magenta volumetric lighting, shallow depth of field, no people, no characters, wide angle',
       width: 1024,
       height: 576,
     });
@@ -251,6 +274,7 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
     });
     expect(lab.variants).toHaveLength(3);
     for (const v of lab.variants) {
+      expect(v.audit.findings.filter((f) => f.severity === 'critical'), `Variant ${v.label} findings`).toEqual([]);
       expect(v.audit.passed).toBe(true);
       expect(v.audit.findings.some((f) => f.code === 'TEXT_INTERNAL_OVERFLOW' && f.severity === 'critical')).toBe(false);
       expect(v.audit.findings.some((f) => f.code === 'DUPLICATE_SUBJECT_IN_BACKGROUND')).toBe(false);
