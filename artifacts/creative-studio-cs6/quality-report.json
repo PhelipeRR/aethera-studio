@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-11-15T04:54:05.011Z",
+  "generatedAt": "2026-11-15T05:47:47.663Z",
   "thumbnailLabAudits": [
     {
       "label": "A",
       "style": "A — Impacto",
       "audit": {
-        "projectId": "creative-thumbnail-d44bc935-1",
+        "projectId": "creative-thumbnail-2d5616eb-5",
         "artType": "thumbnail",
         "passed": true,
         "autoApprovable": true,
@@ -14,42 +14,49 @@
         "findings": [],
         "scorecard": {
           "legibility": 88,
-          "contrast": 88,
+          "contrast": 83,
           "composition": 94,
           "brandConsistency": 95,
-          "overall": 91,
+          "overall": 89,
           "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
         },
-        "checkedAt": "2026-11-15T04:53:18.837Z"
+        "checkedAt": "2026-11-15T05:45:41.684Z"
       }
     },
     {
       "label": "B",
       "style": "B — Tecnologia",
       "audit": {
-        "projectId": "creative-thumbnail-70d43360-9",
+        "projectId": "creative-thumbnail-5f91fcb8-8",
         "artType": "thumbnail",
         "passed": true,
         "autoApprovable": true,
         "criticalCount": 0,
-        "warningCount": 0,
-        "findings": [],
+        "warningCount": 1,
+        "findings": [
+          {
+            "code": "TEXT_INTERNAL_OVERFLOW",
+            "severity": "warning",
+            "message": "Texto \"UPGRADES • CIBERNÉTICOS • CYBERPUNK\" exigiu auto-ajuste de 24px para 20px para não cortar na caixa (540×84).",
+            "layerId": "subtitle-topic"
+          }
+        ],
         "scorecard": {
-          "legibility": 88,
-          "contrast": 85,
-          "composition": 94,
+          "legibility": 82,
+          "contrast": 79,
+          "composition": 87,
           "brandConsistency": 95,
-          "overall": 90,
+          "overall": 84,
           "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
         },
-        "checkedAt": "2026-11-15T04:53:21.383Z"
+        "checkedAt": "2026-11-15T05:46:11.367Z"
       }
     },
     {
       "label": "C",
       "style": "C — Cinematográfica",
       "audit": {
-        "projectId": "creative-thumbnail-97ecb8c5-b",
+        "projectId": "creative-thumbnail-6db6b224-f",
         "artType": "thumbnail",
         "passed": true,
         "autoApprovable": true,
@@ -58,18 +65,18 @@
         "findings": [],
         "scorecard": {
           "legibility": 88,
-          "contrast": 91,
+          "contrast": 80,
           "composition": 94,
           "brandConsistency": 95,
-          "overall": 91,
+          "overall": 89,
           "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
         },
-        "checkedAt": "2026-11-15T04:53:23.892Z"
+        "checkedAt": "2026-11-15T05:46:40.617Z"
       }
     }
   ],
   "bannerAudit": {
-    "projectId": "creative-banner-18ddd4f8-8",
+    "projectId": "creative-banner-99f2cf0e-d",
     "artType": "banner",
     "passed": true,
     "autoApprovable": true,
@@ -78,16 +85,16 @@
     "findings": [],
     "scorecard": {
       "legibility": 88,
-      "contrast": 77,
+      "contrast": 60,
       "composition": 94,
       "brandConsistency": 95,
-      "overall": 88,
+      "overall": 84,
       "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
     },
-    "checkedAt": "2026-11-15T04:53:28.144Z"
+    "checkedAt": "2026-11-15T05:46:57.164Z"
   },
   "avatarAudit": {
-    "projectId": "creative-avatar-1b779df7-8",
+    "projectId": "creative-avatar-49757395-e",
     "artType": "avatar",
     "passed": true,
     "autoApprovable": true,
@@ -102,10 +109,10 @@
       "overall": 90,
       "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
     },
-    "checkedAt": "2026-11-15T04:54:04.910Z"
+    "checkedAt": "2026-11-15T05:47:47.562Z"
   },
   "watermarkAudit": {
-    "projectId": "creative-watermark-38babe85-1",
+    "projectId": "creative-watermark-75949059-e",
     "artType": "watermark",
     "passed": true,
     "autoApprovable": true,
@@ -126,6 +133,6 @@
       "overall": 86,
       "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
     },
-    "checkedAt": "2026-11-15T04:54:05.002Z"
+    "checkedAt": "2026-11-15T05:47:47.656Z"
   }
 }

@@ -116,6 +116,8 @@ export interface MediaRelevanceDecision {
     malId?: number;
     fromCache: boolean;
     matchesExpectedWork: boolean;
+    isAmbiguous?: boolean;
+    ambiguityReason?: string;
     provenanceOnly: true;
   };
 }
@@ -576,6 +578,75 @@ export async function evaluateMediaRelevance(
   const expectsAnime = segmentExpectsAnime(segment);
   const allowsRealPerson = segmentAllowsRealPerson(segment);
 
+  // Optional Anime Provenance (trace.moe): enriches work/episode/timestamp metadata & catches wrong-anime clips,
+  // NEVER replaces VisionRouter or auto-approves without visual proof of the narrated action.
+  let animeProvenanceMeta: MediaRelevanceDecision['animeProvenance'];
+  if (expectsAnime && options?.animeProvenance) {
+    try {
+      const provBuffer =
+        options.provenanceFrameBuffer ??
+        (await options.extractFrameForProvenance?.(candidate.uri, sampledTimestampsSec[0] ?? 1)) ??
+        null;
+      if (provBuffer && provBuffer.length > 0) {
+        const provRes = await options.animeProvenance.identifyFrame({
+          frameBuffer: provBuffer,
+          minConfidence: 0.78,
+        });
+        if (provRes.status === 'ok' && provRes.topMatch) {
+          const m = provRes.topMatch;
+          const candidateWorkTexts = [
+            m.workTitle,
+            m.titles.english ?? '',
+            m.titles.romaji ?? '',
+            m.titles.native ?? '',
+            ...(m.titles.synonyms ?? []),
+          ]
+            .join(' ')
+            .toLowerCase();
+          const promptWorkTokens = extractTopicEntities(`${segment.prompt} ${expectedEntities.join(' ')}`);
+          const matchesExpectedWork =
+            promptWorkTokens.length === 0 ||
+            promptWorkTokens.some((tok) => tok.length >= 3 && candidateWorkTexts.includes(tok));
+          animeProvenanceMeta = {
+            origin: m.origin,
+            workTitle: m.workTitle,
+            episode: m.episode ?? null,
+            fromSec: m.fromSec,
+            toSec: m.toSec,
+            confidence: m.confidence,
+            ...(m.identifiers.anilistId !== undefined ? { anilistId: m.identifiers.anilistId } : {}),
+            ...(m.identifiers.malId !== undefined ? { malId: m.identifiers.malId } : {}),
+            fromCache: m.evidence.fromCache,
+            matchesExpectedWork,
+            ...(provRes.isAmbiguous !== undefined ? { isAmbiguous: provRes.isAmbiguous } : {}),
+            ...(provRes.ambiguityReason ? { ambiguityReason: provRes.ambiguityReason } : {}),
+            provenanceOnly: true,
+          };
+          if (!matchesExpectedWork && !provRes.isAmbiguous && m.confidence >= 0.88) {
+            return {
+              mediaId: candidate.mediaId,
+              accepted: false,
+              score: 0.1,
+              relevanceTier: 'rejected',
+              correspondenceLevel: 'rejected',
+              visualVerificationStatus,
+              visualConfidence,
+              visualEvidence,
+              rejectionCode: 'wrong_anime_or_entity',
+              reason: `Proveniência (${m.origin}) identificou outra obra (${m.workTitle}, conf=${m.confidence}) incompatível com o roteiro.`,
+              sampledTimestampsSec,
+              matchedEntities,
+              visualCategory: dominantVisualCategory,
+              animeProvenance: animeProvenanceMeta,
+            };
+          }
+        }
+      }
+    } catch {
+      // graceful fallback: provenance unavailability never breaks Scene Grounding
+    }
+  }
+
   // 3. Reject unrelated real-person footage when script expects anime/animation (while allowing interviews/BTS/live-action when justified)
   if (
     expectsAnime &&
@@ -705,6 +776,7 @@ export async function evaluateMediaRelevance(
       sampledTimestampsSec,
       matchedEntities: contextEntities,
       visualCategory: dominantVisualCategory,
+      ...(animeProvenanceMeta ? { animeProvenance: animeProvenanceMeta } : {}),
     };
   }
 
@@ -870,73 +942,6 @@ export async function evaluateMediaRelevance(
     (!expectation.requiresSpecificEventVisual || matchedActions.length > 0)
       ? 'exact_match'
       : 'contextual_support';
-
-  // Optional Anime Provenance (trace.moe): enriches work/episode/timestamp metadata & catches wrong-anime clips,
-  // NEVER replaces VisionRouter or auto-approves without visual proof of the narrated action.
-  let animeProvenanceMeta: MediaRelevanceDecision['animeProvenance'];
-  if (expectsAnime && options?.animeProvenance) {
-    try {
-      const provBuffer =
-        options.provenanceFrameBuffer ??
-        (await options.extractFrameForProvenance?.(candidate.uri, sampledTimestampsSec[0] ?? 1)) ??
-        null;
-      if (provBuffer && provBuffer.length > 0) {
-        const provRes = await options.animeProvenance.identifyFrame({
-          frameBuffer: provBuffer,
-          minConfidence: 0.78,
-        });
-        if (provRes.status === 'ok' && provRes.topMatch) {
-          const m = provRes.topMatch;
-          const candidateWorkTexts = [
-            m.workTitle,
-            m.titles.english ?? '',
-            m.titles.romaji ?? '',
-            m.titles.native ?? '',
-            ...(m.titles.synonyms ?? []),
-          ]
-            .join(' ')
-            .toLowerCase();
-          const promptWorkTokens = extractTopicEntities(`${segment.prompt} ${expectedEntities.join(' ')}`);
-          const matchesExpectedWork =
-            promptWorkTokens.length === 0 ||
-            promptWorkTokens.some((tok) => tok.length >= 3 && candidateWorkTexts.includes(tok));
-          animeProvenanceMeta = {
-            origin: m.origin,
-            workTitle: m.workTitle,
-            episode: m.episode ?? null,
-            fromSec: m.fromSec,
-            toSec: m.toSec,
-            confidence: m.confidence,
-            ...(m.identifiers.anilistId !== undefined ? { anilistId: m.identifiers.anilistId } : {}),
-            ...(m.identifiers.malId !== undefined ? { malId: m.identifiers.malId } : {}),
-            fromCache: m.evidence.fromCache,
-            matchesExpectedWork,
-            provenanceOnly: true,
-          };
-          if (!matchesExpectedWork && m.confidence >= 0.85) {
-            return {
-              mediaId: candidate.mediaId,
-              accepted: false,
-              score: 0.1,
-              relevanceTier: 'rejected',
-              correspondenceLevel: 'rejected',
-              visualVerificationStatus,
-              visualConfidence,
-              visualEvidence,
-              rejectionCode: 'wrong_anime_or_entity',
-              reason: `Proveniência (${m.origin}) identificou outra obra (${m.workTitle}, conf=${m.confidence}) incompatível com o roteiro.`,
-              sampledTimestampsSec,
-              matchedEntities: effectiveMatched,
-              visualCategory: dominantVisualCategory,
-              animeProvenance: animeProvenanceMeta,
-            };
-          }
-        }
-      }
-    } catch {
-      // graceful fallback: provenance unavailability never breaks Scene Grounding
-    }
-  }
 
   return {
     mediaId: candidate.mediaId,

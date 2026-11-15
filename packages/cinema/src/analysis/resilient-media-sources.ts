@@ -46,6 +46,15 @@ export interface MediaSourceCandidate {
   license: string;
   durationSec?: number;
   directDownloadable?: boolean;
+  provenanceMetadata?: {
+    postId?: string | number;
+    postUrl?: string;
+    author?: string;
+    source?: string;
+    tags?: string[];
+    rating?: string;
+    usageNotice?: string;
+  };
 }
 
 export interface ProviderAttemptStatus {
@@ -280,8 +289,17 @@ export async function searchResilientMediaSources(
         title: c.title,
         description: c.tags.join(' '),
         origin: 'sakugabooru',
-        license: 'sakugabooru_reference',
+        license: c.usageNotice ?? 'sakugabooru_reference_requires_editorial_review',
         directDownloadable: true,
+        provenanceMetadata: {
+          postId: c.id,
+          ...(c.postUrl ? { postUrl: c.postUrl } : {}),
+          ...(c.author ? { author: c.author } : {}),
+          ...(c.source ? { source: c.source } : {}),
+          tags: c.tags,
+          rating: c.rating,
+          ...(c.usageNotice ? { usageNotice: c.usageNotice } : {}),
+        },
       }));
       candidates.push(...mappedAnime);
       providerStatuses.push({
@@ -371,7 +389,10 @@ export async function searchResilientMediaSources(
   }
 
   // 5. Optional yt-dlp fallback (never single point of failure, never bypasses anti-bot)
-  if (deps.ytDlpSearchFn && candidates.length < 3) {
+  const nonStaticVideoCandidates = candidates.filter(
+    (c) => c.origin !== 'wikimedia_commons' && !/\.(jpg|jpeg|png|svg|gif)(\?|$)/i.test(c.url),
+  );
+  if (deps.ytDlpSearchFn && nonStaticVideoCandidates.length < 3) {
     try {
       const ytdlpHits = await deps.ytDlpSearchFn(query, 4, signal);
       const mapped = ytdlpHits
@@ -800,6 +821,9 @@ export function scoreCandidateRelevancePriority(
     if (text.includes(e)) score += 1;
   }
   if (cand.origin === 'local_library') score += 3;
+  if (cand.origin === 'sakugabooru' && !isGamingTopic) score += 5;
+  if (/\b(fighting|beams|explosions|impact_frames|lightning)\b/i.test(text)) score += 3;
+  if (/\b(logo|mural|poster|banner|cover)\b/i.test(text)) score -= 4;
   if (/\b(anime|cena|scene|clip|episodio|episode|dublado|legendado|luta|fight|transforma)\b/i.test(text)) {
     score += 2;
   }
@@ -1428,7 +1452,10 @@ export async function runAutonomousMediaAcquisition(input: {
             } else if (cand.directDownloadable && /^https?:\/\//i.test(cand.url)) {
               let candidateOutFile: string | null = null;
               try {
-                const res = await fetchFn(cand.url, { signal: opSig });
+                const res = await fetchFn(cand.url, {
+                  headers: { 'User-Agent': 'AetheraStudio/0.1 (media-acquisition)' },
+                  signal: opSig,
+                });
                 if (!res.ok) {
                   downloadFailure = {
                     reasonCode: res.status === 429 ? 'anti_bot' : 'http_error',

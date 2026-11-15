@@ -258,21 +258,52 @@ export const subjectLayerSchema = z.object({
   fitMode: z.enum(['contain', 'cover']).optional(),
 });
 
+export const fontCategorySchema = z.enum([
+  'condensed',
+  'expanded',
+  'display',
+  'sans_serif',
+  'serif',
+  'experimental',
+]);
+export type FontCategory = z.infer<typeof fontCategorySchema>;
+
+export const typographyLayoutStyleSchema = z.enum([
+  'editorial_split',
+  'vertical_spine',
+  'behind_subject_depth',
+  'perspective_plane',
+  'minimal_whisper',
+  'high_contrast_condensed',
+  'textless_focus',
+]);
+export type TypographyLayoutStyle = z.infer<typeof typographyLayoutStyleSchema>;
+
 export const textLayerSchema = z.object({
   ...baseLayerFields,
   type: z.literal('text'),
   role: z.enum(['headline', 'kicker', 'subtitle']).optional(),
   text: z.string().min(1),
-  fontFamily: z.string().min(1).default('Arial Black'),
+  fontFamily: z.string().min(1).default('Segoe UI'),
+  fontCategory: fontCategorySchema.optional(),
   fontSize: z.number().positive().max(400).default(96),
-  fontWeight: z.number().int().min(100).max(900).default(900),
+  fontWeight: z.number().int().min(100).max(900).default(800),
   color: hexColorSchema.default('#FFFFFF'),
   strokeColor: hexColorSchema.default('#000000'),
-  strokeWidth: z.number().nonnegative().max(24).default(6),
+  strokeWidth: z.number().nonnegative().max(24).default(0),
   align: z.enum(['left', 'center', 'right']).default('left'),
   letterSpacing: z.number().min(-10).max(40).default(0),
   lineHeight: z.number().positive().max(3).default(1.05),
-  uppercase: z.boolean().default(true),
+  kerningMode: z.enum(['optical', 'metrics', 'none']).optional(),
+  uppercase: z.boolean().default(false),
+  orientation: z.enum(['horizontal', 'vertical']).optional(),
+  layoutStyle: typographyLayoutStyleSchema.optional(),
+  perspectiveSkewXDeg: z.number().min(-45).max(45).optional(),
+  perspectiveSkewYDeg: z.number().min(-35).max(35).optional(),
+  extrusionDepthPx: z.number().nonnegative().max(24).optional(),
+  extrusionColor: hexColorSchema.optional(),
+  textureOverlay: z.enum(['none', 'metallic', 'scanlines', 'distressed']).optional(),
+  behindSubject: z.boolean().optional(),
   pillColor: hexColorSchema.optional(),
   pillRadius: z.number().nonnegative().max(40).optional(),
 });
@@ -432,6 +463,81 @@ export const conceptMediaRequirementSchema = z.object({
 });
 export type ConceptMediaRequirement = z.infer<typeof conceptMediaRequirementSchema>;
 
+export const localizedDefectSchema = z.object({
+  id: z.string().min(1),
+  category: z.enum([
+    'extra_fingers',
+    'fused_fingers',
+    'impossible_joint',
+    'disconnected_limb',
+    'object_clipping_hand',
+    'implausible_mech_joint',
+    'perspective_distortion',
+    'identity_mismatch',
+    'visual_artifact',
+  ]),
+  severity: z.enum(['none', 'minor', 'moderate', 'severe']),
+  bbox: z.object({
+    x: z.number().nonnegative(),
+    y: z.number().nonnegative(),
+    width: z.number().positive(),
+    height: z.number().positive(),
+  }),
+  description: z.string().min(1),
+  repaired: z.boolean().default(false),
+});
+export type LocalizedDefect = z.infer<typeof localizedDefectSchema>;
+
+export const visualQualityMetricsSchema = z.object({
+  semanticRelevance: z.number().min(0).max(100),
+  anatomicalConsistency: z.number().min(0).max(100),
+  physicalCoherence: z.number().min(0).max(100),
+  compositionQuality: z.number().min(0).max(100),
+  subjectIdentityConsistency: z.number().min(0).max(100),
+  visualArtifactSeverity: z.number().min(0).max(100),
+});
+export type VisualQualityMetrics = z.infer<typeof visualQualityMetricsSchema>;
+
+export const typographyDirectionProposalSchema = z.object({
+  id: z.string().min(1),
+  label: z.enum(['A', 'B', 'C']),
+  styleName: z.string().min(1),
+  layoutStyle: typographyLayoutStyleSchema,
+  fontCategory: fontCategorySchema,
+  fontFamily: z.string().min(1),
+  fallbackChain: z.array(z.string().min(1)).default([]),
+  headlineText: z.string().max(48),
+  subheadlineText: z.string().max(42).optional(),
+  kickerText: z.string().max(28).optional(),
+  textLess: z.boolean().default(false),
+  fontWeight: z.number().int().min(100).max(900).default(800),
+  trackingEm: z.number().min(-0.08).max(0.4).default(0),
+  leadingRatio: z.number().min(0.8).max(2.0).default(1.0),
+  kerningMode: z.enum(['optical', 'metrics', 'none']).default('optical'),
+  orientation: z.enum(['horizontal', 'vertical']).default('horizontal'),
+  behindSubject: z.boolean().default(false),
+  perspectiveSkewXDeg: z.number().min(-45).max(45).default(0),
+  perspectiveSkewYDeg: z.number().min(-35).max(35).default(0),
+  extrusionDepthPx: z.number().nonnegative().max(24).default(0),
+  textureOverlay: z.enum(['none', 'metallic', 'scanlines', 'distressed']).default('none'),
+  strokeWidth: z.number().nonnegative().max(12).default(0),
+  editorialRationale: z.string().min(1),
+});
+export type TypographyDirectionProposal = z.infer<typeof typographyDirectionProposalSchema>;
+
+export const typographyCritiqueSchema = z.object({
+  passed: z.boolean(),
+  legibility1280Score: z.number().min(0).max(100),
+  legibility224Score: z.number().min(0).max(100),
+  hierarchyScore: z.number().min(0).max(100),
+  negativeSpaceRatio: z.number().min(0).max(1),
+  glyphClipped: z.boolean(),
+  isGenericOrRepetitive: z.boolean(),
+  wordCount: z.number().int().nonnegative(),
+  findings: z.array(z.string()),
+});
+export type TypographyCritique = z.infer<typeof typographyCritiqueSchema>;
+
 export const creativeConceptProposalSchema = z.object({
   id: z.string().min(1),
   label: z.enum(['A', 'B', 'C']),
@@ -445,11 +551,12 @@ export const creativeConceptProposalSchema = z.object({
   fidelityMode: creativeFidelityModeSchema.default('conceptual_art'),
   emotion: z.string().min(1),
   usesHumanCharacter: z.boolean(),
-  textRole: z.enum(['minimal_complement', 'comparison_labels', 'editorial_headline']),
-  headlineText: z.string().min(1).max(48),
+  textRole: z.enum(['minimal_complement', 'comparison_labels', 'editorial_headline', 'textless_or_minimal']),
+  headlineText: z.string().max(48).default(''),
   kickerText: z.string().max(32).optional(),
   leftComparisonLabel: z.string().max(24).optional(),
   rightComparisonLabel: z.string().max(24).optional(),
+  typographyDirection: typographyDirectionProposalSchema.optional(),
   editorialRationale: z.string().min(1),
   mediaRequirements: z.array(conceptMediaRequirementSchema).min(1),
 });
@@ -459,6 +566,8 @@ export const visualConceptCritiqueSchema = z.object({
   conceptId: z.string().min(1),
   stage: z.enum(['pre_render', 'post_render']),
   passed: z.boolean(),
+  autoApprovalBlocked: z.boolean().default(false),
+  evaluationStatus: z.enum(['verified', 'inconclusive_needs_human_review']).default('verified'),
   isGenericOrWeak: z.boolean(),
   narrativeRelevanceScore: z.number().min(0).max(100),
   originalityScore: z.number().min(0).max(100),
@@ -467,6 +576,9 @@ export const visualConceptCritiqueSchema = z.object({
   focalPointScore: z.number().min(0).max(100),
   scriptCoherenceScore: z.number().min(0).max(100),
   semanticScore: z.number().min(0).max(100).optional(),
+  qualityMetrics: visualQualityMetricsSchema.optional(),
+  localizedDefects: z.array(localizedDefectSchema).default([]),
+  typographyCritique: typographyCritiqueSchema.optional(),
   rejectionReason: z.string().optional(),
   criticNotes: z.array(z.string()),
 });

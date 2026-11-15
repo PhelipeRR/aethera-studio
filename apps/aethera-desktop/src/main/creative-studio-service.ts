@@ -17,6 +17,7 @@ import {
   VideoFrameAnalyzer,
   brandKitSchema,
   creativeProjectDocumentSchema,
+  generateTypographyConceptLab,
   type AlignTarget,
   type BrandKit,
   type BrandKitStore,
@@ -429,6 +430,62 @@ export class AetheraCreativeStudioService {
     return { document: combined, previewDataUrl, audit };
   }
 
+  async runTypographyConceptLab(input: {
+    projectId: string;
+    prompt?: string;
+    headline?: string;
+  }): Promise<{
+    variants: Array<{
+      label: 'A' | 'B' | 'C';
+      styleTitle: string;
+      editorialRationale: string;
+      document: CreativeProjectDocument;
+      audit: QualityAuditReport;
+      previewDataUrl: string;
+    }>;
+  }> {
+    const base = this.loadDocument(input.projectId);
+    if (!base) {
+      throw new Error('Creative Studio project not found for Typography Concept Lab.');
+    }
+    const brandKit = base.brandKitId ? this.brandKits.get(base.brandKitId) : null;
+    const lab = await generateTypographyConceptLab({
+      baseDocument: base,
+      input: {
+        title: base.title,
+        prompt: input.prompt ?? base.prompt,
+        ...(input.headline ? { headline: input.headline } : {}),
+        brandKit,
+      },
+      compositionEngine: this.compositionEngine,
+    });
+    const variants: Array<{
+      label: 'A' | 'B' | 'C';
+      styleTitle: string;
+      editorialRationale: string;
+      document: CreativeProjectDocument;
+      audit: QualityAuditReport;
+      previewDataUrl: string;
+    }> = [];
+    for (const v of lab.variants) {
+      this.saveDocument(v.document);
+      this.editors.set(v.document.id, new LayeredDocumentEditor(v.document));
+      const audit = await this.qualityGate.auditProject(v.document, {
+        brandKit,
+        renderedBuffer: v.previewBuffer,
+      });
+      variants.push({
+        label: v.direction.label,
+        styleTitle: `Tipografia ${v.direction.label} — ${v.direction.styleName}`,
+        editorialRationale: v.direction.editorialRationale,
+        document: v.document,
+        audit,
+        previewDataUrl: `data:image/png;base64,${v.previewBuffer.toString('base64')}`,
+      });
+    }
+    return { variants };
+  }
+
   /**
    * Automatically creates a thumbnail proposal when a Cinema Pipeline video finishes rendering.
    */
@@ -536,6 +593,10 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
 
   ipcMain.handle('creative:combine-concepts', async (_ev, input: Parameters<AetheraCreativeStudioService['combineThumbnailConcepts']>[0]) => {
     return service.combineThumbnailConcepts(input);
+  });
+
+  ipcMain.handle('creative:typography-lab', async (_ev, input: Parameters<AetheraCreativeStudioService['runTypographyConceptLab']>[0]) => {
+    return service.runTypographyConceptLab(input);
   });
 
   ipcMain.handle(

@@ -45,8 +45,35 @@ export interface AnimeProvenanceResult {
   frameSha256: string;
   matches: AnimeProvenanceMatch[];
   topMatch?: AnimeProvenanceMatch;
+  isAmbiguous?: boolean;
+  ambiguityReason?: string;
   fromCache: boolean;
   error?: string;
+}
+
+export function evaluateTraceMoeAmbiguity(
+  matches: AnimeProvenanceMatch[],
+): { isAmbiguous: boolean; ambiguityReason?: string } {
+  const top = matches[0];
+  if (!top) return { isAmbiguous: false };
+  if (top.confidence < 0.85) {
+    return {
+      isAmbiguous: true,
+      ambiguityReason: `Confiança moderada (${top.confidence}) — possível cena editada, AMV ou frame com efeitos; exigir confirmação multimodal.`,
+    };
+  }
+  const topKey = String(top.identifiers.anilistId ?? top.workTitle).toLowerCase();
+  const rival = matches.slice(1).find((m) => {
+    const k = String(m.identifiers.anilistId ?? m.workTitle).toLowerCase();
+    return k !== topKey && top.confidence - m.confidence < 0.06;
+  });
+  if (rival) {
+    return {
+      isAmbiguous: true,
+      ambiguityReason: `Correspondência ambígua entre "${top.workTitle}" (${top.confidence}) e "${rival.workTitle}" (${rival.confidence}).`,
+    };
+  }
+  return { isAmbiguous: false };
 }
 
 export interface AnimeProvenanceAdapter {
@@ -76,6 +103,10 @@ export interface AnimeMediaSourceCandidate {
   height?: number;
   score?: number;
   source?: string;
+  postUrl?: string;
+  author?: string;
+  artistCredits?: string[];
+  usageNotice?: string;
 }
 
 export interface AnimeMediaSearchResult {
@@ -270,12 +301,15 @@ export class TraceMoeProvenanceAdapter implements AnimeProvenanceAdapter {
         ...m,
         evidence: { ...m.evidence, fromCache: true },
       }));
-      const { topMatch: _cachedTop, ...cachedRest } = cached.value;
+      const { topMatch: _cachedTop, isAmbiguous: _amb, ambiguityReason: _ambR, ...cachedRest } = cached.value;
+      const amb = evaluateTraceMoeAmbiguity(taggedMatches);
       return {
         ...cachedRest,
         status: taggedMatches.length > 0 ? 'ok' : cached.value.status === 'ok' ? 'no_match' : cached.value.status,
         matches: taggedMatches,
         ...(taggedMatches[0] ? { topMatch: taggedMatches[0] } : {}),
+        isAmbiguous: amb.isAmbiguous,
+        ...(amb.ambiguityReason ? { ambiguityReason: amb.ambiguityReason } : {}),
         fromCache: true,
       };
     }
@@ -473,12 +507,15 @@ export class TraceMoeProvenanceAdapter implements AnimeProvenanceAdapter {
           const filtered = allMatches.filter(
             (m) => m.confidence >= minConfidence && (this.allowAdult || !m.isAdult),
           );
+          const amb = evaluateTraceMoeAmbiguity(filtered);
           return {
             status: filtered.length > 0 ? 'ok' : 'no_match',
             origin: this.id,
             frameSha256,
             matches: filtered,
             ...(filtered[0] ? { topMatch: filtered[0] } : {}),
+            isAmbiguous: amb.isAmbiguous,
+            ...(amb.ambiguityReason ? { ambiguityReason: amb.ambiguityReason } : {}),
             fromCache: false,
           };
         } catch (err) {
@@ -520,6 +557,7 @@ interface SakugabooruPost {
   id: number;
   tags?: string;
   source?: string;
+  author?: string;
   score?: number;
   md5?: string;
   file_size?: number;
@@ -563,22 +601,83 @@ export class SakugabooruSourceAdapter implements AnimeMediaSourceAdapter {
   }
 
   static normalizeTags(query: string, explicitTags?: string[], safeOnly = true): string[] {
-    const rawTags = explicitTags && explicitTags.length > 0 ? explicitTags : [query];
-    const normalized = rawTags
-      .map((t) =>
-        t
-          .toLowerCase()
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '')
-          .replace(/[^a-z0-9:_ ]+/g, ' ')
-          .trim()
-          .replace(/\s+/g, '_'),
-      )
-      .filter((t) => t.length >= 2);
-    if (safeOnly && !normalized.some((t) => t.startsWith('rating:'))) {
-      normalized.push('rating:s');
+    if (explicitTags && explicitTags.length > 0) {
+      const normalized = explicitTags
+        .map((t) =>
+          t
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9:_ ]+/g, ' ')
+            .trim()
+            .replace(/\s+/g, '_'),
+        )
+        .filter((t) => t.length >= 2);
+      if (safeOnly && !normalized.some((t) => t.startsWith('rating:'))) {
+        normalized.push('rating:s');
+      }
+      return [...new Set(normalized)].slice(0, 6);
     }
-    return [...new Set(normalized)].slice(0, 6);
+
+    const clean = query
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9:_ ]+/g, ' ')
+      .trim();
+
+    const KNOWN_SERIES_TAGS: Array<[RegExp, string]> = [
+      [/\bdragon[\s_]+ball[\s_]+z\b/i, 'dragon_ball_z'],
+      [/\bdragon[\s_]+ball[\s_]+super\b/i, 'dragon_ball_super'],
+      [/\bdragon[\s_]+ball\b/i, 'dragon_ball_series'],
+      [/\battack[\s_]+on[\s_]+titan\b|\bshingeki\b/i, 'attack_on_titan'],
+      [/\bdemon[\s_]+slayer\b|\bkimetsu\b/i, 'kimetsu_no_yaiba'],
+      [/\bjujutsu[\s_]+kaisen\b/i, 'jujutsu_kaisen'],
+      [/\bone[\s_]+piece\b/i, 'one_piece'],
+      [/\bchainsaw[\s_]+man\b/i, 'chainsaw_man'],
+      [/\bmy[\s_]+hero[\s_]+academia\b|\bboku[\s_]+no[\s_]+hero\b/i, 'boku_no_hero_academia'],
+      [/\bfullmetal[\s_]+alchemist\b/i, 'fullmetal_alchemist'],
+      [/\bcowboy[\s_]+bebop\b/i, 'cowboy_bebop'],
+      [/\bnaruto\b/i, 'naruto'],
+      [/\bbleach\b/i, 'bleach'],
+      [/\bevangelion\b/i, 'evangelion'],
+    ];
+
+    const out: string[] = [];
+    for (const [re, tag] of KNOWN_SERIES_TAGS) {
+      if (re.test(clean)) {
+        out.push(tag);
+        break;
+      }
+    }
+
+    const KNOWN_SAKUGA_ACTION_TAGS = [
+      'fighting',
+      'beams',
+      'explosions',
+      'lightning',
+      'impact_frames',
+      'hair',
+      'fire',
+      'debris',
+      'smears',
+    ];
+    for (const actTag of KNOWN_SAKUGA_ACTION_TAGS) {
+      if (new RegExp(`\\b${actTag}\\b`, 'i').test(clean)) {
+        out.push(actTag);
+        break;
+      }
+    }
+
+    if (out.length === 0) {
+      const tokens = clean.split(/\s+/).filter((t) => t.length >= 3 && !/^(anime|scene|cena|clip|fight|luta|the|and|with|for)$/.test(t));
+      if (tokens.length > 0) out.push(tokens.slice(0, 2).join('_'));
+    }
+
+    if (safeOnly && !out.some((t) => t.startsWith('rating:'))) {
+      out.push('rating:s');
+    }
+    return [...new Set(out)].slice(0, 6);
   }
 
   async searchClips(input: {
@@ -659,11 +758,13 @@ export class SakugabooruSourceAdapter implements AnimeMediaSourceAdapter {
           })
           .map((p) => {
             const tagList = (p.tags ?? '').split(/\s+/).filter(Boolean);
+            const postUrl = `${this.baseUrl}/post/show/${p.id}`;
             return {
               id: p.id,
               origin: this.id,
               title: `Sakugabooru #${p.id}: ${tagList.slice(0, 6).join(', ')}`,
               url: p.file_url!,
+              postUrl,
               ...(p.preview_url ? { previewUrl: p.preview_url } : {}),
               tags: tagList,
               rating: p.rating ?? 's',
@@ -674,6 +775,8 @@ export class SakugabooruSourceAdapter implements AnimeMediaSourceAdapter {
               ...(p.height !== undefined ? { height: p.height } : {}),
               ...(p.score !== undefined ? { score: p.score } : {}),
               ...(p.source ? { source: p.source } : {}),
+              ...(p.author ? { author: p.author } : {}),
+              usageNotice: 'sakugabooru_reference_requires_editorial_review',
             };
           });
 

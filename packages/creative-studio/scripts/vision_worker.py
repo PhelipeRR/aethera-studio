@@ -262,14 +262,22 @@ def run_evaluate_semantic(args: argparse.Namespace) -> None:
     inputs = processor(text=labels, images=image, return_tensors="pt", padding=True, truncation=True).to(device)
     with torch.no_grad():
         outputs = model(**inputs)
-        probs = outputs.logits_per_image.softmax(dim=1)[0].detach().cpu().tolist()
+        # Use raw cosine similarity (logits_per_image / logit_scale) so CLIP never returns an inflated 100% softmax
+        logit_scale = model.logit_scale.exp().item() if hasattr(model, "logit_scale") else 100.0
+        cos_sims = (outputs.logits_per_image[0] / max(1.0, logit_scale)).detach().cpu().tolist()
 
-    pos_probs = probs[: len(positives)]
-    neg_probs = probs[len(positives) :]
-    pos_sum = float(sum(pos_probs))
-    neg_sum = float(sum(neg_probs))
-    best_pos_idx = max(range(len(positives)), key=lambda i: pos_probs[i])
-    best_neg_idx = max(range(len(negatives)), key=lambda i: neg_probs[i]) if neg_probs else None
+    # Typical CLIP cosine similarity for matching text-image pairs is ~0.20..0.34; map [0.14..0.34] -> [0.35..0.94]
+    def calibrate_cosine(c: float) -> float:
+        return max(0.05, min(0.95, 0.35 + (c - 0.14) * (0.59 / 0.20)))
+
+    cal_scores = [calibrate_cosine(c) for c in cos_sims]
+    pos_scores = cal_scores[: len(positives)]
+    neg_scores = cal_scores[len(positives) :]
+    best_pos_idx = max(range(len(positives)), key=lambda i: pos_scores[i])
+    best_neg_idx = max(range(len(negatives)), key=lambda i: neg_scores[i]) if neg_scores else None
+    best_pos = float(pos_scores[best_pos_idx])
+    best_neg = float(neg_scores[best_neg_idx]) if best_neg_idx is not None else 0.25
+    margin = best_pos - best_neg
 
     print(
         json.dumps(
@@ -280,11 +288,228 @@ def run_evaluate_semantic(args: argparse.Namespace) -> None:
                 "device": device,
                 "best_positive": positives[best_pos_idx],
                 "best_negative": negatives[best_neg_idx] if best_neg_idx is not None else None,
-                "positive_prob": round(pos_sum, 4),
-                "negative_prob": round(neg_sum, 4),
-                "margin": round(pos_sum - neg_sum, 4),
-                "is_off_topic": pos_sum < 0.48 or neg_sum > pos_sum,
-                "scores": {labels[i]: round(float(probs[i]), 4) for i in range(len(labels))},
+                "positive_prob": round(best_pos, 4),
+                "negative_prob": round(best_neg, 4),
+                "margin": round(margin, 4),
+                "is_off_topic": best_pos < 0.52 or margin < 0.04,
+                "scores": {labels[i]: round(float(cal_scores[i]), 4) for i in range(len(labels))},
+            }
+        )
+    )
+
+
+def run_inspect_visual_quality(args: argparse.Namespace) -> None:
+    import numpy as np
+    import torch
+    from PIL import Image, ImageFilter
+    from transformers import CLIPModel, CLIPProcessor
+
+    device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+    model_id = args.clip_model
+    try:
+        model = CLIPModel.from_pretrained(model_id, local_files_only=True).to(device)
+        processor = CLIPProcessor.from_pretrained(model_id, local_files_only=True)
+    except Exception:
+        model = CLIPModel.from_pretrained(model_id).to(device)
+        processor = CLIPProcessor.from_pretrained(model_id)
+
+    img = Image.open(str(args.image)).convert("RGB")
+    w, h = img.size
+    genre = (args.genre or "general").lower()
+
+    # Spatial regions: center hero, left-mid, right-mid, lower-center (where hands/weapons/objects sit)
+    regions = [
+        ("center_focal", int(w * 0.20), int(h * 0.12), int(w * 0.60), int(h * 0.72)),
+        ("left_limb_joint", int(w * 0.05), int(h * 0.18), int(w * 0.42), int(h * 0.68)),
+        ("right_limb_joint", int(w * 0.53), int(h * 0.18), int(w * 0.42), int(h * 0.68)),
+        ("lower_grip_zone", int(w * 0.18), int(h * 0.45), int(w * 0.64), int(h * 0.50)),
+    ]
+
+    clean_probes = (
+        [
+            "clean stylized anime illustration with coherent proportions and sharp linework",
+            "well-composed anime visual scene with clear focal silhouette",
+        ]
+        if genre == "anime"
+        else [
+            "coherent well-structured mechanical hardware device with clean geometry and solid joints",
+            "sharp well-proportioned anatomy and physically plausible object attachment",
+        ]
+    )
+    defect_probes = [
+        ("extra_fingers", "deformed mutated hand with extra fingers, fused fingers, or mangled digits"),
+        ("impossible_joint", "broken twisted anatomical joint or disconnected floating limb"),
+        ("object_clipping_hand", "weapon or object clipping through palm or fusing into distorted fingers"),
+        ("implausible_mech_joint", "chaotic tangled wires and asymmetrical melted mechanical joints"),
+    ]
+    probe_texts = clean_probes + [d[1] for d in defect_probes]
+
+    crops = [img.crop((rx, ry, rx + rw, ry + rh)) for (_, rx, ry, rw, rh) in regions]
+    inputs = processor(text=probe_texts, images=crops, return_tensors="pt", padding=True, truncation=True).to(device)
+    with torch.no_grad():
+        outputs = model(**inputs)
+        probs = outputs.logits_per_image.softmax(dim=1).detach().cpu().numpy()
+
+    localized_defects = []
+    patch_clean_scores = []
+    patch_artifact_scores = []
+
+    for idx, (rname, rx, ry, rw, rh) in enumerate(regions):
+        p = probs[idx]
+        clean_score = float(np.sum(p[: len(clean_probes)]))
+        defect_probs = p[len(clean_probes) :]
+        worst_idx = int(np.argmax(defect_probs))
+        worst_prob = float(defect_probs[worst_idx])
+        d_cat, d_desc = defect_probes[worst_idx]
+        patch_clean_scores.append(clean_score)
+        patch_artifact_scores.append(worst_prob)
+
+        if worst_prob > clean_score + 0.08 or worst_prob >= 0.46:
+            sev = "severe" if worst_prob >= 0.58 else "moderate" if worst_prob >= 0.46 else "minor"
+            localized_defects.append(
+                {
+                    "id": f"defect-{rname}-{d_cat}",
+                    "category": d_cat,
+                    "severity": sev,
+                    "bbox": {"x": rx, "y": ry, "width": rw, "height": rh},
+                    "description": f"Região {rname}: {d_desc} (confiança={worst_prob:.2f} vs limpo={clean_score:.2f})",
+                    "repaired": False,
+                }
+            )
+
+    mean_clean = float(np.mean(patch_clean_scores))
+    max_defect = float(np.max(patch_artifact_scores))
+    anatomical_consistency = int(round(max(20.0, min(96.0, mean_clean * 100.0 - max_defect * 22.0))))
+    physical_coherence = int(round(max(25.0, min(95.0, (1.0 - max_defect * 0.85) * 94.0))))
+    artifact_severity = int(round(max(4.0, min(95.0, max_defect * 100.0))))
+
+    # Composition quality from center-vs-border edge focus
+    edges = np.asarray(img.convert("L").filter(ImageFilter.FIND_EDGES), dtype=np.float32)
+    center_edge = float(np.mean(edges[int(h * 0.15) : int(h * 0.85), int(w * 0.18) : int(w * 0.82)]))
+    global_edge = float(np.mean(edges)) + 1e-5
+    focus_ratio = min(1.35, center_edge / global_edge)
+    composition_quality = int(round(max(55.0, min(95.0, 62.0 + focus_ratio * 22.0))))
+
+    # Subject identity consistency (when comparing before vs after image)
+    subject_identity_consistency = 92
+    if args.compare_image and Path(args.compare_image).exists():
+        comp_img = Image.open(str(args.compare_image)).convert("L").resize((256, 256), Image.Resampling.BILINEAR)
+        base_img = img.convert("L").resize((256, 256), Image.Resampling.BILINEAR)
+        a_edge = np.asarray(base_img.filter(ImageFilter.FIND_EDGES), dtype=np.float32)
+        b_edge = np.asarray(comp_img.filter(ImageFilter.FIND_EDGES), dtype=np.float32)
+        a_norm = a_edge - float(np.mean(a_edge))
+        b_norm = b_edge - float(np.mean(b_edge))
+        denom = float(np.linalg.norm(a_norm) * np.linalg.norm(b_norm)) + 1e-5
+        edge_corr = max(0.0, float(np.sum(a_norm * b_norm)) / denom)
+        # Also compute CLIP image-to-image embedding cosine similarity
+        pair_in = processor(images=[img, Image.open(str(args.compare_image)).convert("RGB")], return_tensors="pt").to(device)
+        with torch.no_grad():
+            img_feats = model.get_image_features(**pair_in)
+            img_feats = img_feats / img_feats.norm(dim=-1, keepdim=True)
+            clip_img_sim = float((img_feats[0] @ img_feats[1]).item())
+        subject_identity_consistency = int(
+            round(max(15.0, min(98.0, edge_corr * 45.0 + max(0.0, clip_img_sim) * 55.0)))
+        )
+        if subject_identity_consistency < 72:
+            localized_defects.append(
+                {
+                    "id": "defect-identity-mismatch",
+                    "category": "identity_mismatch",
+                    "severity": "severe",
+                    "bbox": {"x": int(w * 0.5), "y": 0, "width": int(w * 0.5), "height": h},
+                    "description": f"Inconsistência estrutural entre antes e depois (identidade={subject_identity_consistency}/100, edgeCorr={edge_corr:.2f}, clipSim={clip_img_sim:.2f}).",
+                    "repaired": False,
+                }
+            )
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "mode": "inspect-visual-quality",
+                "model": model_id,
+                "device": device,
+                "anatomical_consistency": anatomical_consistency,
+                "physical_coherence": physical_coherence,
+                "composition_quality": composition_quality,
+                "subject_identity_consistency": subject_identity_consistency,
+                "visual_artifact_severity": artifact_severity,
+                "localized_defects": localized_defects,
+            }
+        )
+    )
+
+
+def run_inpaint_region(args: argparse.Namespace) -> None:
+    import torch
+    from diffusers import AutoPipelineForImage2Image
+    from PIL import Image, ImageDraw, ImageFilter
+
+    device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    load_kwargs = {"torch_dtype": dtype, "local_files_only": True}
+    if device == "cuda":
+        load_kwargs["variant"] = "fp16"
+
+    try:
+        pipe = AutoPipelineForImage2Image.from_pretrained(args.model, **load_kwargs)
+    except Exception:
+        load_kwargs.pop("local_files_only", None)
+        pipe = AutoPipelineForImage2Image.from_pretrained(args.model, **load_kwargs)
+
+    if device == "cuda":
+        pipe.enable_attention_slicing()
+        pipe.enable_vae_tiling()
+        try:
+            pipe.enable_model_cpu_offload()
+        except Exception:
+            pipe = pipe.to("cuda")
+    else:
+        pipe = pipe.to("cpu")
+
+    base = Image.open(str(args.image)).convert("RGB")
+    w, h = base.size
+    parts = [int(float(v)) for v in args.bbox.split(",")]
+    bx, by, bw, bh = parts[0], parts[1], parts[2], parts[3]
+    bx = max(0, min(w - 32, bx))
+    by = max(0, min(h - 32, by))
+    bw = max(32, min(w - bx, bw))
+    bh = max(32, min(h - by, bh))
+
+    crop_w = max(256, min(768, (bw // 8) * 8))
+    crop_h = max(256, min(768, (bh // 8) * 8))
+    patch = base.crop((bx, by, bx + bw, by + bh)).resize((crop_w, crop_h), Image.Resampling.LANCZOS)
+
+    strength = max(0.35, min(0.75, float(args.strength)))
+    steps = max(4, int(round(4 / strength)))
+    repaired_patch = pipe(
+        prompt=args.prompt,
+        image=patch,
+        strength=strength,
+        num_inference_steps=steps,
+        guidance_scale=0.0,
+    ).images[0].resize((bw, bh), Image.Resampling.LANCZOS)
+
+    # Feathered mask so only the defective bbox is seamlessly blended
+    mask = Image.new("L", (bw, bh), 0)
+    draw = ImageDraw.Draw(mask)
+    pad = max(6, min(bw, bh) // 10)
+    draw.rectangle([pad, pad, bw - pad, bh - pad], fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=max(4, pad // 2)))
+
+    out_img = base.copy()
+    out_img.paste(repaired_patch, (bx, by), mask)
+    out_path = Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_img.save(str(out_path), format="PNG")
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "mode": "inpaint-region",
+                "bbox": [bx, by, bw, bh],
+                "output": str(out_path),
             }
         )
     )
@@ -325,6 +550,22 @@ def main() -> int:
     eval_sem.add_argument("--clip-model", default="openai/clip-vit-base-patch32")
     eval_sem.add_argument("--cpu", action="store_true")
 
+    insp_qual = sub.add_parser("inspect-visual-quality")
+    insp_qual.add_argument("--image", required=True)
+    insp_qual.add_argument("--compare-image", default=None)
+    insp_qual.add_argument("--genre", default="general")
+    insp_qual.add_argument("--clip-model", default="openai/clip-vit-base-patch32")
+    insp_qual.add_argument("--cpu", action="store_true")
+
+    inpaint = sub.add_parser("inpaint-region")
+    inpaint.add_argument("--image", required=True)
+    inpaint.add_argument("--output", required=True)
+    inpaint.add_argument("--prompt", required=True)
+    inpaint.add_argument("--bbox", required=True)
+    inpaint.add_argument("--strength", type=float, default=0.52)
+    inpaint.add_argument("--model", default="stabilityai/sdxl-turbo")
+    inpaint.add_argument("--cpu", action="store_true")
+
     args = parser.parse_args()
     if args.command == "generate":
         run_generate(args)
@@ -334,6 +575,10 @@ def main() -> int:
         run_segment_adaptive(args)
     elif args.command == "evaluate-semantic":
         run_evaluate_semantic(args)
+    elif args.command == "inspect-visual-quality":
+        run_inspect_visual_quality(args)
+    elif args.command == "inpaint-region":
+        run_inpaint_region(args)
     return 0
 
 

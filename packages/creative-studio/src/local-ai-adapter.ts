@@ -8,9 +8,13 @@ import type {
   BackgroundRemovalRequest,
   ExternalImageAdapter,
   ImageGenerationRequest,
+  LocalizedInpaintRequest,
   SemanticEvaluationRequest,
   SemanticEvaluationResult,
+  VisualQualityInspectionRequest,
+  VisualQualityInspectionResult,
 } from './image-generation-adapter.js';
+import type { LocalizedDefect } from './schemas.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -199,8 +203,84 @@ export class LocalPythonAiAdapter implements ExternalImageAdapter {
         matchedLabel: parsed.best_positive ?? request.positiveConcepts[0] ?? '',
         rationale: isOffTopic
           ? `CLIP multimodal detectou desalinhamento semântico (${(pos * 100).toFixed(1)}% positivo vs ${(neg * 100).toFixed(1)}% distrator "${parsed.best_negative ?? ''}").`
-          : `CLIP multimodal confirmou aderência ao tema "${parsed.best_positive ?? ''}" (${(pos * 100).toFixed(1)}% vs ${(neg * 100).toFixed(1)}% distrator).`,
+          : `CLIP multimodal confirmou aderência ao tema "${parsed.best_positive ?? ''}" (similaridade calibrada ${(pos * 100).toFixed(1)}% vs ${(neg * 100).toFixed(1)}% distrator).`,
       };
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  }
+
+  async inspectVisualQuality(request: VisualQualityInspectionRequest): Promise<VisualQualityInspectionResult> {
+    const workDir = mkdtempSync(join(tmpdir(), 'aethera-ai-qual-'));
+    const imgPath = join(workDir, 'candidate.png');
+    const compPath = join(workDir, 'compare.png');
+    try {
+      writeFileSync(imgPath, request.imageBuffer);
+      const args = [
+        this.workerScriptPath,
+        'inspect-visual-quality',
+        '--image',
+        imgPath,
+        '--genre',
+        request.genre ?? 'general',
+      ];
+      if (request.compareBeforeBuffer) {
+        writeFileSync(compPath, request.compareBeforeBuffer);
+        args.push('--compare-image', compPath);
+      }
+      if (this.forceCpu) args.push('--cpu');
+      const { stdout } = await execFileAsync(this.pythonPath, args, { timeout: this.timeoutMs });
+      const parsed = JSON.parse(stdout.trim().split(/\r?\n/).pop() || '{}') as {
+        anatomical_consistency?: number;
+        physical_coherence?: number;
+        composition_quality?: number;
+        subject_identity_consistency?: number;
+        visual_artifact_severity?: number;
+        localized_defects?: LocalizedDefect[];
+      };
+      return {
+        evaluatorId: 'local-visual-quality-critic',
+        anatomicalConsistency: parsed.anatomical_consistency ?? 84,
+        physicalCoherence: parsed.physical_coherence ?? 84,
+        compositionQuality: parsed.composition_quality ?? 82,
+        subjectIdentityConsistency: parsed.subject_identity_consistency ?? 90,
+        visualArtifactSeverity: parsed.visual_artifact_severity ?? 14,
+        localizedDefects: Array.isArray(parsed.localized_defects) ? parsed.localized_defects : [],
+      };
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  }
+
+  async inpaintRegion(request: LocalizedInpaintRequest): Promise<Buffer> {
+    const workDir = mkdtempSync(join(tmpdir(), 'aethera-ai-inpaint-'));
+    const inPath = join(workDir, 'base.png');
+    const outPath = join(workDir, 'repaired.png');
+    try {
+      writeFileSync(inPath, request.imageBuffer);
+      const { x, y, width, height } = request.bbox;
+      const args = [
+        this.workerScriptPath,
+        'inpaint-region',
+        '--image',
+        inPath,
+        '--output',
+        outPath,
+        '--prompt',
+        request.prompt,
+        '--bbox',
+        `${Math.round(x)},${Math.round(y)},${Math.round(width)},${Math.round(height)}`,
+        '--strength',
+        String(request.strength ?? 0.52),
+        '--model',
+        this.model,
+      ];
+      if (this.forceCpu) args.push('--cpu');
+      await execFileAsync(this.pythonPath, args, { timeout: this.timeoutMs });
+      if (!existsSync(outPath)) {
+        throw new Error('Local inpaint worker completed without writing repaired PNG.');
+      }
+      return readFileSync(outPath);
     } finally {
       rmSync(workDir, { recursive: true, force: true });
     }
@@ -269,5 +349,31 @@ export class ProviderChainImageAdapter implements ExternalImageAdapter {
       }
     }
     throw new Error('Nenhum provedor multimodal de avaliação semântica disponível.');
+  }
+
+  async inspectVisualQuality(request: VisualQualityInspectionRequest): Promise<VisualQualityInspectionResult> {
+    for (const p of this.providers) {
+      if (!p.inspectVisualQuality) continue;
+      if (!(await p.isAvailable())) continue;
+      try {
+        return await p.inspectVisualQuality(request);
+      } catch {
+        // try next provider
+      }
+    }
+    throw new Error('Nenhum provedor de crítica visual anatômica disponível.');
+  }
+
+  async inpaintRegion(request: LocalizedInpaintRequest): Promise<Buffer> {
+    for (const p of this.providers) {
+      if (!p.inpaintRegion) continue;
+      if (!(await p.isAvailable())) continue;
+      try {
+        return await p.inpaintRegion(request);
+      } catch {
+        // try next provider
+      }
+    }
+    throw new Error('Nenhum provedor de reparo localizado (inpainting) disponível.');
   }
 }

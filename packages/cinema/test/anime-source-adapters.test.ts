@@ -326,5 +326,61 @@ describe('Anime Source Adapters (trace.moe & Sakugabooru) + Scene Grounding Isol
     expect(sakugaCalls).toBe(1);
     expect(animeSearch.candidates.some((c) => c.origin === 'sakugabooru')).toBe(true);
     expect(animeSearch.candidates.filter((c) => c.origin === 'sakugabooru')).toHaveLength(1);
+    const sakugaCand = animeSearch.candidates.find((c) => c.origin === 'sakugabooru')!;
+    expect(sakugaCand.provenanceMetadata?.postUrl).toBe('https://www.sakugabooru.com/post/show/314232');
+    expect(sakugaCand.provenanceMetadata?.usageNotice).toBe('sakugabooru_reference_requires_editorial_review');
+
+    // Ambiguous trace.moe match (e.g. AMV/effects at 0.78 confidence) MUST mark isAmbiguous=true and defer to VisionRouter
+    const ambiguousTraceMoe = new TraceMoeProvenanceAdapter({
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            result: [
+              {
+                anilist: { id: 20, title: { english: 'Naruto' }, isAdult: false },
+                episode: 10,
+                from: 10,
+                to: 12,
+                similarity: 0.78,
+              },
+            ],
+          }),
+          { status: 200 },
+        )) as typeof fetch,
+      minIntervalMs: 0,
+    });
+    const ambDecision = await evaluateMediaRelevance(
+      {
+        mediaId: 'clip_ambiguous',
+        uri: 'dbz_amv.mp4',
+        title: 'Dragon Ball Z Goku AMV',
+        origin: 'sakugabooru',
+        durationSec: 20,
+      },
+      {
+        segmentId: 'seg_dbz',
+        prompt: 'Análise de Dragon Ball Z',
+        narrationText: 'Goku se transforma em Super Saiyajin em Namek.',
+        genre: 'anime_essay',
+        expectedEntities: ['Dragon Ball Z', 'Goku'],
+      },
+      {
+        requireVisualVerification: true,
+        animeProvenance: ambiguousTraceMoe,
+        provenanceFrameBuffer: Buffer.from('amv-effect-frame'),
+        analyzeFrames: async (_uri, timestampsSec) =>
+          timestampsSec.map((t) => ({
+            timestampSec: t,
+            description: 'Dragon Ball Z Goku transforms into Super Saiyan',
+            detectedEntities: ['Dragon Ball Z', 'Goku'],
+            detectedActions: ['transforma'],
+            visualCategory: 'anime_animation',
+            confidence: 0.9,
+          })),
+      },
+    );
+    expect(ambDecision.accepted).toBe(true);
+    expect(ambDecision.animeProvenance?.isAmbiguous).toBe(true);
+    expect(ambDecision.animeProvenance?.ambiguityReason).toBeTruthy();
   });
 });
