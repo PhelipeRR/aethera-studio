@@ -4,7 +4,7 @@
 
 Aethera Studio é um app desktop Electron + React. A partir de um pedido em linguagem natural, ele pesquisa o tema, escreve o roteiro, decupa as cenas, busca e valida a mídia, monta a timeline, gera a narração e renderiza uma prévia MP4 real com FFmpeg. As etapas pesadas de IA rodam nos CLIs que você já autenticou (**Antigravity**, **Claude Code** e **Codex**) e em modelos locais (Ollama, SDXL-Turbo, rembg e CLIP). Os dados ficam na sua máquina, em SQLite e em arquivos de workspace.
 
-Este repositório é um monorepo com npm workspaces. Além do Aethera, ele traz o **Singularity Orchestrator** (`apps/orchestrator-desktop`), o **Void** (`apps/void-desktop`) e o app NeuralBridge original (`apps/desktop`). A documentação anterior do NeuralBridge está em [`docs/NEURALBRIDGE-README.md`](docs/NEURALBRIDGE-README.md).
+Este repositório é um monorepo com npm workspaces. Além do Aethera, ele traz o **Singularity Orchestrator** (`apps/orchestrator-desktop`), o **Void** (`apps/void-desktop`) e o app **Singularity** (`apps/desktop`, antigo NeuralBridge). A documentação anterior do Singularity está em [`docs/SINGULARITY-README.md`](docs/SINGULARITY-README.md). Os pacotes internos mantêm o escopo `@neuralbridge/*`.
 
 ---
 
@@ -198,4 +198,4 @@ npm run dev -w @neuralbridge/aethera-desktop
 - [Status do Aethera](docs/aethera/STATUS.md) · [Plano](docs/PLAN.md)
 - [Motor de cinema](docs/aethera/cinema/) · [Creative Studio](docs/plans/aethera-creative-studio.md)
 - [Separação do ecossistema Singularity](docs/architecture/SEP-2026-01-BASELINE.md) · [Contratos](docs/architecture/ADR-SEP-02-CONTRACTS.md)
-- [README anterior do NeuralBridge](docs/NEURALBRIDGE-README.md)
+- [README anterior do Singularity](docs/SINGULARITY-README.md)

@@ -1,4 +1,4 @@
-# NeuralBridge
+# Singularity (antigo NeuralBridge)
 
 > Orquestrador multiagente local e memória compartilhada para **Claude Code** e **Codex CLI**, empacotado como app desktop para Windows.
 
