@@ -3,6 +3,7 @@ export * from './analysis/media-intelligence.js';
 export * from './analysis/media-coverage-planner.js';
 export * from './analysis/anime-source-adapters.js';
 export * from './analysis/resilient-media-sources.js';
+export * from './analysis/media-providers/index.js';
 export * from './director/cinematography-director.js';
 export * from './editorial/editorial-integrity.js';
 export * from './editorial/research-and-decupagem.js';

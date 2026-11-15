@@ -1,0 +1,1053 @@
+{
+  "startedAt": "2026-11-15T23:34:43.134Z",
+  "health": {
+    "steam": {
+      "connectivity": "ok",
+      "latencyMs": 342,
+      "detail": "Conectado (10 resultado(s) na consulta de teste).",
+      "checkedAt": "2026-11-15T23:34:43.477Z"
+    },
+    "igdb": {
+      "connectivity": "auth_missing",
+      "detail": "Credencial ausente — configure a chave para testar.",
+      "checkedAt": "2026-11-15T23:34:43.477Z"
+    },
+    "youtube": {
+      "connectivity": "auth_missing",
+      "detail": "Credencial ausente — configure a chave para testar.",
+      "checkedAt": "2026-11-15T23:34:43.477Z"
+    },
+    "pexels": {
+      "connectivity": "auth_missing",
+      "detail": "Credencial ausente — configure a chave para testar.",
+      "checkedAt": "2026-11-15T23:34:43.477Z"
+    },
+    "pixabay": {
+      "connectivity": "auth_missing",
+      "detail": "Credencial ausente — configure a chave para testar.",
+      "checkedAt": "2026-11-15T23:34:43.477Z"
+    },
+    "nekos_best": {
+      "connectivity": "ok",
+      "latencyMs": 804,
+      "detail": "Conectado (63 resultado(s) na consulta de teste).",
+      "checkedAt": "2026-11-15T23:34:44.281Z"
+    },
+    "kawaii_red": {
+      "connectivity": "ok",
+      "latencyMs": 285,
+      "detail": "Conectado (76 resultado(s) na consulta de teste).",
+      "checkedAt": "2026-11-15T23:34:44.567Z"
+    },
+    "huggingface_datasets": {
+      "connectivity": "ok",
+      "latencyMs": 279,
+      "detail": "Conectado (1 resultado(s) na consulta de teste).",
+      "checkedAt": "2026-11-15T23:34:44.846Z"
+    },
+    "rawg": {
+      "connectivity": "auth_missing",
+      "detail": "Credencial ausente — configure a chave para testar.",
+      "checkedAt": "2026-11-15T23:34:44.846Z"
+    },
+    "waifu_pics": {
+      "connectivity": "unavailable_permanently",
+      "detail": "API fora do ar: api.waifu.pics não resolve DNS (NXDOMAIN em 8.8.8.8 e 1.1.1.1) e waifu.pics/docs exibe conteúdo de apostas não relacionado — domínio comprometido. Verificado em 2026-11-15.",
+      "checkedAt": "2026-11-15T23:34:44.846Z"
+    },
+    "anime_reaction_api": {
+      "connectivity": "unavailable_permanently",
+      "detail": "Servidor público (anime-reactions.uzairashraf.dev) recusa conexão; repositório sem atualização desde 2023-01 e sem licença. Exigiria hospedar o projeto e ainda assim não há licença das imagens. Verificado em 2026-11-15.",
+      "checkedAt": "2026-11-15T23:34:44.846Z"
+    },
+    "mixkit": {
+      "connectivity": "unavailable_permanently",
+      "detail": "Mixkit não oferece API pública (mixkit.co/api/ → HTTP 404). Integração exigiria scraping não autorizado, que não é implementado. Use download manual + biblioteca local.",
+      "checkedAt": "2026-11-15T23:34:44.846Z"
+    }
+  },
+  "searches": {
+    "steam": {
+      "query": "Cyberpunk 2077",
+      "count": 5,
+      "hasMore": true,
+      "sample": [
+        {
+          "id": "steam:movie_257474177",
+          "kind": "video",
+          "title": "Cyberpunk 2077 — Cyberpunk 2077 | Broken Dreams | Edgerunners 2 Update Launch Trailer",
+          "classification": "official_game_trailer",
+          "license": "publisher_promotional",
+          "acquisition": "hls",
+          "pageUrl": "https://store.steampowered.com/app/1091500/"
+        },
+        {
+          "id": "steam:movie_257472812",
+          "kind": "video",
+          "title": "Cyberpunk 2077 — Cyberpunk 2077 | Edgerunners 2 Update Features Overview",
+          "classification": "official_game_trailer",
+          "license": "publisher_promotional",
+          "acquisition": "hls",
+          "pageUrl": "https://store.steampowered.com/app/1091500/"
+        },
+        {
+          "id": "steam:movie_257081132",
+          "kind": "video",
+          "title": "Cyberpunk 2077 — \"Cyberpunk 2077: Ultimate Edition\" — City of Dreams",
+          "classification": "official_game_trailer",
+          "license": "publisher_promotional",
+          "acquisition": "hls",
+          "pageUrl": "https://store.steampowered.com/app/1091500/"
+        }
+      ]
+    },
+    "nekos_best": {
+      "query": "hug",
+      "count": 5,
+      "hasMore": false,
+      "sample": [
+        {
+          "id": "nekos_best:hug_7d850fb2-5346-4323-b0d2-9d2bf025fd12",
+          "kind": "gif",
+          "title": "Shinsekai yori — hug",
+          "classification": "anime_reaction_gif",
+          "license": "nekos_best_tos",
+          "acquisition": "none",
+          "pageUrl": "https://nekos.best/api/v2/hug/7d850fb2-5346-4323-b0d2-9d2bf025fd12.gif"
+        },
+        {
+          "id": "nekos_best:hug_56886a54-ef3f-4947-b069-494af839f70c",
+          "kind": "gif",
+          "title": "Kantai Collection: KanColle — hug",
+          "classification": "anime_reaction_gif",
+          "license": "nekos_best_tos",
+          "acquisition": "none",
+          "pageUrl": "https://nekos.best/api/v2/hug/56886a54-ef3f-4947-b069-494af839f70c.gif"
+        },
+        {
+          "id": "nekos_best:hug_5721b0f4-a2ed-4de6-9ea3-763601c72fc9",
+          "kind": "gif",
+          "title": "Acchi Kocchi — hug",
+          "classification": "anime_reaction_gif",
+          "license": "nekos_best_tos",
+          "acquisition": "none",
+          "pageUrl": "https://nekos.best/api/v2/hug/5721b0f4-a2ed-4de6-9ea3-763601c72fc9.gif"
+        }
+      ]
+    },
+    "kawaii_red": {
+      "query": "hug",
+      "count": 5,
+      "hasMore": false,
+      "sample": [
+        {
+          "id": "kawaii_red:hug_hug20",
+          "kind": "gif",
+          "title": "Reação — hug",
+          "classification": "anime_reaction_gif",
+          "license": "unknown",
+          "acquisition": "direct_http",
+          "pageUrl": "https://api.kawaii.red/gif/hug/hug20.gif"
+        },
+        {
+          "id": "kawaii_red:hug_hug21",
+          "kind": "gif",
+          "title": "Reação — hug",
+          "classification": "anime_reaction_gif",
+          "license": "unknown",
+          "acquisition": "direct_http",
+          "pageUrl": "https://api.kawaii.red/gif/hug/hug21.gif"
+        },
+        {
+          "id": "kawaii_red:hug_hug14",
+          "kind": "gif",
+          "title": "Reação — hug",
+          "classification": "anime_reaction_gif",
+          "license": "unknown",
+          "acquisition": "direct_http",
+          "pageUrl": "https://api.kawaii.red/gif/hug/hug14.gif"
+        }
+      ]
+    },
+    "huggingface_datasets": {
+      "query": "gameplay",
+      "count": 5,
+      "hasMore": true,
+      "sample": [
+        {
+          "id": "huggingface_datasets:xiaoluo11/marvels-spider-man-2-gameplay-data",
+          "kind": "dataset",
+          "title": "漫威蜘蛛侠2",
+          "classification": "dataset_media",
+          "license": "unknown",
+          "acquisition": "none",
+          "pageUrl": "https://huggingface.co/datasets/xiaoluo11/marvels-spider-man-2-gameplay-data"
+        },
+        {
+          "id": "huggingface_datasets:Infatoshi/terraria-gameplay-256x144-15fps",
+          "kind": "dataset",
+          "title": "Infatoshi/terraria-gameplay-256x144-15fps",
+          "classification": "dataset_media",
+          "license": "unknown",
+          "acquisition": "none",
+          "pageUrl": "https://huggingface.co/datasets/Infatoshi/terraria-gameplay-256x144-15fps"
+        },
+        {
+          "id": "huggingface_datasets:Sunain-Labs/sunain-gameplay",
+          "kind": "dataset",
+          "title": "Sunain Gameplay",
+          "classification": "ai_generated",
+          "license": "apache-2.0",
+          "acquisition": "none",
+          "pageUrl": "https://huggingface.co/datasets/Sunain-Labs/sunain-gameplay"
+        }
+      ]
+    }
+  },
+  "acquisitions": [
+    {
+      "id": "steam:ss_1091500_0",
+      "method": "direct_http",
+      "file": "C:\\dev\\neuralbridge-studio\\artifacts\\media-providers-live\\media\\ss_1091500_0.jpg",
+      "bytes": 349046,
+      "durationMs": 595
+    },
+    {
+      "id": "steam:movie_257474177",
+      "method": "hls",
+      "file": "C:\\dev\\neuralbridge-studio\\artifacts\\media-providers-live\\media\\movie_257474177.mp4",
+      "bytes": 8231963,
+      "durationMs": 1821
+    }
+  ],
+  "scenes": {
+    "cyberpunk": {
+      "intent": "game_specific",
+      "providers": [
+        "steam",
+        "igdb",
+        "youtube"
+      ],
+      "attempts": [
+        {
+          "provider": "steam",
+          "status": "ok",
+          "count": 8,
+          "durationMs": 995
+        }
+      ],
+      "accepted": [
+        {
+          "id": "steam:movie_257474176",
+          "classification": "official_game_trailer",
+          "license": "pending_human_review",
+          "score": 13.5
+        },
+        {
+          "id": "steam:movie_257472497",
+          "classification": "official_game_trailer",
+          "license": "pending_human_review",
+          "score": 13.5
+        },
+        {
+          "id": "steam:movie_257082775",
+          "classification": "official_game_trailer",
+          "license": "pending_human_review",
+          "score": 13.5
+        },
+        {
+          "id": "steam:movie_256987122",
+          "classification": "official_game_trailer",
+          "license": "pending_human_review",
+          "score": 13.5
+        }
+      ],
+      "rejected": []
+    },
+    "top10_2027": {
+      "intent": "game_ranking",
+      "providers": [
+        "steam",
+        "youtube",
+        "igdb"
+      ],
+      "attempts": [
+        {
+          "provider": "steam",
+          "status": "ok",
+          "count": 8,
+          "durationMs": 739
+        }
+      ],
+      "accepted": [
+        {
+          "id": "steam:movie_257474176",
+          "classification": "official_game_trailer",
+          "license": "pending_human_review",
+          "score": 10.5
+        },
+        {
+          "id": "steam:movie_257472497",
+          "classification": "official_game_trailer",
+          "license": "pending_human_review",
+          "score": 10.5
+        },
+        {
+          "id": "steam:movie_257082775",
+          "classification": "official_game_trailer",
+          "license": "pending_human_review",
+          "score": 10.5
+        },
+        {
+          "id": "steam:movie_256987122",
+          "classification": "official_game_trailer",
+          "license": "pending_human_review",
+          "score": 10.5
+        }
+      ],
+      "rejected": []
+    },
+    "tecnologia": {
+      "intent": "generic_broll",
+      "providers": [
+        "pexels",
+        "pixabay"
+      ],
+      "attempts": [
+        {
+          "provider": "pexels",
+          "status": "skipped_no_auth",
+          "count": 0,
+          "durationMs": 0,
+          "detail": "Credencial ausente."
+        },
+        {
+          "provider": "pixabay",
+          "status": "skipped_no_auth",
+          "count": 0,
+          "durationMs": 0,
+          "detail": "Credencial ausente."
+        }
+      ],
+      "accepted": [],
+      "rejected": []
+    },
+    "anime_reacao": {
+      "intent": "anime_reaction",
+      "providers": [
+        "nekos_best",
+        "kawaii_red"
+      ],
+      "attempts": [
+        {
+          "provider": "nekos_best",
+          "status": "ok",
+          "count": 8,
+          "durationMs": 819
+        },
+        {
+          "provider": "kawaii_red",
+          "status": "ok",
+          "count": 5,
+          "durationMs": 1910
+        }
+      ],
+      "accepted": [
+        {
+          "id": "kawaii_red:hug_hug19",
+          "classification": "anime_reaction_gif",
+          "license": "pending_human_review",
+          "score": 9
+        },
+        {
+          "id": "kawaii_red:hug_hug8",
+          "classification": "anime_reaction_gif",
+          "license": "pending_human_review",
+          "score": 9
+        },
+        {
+          "id": "kawaii_red:hug_hug14",
+          "classification": "anime_reaction_gif",
+          "license": "pending_human_review",
+          "score": 9
+        },
+        {
+          "id": "kawaii_red:hug_hug23",
+          "classification": "anime_reaction_gif",
+          "license": "pending_human_review",
+          "score": 9
+        }
+      ],
+      "rejected": [
+        {
+          "id": "nekos_best:hug_7d850fb2-5346-4323-b0d2-9d2bf025fd12",
+          "stage": "license",
+          "code": "license_incompatible",
+          "reason": "Os termos de nekos.best Terms of Service proíbem download automatizado."
+        },
+        {
+          "id": "nekos_best:hug_f88c212e-b0dc-4a44-a6ef-8f9ab761d95d",
+          "stage": "license",
+          "code": "license_incompatible",
+          "reason": "Os termos de nekos.best Terms of Service proíbem download automatizado."
+        },
+        {
+          "id": "nekos_best:hug_6ffba377-796c-4157-88a1-82e4b1198340",
+          "stage": "license",
+          "code": "license_incompatible",
+          "reason": "Os termos de nekos.best Terms of Service proíbem download automatizado."
+        },
+        {
+          "id": "nekos_best:hug_c08992e3-ec9c-4cf4-88d0-6ca921d3ef64",
+          "stage": "license",
+          "code": "license_incompatible",
+          "reason": "Os termos de nekos.best Terms of Service proíbem download automatizado."
+        }
+      ]
+    }
+  },
+  "finishedAt": "2026-11-15T23:34:54.788Z",
+  "status": [
+    {
+      "id": "steam",
+      "enabled": true,
+      "configured": true,
+      "connectivity": "ok",
+      "lastError": null
+    },
+    {
+      "id": "igdb",
+      "enabled": true,
+      "configured": false,
+      "connectivity": "auth_missing",
+      "lastError": null
+    },
+    {
+      "id": "youtube",
+      "enabled": true,
+      "configured": false,
+      "connectivity": "auth_missing",
+      "lastError": null
+    },
+    {
+      "id": "pexels",
+      "enabled": true,
+      "configured": false,
+      "connectivity": "auth_missing",
+      "lastError": null
+    },
+    {
+      "id": "pixabay",
+      "enabled": true,
+      "configured": false,
+      "connectivity": "auth_missing",
+      "lastError": null
+    },
+    {
+      "id": "nekos_best",
+      "enabled": true,
+      "configured": true,
+      "connectivity": "ok",
+      "lastError": null
+    },
+    {
+      "id": "kawaii_red",
+      "enabled": true,
+      "configured": true,
+      "connectivity": "ok",
+      "lastError": null
+    },
+    {
+      "id": "huggingface_datasets",
+      "enabled": true,
+      "configured": true,
+      "connectivity": "ok",
+      "lastError": null
+    },
+    {
+      "id": "rawg",
+      "enabled": false,
+      "configured": false,
+      "connectivity": "disabled",
+      "lastError": null
+    },
+    {
+      "id": "waifu_pics",
+      "enabled": false,
+      "configured": false,
+      "connectivity": "unavailable_permanently",
+      "lastError": "API fora do ar: api.waifu.pics não resolve DNS (NXDOMAIN em 8.8.8.8 e 1.1.1.1) e waifu.pics/docs exibe conteúdo de apostas não relacionado — domínio comprometido. Verificado em 2026-11-15."
+    },
+    {
+      "id": "anime_reaction_api",
+      "enabled": false,
+      "configured": false,
+      "connectivity": "unavailable_permanently",
+      "lastError": "Servidor público (anime-reactions.uzairashraf.dev) recusa conexão; repositório sem atualização desde 2023-01 e sem licença. Exigiria hospedar o projeto e ainda assim não há licença das imagens. Verificado em 2026-11-15."
+    },
+    {
+      "id": "mixkit",
+      "enabled": false,
+      "configured": false,
+      "connectivity": "unavailable_permanently",
+      "lastError": "Mixkit não oferece API pública (mixkit.co/api/ → HTTP 404). Integração exigiria scraping não autorizado, que não é implementado. Use download manual + biblioteca local."
+    }
+  ],
+  "events": [
+    {
+      "type": "provider_query",
+      "provider": "steam",
+      "jobId": "live-check",
+      "query": "Cyberpunk 2077",
+      "page": 1,
+      "at": "2026-11-15T23:34:44.847Z"
+    },
+    {
+      "type": "provider_result",
+      "provider": "steam",
+      "jobId": "live-check",
+      "query": "Cyberpunk 2077",
+      "count": 5,
+      "durationMs": 837,
+      "fromCache": false,
+      "at": "2026-11-15T23:34:45.685Z"
+    },
+    {
+      "type": "provider_query",
+      "provider": "steam",
+      "query": "Cyberpunk 2077",
+      "page": 1,
+      "at": "2026-11-15T23:34:45.685Z"
+    },
+    {
+      "type": "provider_result",
+      "provider": "steam",
+      "query": "Cyberpunk 2077",
+      "count": 5,
+      "durationMs": 730,
+      "fromCache": false,
+      "at": "2026-11-15T23:34:46.415Z"
+    },
+    {
+      "type": "provider_query",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "query": "hug",
+      "page": 1,
+      "at": "2026-11-15T23:34:46.415Z"
+    },
+    {
+      "type": "provider_result",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "query": "hug",
+      "count": 5,
+      "durationMs": 227,
+      "fromCache": false,
+      "at": "2026-11-15T23:34:46.642Z"
+    },
+    {
+      "type": "provider_query",
+      "provider": "kawaii_red",
+      "jobId": "live-check",
+      "query": "hug",
+      "page": 1,
+      "at": "2026-11-15T23:34:46.642Z"
+    },
+    {
+      "type": "provider_result",
+      "provider": "kawaii_red",
+      "jobId": "live-check",
+      "query": "hug",
+      "count": 5,
+      "durationMs": 1103,
+      "fromCache": false,
+      "at": "2026-11-15T23:34:47.745Z"
+    },
+    {
+      "type": "provider_query",
+      "provider": "huggingface_datasets",
+      "jobId": "live-check",
+      "query": "gameplay",
+      "page": 1,
+      "at": "2026-11-15T23:34:47.745Z"
+    },
+    {
+      "type": "provider_result",
+      "provider": "huggingface_datasets",
+      "jobId": "live-check",
+      "query": "gameplay",
+      "count": 5,
+      "durationMs": 158,
+      "fromCache": false,
+      "at": "2026-11-15T23:34:47.903Z"
+    },
+    {
+      "type": "download_started",
+      "provider": "steam",
+      "jobId": "live-check",
+      "itemId": "steam:ss_1091500_0",
+      "url": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1091500/ss_2f649b68d579bf87011487d29bc4ccbfdd97d34f.1920x1080.jpg?t=1794474878",
+      "at": "2026-11-15T23:34:47.903Z"
+    },
+    {
+      "type": "download_completed",
+      "provider": "steam",
+      "jobId": "live-check",
+      "itemId": "steam:ss_1091500_0",
+      "filePath": "C:\\dev\\neuralbridge-studio\\artifacts\\media-providers-live\\media\\ss_1091500_0.jpg",
+      "bytes": 349046,
+      "durationMs": 595,
+      "at": "2026-11-15T23:34:48.499Z"
+    },
+    {
+      "type": "download_started",
+      "provider": "steam",
+      "jobId": "live-check",
+      "itemId": "steam:movie_257474177",
+      "url": "https://video.akamai.steamstatic.com/store_trailers/1091500/512843956/7ddc0c953816d19d719b299eb76b1ce188e17225/1792676918/hls_264_master.m3u8?t=1792682496",
+      "at": "2026-11-15T23:34:48.499Z"
+    },
+    {
+      "type": "download_completed",
+      "provider": "steam",
+      "jobId": "live-check",
+      "itemId": "steam:movie_257474177",
+      "filePath": "C:\\dev\\neuralbridge-studio\\artifacts\\media-providers-live\\media\\movie_257474177.mp4",
+      "bytes": 8231963,
+      "durationMs": 1821,
+      "at": "2026-11-15T23:34:50.321Z"
+    },
+    {
+      "type": "source_plan",
+      "jobId": "live-check",
+      "sceneId": "cyberpunk",
+      "intent": "game_specific",
+      "providers": [
+        "steam",
+        "igdb",
+        "youtube"
+      ],
+      "rationale": "Cena sobre um jogo específico: priorizar Steam (trailers/screenshots oficiais), IGDB e YouTube oficial; stock não prova identidade.",
+      "at": "2026-11-15T23:34:50.321Z"
+    },
+    {
+      "type": "provider_query",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "cyberpunk",
+      "query": "Cyberpunk 2077 Night City",
+      "page": 1,
+      "at": "2026-11-15T23:34:50.321Z"
+    },
+    {
+      "type": "provider_result",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "cyberpunk",
+      "query": "Cyberpunk 2077 Night City",
+      "count": 8,
+      "durationMs": 995,
+      "fromCache": false,
+      "at": "2026-11-15T23:34:51.316Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "cyberpunk",
+      "itemId": "steam:movie_257474176",
+      "title": "Cyberpunk 2077 — Cyberpunk 2077 | Broken Dreams | Edgerunners 2 Update Launch Trailer",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:51.317Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "cyberpunk",
+      "itemId": "steam:movie_257472497",
+      "title": "Cyberpunk 2077 — Cyberpunk 2077 | Edgerunners 2 Update Features Overview",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:51.317Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "cyberpunk",
+      "itemId": "steam:movie_257082775",
+      "title": "Cyberpunk 2077 — Cyberpunk 2077: Ultimate Edition — City of Dreams",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:51.317Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "cyberpunk",
+      "itemId": "steam:movie_256987122",
+      "title": "Cyberpunk 2077 — 027_2_1_UpdateTrailer_EN_ESRB M_16x9_1080",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:51.317Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "cyberpunk",
+      "itemId": "steam:movie_256983890",
+      "title": "Cyberpunk 2077 — 001 BaseGame Accolades Trailer EN ESRB-M 16x9 1080",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:51.317Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "cyberpunk",
+      "itemId": "steam:movie_256977937",
+      "title": "Cyberpunk 2077 — 006_EP1_2.0_trailer_ES-MX_ESRB-ES M_16x9_1080",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:51.317Z"
+    },
+    {
+      "type": "source_plan",
+      "jobId": "live-check",
+      "sceneId": "top10",
+      "intent": "game_ranking",
+      "providers": [
+        "steam",
+        "igdb",
+        "youtube"
+      ],
+      "rationale": "Ranking de jogos: IGDB para pesquisa dos títulos; Steam/YouTube para a mídia de cada jogo.",
+      "at": "2026-11-15T23:34:51.317Z"
+    },
+    {
+      "type": "provider_query",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "top10",
+      "query": "Cyberpunk 2077",
+      "page": 1,
+      "at": "2026-11-15T23:34:51.317Z"
+    },
+    {
+      "type": "provider_result",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "top10",
+      "query": "Cyberpunk 2077",
+      "count": 8,
+      "durationMs": 739,
+      "fromCache": false,
+      "at": "2026-11-15T23:34:52.056Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "top10",
+      "itemId": "steam:movie_257474176",
+      "title": "Cyberpunk 2077 — Cyberpunk 2077 | Broken Dreams | Edgerunners 2 Update Launch Trailer",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:52.056Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "top10",
+      "itemId": "steam:movie_257472497",
+      "title": "Cyberpunk 2077 — Cyberpunk 2077 | Edgerunners 2 Update Features Overview",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:52.056Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "top10",
+      "itemId": "steam:movie_257082775",
+      "title": "Cyberpunk 2077 — Cyberpunk 2077: Ultimate Edition — City of Dreams",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:52.056Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "top10",
+      "itemId": "steam:movie_256987122",
+      "title": "Cyberpunk 2077 — 027_2_1_UpdateTrailer_EN_ESRB M_16x9_1080",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:52.056Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "top10",
+      "itemId": "steam:movie_256983890",
+      "title": "Cyberpunk 2077 — 001 BaseGame Accolades Trailer EN ESRB-M 16x9 1080",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:52.056Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "steam",
+      "jobId": "live-check",
+      "sceneId": "top10",
+      "itemId": "steam:movie_256977937",
+      "title": "Cyberpunk 2077 — 006_EP1_2.0_trailer_ES-MX_ESRB-ES M_16x9_1080",
+      "classification": "official_game_trailer",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:52.056Z"
+    },
+    {
+      "type": "source_plan",
+      "jobId": "live-check",
+      "sceneId": "tech",
+      "intent": "generic_broll",
+      "providers": [
+        "pexels",
+        "pixabay"
+      ],
+      "rationale": "Cena genérica: bancos de stock (Pexels, Pixabay) com licença conhecida.",
+      "at": "2026-11-15T23:34:52.057Z"
+    },
+    {
+      "type": "provider_skipped",
+      "provider": "pexels",
+      "jobId": "live-check",
+      "sceneId": "tech",
+      "reason": "Credencial ausente.",
+      "at": "2026-11-15T23:34:52.057Z"
+    },
+    {
+      "type": "provider_fallback",
+      "from": "pexels",
+      "to": "pixabay",
+      "jobId": "live-check",
+      "sceneId": "tech",
+      "reason": "Credencial ausente.",
+      "at": "2026-11-15T23:34:52.057Z"
+    },
+    {
+      "type": "provider_skipped",
+      "provider": "pixabay",
+      "jobId": "live-check",
+      "sceneId": "tech",
+      "reason": "Credencial ausente.",
+      "at": "2026-11-15T23:34:52.057Z"
+    },
+    {
+      "type": "provider_fallback",
+      "from": "pixabay",
+      "to": null,
+      "jobId": "live-check",
+      "sceneId": "tech",
+      "reason": "Credencial ausente. Sem mais provedores adequados para a cena.",
+      "at": "2026-11-15T23:34:52.057Z"
+    },
+    {
+      "type": "source_plan",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "intent": "anime_reaction",
+      "providers": [
+        "nekos_best",
+        "kawaii_red"
+      ],
+      "rationale": "Beat de reação/emoção sem personagem nomeado: provedores de reação de anime são apropriados.",
+      "at": "2026-11-15T23:34:52.057Z"
+    },
+    {
+      "type": "provider_query",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "query": "hug",
+      "page": 1,
+      "at": "2026-11-15T23:34:52.057Z"
+    },
+    {
+      "type": "provider_result",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "query": "hug",
+      "count": 8,
+      "durationMs": 819,
+      "fromCache": false,
+      "at": "2026-11-15T23:34:52.876Z"
+    },
+    {
+      "type": "media_rejected",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "nekos_best:hug_7d850fb2-5346-4323-b0d2-9d2bf025fd12",
+      "title": "Shinsekai yori — hug",
+      "reason": "Os termos de nekos.best Terms of Service proíbem download automatizado.",
+      "at": "2026-11-15T23:34:52.876Z"
+    },
+    {
+      "type": "media_rejected",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "nekos_best:hug_f88c212e-b0dc-4a44-a6ef-8f9ab761d95d",
+      "title": "Nagi no Asukara — hug",
+      "reason": "Os termos de nekos.best Terms of Service proíbem download automatizado.",
+      "at": "2026-11-15T23:34:52.876Z"
+    },
+    {
+      "type": "media_rejected",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "nekos_best:hug_6ffba377-796c-4157-88a1-82e4b1198340",
+      "title": "Yuru Yuri — hug",
+      "reason": "Os termos de nekos.best Terms of Service proíbem download automatizado.",
+      "at": "2026-11-15T23:34:52.877Z"
+    },
+    {
+      "type": "media_rejected",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "nekos_best:hug_c08992e3-ec9c-4cf4-88d0-6ca921d3ef64",
+      "title": "Noragami OAD — hug",
+      "reason": "Os termos de nekos.best Terms of Service proíbem download automatizado.",
+      "at": "2026-11-15T23:34:52.877Z"
+    },
+    {
+      "type": "media_rejected",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "nekos_best:hug_e549230e-34a7-4834-86a9-c4c76df0531d",
+      "title": "Hayate no Gotoku — hug",
+      "reason": "Os termos de nekos.best Terms of Service proíbem download automatizado.",
+      "at": "2026-11-15T23:34:52.877Z"
+    },
+    {
+      "type": "media_rejected",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "nekos_best:hug_53acd7c7-b1f8-4717-baa0-734753ac7c79",
+      "title": "Sora no Method — hug",
+      "reason": "Classe ai_generated não é adequada para cena \"anime_reaction\".",
+      "at": "2026-11-15T23:34:52.877Z"
+    },
+    {
+      "type": "media_rejected",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "nekos_best:hug_65eb2602-d986-417a-9422-ff1319d4b324",
+      "title": "Kamisama no Inai Nichiyoubi — hug",
+      "reason": "Os termos de nekos.best Terms of Service proíbem download automatizado.",
+      "at": "2026-11-15T23:34:52.877Z"
+    },
+    {
+      "type": "media_rejected",
+      "provider": "nekos_best",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "nekos_best:hug_350aee04-6ec3-40a9-b45e-15c754b9c25d",
+      "title": "Akebi-chan no Sailor Fuku — hug",
+      "reason": "Os termos de nekos.best Terms of Service proíbem download automatizado.",
+      "at": "2026-11-15T23:34:52.877Z"
+    },
+    {
+      "type": "provider_query",
+      "provider": "kawaii_red",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "query": "hug",
+      "page": 1,
+      "at": "2026-11-15T23:34:52.877Z"
+    },
+    {
+      "type": "provider_result",
+      "provider": "kawaii_red",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "query": "hug",
+      "count": 5,
+      "durationMs": 1910,
+      "fromCache": false,
+      "at": "2026-11-15T23:34:54.787Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "kawaii_red",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "kawaii_red:hug_hug19",
+      "title": "Reação — hug",
+      "classification": "anime_reaction_gif",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:54.788Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "kawaii_red",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "kawaii_red:hug_hug8",
+      "title": "Reação — hug",
+      "classification": "anime_reaction_gif",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:54.788Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "kawaii_red",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "kawaii_red:hug_hug14",
+      "title": "Reação — hug",
+      "classification": "anime_reaction_gif",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:54.788Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "kawaii_red",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "kawaii_red:hug_hug23",
+      "title": "Reação — hug",
+      "classification": "anime_reaction_gif",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:54.788Z"
+    },
+    {
+      "type": "media_selected",
+      "provider": "kawaii_red",
+      "jobId": "live-check",
+      "sceneId": "anime-reaction",
+      "itemId": "kawaii_red:hug_hug12",
+      "title": "Reação — hug",
+      "classification": "anime_reaction_gif",
+      "license": "pending_human_review",
+      "at": "2026-11-15T23:34:54.788Z"
+    }
+  ]
+}

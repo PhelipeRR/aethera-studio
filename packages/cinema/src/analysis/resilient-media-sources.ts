@@ -27,6 +27,15 @@ import {
   type MediaCoverageReport,
   type ScriptCoverageSegment,
 } from './media-coverage-planner.js';
+import type { MediaProviderRegistry } from './media-providers/registry.js';
+import type {
+  AcquisitionMethod,
+  LicenseDecision,
+  MediaClassification,
+  MediaProviderKey,
+  ProviderMediaItem,
+  SceneSourceContext,
+} from './media-providers/types.js';
 
 export type MediaProviderId =
   | 'local_library'
@@ -34,7 +43,8 @@ export type MediaProviderId =
   | 'wikimedia_commons'
   | 'internet_archive'
   | 'sakugabooru'
-  | 'yt_dlp';
+  | 'yt_dlp'
+  | MediaProviderKey;
 
 export interface MediaSourceCandidate {
   url: string;
@@ -55,11 +65,25 @@ export interface MediaSourceCandidate {
     rating?: string;
     usageNotice?: string;
   };
+  /** Present when the candidate came from the media-provider registry (provenance, class, license). */
+  providerItem?: ProviderMediaItem;
+  licenseDecision?: LicenseDecision;
+  classification?: MediaClassification;
+  acquisitionMethod?: AcquisitionMethod;
 }
 
 export interface ProviderAttemptStatus {
   provider: MediaProviderId;
-  status: 'ok' | 'empty' | 'skipped_no_auth' | 'blocked_auth_or_antibot' | 'error';
+  status:
+    | 'ok'
+    | 'empty'
+    | 'skipped_no_auth'
+    | 'skipped_disabled'
+    | 'blocked_auth_or_antibot'
+    | 'rate_limited'
+    | 'circuit_open'
+    | 'cancelled'
+    | 'error';
   detail?: string;
   count: number;
 }
@@ -76,6 +100,11 @@ export interface ResilientAcquisitionDeps {
   animeMediaSource?: AnimeMediaSourceAdapter;
   animeProvenance?: AnimeProvenanceAdapter;
   extractFrameForProvenance?: (uri: string, timestampSec: number) => Promise<Buffer | null>;
+  /**
+   * Media-provider registry (IGDB, Steam, YouTube, Pexels, Pixabay, anime reactions, datasets). When present, each
+   * search is planned per scene, gated on source fidelity and license, and acquisitions stream through the registry.
+   */
+  mediaProviders?: { registry: MediaProviderRegistry; context?: SceneSourceContext };
   ytDlpSearchFn?: (
     query: string,
     count: number,
@@ -260,7 +289,7 @@ export async function searchResilientMediaSources(
   query: string,
   deps: ResilientAcquisitionDeps,
   signal?: AbortSignal,
-  options?: { genre?: string; prompt?: string },
+  options?: { genre?: string; prompt?: string; scene?: SceneSourceContext },
 ): Promise<ResilientSearchResult> {
   const fetchFn = deps.fetchImpl ?? fetch;
   const candidates: MediaSourceCandidate[] = [];
@@ -325,8 +354,32 @@ export async function searchResilientMediaSources(
     }
   }
 
-  // 2. Official YouTube Data API v3 (only when key is configured)
-  if (deps.youtubeApiKey) {
+  // 1c. Media-provider registry (scene-aware source selection, fidelity + license gates, fallback)
+  let registryCoversYouTube = false;
+  if (deps.mediaProviders) {
+    const { registry, context: baseContext } = deps.mediaProviders;
+    registryCoversYouTube = registry.unusableReason('youtube') === null;
+    const sceneContext: SceneSourceContext = {
+      ...(baseContext ?? {}),
+      ...(options?.scene ?? {}),
+      ...(options?.prompt ? { prompt: options.prompt } : {}),
+      ...(options?.genre ? { genre: options.genre } : {}),
+    };
+    try {
+      const res = await registry.searchForScene(query, sceneContext, { ...(signal ? { signal } : {}) });
+      candidates.push(...res.accepted.map((s) => providerItemToCandidate(s.item, s.license)));
+      for (const a of res.attempts) {
+        providerStatuses.push({ provider: a.provider, status: a.status, count: a.count, ...(a.detail ? { detail: a.detail } : {}) });
+      }
+    } catch (err) {
+      providerStatuses.push({ provider: 'steam', status: 'error', detail: `Registro de provedores falhou: ${(err as Error).message}`, count: 0 });
+    }
+  }
+
+  // 2. Official YouTube Data API v3 (legacy path; skipped when the registry already covers YouTube)
+  if (registryCoversYouTube) {
+    // queried through the registry with quota-aware rate limiting
+  } else if (deps.youtubeApiKey) {
     try {
       const ytHits = await searchYouTubeDataApi(query, deps.youtubeApiKey, fetchFn, signal);
       candidates.push(...ytHits);
@@ -508,6 +561,58 @@ export interface ApprovedMediaAuditDetail {
   coveredSegmentIds: string[];
   usefulIntervals: Array<{ segmentId: string; startSec: number; endSec: number }>;
   editorialJustification: string;
+  /** Origin, author, license, attribution and restrictions — present for media from the provider registry. */
+  provenance?: {
+    provider: string;
+    pageUrl: string;
+    author?: string;
+    attributionText?: string;
+    licenseId: string;
+    licenseName: string;
+    licenseUrl?: string;
+    licenseStatus: LicenseDecision['status'];
+    obligations: LicenseDecision['obligations'];
+    classification: MediaClassification;
+    classificationConfidence: number;
+    retrievedAt: string;
+  };
+}
+
+export interface PendingLicenseReviewEntry {
+  mediaId: string;
+  segmentId: string;
+  title: string;
+  origin: string;
+  sourceUrl: string;
+  localPath: string;
+  licenseId: string;
+  reasons: string[];
+  relevanceAccepted: boolean;
+}
+
+/** Maps a registry item into the pipeline's candidate shape without losing provenance. */
+export function providerItemToCandidate(item: ProviderMediaItem, license: LicenseDecision): MediaSourceCandidate {
+  return {
+    url: item.acquisition.url ?? item.pageUrl,
+    title: item.title,
+    ...(item.description ? { description: item.description } : {}),
+    ...(item.durationSec !== undefined ? { durationSec: item.durationSec } : {}),
+    origin: item.provider,
+    license: item.license.licenseId,
+    directDownloadable: item.acquisition.method === 'direct_http',
+    provenanceMetadata: {
+      postId: item.providerItemId,
+      postUrl: item.pageUrl,
+      ...(item.license.author ? { author: item.license.author } : {}),
+      source: item.provenance.apiEndpoint,
+      tags: item.tags,
+      ...(item.license.notes ? { usageNotice: item.license.notes } : {}),
+    },
+    providerItem: item,
+    licenseDecision: license,
+    classification: item.classification,
+    acquisitionMethod: item.acquisition.method,
+  };
 }
 
 export interface SegmentAcquisitionMetrics {
@@ -630,6 +735,8 @@ export interface AutonomousAcquisitionAuditReport {
     reason: string;
   }>;
   autoResolvedGaps: Array<{ segmentId: string; subject: string; resolvedInRound: number; mediaId: string }>;
+  /** Media the relevance gate approved but whose license needs a human decision (never auto-approved). */
+  pendingLicenseReview?: PendingLicenseReviewEntry[];
   unresolvedGapsForReview: Array<{ segmentId: string; subject: string; suggestedQuery: string; reason: string }>;
   providerStatuses: ProviderAttemptStatus[];
   segmentMetrics: SegmentAcquisitionMetrics[];
@@ -972,10 +1079,13 @@ export async function runAutonomousMediaAcquisition(input: {
       sha256: string;
       durationSec: number;
       decision: MediaRelevanceDecision;
+      providerItem?: ProviderMediaItem;
+      licenseDecision?: LicenseDecision;
     }
   >();
   const allStatuses: ProviderAttemptStatus[] = [];
   const autoResolvedGaps: AutonomousAcquisitionAuditReport['autoResolvedGaps'] = [];
+  const pendingLicenseReview: PendingLicenseReviewEntry[] = [];
 
   let candidatesFoundCount = 0;
   let acquiredFilesCount = 0;
@@ -1330,7 +1440,15 @@ export async function runAutonomousMediaAcquisition(input: {
               item.query,
               effectiveDeps(),
               createScopedSignal(perQueryTimeoutMs),
-              { ...(input.genre ? { genre: input.genre } : {}), prompt: input.prompt },
+              {
+                ...(input.genre ? { genre: input.genre } : {}),
+                prompt: input.prompt,
+                scene: {
+                  sceneId: item.segment.segmentId,
+                  narrationText: item.segment.narrationText,
+                  ...(item.segment.entities ? { entities: item.segment.entities } : {}),
+                },
+              },
             );
             allStatuses.push(...searchRes.providerStatuses);
             if (searchRes.providerStatuses.some((s) => s.provider === 'yt_dlp' && s.status === 'blocked_auth_or_antibot')) {
@@ -1346,7 +1464,8 @@ export async function runAutonomousMediaAcquisition(input: {
               sm.candidatesFound += 1;
 
               const effectiveMaxDurationSec =
-                cand.origin === 'yt_dlp' && input.deps.ytDlpAcquireFn
+                (cand.origin === 'yt_dlp' && input.deps.ytDlpAcquireFn) ||
+                (cand.providerItem && (cand.acquisitionMethod === 'yt_dlp' || cand.acquisitionMethod === 'hls'))
                   ? maxSectionedCandidateDurationSec
                   : maxCandidateDurationSec;
               if (cand.durationSec && cand.durationSec > effectiveMaxDurationSec) {
@@ -1449,6 +1568,27 @@ export async function runAutonomousMediaAcquisition(input: {
           try {
             if (cand.localPath && existsSync(cand.localPath)) {
               filePath = cand.localPath;
+            } else if (cand.providerItem && input.deps.mediaProviders) {
+              try {
+                const slotNum = acqSeq + 1;
+                const jobId = input.deps.mediaProviders.context?.jobId;
+                const res = await input.deps.mediaProviders.registry.acquire(
+                  cand.providerItem,
+                  join(input.mediaDir, `auto_r${round}_${slotNum}`),
+                  {
+                    signal: opSig,
+                    fileStem: `asset_${slotNum}`,
+                    ...(jobId ? { jobId } : {}),
+                    ...(cand.acquisitionMethod === 'yt_dlp' || cand.acquisitionMethod === 'hls'
+                      ? { downloadSection: selectRelevantDownloadWindow(cand, task.segment).sectionArg }
+                      : {}),
+                  },
+                );
+                filePath = res.filePath;
+              } catch (err) {
+                downloadFailure = classifyDownloadFailure(err);
+                filePath = null;
+              }
             } else if (cand.directDownloadable && /^https?:\/\//i.test(cand.url)) {
               let candidateOutFile: string | null = null;
               try {
@@ -1734,6 +1874,32 @@ export async function runAutonomousMediaAcquisition(input: {
             return;
           }
 
+          if (item.cand.licenseDecision?.status === 'pending_human_review') {
+            // The relevance gate approved it, but the license is not known to allow this use: keep both results and
+            // send the media to human review instead of approving it automatically.
+            candidateStates.set(candKey, 'rejected');
+            sm.rejectedCount += 1;
+            pendingLicenseReview.push({
+              mediaId: item.mediaId,
+              segmentId: seg.segmentId,
+              title: item.cand.title ?? item.filePath,
+              origin: item.cand.origin,
+              sourceUrl: item.cand.providerItem?.pageUrl ?? item.cand.url,
+              localPath: item.filePath,
+              licenseId: item.cand.providerItem?.license.licenseId ?? 'unknown',
+              reasons: item.cand.licenseDecision.reasons,
+              relevanceAccepted: true,
+            });
+            rejectedCandidates.push({
+              mediaId: item.mediaId,
+              title: item.cand.title ?? item.filePath,
+              origin: item.cand.origin,
+              rejectionCode: 'license_pending_human_review',
+              reason: `Relevância aprovada, mas a licença requer revisão humana: ${item.cand.licenseDecision.reasons.join(' ')}`,
+            });
+            return;
+          }
+
           candidateStates.set(candKey, 'verified');
           sm.approvedCount += 1;
           approvedAssets.push({
@@ -1754,6 +1920,8 @@ export async function runAutonomousMediaAcquisition(input: {
             sha256: item.sha256,
             durationSec: item.durationSec,
             decision,
+            ...(item.cand.providerItem ? { providerItem: item.cand.providerItem } : {}),
+            ...(item.cand.licenseDecision ? { licenseDecision: item.cand.licenseDecision } : {}),
           });
 
           if (round > 1 && uncoveredAfterRound1.has(seg.segmentId)) {
@@ -1847,6 +2015,24 @@ export async function runAutonomousMediaAcquisition(input: {
       coveredSegmentIds,
       usefulIntervals,
       editorialJustification: meta.decision.reason,
+      ...(meta.providerItem
+        ? {
+            provenance: {
+              provider: meta.providerItem.provider,
+              pageUrl: meta.providerItem.pageUrl,
+              ...(meta.providerItem.license.author ? { author: meta.providerItem.license.author } : {}),
+              ...(meta.providerItem.license.attributionText ? { attributionText: meta.providerItem.license.attributionText } : {}),
+              licenseId: meta.providerItem.license.licenseId,
+              licenseName: meta.providerItem.license.licenseName,
+              ...(meta.providerItem.license.licenseUrl ? { licenseUrl: meta.providerItem.license.licenseUrl } : {}),
+              licenseStatus: meta.licenseDecision?.status ?? 'pending_human_review',
+              obligations: meta.licenseDecision?.obligations ?? [],
+              classification: meta.providerItem.classification,
+              classificationConfidence: meta.providerItem.classificationConfidence,
+              retrievedAt: meta.providerItem.provenance.retrievedAt,
+            },
+          }
+        : {}),
     });
   }
 
@@ -1918,6 +2104,7 @@ export async function runAutonomousMediaAcquisition(input: {
     approvedForAssemblyCount: approvedAssets.length,
     rejectedCandidates,
     autoResolvedGaps,
+    pendingLicenseReview,
     unresolvedGapsForReview,
     providerStatuses: allStatuses,
     segmentMetrics: [...segMetricsMap.values()],
