@@ -3,7 +3,8 @@
 ## Aethera Creative Studio (`CS-1` .. `CS-5`) (2026-11-15)
 
 - [x] **CS-1 — Fundação (`@neuralbridge/creative-studio` + `@neuralbridge/database`):** schemas portáveis v1, `AssetIngestionService` (SHA-256, sem traversal), `BrandKitManager`, `SharpSvgCompositionEngine` (com `sharp` + SVG e interface `ExternalImageAdapter`), `ExportService` (PNG/JPG/WebP/`.aethera-creative.json` + prévia animada + marca d'água idempotente em vídeo) e migração `0121_aethera_creative_studio.sql`. Validado em `packages/creative-studio/test/cs1-foundation.test.ts` (5/5) e `tsc`.
-- [ ] **CS-2 .. CS-5:** Editor por camadas, `VideoFrameAnalyzer`, `CreativeOrchestrator` (4 motores + fallback), `QualityGateService`, Thumbnail Lab, os 4 criadores, integração ao `CinemaPipeline` e Backup Geral, e validação E2E real.
+- [x] **CS-2 — Editor por Camadas (`LayeredDocumentEditor`):** histórico undo/redo, alinhamento em área segura, máscaras, efeitos não destrutivos, edição localizada por prompt e dirty-tracking. Validado em `packages/creative-studio/test/cs2-editor.test.ts` (1/1) e `tsc`.
+- [ ] **CS-3 .. CS-5:** `VideoFrameAnalyzer`, `CreativeOrchestrator` (4 motores + fallback), `QualityGateService`, Thumbnail Lab, UI interativa no `aethera-desktop`, os 4 criadores, integração ao `CinemaPipeline` e Backup Geral, e validação E2E real.
 
 ## Aethera Cinema AI (`CINEMA-00` .. `CINEMA-10`) (2026-11-13)
 
