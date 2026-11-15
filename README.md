@@ -1,280 +1,201 @@
-# NeuralBridge
+# Aethera Studio
 
-> Orquestrador multiagente local e memória compartilhada para **Claude Code** e **Codex CLI**, empacotado como app desktop para Windows.
+> Estúdio audiovisual autônomo com IA para Windows: do prompt ao vídeo MP4 renderizado, com pesquisa factual, roteiro, aquisição de mídia, validação visual, narração e publicação no YouTube.
 
-Você descreve o que quer em linguagem natural ("analise meu projeto .NET, corrija os problemas de performance e rode os testes"). O NeuralBridge:
+Aethera Studio é um app desktop Electron + React. A partir de um pedido em linguagem natural, ele pesquisa o tema, escreve o roteiro, decupa as cenas, busca e valida a mídia, monta a timeline, gera a narração e renderiza uma prévia MP4 real com FFmpeg. As etapas pesadas de IA rodam nos CLIs que você já autenticou (**Antigravity**, **Claude Code** e **Codex**) e em modelos locais (Ollama, SDXL-Turbo, rembg e CLIP). Os dados ficam na sua máquina, em SQLite e em arquivos de workspace.
 
-1. interpreta o pedido;
-2. identifica o projeto e o contexto dele;
-3. recupera memórias e trechos de código relevantes (RAG);
-4. classifica a complexidade e escolhe Claude, Codex ou os dois;
-5. divide o trabalho, controla o orçamento de tokens e roda os CLIs instalados;
-6. acompanha logs, diffs e testes;
-7. grava as decisões e os aprendizados na memória;
-8. devolve um resultado consolidado.
-
-Os dados ficam na sua máquina, em SQLite, e os agentes rodam pelos CLIs oficiais já autenticados por você. O app não usa respostas simuladas.
+Este repositório é um monorepo com npm workspaces. Além do Aethera, ele traz o **Singularity Orchestrator** (`apps/orchestrator-desktop`), o **Void** (`apps/void-desktop`) e o app NeuralBridge original (`apps/desktop`). A documentação anterior do NeuralBridge está em [`docs/NEURALBRIDGE-README.md`](docs/NEURALBRIDGE-README.md).
 
 ---
 
 ## Sumário
 
-- [Funcionalidades](#funcionalidades)
 - [Arquitetura](#arquitetura)
-- [Stack tecnológica](#stack-tecnológica)
+- [Pipeline cinematográfico](#pipeline-cinematográfico)
+- [Orquestração de IA](#orquestração-de-ia)
+- [Módulos](#módulos)
+- [Status: implementado × planejado](#status-implementado--planejado)
 - [Requisitos](#requisitos)
 - [Como rodar](#como-rodar)
-- [Servidor MCP](#servidor-mcp)
-- [Testes e qualidade](#testes-e-qualidade)
-- [Distribuição Windows](#distribuição-windows)
-- [Segurança e privacidade](#segurança-e-privacidade)
+- [Dados e segurança](#dados-e-segurança)
 - [Documentação](#documentação)
-
----
-
-## Funcionalidades
-
-### Orquestração de agentes
-- **Roteador determinístico e configurável** (`packages/orchestrator/src/router.ts`). Escolhe o agente pelo tipo de tarefa, complexidade, tamanho do contexto, disponibilidade, histórico de sucesso e custo. Não gasta tokens para decidir quem chamar.
-- **Modos:** automático, Claude, Codex e colaborativo. No colaborativo, Claude planeja e define os critérios de aceite, Codex implementa a parte delimitada e Claude revisa. Há limite de iterações, timeout e orçamento.
-- **TaskEngine:** estados persistidos (`pending → planning → running → awaiting_approval → validating → completed/failed/cancelled`, além de `paused`), etapas, eventos, tokens, arquivos alterados e diff. Pausa, retomada e cancelamento sobrevivem a um reinício do app.
-- **Agent Swarm:** especialistas escolhidos de forma determinística, handoffs com dependências explícitas, execução em camadas e auditoria de conflito por arquivo (dois agentes nunca editam o mesmo arquivo ao mesmo tempo).
-- **Failover e recuperação:** retry com backoff, fallback de agente, checkpoints e prevenção de execução duplicada.
-- **Auto-Healing seguro** e **Security Guardian**, que classificam o risco das ações e pedem aprovação humana quando precisa.
-- **Permissões por projeto:** somente leitura, edição ou acesso total. Uma etapa `read-only` nunca edita, mesmo em projeto com acesso total.
-
-### Neural Brain (memória compartilhada)
-- Memórias com escopo (global ou projeto), tipos, tags, versões, histórico, restauração e wikilinks `[[Título]]`.
-- **Busca híbrida:** FTS5 do SQLite + embeddings locais (Transformers.js), sem enviar texto para nenhuma API.
-- **Neural RAG Engine:** indexação incremental por hash, chunking determinístico (Markdown, C#, TypeScript), exclusão de arquivos sensíveis, contexto limitado e deduplicado, com referências.
-- **Memory Confidence** e **aprendizado controlado:** aprendizados registrados com confiança, backup e retenção.
-- **Visualização:** grafo 2D (Cytoscape, com caminho mais curto e nós pendentes) e cérebro 3D de partículas (Three.js / React Three Fiber) que acende os nós conforme Claude e Codex consultam memórias reais.
-- Importação e sincronização do histórico dos clientes de IA.
-
-### Chat e execuções
-- Chat no estilo Codex: histórico recolhível, Markdown e blocos de código, imagens coladas como referência, arquivos modificados, progresso em tempo real e cancelamento.
-- Funciona **sem projeto** (conversa geral, somente leitura) ou com um ou mais projetos como contexto.
-- **Execuções** e **Mission Control:** lista de tarefas com filtros por status, agente e projeto, detalhes, pausa, retomada e cancelamento.
-
-### Projetos e workspaces
-- Detecção de stack: .NET / ASP.NET Core / EF Core / SQL Server, PostgreSQL (Npgsql), Next.js, Nuxt/Vue, Prisma, Drizzle, Remotion e outros.
-- **Hierarquia de workspaces** com descoberta somente leitura. Nada é cadastrado sem confirmação, e remover um projeto nunca apaga arquivos.
-- **Project Intelligence:** perfil do projeto exposto aos agentes via MCP (`project_profile`).
-- Criação de projeto, `git init` e `git clone` apenas por ação explícita.
-
-### Git Intelligence 2.0
-- Histórico com grafo de commits, referências, working tree e diffs.
-- Operações Git autorizadas, com confirmação contextual. `reset --hard`, `clean`, force-push e rebase destrutivo ficam de fora.
-- **AI Code Review e Bug Detective**, **Smart Commit & PR Assistant**.
-- **Automações por gatilho** (commit, branch), integradas ao TaskEngine. Automações nunca fazem commit, push, checkout ou merge.
-
-### Workflows
-- **Workflow Builder visual** (React Flow + dagre): DAG validado, definições e execuções versionadas no SQLite, cada etapa é uma tarefa do TaskEngine.
-- **Biblioteca de templates** com busca, favoritos, importação e exportação.
-
-### Token Intelligence e Analytics
-- Token Optimizer: orçamento de contexto, deduplicação e referências no lugar de conteúdo repetido.
-- Estimativas e métricas reais ficam separadas. Custos só aparecem quando o provedor informa o valor.
-- Painel de Analytics com consumo por agente, projeto e tarefa.
-
-### Skills e MCPs
-- **Skills Manager / Skill Studio:** instalação, atualização e rollback de skills por HTTPS ou Git, com aprovação explícita.
-- **Página MCP:** status do servidor e registro oficial em Claude Code e Codex, com backup da configuração anterior.
-
-### Neura — assistente pessoal
-Assistente por voz e texto, **desligado por padrão**, com consentimento separado para microfone, tela e localização.
-- Voz PT-BR / EN pelo **VoiceStudio local** (Whisper para transcrição e TTS por `localhost`). O áudio não é guardado.
-- Comandos locais determinísticos: hora, data, clima (Open-Meteo, com cache), abrir apps (Spotify, Teams, Configurações, Bloco de Notas, Calculadora) e descrição da tela.
-- **Spotify:** reprodução de faixa, álbum, artista e playlist, controle de player e transferência de dispositivo.
-- "Responder este chat": captura a janela ativa, prepara uma prévia e só cola depois da sua confirmação. Recusa campos de senha.
-- Assistente de reuniões com um worker Python local de pré-processamento (`packages/local-worker`).
-- **Companion HUD:** janela flutuante com mascote animado, voz, sugestões e aprovações.
-
-### Aethera — AI Cinematic Studio (antes Velix)
-- Novo nome do Velix: projetos, produções e configurações criados no Velix abrem normalmente, sem migração.
-- Descoberta de temas e pesquisa (YouTube), roteiro, narração (ElevenLabs ou VoiceStudio), captura e cortes.
-- **Video Studio / Motion Engine** com Remotion: composição, timeline com áudio e legendas, render com jobs e cancelamento, preview MP4.
-- Comando `/video` no Chat envia o pedido ao Studio.
-
-### Interface
-- Tema escuro padrão e tema claro, tokens semânticos, foco visível, navegação por teclado e `prefers-reduced-motion`.
-- **Guided Tours** por rota.
-- Páginas: Dashboard, Chat, Execuções, Memória, Skills, Projetos, Git Intelligence, Agentes, MCPs, Analytics, Workflows, Mission Control, Aethera e Configurações.
 
 ---
 
 ## Arquitetura
 
-Monorepo com npm workspaces:
+O diagrama interativo completo, com links para o código-fonte de cada componente, está em [`docs/architecture/aethera-studio-architecture.html`](docs/architecture/aethera-studio-architecture.html). Baixe o arquivo e abra no navegador. Ele funciona offline.
 
-```
-apps/
-  desktop/            App Electron (main, preload, renderer React)
-packages/
-  shared/             Contratos Zod e tipos compartilhados
-  database/           SQLite + Drizzle ORM, migrações versionadas
-  brain/              Neural Brain: memórias, busca híbrida, RAG, embeddings
-  mcp-server/         Servidor MCP standalone (SDK oficial)
-  agents/             Adaptadores Claude Code e Codex CLI (process runner, parsers, redação de segredos)
-  orchestrator/       Roteador, TaskEngine, swarm, workflows, Git automation, Neura, Velix
-  workspace/          Projetos, stack, Git (leitura/escrita separadas), skills, registro MCP
-  local-worker/       Worker Python local para pré-processamento de reuniões
-docs/                 Spec, plano, status, distribuição e sub-planos por fase
-tests/                E2E (Playwright), integração, benchmarks, fixtures
-scripts/              Ícone, bundle de motion, verificação da distribuição
+Resumo (linhas tracejadas = planejado ou parcial):
+
+```mermaid
+flowchart TB
+    user([Criador]) --> renderer[Renderer React 19<br/>rotas /aethera/* · /video]
+    renderer -- invoke --> preload[Preload aetheraBridge<br/>contextBridge isolado]
+    preload -- IPC confiável --> main[Electron Main · Domain IPC<br/>cinema:* · tts:* · creative:* · trend-radar:* · tasks]
+
+    main -- SQL --> brainDb[(db/brain.db<br/>tarefas · Creative Studio)]
+    main -- aethera:* --> runtime[Aethera Runtime<br/>brief → DAG · servidor loopback]
+    runtime -- runs --> runtimeDb[(aethera-studio.db)]
+    runtime -. execução do DAG: planejada .-> agents
+    main -- upload --> youtube[[YouTube Data API<br/>OAuth PKCE]]
+
+    main --> trend[Trend Radar]
+    main --> creative[Creative Studio]
+    main ==> pipeline[Pipeline cinematográfico<br/>StagedCinemaPipeline]
+
+    trend -- busca --> sources[[yt-dlp · Google News RSS · Reddit]]
+    trend -. planejado .-> gtrends[[Google Trends]]
+    creative -- spawn --> python[[Python IA local<br/>SDXL-Turbo · rembg · CLIP]]
+
+    pipeline -- baixa --> ytdlp[[yt-dlp]]
+    pipeline ==> cinema[Motor @neuralbridge/cinema<br/>direção · edição · cor · QC]
+    cinema ==> render[Render MP4 real<br/>FFmpeg · NVENC opcional]
+    render -- narração --> tts[[VoiceStudio · ElevenLabs · SAPI]]
+    pipeline -- saveJob --> files[(Workspaces cinema-*<br/>jobs · mídia · MP4)]
+    render -- MP4 --> files
+
+    trend -- RF-07 --> agents{{Orquestração de agentes<br/>fallback RF-07 · VisionRouter · TaskEngine}}
+    creative -- 4 motores --> agents
+    pipeline -- pesquisa · roteiro · visão --> agents
+    agents --> ollama[[Ollama VLM local]]
+    agents --> agy[[Antigravity CLI]]
+    agents --> claude[[Claude Code CLI<br/>+ Gateway opcional]]
+    agents --> codex[[Codex CLI]]
+
+    classDef planned stroke-dasharray: 5 5,stroke:#d97706,color:#d97706;
+    class gtrends planned;
 ```
 
-```
- Renderer (React)  ──IPC validado com Zod──►  Main (Electron)
-                                                │
-              ┌─────────────────────────────────┼──────────────────────┐
-              ▼                                 ▼                      ▼
-        Orchestrator / TaskEngine         Neural Brain + RAG       Workspace / Git
-              │                                 │
-              ▼                                 ▼
-   Claude Code CLI · Codex CLI             SQLite (Drizzle) ◄── MCP Server ◄── Claude / Codex
-```
-
-- O renderer **nunca executa shell**. O processo principal valida remetente e schema de cada chamada IPC.
-- Os processos rodam com `shell: false`, argumentos em array, timeout e cancelamento.
-- O estado de execução fica no banco, não em memória.
-- Claude Code e Codex leem e gravam a **mesma memória** pelo servidor MCP.
+| Camada | Onde fica |
+|---|---|
+| Renderer (React 19, react-router, TanStack Query) | `apps/aethera-desktop/src/renderer`, com páginas em `packages/desktop-shared/src/renderer` |
+| Preload (`window.aetheraBridge`) | `apps/aethera-desktop/src/preload/index.ts` |
+| Processo principal e IPC | `apps/aethera-desktop/src/main/index.ts`, `aethera-ipc.ts` |
+| Runtime e contratos do ecossistema | `apps/aethera-desktop/src/main/runtime.ts`, `packages/integration-contracts` |
+| Pipeline cinematográfico | `apps/aethera-desktop/src/main/cinema-pipeline.ts` |
+| Motor de cinema | `packages/cinema` |
+| Creative Studio | `packages/creative-studio`, `apps/aethera-desktop/src/main/creative-studio-service.ts` |
+| Adaptadores de agentes | `packages/agents`, `apps/aethera-desktop/src/main/antigravity-cli.ts` |
+| Provedores de visão | `packages/orchestrator/src/aethera/vision-providers.ts` |
+| Persistência (SQLite + Drizzle) | `packages/database` |
 
 ---
 
-## Stack tecnológica
+## Pipeline cinematográfico
 
-| Camada | Tecnologia |
+`StagedCinemaPipeline` conduz cada produção por etapas persistidas em disco. Uma produção pode ser cancelada e retomada de onde parou:
+
+1. **Interpretação** do prompt (obra, entidades, critérios), com invalidação incremental quando o prompt muda.
+2. **Pesquisa editorial** estruturada em um dossiê validado.
+3. **Roteiro** gerado por agente a partir da pesquisa, com checkpoint.
+4. **Decupagem** semântica: consultas específicas por cena.
+5. **Aquisição** de mídia local ou via yt-dlp, seguida de **validação visual** dos frames.
+6. **Planejamento** de cobertura e anti-repetição.
+7. **Montagem**, depois **áudio, SFX e VFX**.
+8. **Prévia**: render MP4 real com FFmpeg, cache incremental de segmentos e supervisor visual que pode rerenderizar cenas defeituosas uma vez.
+9. **Editor**: timeline multifaixa para ajustes finais e exportação OTIO.
+
+Quando falta pesquisa, roteiro ou mídia válida, a produção pausa (`paused_pending_research`, `paused_pending_script`, `paused_pending_media`) em vez de inventar fatos ou usar material irrelevante. O **Production Console** registra logs por etapa em `cinema-console-logs`.
+
+O Evolution Core e a Academy guardam memórias de produção (regras dos diretores, feedback e materiais de estudo). Essas memórias entram nos próximos roteiros e pacotes.
+
+---
+
+## Orquestração de IA
+
+Não existe um orquestrador único. Cada fluxo tem sua cadeia de fallback, e todas usam os CLIs instalados e autenticados localmente:
+
+| Fluxo | Ordem de tentativa |
 |---|---|
-| Desktop | Electron 44, electron-vite 6, electron-builder (NSIS) |
-| UI | React 19, TypeScript 6 (strict), Vite 8, Tailwind CSS 4, Radix UI / shadcn, Lucide, Motion |
-| Estado e dados na UI | Zustand 5, TanStack Query 5, React Router 8 |
-| Persistência | SQLite (better-sqlite3), Drizzle ORM, FTS5 |
-| Validação | Zod 4 |
-| IA local | Transformers.js (`@huggingface/transformers`) para embeddings |
-| Agentes | Claude Code CLI, Codex CLI |
-| Protocolo | Model Context Protocol (`@modelcontextprotocol/sdk`) |
-| Visualização | Cytoscape (fcose), Three.js + React Three Fiber, React Flow + dagre |
-| Vídeo | Remotion 4 (player, renderer, bundler), FFmpeg |
-| Voz | VoiceStudio local (Whisper + TTS), Windows Speech como alternativa, ElevenLabs no Aethera |
-| Integrações | Spotify Web API, Open-Meteo, YouTube |
-| Worker local | Python ≥ 3.11 (hatchling) |
-| Testes | Vitest 5, Playwright 1.64 (Electron), testes de integração com CLIs reais |
-| Qualidade | ESLint 10, typescript-eslint, react-hooks |
+| Pesquisa e roteiro | Antigravity (`agy`) → `claude -p` → `codex exec` |
+| Trend Radar (conselho RF-07) | Antigravity para síntese e refinamento do briefing |
+| Validação visual (`VisionRouter`) | Ollama VLM local → Claude Gateway → Antigravity → Claude → Codex (via TaskEngine) → SigLIP local → heurística FFmpeg |
+| Creative Studio | `claude-code`, `codex-cli`, `antigravity-cli`, `claude-gateway`, com fallback para um agente e para geração local |
+
+O **Claude Gateway** é opcional. Quando habilitado, o Claude Code roda com `ANTHROPIC_BASE_URL`, token e modelo próprios, guardados com `safeStorage` e isolados em um perfil separado.
+
+---
+
+## Módulos
+
+- **Produção com IA** (`/aethera/cinema`): pipeline completo, painel do diretor e console de produção.
+- **Editor** (`/video`): timeline multifaixa, áudio, legendas, render com jobs e cancelamento.
+- **Creative Studio**: thumbnails (Thumbnail Lab A/B/C), banners, avatares e marcas d'água, com editor em camadas, quality gate e geração local por SDXL-Turbo e rembg.
+- **Trend Radar**: ideias de vídeo a partir de fontes verificadas (YouTube via yt-dlp, Google News RSS, Reddit), com deduplicação e briefing cinematográfico.
+- **Narração**: registro de provedores TTS com VoiceStudio local (`localhost:3900`), ElevenLabs e Windows SAPI como fallback.
+- **Biblioteca de mídia** gerenciada (SHA-256, caminhos portáveis), **Calendário editorial** e **Revisão e Qualidade** com release gates.
+- **Publicação** no YouTube via OAuth PKCE loopback, com aprovação explícita antes do upload.
+- **Backup geral** do sistema e da Academy.
+
+---
+
+## Status: implementado × planejado
+
+| Item | Status |
+|---|---|
+| Pipeline cinematográfico, motor de cinema, render MP4, TTS, Creative Studio, Trend Radar (YouTube/News/Reddit) | Implementado |
+| Pareamento com Singularity Orchestrator e Void (servidor loopback + discovery) | Implementado, opcional |
+| Conector **Google Trends** do Trend Radar (`searchTrends`) | Planejado: interface declarada, sem conector |
+| `Aethera Runtime.produceFromPrompt` | Parcial: cria run, DAG e metadados, mas ainda não executa os agentes |
+| OAuth real do Google/YouTube | Código pronto; homologação com credenciais reais pendente |
+| Instalador NSIS (`npm run dist:win:aethera`) | Configurado; execução pendente |
+
+Detalhes e evidências em [`docs/aethera/STATUS.md`](docs/aethera/STATUS.md) e [`docs/PLAN.md`](docs/PLAN.md).
 
 ---
 
 ## Requisitos
 
 - Windows 10/11 x64
-- Node.js **22 ou superior**
-- [Claude Code](https://docs.anthropic.com/claude-code) e/ou [Codex CLI](https://github.com/openai/codex) instalados e autenticados
-- Opcional: VoiceStudio local (voz da Neura), Python 3.11+ (worker de reuniões), FFmpeg (Aethera), conta Spotify
+- Node.js **22 ou superior** (`engines.node >=22`)
+- FFmpeg e ffprobe no `PATH` (render e análise de frames)
+- Pelo menos um agente autenticado: Antigravity CLI (`agy`), Claude Code (`claude`) ou Codex (`codex`)
+- Opcionais:
+  - yt-dlp (aquisição de mídia e busca no YouTube)
+  - Ollama com um modelo de visão (`http://127.0.0.1:11434`, configurável por `NB_LOCAL_VLM_URL`)
+  - Python com o worker do Creative Studio (`NB_PYTHON`). A GPU NVIDIA é opcional; sem ela o SDXL-Turbo roda na CPU.
+  - VoiceStudio local ou uma chave ElevenLabs para narração
+  - Cliente OAuth do Google para publicar no YouTube
+
+`better-sqlite3`, `sharp` e `electron` baixam binários pré-compilados na instalação. Sem binário compatível, o `better-sqlite3` precisa das ferramentas de build do Visual Studio.
 
 ---
 
 ## Como rodar
 
 ```bash
-npm install
+npm ci
 ```
 
 ```bash
-npm run dev
+npm run dev -w @neuralbridge/aethera-desktop
 ```
 
-Scripts principais:
-
-| Comando | O que faz |
+| Comando | Faz |
 |---|---|
-| `npm run dev` | App desktop em modo desenvolvimento |
-| `npm run build` | Build de produção do app |
-| `npm run typecheck` | Typecheck de todos os pacotes e testes |
-| `npm run lint` | ESLint |
+| `npm run dev -w @neuralbridge/aethera-desktop` | Aethera em modo desenvolvimento (electron-vite) |
+| `npm run build:aethera` | Build de produção do Aethera |
+| `npm run typecheck -w @neuralbridge/aethera-desktop` | Typecheck do app (main + renderer) |
 | `npm test` | Testes unitários (Vitest) |
-| `npm run test:integration` | Build + integração (MCP em processo real, CLIs) |
-| `npm run test:e2e` | Build + E2E Playwright no Electron |
-| `npm run dist:win` | Gera o instalador NSIS em `dist/` |
-| `npm run verify:dist` | Verifica o pacote gerado |
+| `npm run dist:win:aethera` | Instalador NSIS em `dist/aethera` |
 
 ---
 
-## Servidor MCP
+## Dados e segurança
 
-O bundle inclui o `mcp-server.js`, que roda sem o app aberto. Para registrar em Claude Code e Codex, use a página **MCPs**: ela mostra os comandos oficiais e faz backup da configuração antes de alterar.
-
-Ferramentas expostas:
-
-| Ferramenta | Função |
-|---|---|
-| `brain_store` | Grava uma memória |
-| `brain_recall` | Recupera uma memória |
-| `brain_search` | Busca híbrida (FTS + semântica) |
-| `brain_rag_search` | Busca trechos de código e documentos indexados |
-| `brain_list` | Lista memórias |
-| `brain_links` | Relações entre memórias |
-| `brain_delete` | Remove uma memória (sem exclusão definitiva via MCP) |
-| `project_profile` | Perfil e stack do projeto |
-| `task_status` | Estado de uma tarefa |
-| `orchestrator_status` | Estado do orquestrador e dos agentes |
-
-Toda saída com dados vem marcada como **dado não confiável**, para que o agente não trate o conteúdo como instrução.
-
----
-
-## Testes e qualidade
-
-- **Unitários:** cerca de 1.476 testes em 168 arquivos (Vitest).
-- **Integração:** servidor MCP em processo real e tarefas reais com Claude e Codex (`NB_REAL_CLI=1`).
-- **E2E:** Playwright no Electron, cobrindo Chat, Memória, Grafo, Projetos, Git, Workflows, Mission Control, Neura, além de Visual QA em três resoluções.
-- **Benchmarks:** RAG (`tests/benchmarks/rag-benchmark.test.ts`).
-
-Se testes que usam `git` falharem em paralelo, confirme com:
-
-```bash
-npx vitest run --no-file-parallelism
-```
-
----
-
-## Distribuição Windows
-
-```bash
-npm run dist:win
-```
-
-Gera `dist/NeuralBridge-Setup-<versão>-x64.exe`, um instalador assistido que deixa escolher a pasta. Os dados ficam em `%APPDATA%\NeuralBridge` e **não são apagados** ao desinstalar. O build local não tem assinatura de código. Veja [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
-
-### Postura de release 0.1.58
-
-O estado atual é **Core stable** e **Power tools stable** para validação local;
-Neura, Aethera (antes Velix) e integrações são **experimentais**. A distribuição empresarial
-está bloqueada até haver Authenticode, atualização automática, registry de
-extensões HTTPS assinado, upgrade sobre uma versão anterior e homologação com
-credenciais reais em ambiente isolado. Consulte a [decisão de release](docs/release/0.1.58-release-decision.md) e a [matriz de homologação](docs/release/homologation-matrix.md).
-
----
-
-## Segurança e privacidade
-
-- Isolamento do Electron (`contextIsolation`, sandbox), CSP restritiva e bloqueio de navegação externa.
-- IPC com remetente confiável e schemas Zod na entrada e na saída.
-- Segredos são removidos dos logs dos agentes (`packages/agents/src/redact.ts`). Arquivos sensíveis ficam fora do RAG.
-- Commits, diffs, saídas de etapa e templates importados são tratados como dados não confiáveis.
-- Neura: cada sensor tem consentimento próprio, o áudio não é guardado e ações no computador ficam auditadas. Detalhes em [docs/neura-privacy.md](docs/neura-privacy.md).
+- Todos os dados ficam em `%APPDATA%/AetheraStudio`: `aethera-studio.db`, `db/brain.db`, workspaces `cinema-*`, `creative-studio/` e preferências.
+- O renderer roda com `contextIsolation` e sem `nodeIntegration`. Cada handler IPC valida a origem (`ensureTrusted` / `isTrustedSender`).
+- O protocolo `aethera-media://` serve apenas arquivos de mídia existentes, com extensões permitidas.
+- Credenciais (ElevenLabs, Claude Gateway, OAuth, IGDB) são cifradas com `safeStorage`.
+- Agentes chamados pelo runtime rodam em modo `read-only`. Publicação e upload exigem confirmação explícita.
 
 ---
 
 ## Documentação
 
-| Documento | Conteúdo |
-|---|---|
-| [docs/SPEC.MD](docs/SPEC.MD) | Especificação do produto |
-| [docs/PLAN.md](docs/PLAN.md) | Plano por fases, status e evidências |
-| [docs/STATUS.md](docs/STATUS.md) | Status de qualidade, segurança e pendências |
-| [docs/plans/](docs/plans/) | Sub-planos de cada fase |
-| [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) | Geração e instalação do instalador |
-| [docs/neura-voice.md](docs/neura-voice.md) | Voz da Neura e VoiceStudio |
-| [docs/neura-privacy.md](docs/neura-privacy.md) | Privacidade e dados da Neura |
-| [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) | Licenças de terceiros (o Remotion exige Company License para empresas com mais de 3 funcionários) |
-| [AGENTS.md](AGENTS.md) | Regras para agentes que trabalham neste repositório |
+- [Diagrama interativo de arquitetura](docs/architecture/aethera-studio-architecture.html)
+- [Status do Aethera](docs/aethera/STATUS.md) · [Plano](docs/PLAN.md)
+- [Motor de cinema](docs/aethera/cinema/) · [Creative Studio](docs/plans/aethera-creative-studio.md)
+- [Separação do ecossistema Singularity](docs/architecture/SEP-2026-01-BASELINE.md) · [Contratos](docs/architecture/ADR-SEP-02-CONTRACTS.md)
+- [README anterior do NeuralBridge](docs/NEURALBRIDGE-README.md)
