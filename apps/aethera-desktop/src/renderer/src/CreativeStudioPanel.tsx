@@ -28,10 +28,21 @@ interface CreativeBridge {
     variants: Array<{
       label: 'A' | 'B' | 'C';
       styleTitle: string;
+      editorialRationale?: string;
+      concept?: { archetype: string; focalSubject: string; visualNarrative: string };
       document: CreativeProjectDocument;
       audit: QualityAuditReport;
       previewDataUrl: string;
     }>;
+  }>;
+  creativeCombineConcepts?: (input: {
+    baseProjectId: string;
+    donorProjectId: string;
+    takeFromDonor: Array<'typography' | 'vfx' | 'watermark' | 'background'>;
+  }) => Promise<{
+    document: CreativeProjectDocument;
+    previewDataUrl: string;
+    audit: QualityAuditReport;
   }>;
   creativeEditLayer?: (input: Record<string, unknown>) => Promise<{
     document: CreativeProjectDocument;
@@ -74,6 +85,8 @@ export function CreativeStudioPanel() {
     Array<{
       label: 'A' | 'B' | 'C';
       styleTitle: string;
+      editorialRationale?: string;
+      concept?: { archetype: string; focalSubject: string; visualNarrative: string };
       document: CreativeProjectDocument;
       audit: QualityAuditReport;
       previewDataUrl: string;
@@ -302,25 +315,56 @@ export function CreativeStudioPanel() {
 
       {labVariants.length > 0 && (
         <div style={{ padding: 14, background: '#091917', border: '1px solid #134e4a', borderRadius: 8 }}>
-          <strong style={{ fontSize: 14 }}>Thumbnail Lab — Comparação Visual (Pontuação Heurística)</strong>
+          <strong style={{ fontSize: 14 }}>Thumbnail Lab — Conceitos Narrativos Independentes (CS-8)</strong>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 10 }}>
             {labVariants.map((v) => (
-              <div key={v.document.id} style={{ background: '#071110', border: '1px solid #134e4a', borderRadius: 6, padding: 8 }}>
+              <div key={v.document.id} style={{ background: '#071110', border: '1px solid #134e4a', borderRadius: 6, padding: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <img src={v.previewDataUrl} alt={v.styleTitle} style={{ width: '100%', borderRadius: 4 }} />
-                <div style={{ fontSize: 12, marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between' }}>
                   <strong>{v.styleTitle}</strong>
                   <span>Score: {v.audit.scorecard.overall}/100</span>
                 </div>
-                <button
-                  onClick={() => {
-                    setActiveDoc(v.document);
-                    setPreviewUrl(v.previewDataUrl);
-                    setAudit(v.audit);
-                  }}
-                  style={{ marginTop: 6, width: '100%', padding: '6px 8px', background: '#0f766e', color: '#ecfdf5', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}
-                >
-                  Editar no Canvas
-                </button>
+                {v.concept && (
+                  <div style={{ fontSize: 11, color: '#99f6e4' }}>
+                    <span>Arquétipo: {v.concept.archetype}</span>
+                    <div>{v.concept.focalSubject}</div>
+                  </div>
+                )}
+                {v.editorialRationale && (
+                  <div style={{ fontSize: 11, color: '#cbd5e1' }}>{v.editorialRationale}</div>
+                )}
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    onClick={() => {
+                      setActiveDoc(v.document);
+                      setPreviewUrl(v.previewDataUrl);
+                      setAudit(v.audit);
+                    }}
+                    style={{ flex: 1, padding: '6px 8px', background: '#0f766e', color: '#ecfdf5', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}
+                  >
+                    Editar no Canvas
+                  </button>
+                  {activeDoc && activeDoc.id !== v.document.id && (
+                    <button
+                      onClick={async () => {
+                        const combined = await getBridge()?.creativeCombineConcepts?.({
+                          baseProjectId: activeDoc.id,
+                          donorProjectId: v.document.id,
+                          takeFromDonor: ['typography', 'vfx'],
+                        });
+                        if (combined) {
+                          setActiveDoc(combined.document);
+                          setPreviewUrl(combined.previewDataUrl);
+                          setAudit(combined.audit);
+                          setStatusMsg(`Elementos de ${v.label} combinados no projeto ativo.`);
+                        }
+                      }}
+                      style={{ padding: '6px 8px', background: '#1e293b', color: '#99f6e4', border: '1px solid #134e4a', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
+                    >
+                      + Combinar
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>

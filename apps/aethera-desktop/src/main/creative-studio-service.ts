@@ -6,6 +6,7 @@ import {
   AssetIngestionService,
   BrandKitManager,
   CompositionPlanner,
+  ConceptDrivenEngine,
   CreativeOrchestrator,
   ExportService,
   LayeredDocumentEditor,
@@ -20,9 +21,11 @@ import {
   type BrandKit,
   type BrandKitStore,
   type CreativeArtType,
+  type CreativeConceptProposal,
   type CreativeLayer,
   type CreativeProjectDocument,
   type ExportFormat,
+  type ExtractedFrameCandidate,
   type LayerEffect,
   type LayerMask,
   type LayerTransform,
@@ -31,6 +34,7 @@ import {
   type ReasoningEngineProvider,
   type ThumbnailLabVariant,
   type VideoSceneHint,
+  type VisualConceptCritique,
 } from '@neuralbridge/creative-studio';
 import { AetheraCreativeStudioRepository, type Db } from '@neuralbridge/database';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
@@ -85,6 +89,7 @@ export class AetheraCreativeStudioService {
   readonly qualityGate: QualityGateService;
   readonly planner: CompositionPlanner;
   readonly orchestrator: CreativeOrchestrator;
+  readonly conceptEngine: ConceptDrivenEngine;
   private readonly editors = new Map<string, LayeredDocumentEditor>();
 
   constructor(options: CreativeStudioServiceOptions) {
@@ -110,11 +115,16 @@ export class AetheraCreativeStudioService {
     });
     this.qualityGate = new QualityGateService(this.engine);
     this.planner = new CompositionPlanner();
+    const providers = this.buildEngineProviders(options.resolveClaudeGatewayEnv);
     this.orchestrator = new CreativeOrchestrator(
-      this.buildEngineProviders(options.resolveClaudeGatewayEnv),
+      providers,
       this.planner,
       this.qualityGate,
     );
+    this.conceptEngine = new ConceptDrivenEngine(this.ingestion, this.engine, this.qualityGate, {
+      imageAdapter: this.imageAdapter,
+      providers,
+    });
   }
 
   private buildEngineProviders(
@@ -311,6 +321,7 @@ export class AetheraCreativeStudioService {
   async runThumbnailLabFromVideo(input: {
     videoPath?: string;
     prompt: string;
+    scriptText?: string;
     headline?: string;
     brandKitId?: string;
     sourceCinemaProjectId?: string;
@@ -318,11 +329,17 @@ export class AetheraCreativeStudioService {
   }): Promise<{
     availableEngines: string[];
     extractedFrames: Array<{ timestampSec: number; impactScore: number; asset: ManagedAssetRef }>;
-    variants: Array<ThumbnailLabVariant & { previewDataUrl: string }>;
+    variants: Array<
+      ThumbnailLabVariant & {
+        previewDataUrl: string;
+        concept: CreativeConceptProposal;
+        postRenderCritique: VisualConceptCritique;
+      }
+    >;
   }> {
     const brandKit = input.brandKitId ? this.brandKits.get(input.brandKitId) : null;
-    let backgroundAsset: ManagedAssetRef | null = null;
     let extractedFrames: Array<{ timestampSec: number; impactScore: number; asset: ManagedAssetRef }> = [];
+    let fullCandidates: ExtractedFrameCandidate[] = [];
 
     if (input.videoPath) {
       const analysis = await this.frameAnalyzer.analyzeAndExtractFrames({
@@ -330,7 +347,7 @@ export class AetheraCreativeStudioService {
         sampleCount: 5,
         ...(input.sceneHints ? { sceneHints: input.sceneHints } : {}),
       });
-      backgroundAsset = analysis.bestCandidate?.asset ?? null;
+      fullCandidates = analysis.candidates;
       extractedFrames = analysis.candidates.map((c) => ({
         timestampSec: c.timestampSec,
         impactScore: c.impactScore,
@@ -338,20 +355,39 @@ export class AetheraCreativeStudioService {
       }));
     }
 
-    const lab = await this.orchestrator.orchestrateThumbnailLab({
+    const lab = await this.orchestrator.orchestrateConceptThumbnailLab(this.conceptEngine, {
       prompt: input.prompt,
+      ...(input.scriptText ? { scriptText: input.scriptText } : {}),
       ...(input.headline ? { headline: input.headline } : {}),
       brandKit,
-      backgroundAsset,
+      ...(input.sceneHints ? { sceneHints: input.sceneHints } : {}),
+      ...(fullCandidates.length > 0 ? { extractedFrames: fullCandidates } : {}),
       ...(input.sourceCinemaProjectId ? { sourceCinemaProjectId: input.sourceCinemaProjectId } : {}),
     });
 
-    const variantsWithPreview: Array<ThumbnailLabVariant & { previewDataUrl: string }> = [];
-    for (const v of lab.variants) {
-      this.saveDocument(v.document);
-      this.editors.set(v.document.id, new LayeredDocumentEditor(v.document));
-      const previewDataUrl = await this.renderPreviewDataUrl(v.document);
-      variantsWithPreview.push({ ...v, previewDataUrl });
+    const variantsWithPreview: Array<
+      ThumbnailLabVariant & {
+        previewDataUrl: string;
+        concept: CreativeConceptProposal;
+        postRenderCritique: VisualConceptCritique;
+      }
+    > = [];
+    for (const proposal of lab.proposals) {
+      this.saveDocument(proposal.document);
+      this.editors.set(proposal.document.id, new LayeredDocumentEditor(proposal.document));
+      const previewDataUrl = await this.renderPreviewDataUrl(proposal.document);
+      const styleMap = { A: 'impact', B: 'tech', C: 'cinematic' } as const;
+      variantsWithPreview.push({
+        label: proposal.concept.label,
+        style: styleMap[proposal.concept.label],
+        styleTitle: `${proposal.concept.label} — ${proposal.concept.title}`,
+        editorialRationale: proposal.concept.editorialRationale,
+        document: proposal.document,
+        audit: proposal.audit,
+        previewDataUrl,
+        concept: proposal.concept,
+        postRenderCritique: proposal.postRenderCritique,
+      });
     }
 
     return {
@@ -359,6 +395,31 @@ export class AetheraCreativeStudioService {
       extractedFrames,
       variants: variantsWithPreview,
     };
+  }
+
+  async combineThumbnailConcepts(input: {
+    baseProjectId: string;
+    donorProjectId: string;
+    takeFromDonor: Array<'typography' | 'vfx' | 'watermark' | 'background'>;
+  }): Promise<{ document: CreativeProjectDocument; previewDataUrl: string; audit: QualityAuditReport }> {
+    const base = this.loadDocument(input.baseProjectId);
+    const donor = this.loadDocument(input.donorProjectId);
+    if (!base || !donor) {
+      throw new Error('Base or donor Creative Studio project not found.');
+    }
+    const combined = this.conceptEngine.combineConceptElements({
+      baseDocument: base,
+      donorDocument: donor,
+      takeFromDonor: input.takeFromDonor,
+    });
+    this.saveDocument(combined);
+    this.editors.set(combined.id, new LayeredDocumentEditor(combined));
+    const brandKit = combined.brandKitId ? this.brandKits.get(combined.brandKitId) : null;
+    const [previewDataUrl, audit] = await Promise.all([
+      this.renderPreviewDataUrl(combined),
+      this.qualityGate.auditProject(combined, { brandKit }),
+    ]);
+    return { document: combined, previewDataUrl, audit };
   }
 
   /**
@@ -464,6 +525,10 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
 
   ipcMain.handle('creative:thumbnail-lab', async (_ev, input: Parameters<AetheraCreativeStudioService['runThumbnailLabFromVideo']>[0]) => {
     return service.runThumbnailLabFromVideo(input);
+  });
+
+  ipcMain.handle('creative:combine-concepts', async (_ev, input: Parameters<AetheraCreativeStudioService['combineThumbnailConcepts']>[0]) => {
+    return service.combineThumbnailConcepts(input);
   });
 
   ipcMain.handle(

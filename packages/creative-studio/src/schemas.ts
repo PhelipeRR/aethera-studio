@@ -369,3 +369,80 @@ export const qualityAuditReportSchema = z.object({
   checkedAt: z.string().min(1),
 });
 export type QualityAuditReport = z.infer<typeof qualityAuditReportSchema>;
+
+export const conceptVisualArchetypeSchema = z.enum([
+  'object_focus',
+  'before_after_comparison',
+  'action_moment',
+  'transformation_scene',
+  'mystery_reveal',
+  'environmental_story',
+]);
+export type ConceptVisualArchetype = z.infer<typeof conceptVisualArchetypeSchema>;
+
+export const conceptBlueprintSchema = z.enum([
+  'macro_center_object',
+  'split_comparison',
+  'fullscreen_action_hud',
+  'asymmetric_story',
+  'mystery_spotlight',
+]);
+export type ConceptBlueprint = z.infer<typeof conceptBlueprintSchema>;
+
+export const mediaProvenanceSchema = z.enum(['real_video_frame', 'ai_generated', 'brand_asset']);
+export type MediaProvenance = z.infer<typeof mediaProvenanceSchema>;
+
+export const conceptMediaRequirementSchema = z.object({
+  id: z.string().min(1),
+  role: z.enum([
+    'primary_scene',
+    'secondary_scene',
+    'hero_object',
+    'hero_character',
+    'comparison_left',
+    'comparison_right',
+    'backdrop',
+  ]),
+  acquisitionMode: z.enum(['video_frame', 'video_frame_crop', 'ai_generate', 'ai_segment', 'brand_reference']),
+  provenance: mediaProvenanceSchema,
+  queryOrPrompt: z.string().min(1),
+  requiresHuman: z.boolean().default(false),
+  preferredTimestampSec: z.number().nonnegative().optional(),
+});
+export type ConceptMediaRequirement = z.infer<typeof conceptMediaRequirementSchema>;
+
+export const creativeConceptProposalSchema = z.object({
+  id: z.string().min(1),
+  label: z.enum(['A', 'B', 'C']),
+  title: z.string().min(1).max(120),
+  archetype: conceptVisualArchetypeSchema,
+  blueprint: conceptBlueprintSchema,
+  focalSubject: z.string().min(1),
+  visualNarrative: z.string().min(1),
+  emotion: z.string().min(1),
+  usesHumanCharacter: z.boolean(),
+  textRole: z.enum(['minimal_complement', 'comparison_labels', 'editorial_headline']),
+  headlineText: z.string().min(1).max(48),
+  kickerText: z.string().max(32).optional(),
+  leftComparisonLabel: z.string().max(24).optional(),
+  rightComparisonLabel: z.string().max(24).optional(),
+  editorialRationale: z.string().min(1),
+  mediaRequirements: z.array(conceptMediaRequirementSchema).min(1),
+});
+export type CreativeConceptProposal = z.infer<typeof creativeConceptProposalSchema>;
+
+export const visualConceptCritiqueSchema = z.object({
+  conceptId: z.string().min(1),
+  stage: z.enum(['pre_render', 'post_render']),
+  passed: z.boolean(),
+  isGenericOrWeak: z.boolean(),
+  narrativeRelevanceScore: z.number().min(0).max(100),
+  originalityScore: z.number().min(0).max(100),
+  compositionScore: z.number().min(0).max(100),
+  legibilityScore: z.number().min(0).max(100),
+  focalPointScore: z.number().min(0).max(100),
+  scriptCoherenceScore: z.number().min(0).max(100),
+  rejectionReason: z.string().optional(),
+  criticNotes: z.array(z.string()),
+});
+export type VisualConceptCritique = z.infer<typeof visualConceptCritiqueSchema>;

@@ -1,4 +1,9 @@
 import type { CompositionPlanner, CreativePlanInput, ThumbnailLabVariant } from './composition-planner.js';
+import {
+  ConceptDrivenEngine,
+  type ConceptEngineInput,
+  type ConceptLabProposalResult,
+} from './concept-engine.js';
 import { CreativeDirectorAgent, type DirectorCritiqueIssue } from './creative-director.js';
 import type { QualityGateService } from './quality-gate.js';
 import type { CreativeProjectDocument, QualityAuditReport } from './schemas.js';
@@ -178,5 +183,23 @@ export class CreativeOrchestrator {
       this.qualityGate,
     );
     return { availableEngines, variants };
+  }
+
+  async orchestrateConceptThumbnailLab(
+    conceptEngine: ConceptDrivenEngine,
+    input: ConceptEngineInput,
+  ): Promise<{
+    availableEngines: TechnicalEngineId[];
+    proposals: ConceptLabProposalResult[];
+    enginesUsed: string[];
+  }> {
+    const availableEngines = await this.detectAvailableEngines();
+    const safePrompt = sanitizeUntrustedCreativeInput(input.prompt);
+    const { proposals, enginesUsed } = await conceptEngine.generateConceptLab({
+      ...input,
+      prompt: safePrompt,
+      ...(input.scriptText ? { scriptText: sanitizeUntrustedCreativeInput(input.scriptText) } : {}),
+    });
+    return { availableEngines, proposals, enginesUsed };
   }
 }

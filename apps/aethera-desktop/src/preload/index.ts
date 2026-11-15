@@ -146,6 +146,7 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeLoadProject: (projectId: string) => ipcRenderer.invoke('creative:load-project', projectId),
   creativeCreateFromPrompt: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:create-from-prompt', input),
   creativeThumbnailLab: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:thumbnail-lab', input),
+  creativeCombineConcepts: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:combine-concepts', input),
   creativeEditLayer: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:edit-layer', input),
   creativeExport: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:export', input),
   creativeApprove: (input: { projectId: string; approvedBy: string }) => ipcRenderer.invoke('creative:approve', input),

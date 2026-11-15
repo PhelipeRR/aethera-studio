@@ -10,3 +10,4 @@ export * from './composition-planner.js';
 export * from './creative-orchestrator.js';
 export * from './creative-director.js';
 export * from './local-ai-adapter.js';
+export * from './concept-engine.js';

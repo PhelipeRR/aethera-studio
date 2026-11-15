@@ -14,7 +14,7 @@ export class QualityGateService {
 
   async auditProject(
     doc: CreativeProjectDocument,
-    options?: { brandKit?: BrandKit | null },
+    options?: { brandKit?: BrandKit | null; renderedBuffer?: Buffer },
   ): Promise<QualityAuditReport> {
     const findings: QualityAuditFinding[] = [];
     const spec = ART_SPECIFICATIONS[doc.artType];
@@ -29,7 +29,7 @@ export class QualityGateService {
     }
 
     // 2. Render actual buffer and inspect real pixels
-    const rendered = await this.engine.renderDocumentToBuffer(doc, 'png');
+    const rendered = options?.renderedBuffer ?? (await this.engine.renderDocumentToBuffer(doc, 'png'));
     const meta = await sharp(rendered).metadata();
     if (meta.width !== doc.width || meta.height !== doc.height) {
       findings.push({
@@ -174,6 +174,7 @@ export class QualityGateService {
       const tArea = Math.max(1, (tx2 - tx1) * (ty2 - ty1));
 
       for (const sLayer of visibleSubjects) {
+        if (sLayer.type === 'subject' && sLayer.cutoutMethod === 'none' && !sLayer.removeBackground) continue;
         const sx1 = sLayer.transform.x;
         const sy1 = sLayer.transform.y;
         const sx2 = sx1 + sLayer.transform.width * sLayer.transform.scaleX;
