@@ -8,6 +8,7 @@ const WORKSPACE_PACKAGES = [
   '@neuralbridge/shared',
   '@neuralbridge/integration-contracts',
   '@neuralbridge/cinema',
+  '@neuralbridge/creative-studio',
   '@neuralbridge/database',
   '@neuralbridge/brain',
   '@neuralbridge/mcp-server',
@@ -23,6 +24,7 @@ export default defineConfig({
       alias: {
         '@neuralbridge/integration-contracts': resolve('../../packages/integration-contracts/src/index.ts'),
         '@neuralbridge/cinema': resolve('../../packages/cinema/src/index.ts'),
+        '@neuralbridge/creative-studio': resolve('../../packages/creative-studio/src/index.ts'),
       },
     },
     build: {
@@ -50,6 +52,7 @@ export default defineConfig({
       alias: {
         '@': resolve('../../packages/desktop-shared/src/renderer/src'),
         '@neuralbridge/cinema': resolve('../../packages/cinema/src/index.ts'),
+        '@neuralbridge/creative-studio': resolve('../../packages/creative-studio/src/index.ts'),
       },
     },
     plugins: [react(), tailwindcss()],

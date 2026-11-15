@@ -22,3 +22,4 @@ export * from './aethera-audio-library-repository.js';
 export * from './aethera-director-repository.js';
 export * from './aethera-editorial-plan-repository.js';
 export * from './aethera-review-repository.js';
+export * from './aethera-creative-studio-repository.js';

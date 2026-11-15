@@ -911,3 +911,9 @@ export const aetheraMediaCandidates = sqliteTable('aethera_media_candidates', {
 export const aetheraMediaUsageEvents = sqliteTable('aethera_media_usage_events', {
   id: text('id').primaryKey(), runId: text('run_id').notNull().references(() => velixProductionRuns.id, { onDelete: 'cascade' }), assetId: text('asset_id').references(() => velixLocalAssets.id, { onDelete: 'cascade' }), candidateId: text('candidate_id').references(() => aetheraMediaCandidates.id, { onDelete: 'set null' }), subjectId: text('subject_id'), event: text('event').notNull(), detail: text('detail').notNull().default(''), createdAt: text('created_at').notNull(),
 }, (t) => [index('aethera_media_usage_events_asset_idx').on(t.assetId, t.createdAt), index('aethera_media_usage_events_run_idx').on(t.runId, t.createdAt)]);
+export const aetheraCreativeBrandKits = sqliteTable('aethera_creative_brand_kits', {
+  id: text('id').primaryKey(), channelId: text('channel_id'), channelName: text('channel_name').notNull(), dataJson: text('data_json').notNull(), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+}, (t) => [index('aethera_creative_brand_kits_channel_idx').on(t.channelId)]);
+export const aetheraCreativeProjects = sqliteTable('aethera_creative_projects', {
+  id: text('id').primaryKey(), artType: text('art_type').notNull(), title: text('title').notNull(), brandKitId: text('brand_kit_id').references(() => aetheraCreativeBrandKits.id, { onDelete: 'set null' }), sourceCinemaProjectId: text('source_cinema_project_id'), schemaVersion: integer('schema_version').notNull(), dataJson: text('data_json').notNull(), approvedBy: text('approved_by'), approvedAt: text('approved_at'), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+}, (t) => [index('aethera_creative_projects_art_type_idx').on(t.artType, t.updatedAt), index('aethera_creative_projects_cinema_idx').on(t.sourceCinemaProjectId)]);

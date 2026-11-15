@@ -1,0 +1,13 @@
+{
+  "name": "@neuralbridge/creative-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "sharp": "^0.34.2",
+    "zod": "4.3.6"
+  }
+}

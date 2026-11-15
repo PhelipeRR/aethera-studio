@@ -17,7 +17,7 @@
     "build:aethera": "npm run build -w @neuralbridge/aethera-desktop",
     "build:void": "npm run build -w @neuralbridge/void-desktop",
     "build:all-apps": "npm run build && npm run build:orchestrator && npm run build:aethera && npm run build:void",
-    "typecheck": "tsc -p packages/shared && tsc -p packages/integration-contracts && tsc -p packages/cinema && tsc -p packages/core && tsc -p packages/database && tsc -p packages/brain && tsc -p packages/mcp-server && tsc -p packages/workspace && tsc -p packages/agents && tsc -p packages/orchestrator && tsc -p packages/extensions-neura && tsc -p packages/extensions-velix && tsc -p tests/tsconfig.json && npm run typecheck -w @neuralbridge/desktop && npm run typecheck -w @neuralbridge/orchestrator-desktop && npm run typecheck -w @neuralbridge/aethera-desktop && npm run typecheck -w @neuralbridge/void-desktop",
+    "typecheck": "tsc -p packages/shared && tsc -p packages/integration-contracts && tsc -p packages/cinema && tsc -p packages/creative-studio && tsc -p packages/core && tsc -p packages/database && tsc -p packages/brain && tsc -p packages/mcp-server && tsc -p packages/workspace && tsc -p packages/agents && tsc -p packages/orchestrator && tsc -p packages/extensions-neura && tsc -p packages/extensions-velix && tsc -p tests/tsconfig.json && npm run typecheck -w @neuralbridge/desktop && npm run typecheck -w @neuralbridge/orchestrator-desktop && npm run typecheck -w @neuralbridge/aethera-desktop && npm run typecheck -w @neuralbridge/void-desktop",
     "lint": "eslint .",
     "test": "vitest run",
     "test:e2e": "npm run build && npm run build:motion && playwright test",

@@ -17,7 +17,8 @@
     "allowImportingTsExtensions": false,
     "paths": {
       "@neuralbridge/integration-contracts": ["./packages/integration-contracts/src/index.ts"],
-      "@neuralbridge/cinema": ["./packages/cinema/src/index.ts"]
+      "@neuralbridge/cinema": ["./packages/cinema/src/index.ts"],
+      "@neuralbridge/creative-studio": ["./packages/creative-studio/src/index.ts"]
     }
   }
 }

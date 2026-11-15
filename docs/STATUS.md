@@ -1,5 +1,10 @@
 # Status de qualidade e segurança
 
+## Aethera Creative Studio (`CS-1` .. `CS-5`) (2026-11-15)
+
+- [x] **CS-1 — Fundação (`@neuralbridge/creative-studio` + `@neuralbridge/database`):** schemas portáveis v1, `AssetIngestionService` (SHA-256, sem traversal), `BrandKitManager`, `SharpSvgCompositionEngine` (com `sharp` + SVG e interface `ExternalImageAdapter`), `ExportService` (PNG/JPG/WebP/`.aethera-creative.json` + prévia animada + marca d'água idempotente em vídeo) e migração `0121_aethera_creative_studio.sql`. Validado em `packages/creative-studio/test/cs1-foundation.test.ts` (5/5) e `tsc`.
+- [ ] **CS-2 .. CS-5:** Editor por camadas, `VideoFrameAnalyzer`, `CreativeOrchestrator` (4 motores + fallback), `QualityGateService`, Thumbnail Lab, os 4 criadores, integração ao `CinemaPipeline` e Backup Geral, e validação E2E real.
+
 ## Aethera Cinema AI (`CINEMA-00` .. `CINEMA-10`) (2026-11-13)
 
 - [x] **`@neuralbridge/cinema` (`packages/cinema/`):** Timeline IR racional (`OTIO Timeline.1`), sanitização anti-prompt-injection, direção cinematográfica com Plano A/B, direção de comédia (`cinematic_subtle_humor` 35% padrão + bloqueio sensível + 0% disable), edição determinística + undo/redo, VFX/tipografia HUD-safe, pipeline de cor Rec.709 e som EBU R128, QC multi-pass, reparo incremental (`budget <= 3`), Release Gates e benchmark corpus (12 cenários: 8 dev / 4 holdout).

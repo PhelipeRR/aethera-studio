@@ -1,5 +1,14 @@
 # NeuralBridge — Plano de Implementação
 
+## FASE ATIVA — Aethera Creative Studio (`CS-1` .. `CS-5`) (2026-11-15)
+
+Plano aprovado em `docs/plans/aethera-creative-studio.md` para transformar o **Aethera Studio** em uma plataforma completa de produção audiovisual e identidade visual (`packages/creative-studio` + `apps/aethera-desktop` + `@neuralbridge/database`):
+- **CS-1 (CONCLUÍDA):** pacote `@neuralbridge/creative-studio` com schemas Zod versionados (`CreativeProjectDocument` v1), `AssetIngestionService` (armazenamento gerenciado + SHA-256 + paths portáveis), `BrandKitManager`, `SharpSvgCompositionEngine` + interface `ExternalImageAdapter`, `ExportService` (PNG/JPG/WebP/projeto editável/prévia animada + marca d'água idempotente em vídeo) e migração SQLite `0121_aethera_creative_studio.sql` (`AetheraCreativeStudioRepository`).
+- **CS-2 (EM ANDAMENTO):** `LayeredCanvasEditor` (estado editável por camadas, undo/redo, texto, máscaras, efeitos não destrutivos, auto-save, edição localizada por prompt e UI interativa no `aethera-desktop`).
+- **CS-3 (PENDENTE):** `VideoFrameAnalyzer`, `CreativeOrchestrator` (4 motores com fallback RF-07 para 1 agente), `QualityGateService` e **Thumbnail Lab** (3 variações + score heurístico).
+- **CS-4 (PENDENTE):** os 4 criadores especializados (Thumbnail, Banner `2560×1440` + safe area, Avatar `800×800`, Marca d'água `150×150`), integração automática no `CinemaPipeline` e Backup Geral (`system-backup.ts`).
+- **CS-5 (PENDENTE):** suíte E2E com exemplos reais (Cyberpunk 2077 gameplay frames, banner gamer futurista, avatar mascote tecnológico, marca d'água transparente), `typecheck` e `build`.
+
 ## FASE CONCLUÍDA — Aethera Cinema AI (`CINEMA-00` .. `CINEMA-10`, 2026-11-13)
 
 Implementação full-stack do motor cinematográfico determinístico em `packages/cinema` (`@neuralbridge/cinema`) integrado ao `apps/aethera-desktop` (`cinema:*` IPC e `CinemaDirectorPanel` em `/aethera/cinema`):

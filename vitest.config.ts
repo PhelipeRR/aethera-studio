@@ -6,6 +6,7 @@ export default defineConfig({
     alias: {
       '@neuralbridge/integration-contracts': resolve('packages/integration-contracts/src/index.ts'),
       '@neuralbridge/cinema': resolve('packages/cinema/src/index.ts'),
+      '@neuralbridge/creative-studio': resolve('packages/creative-studio/src/index.ts'),
     },
   },
   test: {
