@@ -100,7 +100,10 @@ export class ClaudeCliAdapter implements AgentAdapter {
   }
 
   run(request: AgentRunRequest, signal?: AbortSignal): AsyncIterable<AgentEvent> {
-    const cli = this.options.cli ?? findClientCli('claude', this.options.env ?? process.env);
+    const resolvedEnv = this.options.resolveEnv
+      ? { ...process.env, ...this.options.env, ...this.options.resolveEnv() }
+      : this.options.env;
+    const cli = this.options.cli ?? findClientCli('claude', resolvedEnv ?? process.env);
     if (!cli) return failedRun('Claude Code não encontrado no PATH.');
     let configFile: string | undefined;
     if (request.mcp) {
@@ -115,12 +118,17 @@ export class ClaudeCliAdapter implements AgentAdapter {
       if (configFile) rmSync(configFile, { force: true });
       return failedRun(`Não foi possível ler uma imagem anexada: ${error instanceof Error ? error.message : String(error)}`);
     }
+    const gatewayModel =
+      resolvedEnv?.['ANTHROPIC_BASE_URL'] && resolvedEnv?.['ANTHROPIC_AUTH_TOKEN'] && resolvedEnv?.['ANTHROPIC_MODEL']
+        ? resolvedEnv['ANTHROPIC_MODEL']
+        : undefined;
+    const effectiveRequest = gatewayModel ? { ...request, model: gatewayModel } : request;
     return runAgent({
       cli,
-      args: claudeArgs(request, configFile),
-      request,
+      args: claudeArgs(effectiveRequest, configFile),
+      request: effectiveRequest,
       stdin,
-      ...(this.options.env ? { env: this.options.env } : {}),
+      ...(resolvedEnv ? { env: resolvedEnv } : {}),
       ...(signal ? { signal } : {}),
       parser: createClaudeParser(),
       cleanup: () => configFile && rmSync(configFile, { force: true }),

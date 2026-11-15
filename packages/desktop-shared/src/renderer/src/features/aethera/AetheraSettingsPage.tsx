@@ -121,6 +121,12 @@ export function AetheraSettingsPage({ description }: { description: string }) {
   // RAWG & Collage
   const [rawgConfigured, setRawgConfigured] = useState(false);
   const [rawgApiKey, setRawgApiKey] = useState('');
+  // Claude Gateway
+  const [gatewayEnabled, setGatewayEnabled] = useState(false);
+  const [gatewayConfigured, setGatewayConfigured] = useState(false);
+  const [gatewayBaseUrl, setGatewayBaseUrl] = useState('https://resgatar.online/ia');
+  const [gatewayModel, setGatewayModel] = useState('claude-opus-5-5');
+  const [gatewayToken, setGatewayToken] = useState('');
   const [collageConfigured, setCollageConfigured] = useState(false);
   const [collageApiKey, setCollageApiKey] = useState('');
 
@@ -159,6 +165,14 @@ export function AetheraSettingsPage({ description }: { description: string }) {
     nb?.app?.info?.().then(setAppInfo).catch(() => {});
     nb?.video?.studioIgdbStatus?.().then(setIgdbStatus).catch(() => {});
     nb?.video?.studioRawgStatus?.().then((r: { configured?: boolean }) => setRawgConfigured(Boolean(r?.configured))).catch(() => {});
+    nb?.video?.studioClaudeGatewayStatus?.()
+      .then((r: { enabled?: boolean; configured?: boolean; baseUrl?: string; model?: string }) => {
+        setGatewayEnabled(Boolean(r?.enabled));
+        setGatewayConfigured(Boolean(r?.configured));
+        if (r?.baseUrl) setGatewayBaseUrl(r.baseUrl);
+        if (r?.model) setGatewayModel(r.model);
+      })
+      .catch(() => {});
     nb?.video?.collageKeyStatus?.().then((r: { configured?: boolean }) => setCollageConfigured(Boolean(r?.configured))).catch(() => {});
     nb?.video?.channelProfile?.()
       .then((p) => setYtChannel({ connected: Boolean(p?.title), ...(p?.title ? { title: p.title } : {}) }))
@@ -299,6 +313,47 @@ export function AetheraSettingsPage({ description }: { description: string }) {
       setStatusMessage({ kind: 'ok', text: 'Chave RAWG salva com segurança.' });
     } catch (err) {
       setStatusMessage({ kind: 'error', text: err instanceof Error ? err.message : 'Erro ao salvar RAWG.' });
+    }
+  };
+
+  const handleSaveClaudeGateway = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await window.neuralbridge.video.studioClaudeGatewaySave({
+        enabled: gatewayEnabled,
+        baseUrl: gatewayBaseUrl.trim() || 'https://resgatar.online/ia',
+        ...(gatewayToken.trim() ? { authToken: gatewayToken.trim() } : {}),
+        model: gatewayModel.trim() || 'claude-opus-5-5',
+      });
+      setGatewayToken('');
+      await refreshAll();
+      setStatusMessage({
+        kind: 'ok',
+        text: gatewayEnabled
+          ? 'Claude Gateway salvo e ativado para roteiro, pesquisa, direção e visão.'
+          : 'Claude Gateway salvo (desativado — usando perfil oficial).',
+      });
+    } catch (err) {
+      setStatusMessage({
+        kind: 'error',
+        text: err instanceof Error ? err.message : 'Erro ao salvar Claude Gateway.',
+      });
+    }
+  };
+
+  const handleClearClaudeGateway = async () => {
+    try {
+      await window.neuralbridge.video.studioClaudeGatewayClear();
+      setGatewayToken('');
+      setGatewayEnabled(false);
+      setGatewayConfigured(false);
+      await refreshAll();
+      setStatusMessage({ kind: 'ok', text: 'Credenciais do Claude Gateway removidas.' });
+    } catch (err) {
+      setStatusMessage({
+        kind: 'error',
+        text: err instanceof Error ? err.message : 'Erro ao limpar Claude Gateway.',
+      });
     }
   };
 
@@ -704,6 +759,89 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                     Testar provedores
                   </button>
                 </div>
+
+                <form
+                  onSubmit={(e) => void handleSaveClaudeGateway(e)}
+                  className="space-y-3 rounded-xl border border-border bg-[#0d0d17] p-4"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground">Claude Gateway (Resgatar.online / Anthropic-compatible)</h3>
+                      <p className="text-[11px] text-muted-foreground">
+                        Quando ativado, o agente Claude usa esta URL, token e modelo em roteiro, pesquisa, direção e análise visual.
+                      </p>
+                    </div>
+                    <span className={gatewayConfigured ? 'text-emerald-300' : 'text-muted-foreground'}>
+                      {gatewayConfigured ? (gatewayEnabled ? 'Ativo' : 'Configurado (pausado)') : 'Não configurado'}
+                    </span>
+                  </div>
+
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={gatewayEnabled}
+                      onChange={(e) => setGatewayEnabled(e.target.checked)}
+                      className="rounded border-border bg-[#090912]"
+                    />
+                    <span className="font-medium text-foreground">Ativar Claude Gateway na turma de agentes</span>
+                  </label>
+
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-muted-foreground">Base URL (`ANTHROPIC_BASE_URL`)</span>
+                      <input
+                        type="url"
+                        value={gatewayBaseUrl}
+                        onChange={(e) => setGatewayBaseUrl(e.target.value)}
+                        placeholder="https://resgatar.online/ia"
+                        className="w-full rounded-xl border border-border bg-[#090912] px-3 py-2 text-xs text-foreground"
+                        required
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-muted-foreground">Modelo (`ANTHROPIC_MODEL`)</span>
+                      <input
+                        type="text"
+                        value={gatewayModel}
+                        onChange={(e) => setGatewayModel(e.target.value)}
+                        placeholder="claude-opus-5-5"
+                        className="w-full rounded-xl border border-border bg-[#090912] px-3 py-2 text-xs text-foreground"
+                        required
+                      />
+                    </label>
+                  </div>
+
+                  <label className="block space-y-1">
+                    <span className="text-[11px] text-muted-foreground">
+                      Token do Gateway (`ANTHROPIC_AUTH_TOKEN`) {gatewayConfigured ? '— deixe vazio para manter o token salvo' : ''}
+                    </span>
+                    <input
+                      type="password"
+                      value={gatewayToken}
+                      onChange={(e) => setGatewayToken(e.target.value)}
+                      placeholder={gatewayConfigured ? '•••••••••••••••• (token salvo no cofre local)' : 'Cole o token do Resgatar.online'}
+                      className="w-full rounded-xl border border-border bg-[#090912] px-3 py-2 text-xs text-foreground"
+                    />
+                  </label>
+
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <button
+                      type="submit"
+                      className="rounded-lg bg-primary px-3 py-1.5 font-semibold text-primary-foreground"
+                    >
+                      Salvar Claude Gateway
+                    </button>
+                    {gatewayConfigured && (
+                      <button
+                        type="button"
+                        onClick={() => void handleClearClaudeGateway()}
+                        className="rounded-lg border border-border px-3 py-1.5 text-foreground"
+                      >
+                        Remover token
+                      </button>
+                    )}
+                  </div>
+                </form>
               </div>
             )}
 

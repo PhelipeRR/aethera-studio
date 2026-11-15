@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { z } from 'zod';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -268,7 +269,33 @@ export function registerAetheraDomainIpc(options: {
     database.handle?.close();
   });
 
-  const claude = new ClaudeCliAdapter();
+  const claudeGatewaySchema = z.strictObject({
+    enabled: z.boolean(),
+    baseUrl: z.string().trim().url().max(500),
+    authToken: z.string().trim().min(1).max(2000),
+    model: z.string().trim().min(1).max(200),
+  });
+  const claudeGatewaySecretStore = new StudioSecretStore(
+    join(userDataDir, 'aethera-claude-gateway.bin'),
+    safeStorage,
+    claudeGatewaySchema,
+    'as credenciais do Claude Gateway',
+  );
+  const resolveClaudeGatewayEnv = (): Record<string, string | undefined> => {
+    const cfg = claudeGatewaySecretStore.load();
+    if (!cfg || !cfg.enabled || !cfg.authToken || !cfg.baseUrl) return {};
+    const profileDir = join(userDataDir, 'claude-gateway-profile');
+    mkdirSync(profileDir, { recursive: true });
+    return {
+      CLAUDE_CONFIG_DIR: profileDir,
+      ANTHROPIC_BASE_URL: cfg.baseUrl,
+      ANTHROPIC_AUTH_TOKEN: cfg.authToken,
+      ANTHROPIC_MODEL: cfg.model,
+      ANTHROPIC_API_KEY: undefined,
+    };
+  };
+
+  const claude = new ClaudeCliAdapter({ resolveEnv: resolveClaudeGatewayEnv });
   const codex = new CodexCliAdapter();
   const agents = [claude, codex];
 
@@ -913,6 +940,48 @@ export function registerAetheraDomainIpc(options: {
   registerIpcHandler(ipcMain, IpcChannel.videoStudioRawgSave, async ({ apiKey }) => { rawgSecretStore.save({ apiKey }); return { ok: true as const }; }, isTrustedSender);
   registerIpcHandler(ipcMain, IpcChannel.videoStudioRawgStatus, async () => ({ configured: rawgSecretStore.load() !== null }), isTrustedSender);
   registerIpcHandler(ipcMain, IpcChannel.videoStudioRawgClear, async () => { rawgSecretStore.clear(); return { ok: true as const }; }, isTrustedSender);
+  registerIpcHandler(
+    ipcMain,
+    IpcChannel.videoStudioClaudeGatewaySave,
+    async (input) => {
+      const existing = claudeGatewaySecretStore.load();
+      const authToken = input.authToken?.trim() || existing?.authToken || '';
+      if (!authToken) {
+        throw new Error('Token do Claude Gateway é obrigatório na primeira configuração.');
+      }
+      claudeGatewaySecretStore.save({
+        enabled: input.enabled,
+        baseUrl: input.baseUrl,
+        authToken,
+        model: input.model,
+      });
+      return { ok: true as const };
+    },
+    isTrustedSender,
+  );
+  registerIpcHandler(
+    ipcMain,
+    IpcChannel.videoStudioClaudeGatewayStatus,
+    async () => {
+      const stored = claudeGatewaySecretStore.load();
+      return {
+        enabled: stored?.enabled ?? false,
+        configured: Boolean(stored?.authToken),
+        baseUrl: stored?.baseUrl ?? 'https://resgatar.online/ia',
+        model: stored?.model ?? 'claude-opus-5-5',
+      };
+    },
+    isTrustedSender,
+  );
+  registerIpcHandler(
+    ipcMain,
+    IpcChannel.videoStudioClaudeGatewayClear,
+    async () => {
+      claudeGatewaySecretStore.clear();
+      return { ok: true as const };
+    },
+    isTrustedSender,
+  );
 
   // Autonomous Aethera Production Pipeline, Timeline, Editorial Plan, Audio, Review & Content OS
   const discoveryRepository = () => {
@@ -1718,10 +1787,32 @@ export function registerAetheraDomainIpc(options: {
   const editorialCalendar = new EditorialCalendarEngine(
     join(app.getPath('userData'), 'calendar', 'editorial-calendar-store.json'),
   );
-  const AETHERA_VISION_CHAIN = ['local-vlm', 'antigravity', 'claude', 'codex', 'local-siglip', 'ffmpeg-heuristics'] as const;
+  const AETHERA_VISION_CHAIN = ['local-vlm', 'claude-gateway', 'antigravity', 'claude', 'codex', 'local-siglip', 'ffmpeg-heuristics'] as const;
   const buildAetheraVisionProviders = (rootDir: string, projectId: string) =>
     createVisionProviders([
       createOllamaLocalVlmProvider(),
+      ...(taskEngine
+        ? [
+            createTaskEngineVisionProvider({
+              id: 'claude',
+              providerId: 'claude-gateway',
+              model: claudeGatewaySecretStore.load()?.model ?? 'claude-opus-5-5',
+              root: rootDir,
+              projectId,
+              enabled: Boolean(claudeGatewaySecretStore.load()?.enabled && claudeGatewaySecretStore.load()?.authToken),
+              taskEngine,
+              checkAvailable: async () => {
+                const cfg = claudeGatewaySecretStore.load();
+                if (!cfg?.enabled || !cfg.authToken) {
+                  return { available: false, reason: 'Claude Gateway desativado ou sem token.' };
+                }
+                return findClientCli('claude')
+                  ? { available: true }
+                  : { available: false, reason: 'Claude CLI (claude.exe) não encontrado para o Gateway.' };
+              },
+            }),
+          ]
+        : []),
       createAntigravityCliVisionProvider({
         root: rootDir,
         detect: async () => {
@@ -1744,7 +1835,7 @@ export function registerAetheraDomainIpc(options: {
         ? [
             createTaskEngineVisionProvider({
               id: 'claude',
-              model: 'sonnet',
+              model: '',
               root: rootDir,
               projectId,
               enabled: true,
@@ -1756,7 +1847,7 @@ export function registerAetheraDomainIpc(options: {
             }),
             createTaskEngineVisionProvider({
               id: 'codex',
-              model: 'gpt-5-codex',
+              model: '',
               root: rootDir,
               projectId,
               enabled: true,
@@ -1788,7 +1879,7 @@ export function registerAetheraDomainIpc(options: {
         return dirs;
       })(),
       ytDlpSearchFn: (q, count, sig) => ytDlpSearch(ytDlp, q, count, sig),
-      ytDlpAcquireFn: async (targetUrl, idx, dir, sig) => {
+      ytDlpAcquireFn: async (targetUrl, idx, dir, sig, downloadSection) => {
         const relativeDir = `acq_${idx + 1}_${Date.now().toString(36)}`;
         mkdirSync(join(dir, relativeDir), { recursive: true });
         const out = await acquireWithYtDlp({
@@ -1798,7 +1889,7 @@ export function registerAetheraDomainIpc(options: {
           relativeDir,
           fileStem: `slot_${idx + 1}`,
           maxHeight: 720,
-          downloadSection: '*0:00-1:30',
+          downloadSection: downloadSection ?? '*0:00-1:30',
           maxFilesize: '90M',
           ...(sig ? { signal: sig } : {}),
           ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),

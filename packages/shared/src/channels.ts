@@ -494,6 +494,9 @@ export const IpcChannel = {
   videoStudioRawgSave: 'video:studio:rawg:save',
   videoStudioRawgStatus: 'video:studio:rawg:status',
   videoStudioRawgClear: 'video:studio:rawg:clear',
+  videoStudioClaudeGatewaySave: 'video:studio:claude-gateway:save',
+  videoStudioClaudeGatewayStatus: 'video:studio:claude-gateway:status',
+  videoStudioClaudeGatewayClear: 'video:studio:claude-gateway:clear',
   videoProductionRunClaims: 'video:production-run:claims',
   videoProductionEvidenceDecide: 'video:production-run:evidence-decide',
   videoProductionClaimKind: 'video:production-run:claim-kind',
@@ -1176,6 +1179,9 @@ export interface NeuralBridgeApi {
     studioRawgSave(apiKey: string): Promise<{ ok: true }>;
     studioRawgStatus(): Promise<{ configured: boolean }>;
     studioRawgClear(): Promise<{ ok: true }>;
+    studioClaudeGatewaySave(input: { enabled: boolean; baseUrl: string; authToken?: string; model: string }): Promise<{ ok: true }>;
+    studioClaudeGatewayStatus(): Promise<{ enabled: boolean; configured: boolean; baseUrl: string; model: string }>;
+    studioClaudeGatewayClear(): Promise<{ ok: true }>;
     productionRunClaims(runId: string): Promise<ProductionClaims>;
     productionEvidenceDecide(input: { evidenceId: string; decision: 'approved' | 'rejected'; note?: string }): Promise<ProductionClaims>;
     productionClaimKind(input: { claimId: string; kind: ClaimKind }): Promise<ProductionClaims>;

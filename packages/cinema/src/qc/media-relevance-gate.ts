@@ -486,16 +486,21 @@ export async function evaluateMediaRelevance(
   const perFrameMatches = validVisualFrames.map((frame) => {
     const fText = normalizeFrameText(frame);
     const fTopicEntities = extractTopicEntities(fText);
-    const fEntities = expectedEntities.filter(
-      (entity) => fText.includes(entity) || fTopicEntities.includes(entity),
-    );
+    const fEntities = expectedEntities.filter((entity) => {
+      const shortEntity = entity.split(',')[0]?.replace(/\([^)]*\)/g, '').trim() ?? entity;
+      return (
+        fText.includes(entity) ||
+        fTopicEntities.includes(entity) ||
+        (shortEntity.length >= 3 && (fText.includes(shortEntity) || fTopicEntities.includes(shortEntity)))
+      );
+    });
     const fActions = expectation.actionsAndEvents.filter((actionKey) => {
       const pattern = NARRATIVE_ACTION_PATTERNS.find((p) => p.key === actionKey);
       return (frame.detectedActions ?? []).includes(actionKey) || Boolean(pattern?.regex.test(fText));
     });
     const isEventMatch =
       expectation.actionsAndEvents.length > 0
-        ? fActions.length > 0 && (fEntities.length > 0 || fTopicEntities.length > 0)
+        ? fActions.length > 0 && fEntities.length > 0
         : fEntities.length > 0;
     return {
       frame,
@@ -622,13 +627,25 @@ export async function evaluateMediaRelevance(
     };
   }
 
+  const promptTokens = new Set(extractTopicEntities(segment.prompt));
+  const specificSegmentEntities = expectedEntities.filter((e) => {
+    const toks = extractTopicEntities(e);
+    return toks.length > 0 && toks.some((t) => !promptTokens.has(t));
+  });
+  const missingSpecificIdentity =
+    validVisualFrames.length > 0 &&
+    specificSegmentEntities.length > 0 &&
+    !specificSegmentEntities.some((e) => matchedEntities.includes(e)) &&
+    (expectation.requiresSpecificEventVisual ||
+      (matchedEntities.length > 0 && matchedEntities.every((m) => promptTokens.has(m))));
+
   const isSameUniverseOnly = matchedEntities.length === 0 && matchedUniverseEntities.length > 0;
   const missingSpecificVisualEvent =
     expectation.requiresSpecificEventVisual &&
     validVisualFrames.length > 0 &&
     eventMatchingFrames.length === 0;
-  // Same universe (or even shared protagonist) without visually depicting the required specific event -> cannot satisfy coverage!
-  if ((isSameUniverseOnly || missingSpecificVisualEvent) && expectation.requiresSpecificEventVisual) {
+  // Same universe (or generic combat/gameplay without proving the specific character/implant/event) -> cannot satisfy coverage!
+  if (missingSpecificIdentity || ((isSameUniverseOnly || missingSpecificVisualEvent) && expectation.requiresSpecificEventVisual)) {
     const contextEntities = matchedEntities.length > 0 ? matchedEntities : matchedUniverseEntities;
     return {
       mediaId: candidate.mediaId,

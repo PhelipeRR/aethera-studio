@@ -22,6 +22,7 @@ import {
   sampleDistributedFrameTimestamps,
   scoreCandidateRelevancePriority,
   searchResilientMediaSources,
+  selectRelevantDownloadWindow,
 } from '../src/index.js';
 
 describe('Media Relevance Gate & Visual Critic Blocking', () => {
@@ -1101,5 +1102,100 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(audit.coverageReport.segments[0]?.usableDurationSec).toBe(60);
     expect(audit.coverageReport.segments[0]?.relevantIntervals.length).toBe(2);
     expect(audit.unresolvedGapsForReview).toEqual([]);
+  });
+
+  it('selects relevant intervals anywhere in long videos via chapters/timestamps and blocks generic combat without entity proof', async () => {
+    const maleniaSeg = {
+      segmentId: 'seg_malenia',
+      subject: 'Malenia, Blade of Miquella',
+      narrationText: 'Malenia enfrenta o jogador na segunda fase de Elden Ring.',
+      entities: ['Elden Ring', 'Malenia'],
+      expectedDurationSec: 60,
+    };
+
+    const chapterWin = selectRelevantDownloadWindow(
+      {
+        url: 'https://youtube.com/watch?v=bosses',
+        title: 'All Elden Ring Bosses',
+        origin: 'yt_dlp',
+        license: 'external_reference',
+        durationSec: 1200,
+        chapters: [
+          { startSec: 0, endSec: 180, title: 'Intro & Margit' },
+          { startSec: 640, endSec: 780, title: 'Malenia Blade of Miquella Boss Fight' },
+        ],
+      },
+      maleniaSeg,
+    );
+    expect(chapterWin.source).toBe('chapter_match');
+    expect(chapterWin.startSec).toBe(640);
+    expect(chapterWin.sectionArg).toBe('*10:40-11:55');
+
+    const descWin = selectRelevantDownloadWindow(
+      {
+        url: 'https://youtube.com/watch?v=cyberpunk',
+        title: 'Best Cyberpunk 2077 Cyberware Builds',
+        description: '00:00 Intro\n04:20 Sandevistan Slow Motion Showcase\n08:10 Mantis Blades',
+        origin: 'yt_dlp',
+        license: 'external_reference',
+        durationSec: 700,
+      },
+      {
+        segmentId: 'seg_sandevistan',
+        subject: 'Sandevistan',
+        narrationText: 'O implante Sandevistan desacelera o tempo em Cyberpunk 2077.',
+        entities: ['Cyberpunk 2077', 'Sandevistan'],
+        expectedDurationSec: 45,
+      },
+    );
+    expect(descWin.source).toBe('description_timestamp');
+    expect(descWin.startSec).toBe(260);
+    expect(descWin.sectionArg).toBe('*4:20-5:20');
+
+    const midpointWin = selectRelevantDownloadWindow(
+      {
+        url: 'https://youtube.com/watch?v=long',
+        title: 'Elden Ring Gameplay',
+        origin: 'yt_dlp',
+        license: 'external_reference',
+        durationSec: 800,
+      },
+      maleniaSeg,
+    );
+    expect(midpointWin.source).toBe('temporal_midpoint');
+    expect(midpointWin.startSec).toBe(200);
+
+    // Scene Grounding MUST NOT approve generic Elden Ring combat/fight/gameplay without proving Malenia
+    const genericCombatDecision = await evaluateMediaRelevance(
+      {
+        mediaId: 'generic_elden_combat',
+        uri: 'elden_combat.mp4',
+        title: 'Elden Ring Gameplay Combat Fight',
+        origin: 'yt_dlp',
+        durationSec: 60,
+      },
+      {
+        segmentId: 'seg_malenia',
+        prompt: 'Crie um vídeo sobre os 10 chefes mais difíceis de Elden Ring',
+        narrationText: 'Malenia enfrenta o jogador com Waterfowl Dance.',
+        genre: 'gameplay_essay',
+        expectedEntities: ['Elden Ring', 'Malenia'],
+      },
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async (_uri, timestampsSec) =>
+          timestampsSec.map((t) => ({
+            timestampSec: t,
+            summary: 'Elden Ring player fighting generic knight in Limgrave combat gameplay',
+            detectedEntities: ['Elden Ring'],
+            detectedActions: ['fight', 'combat', 'gameplay'],
+            visualCategory: 'gameplay',
+            confidence: 0.85,
+            provider: 'test_vision',
+          })),
+      },
+    );
+    expect(genericCombatDecision.correspondenceLevel).toBe('universe_only_coincidence');
+    expect(genericCombatDecision.eligibleSegmentIds).toEqual([]);
   });
 });

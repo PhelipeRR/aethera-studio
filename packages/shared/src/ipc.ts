@@ -924,6 +924,25 @@ export const ipcContract = {
   [IpcChannel.videoStudioRawgSave]: { input: z.strictObject({ apiKey: z.string().trim().min(1).max(500) }), output: okSchema },
   [IpcChannel.videoStudioRawgStatus]: { input: noInput, output: z.strictObject({ configured: z.boolean() }) },
   [IpcChannel.videoStudioRawgClear]: { input: noInput, output: okSchema },
+  [IpcChannel.videoStudioClaudeGatewaySave]: {
+    input: z.strictObject({
+      enabled: z.boolean(),
+      baseUrl: z.string().trim().url().max(500),
+      authToken: z.string().trim().min(1).max(2000).optional(),
+      model: z.string().trim().min(1).max(200),
+    }),
+    output: okSchema,
+  },
+  [IpcChannel.videoStudioClaudeGatewayStatus]: {
+    input: noInput,
+    output: z.strictObject({
+      enabled: z.boolean(),
+      configured: z.boolean(),
+      baseUrl: z.string(),
+      model: z.string(),
+    }),
+  },
+  [IpcChannel.videoStudioClaudeGatewayClear]: { input: noInput, output: okSchema },
   [IpcChannel.videoProductionRunClaims]: { input: z.strictObject({ runId: z.string().uuid() }), output: productionClaimsSchema },
   [IpcChannel.videoProductionEvidenceDecide]: { input: z.strictObject({ evidenceId: z.string().uuid(), decision: z.enum(['approved', 'rejected']), note: z.string().trim().max(1_000).optional() }), output: productionClaimsSchema },
   [IpcChannel.videoProductionClaimKind]: { input: z.strictObject({ claimId: z.string().uuid(), kind: z.enum(claimKinds) }), output: productionClaimsSchema },

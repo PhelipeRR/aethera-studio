@@ -8,6 +8,7 @@ import type { TaskEngine } from '../engine.js';
 /** Optional adapter: callers must explicitly enable it after B-1. TaskEngine owns read-only access, lease and quota. */
 export function createTaskEngineVisionProvider(input: {
   id: 'codex' | 'claude';
+  providerId?: string;
   model: string;
   root: string;
   projectId: string;
@@ -59,7 +60,7 @@ export function createTaskEngineVisionProvider(input: {
     return segmentAnalysisSchema.parse(result.structured);
   };
   return {
-    id: input.id, model: input.model, capabilities: ['classify', 'describe', 'ocr', 'analyze'], limits: { maxImagesPerCall: 3 },
+    id: input.providerId ?? input.id, model: input.model, capabilities: ['classify', 'describe', 'ocr', 'analyze'], limits: { maxImagesPerCall: 3 },
     analyze: ({ frames, context, signal }) => analyze(frames, context, signal),
     lastReportedModel: () => reportedModel,
     detect: async () => {
@@ -76,6 +77,7 @@ export function createTaskEngineVisionProvider(input: {
 export function createVisionProviders(configured: readonly VisualAnalysisProvider[] = []): VisualAnalysisProvider[] {
   const registry: Array<{ id: string; capabilities: VisualAnalysisProvider['capabilities']; reason: string }> = [
     { id: 'ffmpeg-heuristics', capabilities: ['describe'], reason: '' },
+    { id: 'claude-gateway', capabilities: ['classify', 'describe', 'ocr', 'analyze'], reason: 'Claude Gateway não configurado ou desativado.' },
     { id: 'antigravity', capabilities: ['classify', 'describe', 'ocr', 'analyze'], reason: 'Antigravity CLI (agy) não configurado ou indisponível.' },
     { id: 'codex', capabilities: ['classify', 'describe', 'ocr'], reason: 'TaskEngine visual adapter not enabled; real B-1 validation pending.' },
     { id: 'claude', capabilities: ['classify', 'describe', 'ocr'], reason: 'TaskEngine visual adapter not enabled; real B-1 validation pending.' },

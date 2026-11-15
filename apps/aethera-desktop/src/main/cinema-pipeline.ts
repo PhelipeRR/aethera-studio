@@ -1464,6 +1464,7 @@ export class StagedCinemaPipeline {
       }
 
       // Etapa B (Semantic Editing): correlacionar segmentos de narração às mídias adquiridas
+      const clipSegmentMap = new Map<string, string>();
       if (job.acquiredMedia.length > 0 && pkg.direction.narrativeBeats.length > 0) {
         const videoTrackClips = pkg.timeline.clips.filter((c) => c.trackId === 'v1');
         const segments = pkg.direction.narrativeBeats.slice(0, videoTrackClips.length).map((beat, idx) => {
@@ -1512,9 +1513,11 @@ export class StagedCinemaPipeline {
               const partTicks = isLast
                 ? Math.max(1, startTickBase + totalTimelineTicks - cursorTick)
                 : Math.max(1, Math.round((ivSec / Math.max(1, totalIntervalSec)) * totalTimelineTicks));
+              const subClipId = pIdx === 0 ? c.clipId : `${c.clipId}_p${pIdx + 1}`;
+              clipSegmentMap.set(subClipId, expectedSegId);
               nextClips.push({
                 ...c,
-                clipId: pIdx === 0 ? c.clipId : `${c.clipId}_p${pIdx + 1}`,
+                clipId: subClipId,
                 mediaId: iv.mediaId,
                 timelineRange: {
                   start: { value: cursorTick, rate: tlRate },
@@ -1555,6 +1558,7 @@ export class StagedCinemaPipeline {
                 },
               }
             : c.sourceRange;
+          clipSegmentMap.set(c.clipId, expectedSegId);
           nextClips.push({ ...c, mediaId: finalMediaId, sourceRange: nextSourceRange });
         }
         pkg = {
@@ -1569,16 +1573,28 @@ export class StagedCinemaPipeline {
       job.completedStages = [...new Set([...job.completedStages, 'planejamento'])] as ProductionStageState[];
 
       // COVERAGE & ANTI-REPETITION QUALITY GATE (antes da renderização)
+      const sceneBySegId = new Map(scenesForAcquisition.map((sc) => [sc.sceneId, sc]));
       const coverageSegments = pkg.editorialScript
-        ? pkg.editorialScript.segments.map((s) => ({
-            segmentId: s.segmentId,
-            subject: s.title || s.segmentId,
-            narrationText: s.spokenText,
-            expectedDurationSec: Math.max(
-              8,
-              Math.round((job.targetDurationSec ?? 90) / Math.max(1, pkg.editorialScript!.segments.length)),
-            ),
-          }))
+        ? pkg.editorialScript.segments.map((s) => {
+            const matchedScene = sceneBySegId.get(s.segmentId);
+            return {
+              segmentId: s.segmentId,
+              subject: s.title || s.segmentId,
+              narrationText: s.spokenText,
+              ...(matchedScene
+                ? {
+                    entities:
+                      matchedScene.matchingCriteria.requiredEntities.length > 0
+                        ? [matchedScene.workTitle, ...matchedScene.matchingCriteria.requiredEntities]
+                        : matchedScene.entities,
+                  }
+                : {}),
+              expectedDurationSec: Math.max(
+                8,
+                Math.round((job.targetDurationSec ?? 90) / Math.max(1, pkg.editorialScript!.segments.length)),
+              ),
+            };
+          })
         : pkg.direction.narrativeBeats.map((b, i) => ({
             segmentId: b.beatId || `seg_${i + 1}`,
             subject: String(b.stage),
@@ -1605,7 +1621,10 @@ export class StagedCinemaPipeline {
         .filter((c) => c.trackId === 'v1' && c.mediaId)
         .map((c, idx) => ({
           clipId: c.clipId,
-          segmentId: coverageSegments[idx % Math.max(1, coverageSegments.length)]?.segmentId ?? `seg_${idx + 1}`,
+          segmentId:
+            clipSegmentMap.get(c.clipId) ??
+            coverageSegments[idx % Math.max(1, coverageSegments.length)]?.segmentId ??
+            `seg_${idx + 1}`,
           mediaId: c.mediaId!,
           sourceStartSec: c.sourceRange.start.value / Math.max(1, c.sourceRange.start.rate),
           sourceEndSec:

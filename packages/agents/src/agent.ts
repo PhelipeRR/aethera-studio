@@ -43,6 +43,8 @@ export interface AdapterOptions {
   /** Override the CLI location (tests, custom installs). */
   cli?: CommandSpec;
   env?: Record<string, string | undefined>;
+  /** Dynamic environment resolver evaluated on each detect/run call (e.g. gateway token toggle). */
+  resolveEnv?: () => Record<string, string | undefined>;
 }
 
 export interface AgentAdapter {
@@ -83,10 +85,11 @@ export interface DetectSpec {
 /** Shared detection: location, version, login, features. Results are cached for a minute. */
 export function createDetector(spec: DetectSpec, options: AdapterOptions) {
   let cached: { at: number; status: AgentStatus } | null = null;
-  const env = options.env ?? process.env;
-
   return async function detect({ refresh = false } = {}): Promise<AgentStatus> {
     if (!refresh && cached && Date.now() - cached.at < 60_000) return cached.status;
+    const env = options.resolveEnv
+      ? { ...process.env, ...options.env, ...options.resolveEnv() }
+      : (options.env ?? process.env);
     const base: AgentStatus = {
       id: spec.id,
       label: spec.label,
@@ -111,7 +114,11 @@ export function createDetector(spec: DetectSpec, options: AdapterOptions) {
     const run = createCliRunner({ env, timeoutMs: 30_000 });
     const [versionOut, authOut, helpOut] = await Promise.all([run(cli, spec.versionArgs), run(cli, spec.authArgs), run(cli, spec.helpArgs)]);
     const version = versionOf(versionOut.stdout);
-    const auth = spec.parseAuth(authOut);
+    const parsedAuth = spec.parseAuth(authOut);
+    const auth =
+      spec.id === 'claude' && env['ANTHROPIC_AUTH_TOKEN'] && env['ANTHROPIC_BASE_URL']
+        ? { authenticated: true, method: 'gateway-token' }
+        : parsedAuth;
     const features = Object.entries(spec.features)
       .filter(([, marker]) => helpOut.stdout.includes(marker))
       .map(([name]) => name);

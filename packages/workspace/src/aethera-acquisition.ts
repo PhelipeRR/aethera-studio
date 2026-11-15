@@ -12,9 +12,17 @@ import { runVelixCommand, velixImportError } from './velix.js';
 export interface YtDlpCommand { command: string; prefix: readonly string[] }
 export const defaultYtDlp = (): YtDlpCommand => ({ command: process.env['NB_PYTHON'] ?? 'python', prefix: ['-m', 'yt_dlp'] });
 
+export interface YtDlpChapter {
+  startSec: number;
+  endSec: number;
+  title: string;
+}
+
 export interface YtDlpVideoInfo {
   id: string; url: string; title: string; channel: string; channelVerified: boolean; durationSeconds: number | null;
   maxHeight: number | null; uploadDate: string | null; license: string | null; thumbnail: string | null; isLive: boolean;
+  description?: string;
+  chapters?: YtDlpChapter[];
 }
 
 /** One `-j` line of yt-dlp into the fields the Studio uses; anything that is not a video is ignored. */
@@ -30,10 +38,21 @@ export function parseYtDlpInfo(line: string): YtDlpVideoInfo | null {
   const height = heights.length ? Math.max(...heights) : typeof raw['height'] === 'number' ? raw['height'] : null;
   const upload = typeof raw['upload_date'] === 'string' && /^\d{8}$/.test(raw['upload_date']) ? `${raw['upload_date'].slice(0, 4)}-${raw['upload_date'].slice(4, 6)}-${raw['upload_date'].slice(6, 8)}` : null;
   const channel = typeof raw['channel'] === 'string' ? raw['channel'] : typeof raw['uploader'] === 'string' ? raw['uploader'] : '';
+  const rawChapters = Array.isArray(raw['chapters']) ? (raw['chapters'] as Array<Record<string, unknown>>) : [];
+  const chapters: YtDlpChapter[] = rawChapters
+    .map((ch) => ({
+      startSec: typeof ch['start_time'] === 'number' ? ch['start_time'] : Number.NaN,
+      endSec: typeof ch['end_time'] === 'number' ? ch['end_time'] : Number.NaN,
+      title: typeof ch['title'] === 'string' ? ch['title'].trim() : '',
+    }))
+    .filter((ch) => Number.isFinite(ch.startSec) && Number.isFinite(ch.endSec) && ch.endSec > ch.startSec && ch.title.length > 0);
+  const description = typeof raw['description'] === 'string' && raw['description'].trim() ? raw['description'].slice(0, 4000) : undefined;
   return {
     id, url, title, channel, channelVerified: raw['channel_is_verified'] === true,
     durationSeconds: typeof raw['duration'] === 'number' ? raw['duration'] : null, maxHeight: height && height > 0 ? Math.round(height) : null,
     uploadDate: upload, license: typeof raw['license'] === 'string' ? raw['license'] : null, thumbnail: typeof raw['thumbnail'] === 'string' ? raw['thumbnail'] : null, isLive: raw['is_live'] === true,
+    ...(description ? { description } : {}),
+    ...(chapters.length > 0 ? { chapters } : {}),
   };
 }
 

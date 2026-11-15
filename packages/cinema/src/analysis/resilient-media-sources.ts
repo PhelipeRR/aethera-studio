@@ -33,6 +33,7 @@ export interface MediaSourceCandidate {
   localPath?: string;
   title?: string;
   description?: string;
+  chapters?: Array<{ startSec: number; endSec: number; title: string }>;
   origin: MediaProviderId;
   license: string;
   durationSec?: number;
@@ -55,8 +56,27 @@ export interface ResilientAcquisitionDeps {
   localMediaDirs?: string[];
   youtubeApiKey?: string;
   fetchImpl?: typeof fetch;
-  ytDlpSearchFn?: (query: string, count: number, signal?: AbortSignal) => Promise<Array<{ url: string; title?: string; durationSec?: number }>>;
-  ytDlpAcquireFn?: (url: string, slotIndex: number, mediaDir: string, signal?: AbortSignal) => Promise<string | null>;
+  ytDlpSearchFn?: (
+    query: string,
+    count: number,
+    signal?: AbortSignal,
+  ) => Promise<
+    Array<{
+      url: string;
+      title?: string;
+      durationSec?: number;
+      durationSeconds?: number | null;
+      description?: string;
+      chapters?: Array<{ startSec: number; endSec: number; title: string }>;
+    }>
+  >;
+  ytDlpAcquireFn?: (
+    url: string,
+    slotIndex: number,
+    mediaDir: string,
+    signal?: AbortSignal,
+    downloadSection?: string,
+  ) => Promise<string | null>;
 }
 
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm', '.mkv']);
@@ -303,14 +323,19 @@ export async function searchResilientMediaSources(
       const ytdlpHits = await deps.ytDlpSearchFn(query, 4, signal);
       const mapped = ytdlpHits
         .filter((r) => Boolean(r.url))
-        .map((r) => ({
-          url: r.url,
-          ...(r.title ? { title: r.title } : {}),
-          ...(r.durationSec !== undefined ? { durationSec: r.durationSec } : {}),
-          origin: 'yt_dlp' as const,
-          license: 'external_reference',
-          directDownloadable: false,
-        }));
+        .map((r) => {
+          const dur = r.durationSec ?? (typeof r.durationSeconds === 'number' ? r.durationSeconds : undefined);
+          return {
+            url: r.url,
+            ...(r.title ? { title: r.title } : {}),
+            ...(r.description ? { description: r.description } : {}),
+            ...(r.chapters && r.chapters.length > 0 ? { chapters: r.chapters } : {}),
+            ...(dur !== undefined ? { durationSec: dur } : {}),
+            origin: 'yt_dlp' as const,
+            license: 'external_reference',
+            directDownloadable: false,
+          };
+        });
       candidates.push(...mapped);
       providerStatuses.push({
         provider: 'yt_dlp',
@@ -562,6 +587,119 @@ async function runWithConcurrency<T>(
   await Promise.all(runners);
 }
 
+function formatYtDlpTimestamp(totalSec: number): string {
+  const safe = Math.max(0, Math.floor(totalSec));
+  const hrs = Math.floor(safe / 3600);
+  const mins = Math.floor((safe % 3600) / 60);
+  const secs = safe % 60;
+  const mm = String(mins).padStart(hrs > 0 ? 2 : 1, '0');
+  const ss = String(secs).padStart(2, '0');
+  return hrs > 0 ? `${hrs}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function parseTimestampTokenToSec(token: string): number | null {
+  const parts = token.split(':').map((p) => Number(p));
+  if (parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
+  if (parts.length === 2) return parts[0]! * 60 + parts[1]!;
+  if (parts.length === 3) return parts[0]! * 3600 + parts[1]! * 60 + parts[2]!;
+  return null;
+}
+
+/**
+ * Selects the most relevant temporal window anywhere in a video using chapters, description timestamps,
+ * or non-intro temporal midpoint for long videos instead of always clipping 0:00-1:30.
+ */
+export function selectRelevantDownloadWindow(
+  cand: MediaSourceCandidate,
+  segment: ScriptCoverageSegment,
+): {
+  startSec: number;
+  endSec: number;
+  sectionArg: string;
+  source: 'chapter_match' | 'description_timestamp' | 'temporal_midpoint' | 'head';
+} {
+  const desiredSpan = Math.min(105, Math.max(60, Math.round(segment.expectedDurationSec + 15)));
+  const totalDur = cand.durationSec && cand.durationSec > 0 ? Math.floor(cand.durationSec) : null;
+  const segTokens = tokenize(
+    `${segment.subject} ${segment.expectedEvent ?? ''} ${(segment.entities ?? []).join(' ')}`,
+  ).filter((t) => t.length >= 3);
+
+  const scoreTextMatch = (label: string): number => {
+    const labelTokens = new Set(tokenize(label));
+    let hits = 0;
+    for (const t of segTokens) {
+      if (labelTokens.has(t)) hits += 1;
+    }
+    return hits;
+  };
+
+  if (cand.chapters && cand.chapters.length > 0 && segTokens.length > 0) {
+    let bestChapter: { startSec: number; endSec: number; hits: number } | null = null;
+    for (const ch of cand.chapters) {
+      const hits = scoreTextMatch(ch.title);
+      if (hits > 0 && (!bestChapter || hits > bestChapter.hits)) {
+        bestChapter = { startSec: ch.startSec, endSec: ch.endSec, hits };
+      }
+    }
+    if (bestChapter) {
+      const startSec = Math.max(0, Math.floor(bestChapter.startSec));
+      const rawEnd = Math.min(Math.ceil(bestChapter.endSec), startSec + desiredSpan);
+      const endSec = totalDur ? Math.min(totalDur, Math.max(startSec + 15, rawEnd)) : Math.max(startSec + 15, rawEnd);
+      return {
+        startSec,
+        endSec,
+        sectionArg: `*${formatYtDlpTimestamp(startSec)}-${formatYtDlpTimestamp(endSec)}`,
+        source: 'chapter_match',
+      };
+    }
+  }
+
+  if (cand.description && segTokens.length > 0) {
+    let bestLine: { startSec: number; hits: number } | null = null;
+    for (const line of cand.description.split(/\r?\n/)) {
+      const tsMatch = line.match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
+      if (!tsMatch?.[1]) continue;
+      const startSec = parseTimestampTokenToSec(tsMatch[1]);
+      if (startSec === null) continue;
+      const hits = scoreTextMatch(line);
+      if (hits > 0 && (!bestLine || hits > bestLine.hits)) {
+        bestLine = { startSec, hits };
+      }
+    }
+    if (bestLine) {
+      const startSec = Math.max(0, Math.floor(bestLine.startSec));
+      const endSec = totalDur ? Math.min(totalDur, startSec + desiredSpan) : startSec + desiredSpan;
+      if (endSec > startSec + 10) {
+        return {
+          startSec,
+          endSec,
+          sectionArg: `*${formatYtDlpTimestamp(startSec)}-${formatYtDlpTimestamp(endSec)}`,
+          source: 'description_timestamp',
+        };
+      }
+    }
+  }
+
+  if (totalDur && totalDur > 180) {
+    const startSec = Math.min(Math.max(15, Math.floor(totalDur * 0.25)), Math.max(15, totalDur - desiredSpan));
+    const endSec = Math.min(totalDur, startSec + desiredSpan);
+    return {
+      startSec,
+      endSec,
+      sectionArg: `*${formatYtDlpTimestamp(startSec)}-${formatYtDlpTimestamp(endSec)}`,
+      source: 'temporal_midpoint',
+    };
+  }
+
+  const endSec = totalDur ? Math.min(totalDur, desiredSpan) : desiredSpan;
+  return {
+    startSec: 0,
+    endSec,
+    sectionArg: `*0:00-${formatYtDlpTimestamp(endSec)}`,
+    source: 'head',
+  };
+}
+
 export function scoreCandidateRelevancePriority(
   cand: MediaSourceCandidate,
   segment: ScriptCoverageSegment,
@@ -651,13 +789,15 @@ export async function runAutonomousMediaAcquisition(input: {
   const maxRounds = Math.max(1, input.limits?.maxRounds ?? 3);
   const baseMaxDurationMs = Math.max(
     1_000,
-    input.limits?.maxDurationMs ?? Math.max(120_000, Math.min(600_000, input.segments.length * 45_000)),
+    input.limits?.maxDurationMs ?? Math.max(180_000, Math.min(900_000, input.segments.length * 60_000)),
   );
   const budgetMultiplier = Math.max(0.25, input.limits?.budgetMultiplier ?? 1);
   const maxDurationMs = Math.round(baseMaxDurationMs * budgetMultiplier);
   const perOperationTimeoutMs = Math.max(1_000, input.limits?.perOperationTimeoutMs ?? 35_000);
   const maxQueriesTotal = Math.max(input.segments.length, input.limits?.maxQueriesTotal ?? Math.max(36, input.segments.length * 4));
   const maxCandidateDurationSec = input.limits?.maxCandidateDurationSec ?? 600;
+  const maxSectionedCandidateDurationSec =
+    input.limits?.maxCandidateDurationSec ?? (input.deps.ytDlpAcquireFn ? 3600 : maxCandidateDurationSec);
   const discoveryConcurrency = Math.max(1, input.limits?.discoveryConcurrency ?? 3);
   const acquisitionConcurrency = Math.max(1, input.limits?.acquisitionConcurrency ?? 2);
   const verificationConcurrency = Math.max(1, input.limits?.verificationConcurrency ?? 1);
@@ -1023,7 +1163,11 @@ export async function runAutonomousMediaAcquisition(input: {
               candidatesFoundCount += 1;
               sm.candidatesFound += 1;
 
-              if (cand.durationSec && cand.durationSec > maxCandidateDurationSec) {
+              const effectiveMaxDurationSec =
+                cand.origin === 'yt_dlp' && input.deps.ytDlpAcquireFn
+                  ? maxSectionedCandidateDurationSec
+                  : maxCandidateDurationSec;
+              if (cand.durationSec && cand.durationSec > effectiveMaxDurationSec) {
                 candidateStates.set(candKey, 'rejected');
                 sm.rejectedCount += 1;
                 rejectedCandidates.push({
@@ -1031,7 +1175,7 @@ export async function runAutonomousMediaAcquisition(input: {
                   title: cand.title ?? cand.url,
                   origin: cand.origin,
                   rejectionCode: 'duration_limit_exceeded',
-                  reason: `Candidato excede limite de duração (${Math.round(cand.durationSec)}s > ${maxCandidateDurationSec}s), evitando download longo bloqueante.`,
+                  reason: `Candidato excede limite de duração (${Math.round(cand.durationSec)}s > ${effectiveMaxDurationSec}s), evitando download longo bloqueante.`,
                 });
                 continue;
               }
@@ -1066,7 +1210,7 @@ export async function runAutonomousMediaAcquisition(input: {
           list.sort((a, b) => b.priorityScore - a.priorityScore);
         }
         const acquisitionQueue: Array<{ segment: ScriptCoverageSegment; cand: MediaSourceCandidate }> = [];
-        const maxPerSegThisRound = round === 1 ? 2 : 3;
+        const maxPerSegThisRound = round === 1 ? (targetSegments.length > 6 ? 1 : 2) : 2;
         for (let rank = 0; rank < maxPerSegThisRound; rank += 1) {
           for (const s of targetSegments) {
             const entry = discoveredBySegment.get(s.segmentId)?.[rank];
@@ -1079,7 +1223,7 @@ export async function runAutonomousMediaAcquisition(input: {
         const perDownloadTimeoutMs = Math.min(
           perOperationTimeoutMs,
           Math.max(
-            Math.min(perOperationTimeoutMs, 25_000),
+            Math.min(perOperationTimeoutMs, 75_000),
             Math.floor((acquisitionBudgetMs * acquisitionConcurrency) / Math.max(1, acquisitionQueue.length)),
           ),
         );
@@ -1117,6 +1261,15 @@ export async function runAutonomousMediaAcquisition(input: {
                     detail: `HTTP ${res.status} ${res.statusText || ''}`.trim(),
                   };
                 } else {
+                  const contentLengthRaw = res.headers?.get?.('content-length');
+                  const contentLengthBytes = contentLengthRaw ? Number(contentLengthRaw) : 0;
+                  if (Number.isFinite(contentLengthBytes) && contentLengthBytes > 120 * 1024 * 1024) {
+                    try { await res.body?.cancel(); } catch { /* ignore */ }
+                    downloadFailure = {
+                      reasonCode: 'invalid_file',
+                      detail: `Arquivo remoto excede 120MB (${Math.round(contentLengthBytes / (1024 * 1024))}MB)`,
+                    };
+                  } else {
                   const buf = Buffer.from(await res.arrayBuffer());
                   if (buf.length < 1024) {
                     downloadFailure = {
@@ -1137,6 +1290,7 @@ export async function runAutonomousMediaAcquisition(input: {
                     writeFileSync(candidateOutFile, buf);
                     filePath = candidateOutFile;
                   }
+                  }
                 }
               } catch (err) {
                 if (candidateOutFile && existsSync(candidateOutFile)) {
@@ -1147,7 +1301,8 @@ export async function runAutonomousMediaAcquisition(input: {
               }
             } else if (cand.origin === 'yt_dlp' && !ytDlpBlocked && input.deps.ytDlpAcquireFn) {
               try {
-                filePath = await input.deps.ytDlpAcquireFn(cand.url, acqSeq, input.mediaDir, opSig);
+                const win = selectRelevantDownloadWindow(cand, task.segment);
+                filePath = await input.deps.ytDlpAcquireFn(cand.url, acqSeq, input.mediaDir, opSig, win.sectionArg);
                 if (!filePath || !existsSync(filePath)) {
                   downloadFailure = {
                     reasonCode: 'invalid_file',
