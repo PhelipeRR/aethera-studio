@@ -20,6 +20,13 @@ asarUnpack:
   - node_modules/cross-spawn/**
   - node_modules/execa/**
   - node_modules/ws/**
+  - node_modules/sharp/**
+  - node_modules/@img/**
+  - node_modules/semver/**
+  - node_modules/color/**
+  - node_modules/color-convert/**
+  - node_modules/color-name/**
+  - node_modules/detect-libc/**
 extraResources:
   - from: ../../packages/database/migrations
     to: migrations

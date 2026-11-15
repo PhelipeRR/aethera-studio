@@ -7,6 +7,7 @@ import type {
   CreativeProjectDocument,
   LayerEffect,
   LayerMask,
+  LocalizedDefect,
   ManagedAssetRef,
 } from './schemas.js';
 
@@ -41,6 +42,29 @@ export interface SemanticEvaluationResult {
   rationale: string;
 }
 
+export interface VisualQualityInspectionRequest {
+  imageBuffer: Buffer;
+  compareBeforeBuffer?: Buffer;
+  genre?: string;
+}
+
+export interface VisualQualityInspectionResult {
+  evaluatorId: string;
+  anatomicalConsistency: number;
+  physicalCoherence: number;
+  compositionQuality: number;
+  subjectIdentityConsistency: number;
+  visualArtifactSeverity: number;
+  localizedDefects: LocalizedDefect[];
+}
+
+export interface LocalizedInpaintRequest {
+  imageBuffer: Buffer;
+  prompt: string;
+  bbox: { x: number; y: number; width: number; height: number };
+  strength?: number;
+}
+
 /**
  * Optional external AI image generation / segmentation / multimodal evaluation adapter.
  * Kept strictly separate from deterministic Sharp/SVG layer composition.
@@ -51,6 +75,8 @@ export interface ExternalImageAdapter {
   generateImage?(request: ImageGenerationRequest): Promise<Buffer>;
   removeBackground?(request: BackgroundRemovalRequest): Promise<Buffer>;
   evaluateImageSemantics?(request: SemanticEvaluationRequest): Promise<SemanticEvaluationResult>;
+  inspectVisualQuality?(request: VisualQualityInspectionRequest): Promise<VisualQualityInspectionResult>;
+  inpaintRegion?(request: LocalizedInpaintRequest): Promise<Buffer>;
 }
 
 function escapeXml(value: string): string {
@@ -119,16 +145,47 @@ export function fitTextToBox(params: {
   strokeWidth: number;
   uppercase?: boolean;
   minFontSize?: number;
+  orientation?: 'horizontal' | 'vertical';
 }): TextBoxFitResult {
   const display = params.uppercase ? params.text.toUpperCase() : params.text;
-  const padX = Math.min(36, Math.round(params.targetW * 0.06));
+  const isVertical = params.orientation === 'vertical';
+
+  // For vertical orientation, swap the semantic meaning of width/height:
+  // the "width" of a vertical text column is actually its visual height (stacked glyphs),
+  // and the "height" constraint is the visual width available for each glyph.
+  const effectiveW = isVertical ? params.targetH : params.targetW;
+  const effectiveH = isVertical ? params.targetW : params.targetH;
+
+  // For vertical text, use targetW/targetH directly (no swap): targetW = visual column width,
+  // targetH = visual height available for the stacked glyphs. Padding is applied per-axis.
+  const vertPadX = isVertical ? Math.min(36, Math.round(params.targetW * 0.06)) : 0;
+  const vertPadY = isVertical ? 16 : 0;
+  const vertAvailW = isVertical ? Math.max(30, params.targetW - vertPadX) : 0;
+  const vertAvailH = isVertical ? Math.max(40, params.targetH - vertPadY) : 0;
+  const padX = Math.min(36, Math.round(effectiveW * 0.06));
   const padY = 16;
-  const availW = Math.max(40, params.targetW - padX);
-  const availH = Math.max(30, params.targetH - padY);
+  const availW = Math.max(40, effectiveW - padX);
+  const availH = Math.max(30, effectiveH - padY);
   const minFont = Math.max(16, params.minFontSize ?? 24);
 
   const measureAt = (fs: number) => {
     const charW = fs * 0.72 + Math.max(0, params.letterSpacing) + params.strokeWidth * 0.65;
+
+    if (isVertical) {
+      // Vertical text: each character occupies one vertical slot stacked top-to-bottom.
+      // Column width (widest glyph) must fit within targetW; total stacked height must fit within targetH.
+      const charCount = display.length;
+      const estColumnWidth = charW;
+      const estColumnHeight = charCount * fs * params.lineHeight;
+      const lines = [display]; // single "line" containing all chars for vertical layout
+      return {
+        lines,
+        estW: estColumnWidth,
+        estH: estColumnHeight,
+        fits: estColumnWidth <= vertAvailW && estColumnHeight <= vertAvailH,
+      };
+    }
+
     const maxChars = Math.max(4, Math.floor(availW / Math.max(8, charW)));
     const lines = wrapTextLines(display, maxChars);
     const maxLen = lines.reduce((m, l) => Math.max(m, l.length), 0);
@@ -490,7 +547,15 @@ export class SharpSvgCompositionEngine {
   ): Promise<Buffer> {
     const orderedLayers = [...doc.layers]
       .filter((layer) => layer.visible)
-      .sort((a, b) => a.zIndex - b.zIndex);
+      .sort((a, b) => {
+        const effZ = (l: CreativeLayer): number => {
+          if (l.type === 'text' && l.behindSubject) {
+            return 0.5;
+          }
+          return l.zIndex;
+        };
+        return effZ(a) - effZ(b);
+      });
 
     const baseCanvas = sharp({
       create: {
@@ -577,6 +642,14 @@ export class SharpSvgCompositionEngine {
       heightCoverage: bounds.height / Math.max(1, doc.height),
       areaCoverage: bounds.nonTransparentPixels / Math.max(1, doc.width * doc.height),
     };
+  }
+
+  /**
+   * Public API for rendering a single layer in isolation (used by TypographyQualityCritic).
+   * Delegates to the private renderLayer implementation.
+   */
+  async renderSingleLayer(doc: CreativeProjectDocument, layer: CreativeLayer): Promise<Buffer | null> {
+    return this.renderLayer(doc, layer);
   }
 
   private async renderLayer(doc: CreativeProjectDocument, layer: CreativeLayer): Promise<Buffer | null> {
@@ -765,19 +838,95 @@ export class SharpSvgCompositionEngine {
           pillSvg = `<rect x="${pillX}" y="0" width="${Math.round(pillW)}" height="${pillH}" rx="${rx}" ry="${rx}" fill="${escapeXml(layer.pillColor)}"/>`;
         }
 
-        const tspans = lines
-          .map((line, idx) => {
-            const yPos = Math.round(fittedFs + (layer.pillColor ? 4 : 0) + idx * lineHeightPx);
-            const strokeAttrs =
-              layer.strokeWidth > 0
-                ? `stroke="${escapeXml(layer.strokeColor)}" stroke-width="${layer.strokeWidth}" paint-order="stroke fill"`
-                : '';
-            return `<text x="${textX}" y="${yPos}" text-anchor="${anchor}" font-family="${escapeXml(layer.fontFamily)}, sans-serif" font-size="${fittedFs}" font-weight="${layer.fontWeight}" letter-spacing="${layer.letterSpacing}" fill="${escapeXml(layer.color)}" ${strokeAttrs}>${escapeXml(line)}</text>`;
-          })
-          .join('');
+        const kerningAttr =
+          layer.kerningMode === 'none'
+            ? 'font-kerning="none"'
+            : 'font-kerning="normal" text-rendering="geometricPrecision"';
 
-        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${targetW}" height="${targetH}">${pillSvg}${tspans}</svg>`;
-        buf = await sharp(Buffer.from(svg)).png().toBuffer();
+        let defsSvg = '';
+        let fillValue = escapeXml(layer.color);
+        if (layer.textureOverlay === 'metallic') {
+          defsSvg += `<linearGradient id="tex-metal" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#FFFFFF"/>
+            <stop offset="48%" stop-color="${escapeXml(layer.color)}"/>
+            <stop offset="52%" stop-color="#94A3B8"/>
+            <stop offset="100%" stop-color="${escapeXml(layer.color)}"/>
+          </linearGradient>`;
+          fillValue = 'url(#tex-metal)';
+        } else if (layer.textureOverlay === 'scanlines') {
+          defsSvg += `<pattern id="tex-scan" width="8" height="6" patternUnits="userSpaceOnUse">
+            <rect width="8" height="4" fill="${escapeXml(layer.color)}"/>
+            <rect y="4" width="8" height="2" fill="${escapeXml(layer.color)}" fill-opacity="0.55"/>
+          </pattern>`;
+          fillValue = 'url(#tex-scan)';
+        }
+
+        const extrudeDepth = Math.round(layer.extrusionDepthPx ?? 0);
+        const extrudeColor = escapeXml(layer.extrusionColor ?? '#090D16');
+
+        const buildTextNodes = (dx: number, dy: number, fillOverride?: string, isExtrude = false): string =>
+          lines
+            .map((line, idx) => {
+              const yPos = Math.round(fittedFs + (layer.pillColor ? 4 : 0) + idx * lineHeightPx) + dy;
+              const strokeAttrs =
+                !isExtrude && layer.strokeWidth > 0
+                  ? `stroke="${escapeXml(layer.strokeColor)}" stroke-width="${layer.strokeWidth}" paint-order="stroke fill"`
+                  : '';
+              return `<text x="${textX + dx}" y="${yPos}" text-anchor="${anchor}" font-family="${escapeXml(layer.fontFamily)}, sans-serif" font-size="${fittedFs}" font-weight="${layer.fontWeight}" letter-spacing="${layer.letterSpacing}" ${kerningAttr} fill="${fillOverride ?? fillValue}" ${strokeAttrs}>${escapeXml(line)}</text>`;
+            })
+            .join('');
+
+        let extrusionSvg = '';
+        if (extrudeDepth > 0) {
+          for (let step = extrudeDepth; step >= 1; step -= 2) {
+            extrusionSvg += buildTextNodes(step, step, extrudeColor, true);
+          }
+        }
+
+        const mainTspans = buildTextNodes(0, 0);
+        const skewX = layer.perspectiveSkewXDeg ?? 0;
+        const skewY = layer.perspectiveSkewYDeg ?? 0;
+        const isVert = layer.orientation === 'vertical';
+        const groupTransforms: string[] = [];
+        if (isVert) {
+          groupTransforms.push(`translate(${Math.round(targetW / 2)}, ${Math.round(targetH / 2)}) rotate(-90) translate(${-Math.round(targetW / 2)}, ${-Math.round(targetH / 2)})`);
+        }
+        if (skewX !== 0 || skewY !== 0) {
+          groupTransforms.push(`skewX(${skewX}) skewY(${skewY})`);
+        }
+        const gOpen = groupTransforms.length > 0 ? `<g transform="${groupTransforms.join(' ')}">` : '';
+        const gClose = groupTransforms.length > 0 ? '</g>' : '';
+
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${targetW}" height="${targetH}">${defsSvg ? `<defs>${defsSvg}</defs>` : ''}${gOpen}${pillSvg}${extrusionSvg}${mainTspans}${gClose}</svg>`;
+        let rawTextBuf = await sharp(Buffer.from(svg)).png().toBuffer();
+
+        // Real glyph-bounds verification: if any rendered glyph touches the box edges, contain-fit with 6px safety margin
+        const glyphBounds = await measureAlphaBounds(rawTextBuf, 20);
+        if (
+          glyphBounds &&
+          (glyphBounds.left <= 1 ||
+            glyphBounds.top <= 1 ||
+            glyphBounds.left + glyphBounds.width >= targetW - 2 ||
+            glyphBounds.top + glyphBounds.height >= targetH - 2)
+        ) {
+          const croppedGlyphs = await trimTransparentBounds(rawTextBuf, 2);
+          rawTextBuf = await sharp(croppedGlyphs)
+            .resize(Math.max(16, targetW - 12), Math.max(16, targetH - 12), {
+              fit: 'contain',
+              position: layer.align === 'center' ? 'centre' : layer.align === 'right' ? 'east' : 'west',
+              background: { r: 0, g: 0, b: 0, alpha: 0 },
+            })
+            .extend({
+              top: 6,
+              bottom: 6,
+              left: 6,
+              right: 6,
+              background: { r: 0, g: 0, b: 0, alpha: 0 },
+            })
+            .png()
+            .toBuffer();
+        }
+        buf = rawTextBuf;
         break;
       }
 

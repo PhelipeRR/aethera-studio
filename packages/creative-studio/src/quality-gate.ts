@@ -133,6 +133,8 @@ export class QualityGateService {
 
       const boxW = Math.round(layer.transform.width * layer.transform.scaleX);
       const boxH = Math.round(layer.transform.height * layer.transform.scaleY);
+      const layerOrientation =
+        layer.type === 'text' ? (layer as Extract<typeof layer, { type: 'text' }>).orientation : undefined;
       const textFit = fitTextToBox({
         text: layer.text,
         targetW: boxW,
@@ -143,6 +145,7 @@ export class QualityGateService {
         strokeWidth: layer.strokeWidth,
         uppercase: layer.uppercase,
         minFontSize: layer.role === 'kicker' || layer.role === 'subtitle' ? 18 : 24,
+        ...(layerOrientation ? { orientation: layerOrientation } : {}),
       });
       if (!textFit.fitsAfterAutoScale) {
         legibility -= 25;
@@ -248,14 +251,22 @@ export class QualityGateService {
         .map((l) => l.fontSize);
       const maxFs = textSizes.length > 0 ? Math.max(...textSizes) : 0;
       const minFs = textSizes.length > 0 ? Math.min(...textSizes) : 0;
-      const hasHierarchy =
-        visibleTexts.length >= 2 && (maxFs >= minFs * 1.25 || visibleTexts.some((l) => l.type === 'text' && (l.role === 'kicker' || l.role === 'subtitle')));
+      // Hierarchy is satisfied when: (a) multiple text layers exist with scale contrast or explicit kicker/subtitle,
+      // OR (b) a single strong headline exists (textless or single-headline thumbnails are editorially valid),
+      // OR (c) no text layers exist (pure visual focus). Only flag as critical when there are 2+ text layers
+      // that lack any differentiation — a single headline alone is NOT a hierarchy failure.
+      const hasMultipleTextLayers = visibleTexts.length >= 2;
+      const hasScaleContrast = hasMultipleTextLayers && maxFs >= minFs * 1.25;
+      const hasExplicitSecondaryRole = visibleTexts.some(
+        (l) => l.type === 'text' && (l.role === 'kicker' || l.role === 'subtitle'),
+      );
+      const hasHierarchy = !hasMultipleTextLayers || hasScaleContrast || hasExplicitSecondaryRole;
       if (!hasHierarchy) {
         legibility -= 15;
         findings.push({
           code: 'MISSING_TYPOGRAPHIC_HIERARCHY',
           severity: 'critical',
-          message: 'Thumbnail sem hierarquia tipográfica editorial (exige kicker/subtítulo + título de impacto com contraste de escala).',
+          message: 'Múltiplas camadas de texto sem diferenciação de escala ou função editorial (kicker/subtítulo).',
         });
       }
 

@@ -17,13 +17,16 @@ import {
   type CreativeFidelityMode,
   type CreativeLayer,
   type CreativeProjectDocument,
+  type LocalizedDefect,
   type ManagedAssetRef,
   type MediaProvenance,
   type QualityAuditReport,
   type VisualConceptCritique,
+  type VisualQualityMetrics,
 } from './schemas.js';
 import type { ExtractedFrameCandidate, VideoSceneHint } from './video-frame-analyzer.js';
 import type { ReasoningEngineProvider } from './creative-orchestrator.js';
+import { TypographyArtDirector, TypographyQualityCritic } from './typography-director.js';
 
 export interface ConceptEngineInput {
   title?: string;
@@ -40,6 +43,10 @@ export interface ConceptEngineInput {
   watermarkAsset?: ManagedAssetRef | null;
   sourceCinemaProjectId?: string;
   sourceVideoAssetId?: string;
+  /** Canvas width for adaptive typography positioning (defaults to 1280 when omitted) */
+  width?: number;
+  /** Canvas height for adaptive typography positioning (defaults to 720 when omitted) */
+  height?: number;
 }
 
 export interface AcquiredMediaItem {
@@ -187,15 +194,15 @@ export function extractNarrativeEntities(input: ConceptEngineInput): ExtractedSc
           : 'general';
 
   const objectVisualDescriptor = /cyberware|implante|bi[oô]nic|pr[oó]tese|sandevistan|mantis/.test(lower)
-    ? 'detailed mechanical cybernetic prosthetic forearm and neural wrist implant with exposed chrome titanium actuators, copper micro-coils and glowing cyan optical circuit veins on a lit surgical tech workbench'
+    ? 'precision-engineered cybernetic Sandevistan neural spine implant and chrome optic hardware module with symmetrical titanium plates, copper micro-coils and glowing cyan optical conduits resting on a dark ripperdoc surgical tray, no human hands, no fingers'
     : /selo|amuleto|rel[ií]quia|runa/.test(lower)
-      ? 'intricate ancient carved stone and gold mystic seal artifact with glowing crimson runes cracking open on a dark pedestal'
+      ? 'intricate ancient carved stone and gold mystic seal artifact with glowing crimson runes cracking open on a dark pedestal, no hands'
       : /submarino|fossa|oceano|marinh/.test(lower)
         ? 'deep-sea scientific submersible bathysphere spotlighting an encrusted sunken relic on the ocean floor'
-        : `detailed recognizable physical artifact representing ${primaryObject} and ${secondaryTerm} under crisp studio key lighting`;
+        : `symmetrical recognizable physical hardware artifact representing ${primaryObject} and ${secondaryTerm} on dark studio plinth, no human hands`;
 
   const actionVisualDescriptor = /cyberware|implante|bi[oô]nic|pr[oó]tese|sandevistan|mantis/.test(lower)
-    ? 'dynamic first-person combat action shot of a glowing cybernetic forearm blade implant actively slashing through electric cyan and orange sparks in a neon rain street, motion energy'
+    ? 'mounted cybernetic titanium arm cannon and retractable energy blade housing firing a focused electric cyan and amber plasma beam through neon rain street, symmetrical mechanical casing, no human fingers, no open palm'
     : /selo|amuleto|rel[ií]quia|anime/.test(lower)
       ? 'dramatic anime climax energy wave erupting from a shattering cursed seal inside an underground station, dynamic speed lines'
       : `wide dynamic cinematic action climax illustrating ${primaryObject} in active use, dramatic motion energy`;
@@ -528,8 +535,29 @@ export class ConceptDrivenEngine {
     const conceptB = applyFidelity(buildByArchetype('B', archetypeTriple[1], llmConcepts?.B));
     const conceptC = applyFidelity(buildByArchetype('C', archetypeTriple[2], llmConcepts?.C));
 
+    // Plan independent editorial typography directions for A, B, and C (no repeated headlines or thick black outlines)
+    const typoDirector = new TypographyArtDirector(this.options?.providers ?? []);
+    const { directions } = await typoDirector.planConceptTypographyTriad({
+      ...(input.title ? { title: input.title } : {}),
+      ...(input.headline ? { headline: input.headline } : {}),
+      prompt: input.prompt,
+      ...(input.scriptText ? { scriptText: input.scriptText } : {}),
+      genre: entities.genre,
+      brandKit: input.brandKit ?? null,
+    });
+
+    const withTypo = (c: CreativeConceptProposal, idx: 0 | 1 | 2): CreativeConceptProposal => {
+      const dir = directions[idx];
+      return creativeConceptProposalSchema.parse({
+        ...c,
+        headlineText: dir.headlineText || c.headlineText,
+        kickerText: dir.kickerText ?? c.kickerText,
+        typographyDirection: dir,
+      });
+    };
+
     return {
-      concepts: [conceptA, conceptB, conceptC],
+      concepts: [withTypo(conceptA, 0), withTypo(conceptB, 1), withTypo(conceptC, 2)],
       enginesUsed,
     };
   }
@@ -710,12 +738,33 @@ export class ConceptDrivenEngine {
               refPaths = [absRef];
             }
           }
-          const genBuf = await adapter.generateImage({
+          let genBuf = await adapter.generateImage({
             prompt: req.queryOrPrompt,
             width: req.role === 'comparison_left' || req.role === 'comparison_right' ? 640 : 1024,
             height: req.role === 'comparison_left' || req.role === 'comparison_right' ? 720 : 576,
-            ...(refPaths ? { referenceImagePaths: refPaths, strength: req.strength ?? 0.62 } : {}),
+            ...(refPaths ? { referenceImagePaths: refPaths, strength: req.strength ?? 0.44 } : {}),
           });
+          // When transforming before->after (ai_img2img), preserve exact structural pose/geometry by blending with modulated base
+          if (refPaths?.[0]) {
+            const meta = await sharp(genBuf).metadata();
+            const tw = meta.width ?? 640;
+            const th = meta.height ?? 720;
+            const energizedBase = await sharp(refPaths[0])
+              .resize(tw, th, { fit: 'fill' })
+              .modulate({ brightness: 1.26, saturation: 1.95, hue: 155 })
+              .linear(1.22, -8)
+              .png()
+              .toBuffer();
+            const aiOverlay = await sharp(genBuf)
+              .resize(tw, th, { fit: 'fill' })
+              .ensureAlpha(0.55)
+              .png()
+              .toBuffer();
+            genBuf = await sharp(energizedBase)
+              .composite([{ input: aiOverlay, blend: 'over' }])
+              .png()
+              .toBuffer();
+          }
           chosenAsset = await this.ingestion.ingestBuffer({
             buffer: genBuf,
             kind: 'image',
@@ -1147,7 +1196,7 @@ export class ConceptDrivenEngine {
           fontWeight: typography.titleWeight,
           color: palette.accent,
           strokeColor: '#000000',
-          strokeWidth: 9,
+          strokeWidth: 0,
           align: 'left',
           letterSpacing: 2,
           lineHeight: 1.04,
@@ -1157,6 +1206,21 @@ export class ConceptDrivenEngine {
           effects: [{ kind: 'dropShadow', enabled: true, offsetX: 0, offsetY: 8, blur: 18, color: '#000000EE' }],
         },
       );
+    }
+
+    // Apply TypographyArtDirector direction when present (distinct fonts, layout styles, zero thick outlines)
+    if (concept.typographyDirection) {
+      const typoDirector = new TypographyArtDirector(this.options?.providers ?? []);
+      const nonTextLayers = layers.filter((l) => l.type !== 'text');
+      const customTextLayers = typoDirector.buildTypographyLayers(concept.typographyDirection, palette, {
+        isSplitComparison: concept.blueprint === 'split_comparison',
+        ...(concept.leftComparisonLabel ? { leftLabel: concept.leftComparisonLabel } : {}),
+        ...(concept.rightComparisonLabel ? { rightLabel: concept.rightComparisonLabel } : {}),
+        canvasWidth: input.width ?? 1280,
+        canvasHeight: input.height ?? 720,
+      });
+      layers.length = 0;
+      layers.push(...nonTextLayers, ...customTextLayers);
     }
 
     if (input.watermarkAsset) {
@@ -1223,6 +1287,7 @@ export class ConceptDrivenEngine {
     doc: CreativeProjectDocument,
     acquired: AcquiredMediaItem[],
     input: ConceptEngineInput,
+    siblingHeadlines: string[] = [],
   ): Promise<{ critique: VisualConceptCritique; audit: QualityAuditReport }> {
     const rendered = await this.engine.renderDocumentToBuffer(doc, 'png');
     const audit = await this.qualityGate.auditProject(doc, {
@@ -1240,8 +1305,10 @@ export class ConceptDrivenEngine {
     let compositionScore = audit.scorecard.composition;
     const notes: string[] = [];
     const postRejections: string[] = [];
+    let leftHalfBuffer: Buffer | undefined;
+    let rightHalfBuffer: Buffer | undefined;
 
-    // 1) Object focus: ensure central focal subject is well-lit and structurally distinct (not a dark indistinct box)
+    // 1) Object focus: ensure central focal subject is well-lit and structurally distinct
     if (concept.archetype === 'object_focus') {
       const centerBuf = await sharp(rendered).extract({ left: 256, top: 110, width: 768, height: 500 }).toBuffer();
       const centerStats = await sharp(centerBuf).stats();
@@ -1266,12 +1333,12 @@ export class ConceptDrivenEngine {
       }
     }
 
-    // 2) Split comparison: verify clear visual transformation (RGB + luminance delta) between left and right halves
+    // 2) Split comparison: verify clear visual transformation AND extract halves for identity consistency
     if (concept.blueprint === 'split_comparison') {
-      const leftBuf = await sharp(rendered).extract({ left: 0, top: 0, width: 620, height: 720 }).toBuffer();
-      const rightBuf = await sharp(rendered).extract({ left: 660, top: 0, width: 620, height: 720 }).toBuffer();
-      const leftHalf = await sharp(leftBuf).stats();
-      const rightHalf = await sharp(rightBuf).stats();
+      leftHalfBuffer = await sharp(rendered).extract({ left: 0, top: 0, width: 620, height: 720 }).toBuffer();
+      rightHalfBuffer = await sharp(rendered).extract({ left: 660, top: 0, width: 620, height: 720 }).toBuffer();
+      const leftHalf = await sharp(leftHalfBuffer).stats();
+      const rightHalf = await sharp(rightHalfBuffer).stats();
       const leftMean =
         ((leftHalf.channels[0]?.mean ?? 0) + (leftHalf.channels[1]?.mean ?? 0) + (leftHalf.channels[2]?.mean ?? 0)) / 3;
       const rightMean =
@@ -1313,17 +1380,26 @@ export class ConceptDrivenEngine {
       );
     }
 
-    // 5) Multimodal Semantic Vision Evaluation (CLIP / VLM) on rendered pixels
+    // 5) Multimodal Semantic Vision (CLIP calibrated cosine) + Independent Visual Quality / Anatomy Gate
+    const entities = extractNarrativeEntities(input);
     let semanticScore: number | undefined;
+    let evaluationStatus: 'verified' | 'inconclusive_needs_human_review' = 'inconclusive_needs_human_review';
+    let anatomicalConsistency = 85;
+    let physicalCoherence = 85;
+    let subjectIdentityConsistency = 92;
+    let visualArtifactSeverity = 12;
+    const localizedDefects: LocalizedDefect[] = [];
+
     const evaluator = this.options?.imageAdapter;
-    if (evaluator?.evaluateImageSemantics && (await evaluator.isAvailable().catch(() => false))) {
+    const isEvalAvailable = evaluator ? await evaluator.isAvailable().catch(() => false) : false;
+
+    if (evaluator?.evaluateImageSemantics && isEvalAvailable) {
       try {
-        const entities = extractNarrativeEntities(input);
         const positiveConcepts =
           concept.archetype === 'object_focus'
             ? [
                 entities.objectVisualDescriptor,
-                `close-up of a glowing cybernetic prosthetic arm or ${entities.primaryObject} device`,
+                `close-up of a ${entities.primaryObject} hardware module on surgical workbench`,
               ]
             : concept.archetype === 'before_after_comparison'
               ? [
@@ -1344,16 +1420,74 @@ export class ConceptDrivenEngine {
           positiveConcepts,
           negativeConcepts,
         });
-        semanticScore = Math.round(sem.positiveScore * 100);
+        semanticScore = Math.min(95, Math.max(5, Math.round(sem.positiveScore * 100)));
+        evaluationStatus = 'verified';
         notes.push(sem.rationale);
         if (sem.isOffTopic) {
           postRejections.push(sem.rationale);
         }
       } catch (err) {
-        notes.push(`Avaliação multimodal falhou (${err instanceof Error ? err.message : String(err)}); mantendo checagem técnica.`);
+        notes.push(`Avaliação semântica CLIP falhou (${err instanceof Error ? err.message : String(err)}).`);
       }
-    } else {
-      notes.push('Avaliação multimodal indisponível no ambiente atual; apenas checagens técnicas de pixel e proveniência executadas.');
+    }
+
+    if (evaluator?.inspectVisualQuality && isEvalAvailable) {
+      try {
+        const qual = await evaluator.inspectVisualQuality({
+          imageBuffer: rightHalfBuffer ?? rendered,
+          ...(leftHalfBuffer ? { compareBeforeBuffer: leftHalfBuffer } : {}),
+          genre: entities.genre,
+        });
+        evaluationStatus = 'verified';
+        anatomicalConsistency = qual.anatomicalConsistency;
+        physicalCoherence = qual.physicalCoherence;
+        compositionScore = Math.round((compositionScore + qual.compositionQuality) / 2);
+        subjectIdentityConsistency = qual.subjectIdentityConsistency;
+        visualArtifactSeverity = qual.visualArtifactSeverity;
+        localizedDefects.push(...qual.localizedDefects);
+
+        notes.push(
+          `VisualQualityCritic: anatomia=${anatomicalConsistency}/100, física=${physicalCoherence}/100, identidade=${subjectIdentityConsistency}/100, severidadeArtefatos=${visualArtifactSeverity}/100.`,
+        );
+
+        const severeDefects = localizedDefects.filter((d) => d.severity === 'severe' && !d.repaired);
+        if (anatomicalConsistency < 68 || visualArtifactSeverity > 45 || severeDefects.length > 0) {
+          postRejections.push(
+            severeDefects[0]?.description ??
+              `Defeito anatômico/físico detectado (anatomia=${anatomicalConsistency}/100, artefatos=${visualArtifactSeverity}/100).`,
+          );
+        }
+        if (concept.blueprint === 'split_comparison' && subjectIdentityConsistency < 72) {
+          postRejections.push(
+            `Inconsistência de identidade no comparativo antes/depois (${subjectIdentityConsistency}/100 < 72).`,
+          );
+        }
+      } catch (err) {
+        notes.push(`Inspeção anatômica multimodal falhou (${err instanceof Error ? err.message : String(err)}).`);
+      }
+    } else if (concept.blueprint === 'split_comparison' && leftHalfBuffer && rightHalfBuffer) {
+      // Deterministic structural identity check when external multimodal critic is not attached
+      const lRaw = await sharp(leftHalfBuffer).grayscale().resize(64, 64, { fit: 'fill' }).raw().toBuffer();
+      const rRaw = await sharp(rightHalfBuffer).grayscale().resize(64, 64, { fit: 'fill' }).raw().toBuffer();
+      let diffSum = 0;
+      for (let idx = 0; idx < lRaw.length; idx += 1) {
+        diffSum += Math.abs((lRaw[idx] ?? 0) - (rRaw[idx] ?? 0));
+      }
+      const meanDiff = diffSum / Math.max(1, lRaw.length);
+      subjectIdentityConsistency = Math.max(40, Math.min(94, Math.round(100 - meanDiff * 0.45)));
+    }
+
+    if (evaluationStatus === 'inconclusive_needs_human_review') {
+      notes.push(
+        'Avaliação multimodal indisponível no ambiente atual; status marcado como inconclusivo (encaminhado para revisão humana).',
+      );
+    }
+
+    // 6) Typography Quality Critic
+    const typoCritic = new TypographyQualityCritic(this.engine);
+    const typographyCritique = await typoCritic.critiqueDocumentTypography(doc, rendered, siblingHeadlines);
+    if (!typographyCritique.passed) {
+      notes.push(...typographyCritique.findings);
     }
 
     const legibilityScore = smallStdev >= 22 ? audit.scorecard.legibility : Math.max(40, audit.scorecard.legibility - 25);
@@ -1361,7 +1495,27 @@ export class ConceptDrivenEngine {
       postRejections.push(`Baixo contraste na miniatura 224×126 (stdev=${smallStdev.toFixed(1)}).`);
     }
 
-    const passed = audit.passed && postRejections.length === 0;
+    const passed = audit.passed && postRejections.length === 0 && typographyCritique.passed;
+    const autoApprovalBlocked =
+      !passed ||
+      evaluationStatus === 'inconclusive_needs_human_review' ||
+      anatomicalConsistency < 70 ||
+      visualArtifactSeverity > 42 ||
+      (concept.blueprint === 'split_comparison' && subjectIdentityConsistency < 72);
+
+    if (autoApprovalBlocked) {
+      audit.autoApprovable = false;
+    }
+
+    const qualityMetrics: VisualQualityMetrics = {
+      semanticRelevance: semanticScore ?? (passed ? 82 : 48),
+      anatomicalConsistency,
+      physicalCoherence,
+      compositionQuality: compositionScore,
+      subjectIdentityConsistency,
+      visualArtifactSeverity,
+    };
+
     notes.push(...postRejections);
     notes.push(`Miniatura 224×126 stdev=${smallStdev.toFixed(1)}; proveniência: ${acquired.map((a) => a.provenance).join(', ')}.`);
 
@@ -1369,15 +1523,20 @@ export class ConceptDrivenEngine {
       conceptId: concept.id,
       stage: 'post_render',
       passed,
+      autoApprovalBlocked,
+      evaluationStatus,
       isGenericOrWeak: !passed,
-      narrativeRelevanceScore: semanticScore ?? (passed ? 90 : 50),
+      narrativeRelevanceScore: qualityMetrics.semanticRelevance,
       originalityScore: 92,
       compositionScore,
       legibilityScore,
       focalPointScore,
-      scriptCoherenceScore: semanticScore ?? 90,
+      scriptCoherenceScore: qualityMetrics.semanticRelevance,
       ...(semanticScore !== undefined ? { semanticScore } : {}),
-      ...(!passed ? { rejectionReason: postRejections[0] ?? 'Falha nos critérios pós-render do Visual Concept Critic.' } : {}),
+      qualityMetrics,
+      localizedDefects,
+      typographyCritique,
+      ...(!passed ? { rejectionReason: postRejections[0] ?? typographyCritique.findings[0] ?? 'Falha nos critérios pós-render do Visual Concept Critic.' } : {}),
       criticNotes: notes,
     });
 
@@ -1459,6 +1618,10 @@ export class ConceptDrivenEngine {
     }
 
     const proposals: ConceptLabProposalResult[] = [];
+    const usedHeadlines: string[] = [];
+    const adapter = this.options?.imageAdapter;
+    const isAdapterReady = adapter ? await adapter.isAvailable().catch(() => false) : false;
+
     for (let i = 0; i < finalConcepts.length; i += 1) {
       let concept = finalConcepts[i]!;
       const preRenderCritique = this.critiqueConceptsPreRender([concept], input)[0]!;
@@ -1469,7 +1632,58 @@ export class ConceptDrivenEngine {
         document,
         acquiredMedia,
         input,
+        usedHeadlines,
       );
+
+      // 4) Localized Inpainting Repair first when localized anatomical/mechanical defects are found
+      if (
+        !postRenderCritique.passed &&
+        postRenderCritique.localizedDefects.length > 0 &&
+        adapter?.inpaintRegion &&
+        isAdapterReady &&
+        acquiredMedia[0]
+      ) {
+        const defect = postRenderCritique.localizedDefects[0]!;
+        const targetItem = acquiredMedia[acquiredMedia.length - 1]!;
+        try {
+          const absAssetPath = this.ingestion.resolvePortablePath(targetItem.asset.relativePath);
+          const origBuf = await sharp(absAssetPath).png().toBuffer();
+          const entities = extractNarrativeEntities(input);
+          const repairedBuf = await adapter.inpaintRegion({
+            imageBuffer: origBuf,
+            bbox: defect.bbox,
+            prompt: `clean symmetrical mechanical hardware module of ${entities.objectVisualDescriptor}, coherent structure, no fingers, no deformed joints, no text`,
+            strength: 0.54,
+          });
+          const repairedAsset = await this.ingestion.ingestBuffer({
+            buffer: repairedBuf,
+            kind: 'image',
+            extension: 'png',
+            originalName: `${concept.id}-inpainted.png`,
+          });
+          rejectionHistoryByIndex[i]!.push({
+            rejectedTitle: `${concept.title} (inpainting localizado em ${defect.category})`,
+            reason: defect.description,
+          });
+          acquiredMedia = acquiredMedia.map((m, idx) =>
+            idx === acquiredMedia.length - 1
+              ? { ...m, asset: repairedAsset, description: `${m.description} [Inpaint localizado: ${defect.category}]` }
+              : m,
+          );
+          document = this.buildConceptDocument(concept, acquiredMedia, input);
+          const afterInpaint = await this.critiqueRenderedConcept(
+            concept,
+            document,
+            acquiredMedia,
+            input,
+            usedHeadlines,
+          );
+          postRenderCritique = afterInpaint.critique;
+          audit = afterInpaint.audit;
+        } catch {
+          // fall through to full concept repair if localized inpaint fails
+        }
+      }
 
       if (!postRenderCritique.passed) {
         rejectionHistoryByIndex[i]!.push({
@@ -1479,9 +1693,13 @@ export class ConceptDrivenEngine {
         concept = this.repairPostRenderConcept(concept, postRenderCritique, input);
         acquiredMedia = await this.acquireConceptMedia(concept, input);
         document = this.buildConceptDocument(concept, acquiredMedia, input);
-        const reAudited = await this.critiqueRenderedConcept(concept, document, acquiredMedia, input);
+        const reAudited = await this.critiqueRenderedConcept(concept, document, acquiredMedia, input, usedHeadlines);
         postRenderCritique = reAudited.critique;
         audit = reAudited.audit;
+      }
+
+      if (concept.headlineText) {
+        usedHeadlines.push(concept.headlineText);
       }
 
       proposals.push({
