@@ -178,6 +178,9 @@ describe('CS-9 — Typography Robustness & Validation', () => {
       perspectiveSkewXDeg: 0,
       perspectiveSkewYDeg: 0,
       strokeWidth: 0,
+      extrusionDepthPx: 0,
+      textureOverlay: 'none',
+      editorialRationale: 'Test fixture for adaptive positioning validation.',
     };
 
     const director = new TypographyArtDirector([]);

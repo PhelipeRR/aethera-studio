@@ -803,32 +803,15 @@ export class ConceptDrivenEngine {
       }
 
       if (!chosenAsset) {
-        // Deterministic local procedural canvas if no AI/video frame is available
-        const isWarm = req.role === 'comparison_right' || concept.label === 'A';
-        const w = req.role === 'comparison_left' || req.role === 'comparison_right' ? 640 : 1024;
-        const h = req.role === 'comparison_left' || req.role === 'comparison_right' ? 720 : 576;
-        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
-          <defs>
-            <radialGradient id="g" cx="50%" cy="50%" r="68%">
-              <stop offset="0%" stop-color="${isWarm ? '#FACC15' : '#38BDF8'}" stop-opacity="0.95"/>
-              <stop offset="45%" stop-color="${isWarm ? '#E11D48' : '#1D4ED8'}" stop-opacity="0.7"/>
-              <stop offset="100%" stop-color="#0B1120" stop-opacity="1"/>
-            </radialGradient>
-          </defs>
-          <rect width="100%" height="100%" fill="#0B1120"/>
-          <rect width="100%" height="100%" fill="url(#g)"/>
-          <circle cx="${Math.round(w / 2)}" cy="${Math.round(h / 2)}" r="${Math.round(Math.min(w, h) * 0.28)}" fill="${isWarm ? '#F59E0B' : '#0EA5E9'}" fill-opacity="0.35" stroke="${isWarm ? '#FEF08A' : '#BAE6FD'}" stroke-width="10"/>
-          <rect x="${Math.round(w * 0.15)}" y="${Math.round(h * 0.18)}" width="${Math.round(w * 0.7)}" height="${Math.round(h * 0.12)}" rx="12" fill="#FFFFFF" fill-opacity="0.16"/>
-        </svg>`;
-        const fallbackBuf = await sharp(Buffer.from(svg)).png().toBuffer();
-        chosenAsset = await this.ingestion.ingestBuffer({
-          buffer: fallbackBuf,
-          kind: 'image',
-          extension: 'png',
-          originalName: `${concept.id}-${req.role}-procedural.png`,
-        });
-        actualProvenance = 'ai_generated';
-        desc = `Composição local de fallback para ${req.role}`;
+        // BLOCK: never silently substitute geometric placeholders for real media.
+        // When no AI adapter or video frame is available, throw an explicit error
+        // so the pipeline fails visibly instead of producing fake thumbnails.
+        throw new Error(
+          `[VisualContentGate] Aquisição de mídia bloqueada para o requisito "${req.id}" (role=${req.role}) do conceito "${concept.title}". ` +
+          `Nenhum ExternalImageAdapter disponível e nenhum frame de vídeo fornecido. ` +
+          `O pipeline NÃO gera mais placeholders geométricos silenciosos. ` +
+          `Forneça um imageAdapter funcional ou extractedFrames para continuar.`,
+        );
       }
 
       acquired.push({

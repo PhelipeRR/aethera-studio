@@ -12,3 +12,4 @@ export * from './creative-director.js';
 export * from './local-ai-adapter.js';
 export * from './typography-director.js';
 export * from './concept-engine.js';
+export * from './visual-content-gate.js';
