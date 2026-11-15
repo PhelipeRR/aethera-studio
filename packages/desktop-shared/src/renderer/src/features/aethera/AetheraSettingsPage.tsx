@@ -78,6 +78,7 @@ interface AetheraBridgeLoose {
     counts?: {
       cinemaProjects: number;
       cinemaLibraryFiles?: number;
+      libraryAssets?: number;
       academyMaterials: number;
       evolutionMemories: number;
       calendarEvents: number;
@@ -91,6 +92,7 @@ interface AetheraBridgeLoose {
     counts?: {
       cinemaProjects: number;
       cinemaLibraryFiles?: number;
+      libraryAssets?: number;
       academyMaterials: number;
       evolutionMemories: number;
       calendarEvents: number;
@@ -218,7 +220,7 @@ export function AetheraSettingsPage({ description }: { description: string }) {
       const c = res.counts;
       setStatusMessage({
         kind: 'ok',
-        text: `Backup Geral salvo em ${res.filePath ?? 'arquivo selecionado'} (${c?.cinemaProjects ?? 0} projetos, ${c?.cinemaLibraryFiles ?? 0} arquivos da biblioteca, ${c?.academyMaterials ?? 0} materiais da Academy, ${c?.evolutionMemories ?? 0} memórias, ${c?.calendarEvents ?? 0} eventos).`,
+        text: `Backup Geral salvo em ${res.filePath ?? 'arquivo selecionado'} (${c?.cinemaProjects ?? 0} projetos, ${c?.libraryAssets ?? 0} itens na biblioteca, ${c?.cinemaLibraryFiles ?? 0} arquivos em cinema-library, ${c?.academyMaterials ?? 0} materiais da Academy, ${c?.evolutionMemories ?? 0} memórias, ${c?.calendarEvents ?? 0} eventos).`,
       });
     } catch (err) {
       setStatusMessage({

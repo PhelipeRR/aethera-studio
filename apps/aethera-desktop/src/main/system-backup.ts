@@ -23,6 +23,7 @@ const SAFE_JSON_NAME = /^[a-zA-Z0-9._-]+\.json$/;
 export interface AetheraSystemBackupCounts {
   cinemaProjects: number;
   cinemaLibraryFiles?: number;
+  libraryAssets?: number;
   academyMaterials: number;
   academyKnowledge: number;
   academyExercises: number;
@@ -190,9 +191,22 @@ export function exportSystemBackup(
 
   const cinemaLibrary = deps.cinemaLibraryDir ? collectDirectoryFilesBase64(deps.cinemaLibraryDir) : undefined;
 
+  let libraryAssets = 0;
+  if (deps.databaseHandle?.sqlite) {
+    try {
+      const row = deps.databaseHandle.sqlite.prepare('SELECT COUNT(*) AS cnt FROM velix_local_assets').get() as
+        | { cnt?: number }
+        | undefined;
+      libraryAssets = Number(row?.cnt ?? 0);
+    } catch {
+      libraryAssets = 0;
+    }
+  }
+
   const counts: AetheraSystemBackupCounts = {
     cinemaProjects: Object.keys(cinemaProjects).filter((k) => !k.endsWith('.render.json')).length,
     cinemaLibraryFiles: cinemaLibrary ? Object.keys(cinemaLibrary).length : 0,
+    libraryAssets,
     academyMaterials: academySnap.materials.length,
     academyKnowledge: academySnap.knowledge.length,
     academyExercises: academySnap.exercises.length,
@@ -344,6 +358,7 @@ export function restoreSystemBackup(
       ? Object.keys(parsed.cinemaProjects).filter((k) => !k.endsWith('.render.json')).length
       : 0,
     cinemaLibraryFiles: parsed.cinemaLibrary ? Object.keys(parsed.cinemaLibrary).length : 0,
+    libraryAssets: parsed.counts?.libraryAssets ?? 0,
     academyMaterials: parsed.academy?.materials?.length ?? 0,
     academyKnowledge: parsed.academy?.knowledge?.length ?? 0,
     academyExercises: parsed.academy?.exercises?.length ?? 0,
