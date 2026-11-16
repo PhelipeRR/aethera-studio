@@ -224,4 +224,7 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeAiStatus: () => ipcRenderer.invoke('creative:ai-status'),
   creativeImageEngineStatus: () => ipcRenderer.invoke('creative:image-engine-status'),
   creativeCancelGeneration: () => ipcRenderer.invoke('creative:cancel-generation'),
+  creativeReleaseImageMemory: () => ipcRenderer.invoke('creative:release-image-memory'),
+  creativeImageEngineSettings: () => ipcRenderer.invoke('creative:image-engine-settings'),
+  creativeSaveImageEngineSettings: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:save-image-engine-settings', input),
 });

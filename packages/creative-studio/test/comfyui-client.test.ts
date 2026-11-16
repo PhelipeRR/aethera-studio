@@ -80,4 +80,23 @@ describe('ComfyUiClient', () => {
     });
     await expect(errorClient.waitForCompletion('prompt-err', { pollMs: 1, timeoutMs: 100 })).rejects.toThrow(/bad graph/);
   });
+
+  it('uploads a reference image through ComfyUI multipart transport', async () => {
+    let sawMultipart = false;
+    const client = new ComfyUiClient({
+      baseUrl: 'http://localhost:8188',
+      fetchImpl: async (input, init) => {
+        expect(String(input)).toBe('http://localhost:8188/upload/image');
+        sawMultipart = init?.body instanceof FormData;
+        return jsonResponse({ name: 'reference.png', subfolder: 'aethera', type: 'input' });
+      },
+    });
+
+    await expect(client.uploadImage(Buffer.from('reference'), 'reference.png')).resolves.toEqual({
+      name: 'reference.png',
+      subfolder: 'aethera',
+      type: 'input',
+    });
+    expect(sawMultipart).toBe(true);
+  });
 });

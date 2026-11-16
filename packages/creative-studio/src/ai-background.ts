@@ -3,6 +3,7 @@ import type { ExternalImageAdapter } from './image-generation-adapter.js';
 import type { BrandKit, CreativeArtType, ManagedAssetRef } from './schemas.js';
 import { buildVisualRecipe, type CreativeDirectionNotes, type VisualRecipe } from './visual-recipe.js';
 import type { ProfessionalPresetId } from './creative-presets.js';
+import { auditGeneratedImage, type GeneratedImageQualityAudit } from './generated-image-quality.js';
 
 /**
  * Outcome of the AI image step of "Gerar Arte Editável". It is always returned (never thrown) so the caller can
@@ -14,6 +15,7 @@ export interface AiGenerationReport {
   message: string;
   durationMs?: number;
   recipe?: VisualRecipe;
+  qualityAudit?: GeneratedImageQualityAudit;
 }
 
 export interface GenerateAiBackgroundInput {
@@ -27,6 +29,7 @@ export interface GenerateAiBackgroundInput {
   seed?: number;
   seedKey?: string;
   professionalPreset?: ProfessionalPresetId;
+  referenceImagePaths?: string[];
 }
 
 export async function generateAiBackground(
@@ -68,7 +71,22 @@ export async function generateAiBackground(
       samplerName: recipe.samplerName,
       scheduler: recipe.scheduler,
       preset: recipe.professionalPreset,
+      ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths } : {}),
     });
+    const qualityAudit = await auditGeneratedImage(buffer, { expectedWidth: recipe.width, expectedHeight: recipe.height });
+    if (!qualityAudit.passed) {
+      return {
+        asset: null,
+        report: {
+          status: 'failed',
+          engineId,
+          message: `A auditoria estrutural rejeitou a imagem gerada: ${qualityAudit.findings.map((finding) => finding.message).join(' ')}`,
+          durationMs: Date.now() - started,
+          recipe,
+          qualityAudit,
+        },
+      };
+    }
     const asset = await input.ingestion.ingestBuffer({
       buffer,
       kind: 'image',
@@ -83,6 +101,7 @@ export async function generateAiBackground(
         message: `Fundo gerado por ${engineId} (preset ${recipe.preset}, seed ${recipe.seed}).`,
         durationMs: Date.now() - started,
         recipe,
+        qualityAudit,
       },
     };
   } catch (error) {

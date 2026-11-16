@@ -54,6 +54,7 @@ import {
 import { AetheraCreativeStudioRepository, type Db } from '@neuralbridge/database';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
 import { createProductionJobId, type ProductionConsoleService } from './production-console.js';
+import { CreativeImageEngineSettingsStore, type CreativeImageEngineSettings } from './creative-image-engine-settings.js';
 
 class SqliteBrandKitStore implements BrandKitStore {
   constructor(private readonly repo: AetheraCreativeStudioRepository) {}
@@ -129,22 +130,26 @@ export class AetheraCreativeStudioService {
   private readonly editors = new Map<string, LayeredDocumentEditor>();
   private readonly productionConsole: ProductionConsoleService | undefined;
   private readonly comfyUiEndpoint: string | undefined;
+  private readonly imageEngineSettingsStore: CreativeImageEngineSettingsStore;
   /** Console job of the creative execution in progress; concurrent thumbnails each carry their own. */
   private readonly consoleJob = new AsyncLocalStorage<CreativeConsoleJob>();
 
   constructor(options: CreativeStudioServiceOptions) {
     this.productionConsole = options.productionConsole;
-    this.comfyUiEndpoint = options.comfyUiEndpoint;
     this.repo = new AetheraCreativeStudioRepository(options.db);
     this.storageRoot = join(options.userDataDir, 'creative-studio');
+    this.imageEngineSettingsStore = new CreativeImageEngineSettingsStore(join(this.storageRoot, 'image-engine-settings.json'));
+    const imageEngineSettings = this.imageEngineSettingsStore.load();
+    this.comfyUiEndpoint = options.comfyUiEndpoint ?? imageEngineSettings.endpoint;
     this.ingestion = new AssetIngestionService({
       storageRoot: this.storageRoot,
       ...(options.ffprobePath ? { ffprobePath: options.ffprobePath } : {}),
     });
     this.brandKits = new BrandKitManager(new SqliteBrandKitStore(this.repo));
     this.comfyUiAdapter = new ComfyUiImageAdapter({
-      ...(options.comfyUiEndpoint ? { endpoint: options.comfyUiEndpoint } : {}),
-      ...(options.comfyUiCheckpoint ? { checkpoint: options.comfyUiCheckpoint } : {}),
+      endpoint: this.comfyUiEndpoint,
+      ...(options.comfyUiCheckpoint ? { checkpoint: options.comfyUiCheckpoint } : { checkpoint: imageEngineSettings.checkpoint }),
+      releaseMemoryAfterGeneration: imageEngineSettings.releaseMemoryAfterGeneration,
       requestTimeoutMs: 750,
     });
     this.localImageAdapter = new LocalPythonAiAdapter();
@@ -194,6 +199,33 @@ export class AetheraCreativeStudioService {
 
   async cancelImageGeneration(): Promise<boolean> {
     return this.comfyUiAdapter.cancel();
+  }
+
+  async releaseImageMemory(): Promise<boolean> {
+    return this.comfyUiAdapter.releaseMemory();
+  }
+
+  async getImageEngineSettings(): Promise<{
+    settings: CreativeImageEngineSettings;
+    availableCheckpoints: string[];
+    status: Awaited<ReturnType<AetheraCreativeStudioService['imageEngineStatus']>>;
+  }> {
+    const settings = this.imageEngineSettingsStore.load();
+    const status = await this.imageEngineStatus();
+    return { settings, availableCheckpoints: status.comfyUi.models.checkpoints, status };
+  }
+
+  async saveImageEngineSettings(input: unknown): Promise<{
+    settings: CreativeImageEngineSettings;
+    availableCheckpoints: string[];
+    status: Awaited<ReturnType<AetheraCreativeStudioService['imageEngineStatus']>>;
+    requiresRestart: boolean;
+  }> {
+    const settings = this.imageEngineSettingsStore.save(input);
+    this.comfyUiAdapter.setCheckpoint(settings.checkpoint);
+    this.comfyUiAdapter.setReleaseMemoryAfterGeneration(settings.releaseMemoryAfterGeneration);
+    const current = await this.getImageEngineSettings();
+    return { ...current, requiresRestart: settings.endpoint !== this.comfyUiEndpoint };
   }
 
   /**
@@ -439,6 +471,7 @@ export class AetheraCreativeStudioService {
     avatarBackdrop?: 'light' | 'dark' | 'transparent';
     useAiGeneration?: boolean;
     professionalPreset?: ProfessionalPresetId;
+    referenceImagePaths?: string[];
     assetManifest?: Record<string, ManagedAssetRef>;
   }): Promise<{
     document: CreativeProjectDocument;
@@ -483,6 +516,7 @@ export class AetheraCreativeStudioService {
         imageAdapter: this.imageAdapter,
         ingestion: this.ingestion,
         ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
+        ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths } : {}),
       });
       generation = generated.report;
       this.reportGeneration(generation);
@@ -1052,4 +1086,7 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
 
   ipcMain.handle('creative:image-engine-status', async () => service.imageEngineStatus());
   ipcMain.handle('creative:cancel-generation', async () => service.cancelImageGeneration());
+  ipcMain.handle('creative:release-image-memory', async () => service.releaseImageMemory());
+  ipcMain.handle('creative:image-engine-settings', async () => service.getImageEngineSettings());
+  ipcMain.handle('creative:save-image-engine-settings', async (_ev, input: unknown) => service.saveImageEngineSettings(input));
 }

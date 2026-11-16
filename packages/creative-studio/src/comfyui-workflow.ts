@@ -27,6 +27,11 @@ export interface ComfyUiWorkflowValidation {
   errors: string[];
 }
 
+export interface ComfyUiImg2ImgInput extends ComfyUiTxt2ImgInput {
+  inputImage: ComfyUiImageRef;
+  denoise: number;
+}
+
 /**
  * Native ComfyUI graph used by the first production adapter. It deliberately avoids custom nodes so the graph can
  * be audited against /object_info and remains portable across a clean ComfyUI installation.
@@ -87,6 +92,26 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
   };
 }
 
+export function buildComfyUiImg2ImgWorkflow(input: ComfyUiImg2ImgInput): ComfyUiWorkflow {
+  const width = Math.max(64, Math.round(input.width / 8) * 8);
+  const height = Math.max(64, Math.round(input.height / 8) * 8);
+  const imageName = input.inputImage.subfolder ? `${input.inputImage.subfolder}/${input.inputImage.filename}` : input.inputImage.filename;
+  const base = buildComfyUiTxt2ImgWorkflow({ ...input, width, height });
+  return {
+    '1': base['1']!,
+    '2': base['2']!,
+    '3': base['3']!,
+    '4': { class_type: 'LoadImage', inputs: { image: imageName }, _meta: { title: 'Aethera reference image' } },
+    '5': { class_type: 'VAEEncode', inputs: { pixels: ['4', 0], vae: ['1', 2] }, _meta: { title: 'Aethera reference encode' } },
+    '6': {
+      ...base['5']!,
+      inputs: { ...base['5']!.inputs, denoise: Math.min(1, Math.max(0.01, input.denoise)), latent_image: ['5', 0] },
+    },
+    '7': { ...base['6']!, inputs: { samples: ['6', 0], vae: ['1', 2] } },
+    '8': { ...base['7']!, inputs: { filename_prefix: input.filenamePrefix, images: ['7', 0] } },
+  };
+}
+
 function checkpointNames(objectInfo: Record<string, unknown>): string[] {
   const loader = objectInfo['CheckpointLoaderSimple'];
   if (!loader || typeof loader !== 'object') return [];
@@ -101,7 +126,8 @@ function checkpointNames(objectInfo: Record<string, unknown>): string[] {
 
 export function validateComfyUiWorkflow(workflow: ComfyUiWorkflow, objectInfo: Record<string, unknown>): ComfyUiWorkflowValidation {
   const errors: string[] = [];
-  const requiredNodeTypes = ['CheckpointLoaderSimple', 'CLIPTextEncode', 'EmptyLatentImage', 'KSampler', 'VAEDecode', 'SaveImage'];
+  const requiredNodeTypes = new Set(['CheckpointLoaderSimple', 'CLIPTextEncode', 'EmptyLatentImage', 'KSampler', 'VAEDecode', 'SaveImage']);
+  for (const node of Object.values(workflow)) requiredNodeTypes.add(node.class_type);
   const availableTypes = new Set(Object.keys(objectInfo));
   for (const nodeType of requiredNodeTypes) {
     if (!availableTypes.has(nodeType)) errors.push(`ComfyUI does not expose required node "${nodeType}".`);

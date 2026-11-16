@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildComfyUiTxt2ImgWorkflow,
+  buildComfyUiImg2ImgWorkflow,
   extractComfyUiImages,
   validateComfyUiWorkflow,
 } from '../src/comfyui-workflow.js';
@@ -58,6 +59,29 @@ describe('ComfyUI workflow registry', () => {
 
     expect(result.ok).toBe(false);
     expect(result.errors).toContain('Checkpoint "missing.safetensors" is not reported by ComfyUI as installed.');
+  });
+
+  it('builds a native img2img graph with an uploaded reference and denoise strength', () => {
+    const workflow = buildComfyUiImg2ImgWorkflow({
+      checkpoint: 'sdxl.safetensors',
+      positivePrompt: 'hero portrait',
+      negativePrompt: 'text',
+      width: 768,
+      height: 768,
+      seed: 7,
+      steps: 10,
+      cfg: 5,
+      samplerName: 'euler',
+      scheduler: 'normal',
+      denoise: 0.42,
+      inputImage: { filename: 'reference.png', subfolder: 'aethera', type: 'input' },
+      filenamePrefix: 'Aethera/reference',
+    });
+
+    expect(workflow['4']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/reference.png' } });
+    expect(workflow['5']).toMatchObject({ class_type: 'VAEEncode', inputs: { pixels: ['4', 0], vae: ['1', 2] } });
+    expect(workflow['6']).toMatchObject({ class_type: 'KSampler', inputs: { denoise: 0.42, latent_image: ['5', 0] } });
+    expect(workflow['8']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['7', 0] } });
   });
 
   it('extracts generated image references from history outputs', () => {

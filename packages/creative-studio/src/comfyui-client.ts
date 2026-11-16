@@ -39,6 +39,12 @@ export interface ComfyUiImageRef {
   type?: 'input' | 'output' | 'temp';
 }
 
+export interface ComfyUiUploadResult {
+  name: string;
+  subfolder: string;
+  type: 'input' | 'output' | 'temp';
+}
+
 export interface ComfyUiClientOptions {
   baseUrl: string;
   fetchImpl?: typeof fetch;
@@ -191,6 +197,19 @@ export class ComfyUiClient {
     });
     const response = await this.request(`/view?${query.toString()}`);
     return Buffer.from(await response.arrayBuffer());
+  }
+
+  async uploadImage(buffer: Buffer, filename: string, subfolder = 'aethera', overwrite = true): Promise<ComfyUiUploadResult> {
+    const form = new FormData();
+    form.append('image', new Blob([new Uint8Array(buffer)]), filename);
+    form.append('subfolder', subfolder);
+    form.append('overwrite', String(overwrite));
+    const response = await this.request('/upload/image', { method: 'POST', body: form });
+    const payload = (await response.json()) as Partial<ComfyUiUploadResult>;
+    if (typeof payload.name !== 'string' || typeof payload.subfolder !== 'string' || !payload.type) {
+      throw new Error('ComfyUI returned an invalid upload reference.');
+    }
+    return { name: payload.name, subfolder: payload.subfolder, type: payload.type };
   }
 
   async interrupt(): Promise<void> {

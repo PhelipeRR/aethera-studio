@@ -30,6 +30,7 @@ interface CreativeBridge {
       message: string;
       durationMs?: number;
       recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine' };
+      qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
     };
   }>;
   creativeThumbnailLab?: (input: Record<string, unknown>) => Promise<{
@@ -87,7 +88,19 @@ interface CreativeBridge {
     localAvailable: boolean;
     activeProvider: string;
   }>;
+  creativeImageEngineSettings?: () => Promise<{
+    settings: { endpoint: string; checkpoint: string; preferredPreset: ProfessionalPresetId; releaseMemoryAfterGeneration: boolean };
+    availableCheckpoints: string[];
+    status: NonNullable<Awaited<ReturnType<NonNullable<CreativeBridge['creativeImageEngineStatus']>>>>;
+  }>;
+  creativeSaveImageEngineSettings?: (input: Record<string, unknown>) => Promise<{
+    settings: { endpoint: string; checkpoint: string; preferredPreset: ProfessionalPresetId; releaseMemoryAfterGeneration: boolean };
+    availableCheckpoints: string[];
+    status: NonNullable<Awaited<ReturnType<NonNullable<CreativeBridge['creativeImageEngineStatus']>>>>;
+    requiresRestart: boolean;
+  }>;
   creativeCancelGeneration?: () => Promise<boolean>;
+  creativeReleaseImageMemory?: () => Promise<boolean>;
 }
 
 function getBridge(): CreativeBridge | undefined {
@@ -98,6 +111,7 @@ export function CreativeStudioPanel() {
   const [artType, setArtType] = useState<CreativeArtType>('thumbnail');
   const [prompt, setPrompt] = useState('');
   const [headline, setHeadline] = useState('');
+  const [referencePath, setReferencePath] = useState('');
   const [videoPath, setVideoPath] = useState('');
   const [engines, setEngines] = useState<string[]>([]);
   const [brandKits, setBrandKits] = useState<BrandKit[]>([]);
@@ -115,6 +129,8 @@ export function CreativeStudioPanel() {
   const [avatarBackdrop, setAvatarBackdrop] = useState<'dark' | 'light' | 'transparent'>('dark');
   const [useAiGeneration, setUseAiGeneration] = useState<boolean>(true);
   const [professionalPreset, setProfessionalPreset] = useState<ProfessionalPresetId>('youtube_thumbnail_1280x720');
+  const [selectedCheckpoint, setSelectedCheckpoint] = useState('');
+  const [releaseMemoryAfterGeneration, setReleaseMemoryAfterGeneration] = useState(false);
   const [fidelityMode, setFidelityMode] = useState<'conceptual_art' | 'content_faithful' | 'authentic_gameplay'>(
     'conceptual_art',
   );
@@ -149,6 +165,7 @@ export function CreativeStudioPanel() {
     message: string;
     durationMs?: number;
     recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine' };
+    qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
   } | null>(null);
   const [generationBusy, setGenerationBusy] = useState(false);
   const [engineStatus, setEngineStatus] = useState<Awaited<ReturnType<NonNullable<CreativeBridge['creativeImageEngineStatus']>>> | null>(null);
@@ -156,18 +173,24 @@ export function CreativeStudioPanel() {
   const refreshLists = async () => {
     const bridge = getBridge();
     if (!bridge) return;
-    const [eng, kits, projs, ai, imageEngine] = await Promise.all([
+    const [eng, kits, projs, ai, imageEngine, persistedImageEngine] = await Promise.all([
       bridge.creativeEngines?.() ?? Promise.resolve([]),
       bridge.creativeListBrandKits?.() ?? Promise.resolve([]),
       bridge.creativeListProjects?.() ?? Promise.resolve([]),
       bridge.creativeAiStatus?.() ?? Promise.resolve({ available: false, provider: 'none' }),
       bridge.creativeImageEngineStatus?.() ?? Promise.resolve(null),
+      bridge.creativeImageEngineSettings?.() ?? Promise.resolve(null),
     ]);
     setEngines(eng);
     setBrandKits(kits);
     setProjects(projs);
     setAiAvailable(ai.available);
-    if (imageEngine) setEngineStatus(imageEngine);
+    if (persistedImageEngine) {
+      setEngineStatus(persistedImageEngine.status);
+      setSelectedCheckpoint(persistedImageEngine.settings.checkpoint);
+      setProfessionalPreset(persistedImageEngine.settings.preferredPreset);
+      setReleaseMemoryAfterGeneration(persistedImageEngine.settings.releaseMemoryAfterGeneration);
+    } else if (imageEngine) setEngineStatus(imageEngine);
   };
 
   useEffect(() => {
@@ -190,6 +213,7 @@ export function CreativeStudioPanel() {
         ...(artType === 'avatar' ? { avatarBackdrop } : {}),
         useAiGeneration,
         professionalPreset,
+        ...(referencePath.trim() ? { referenceImagePaths: [referencePath.trim()] } : {}),
       });
       setActiveDoc(res.document);
       setPreviewUrl(res.previewDataUrl);
@@ -219,6 +243,16 @@ export function CreativeStudioPanel() {
     if (!bridge?.creativeCancelGeneration) return;
     const cancelled = await bridge.creativeCancelGeneration();
     setStatusMsg(cancelled ? 'Cancelamento solicitado ao motor de imagem.' : 'Nenhuma geração ComfyUI ativa para cancelar.');
+  };
+
+  const saveImageEngineSettings = async (patch: Record<string, unknown>) => {
+    const saved = await getBridge()?.creativeSaveImageEngineSettings?.(patch);
+    if (!saved) return;
+    setEngineStatus(saved.status);
+    setSelectedCheckpoint(saved.settings.checkpoint);
+    setProfessionalPreset(saved.settings.preferredPreset);
+    setReleaseMemoryAfterGeneration(saved.settings.releaseMemoryAfterGeneration);
+    setStatusMsg(saved.requiresRestart ? 'Configuração salva; reinicie o Aethera para aplicar o endpoint.' : 'Configuração do engine salva.');
   };
 
   const handleThumbnailLab = async () => {
@@ -318,9 +352,38 @@ export function CreativeStudioPanel() {
           <span style={{ color: 'var(--muted-foreground)', maxWidth: 620 }}>{engineStatus.comfyUi.reason}</span>
         )}
         {engineStatus && (
-          <span style={{ color: 'var(--muted-foreground)' }}>
-            checkpoints: {engineStatus.comfyUi.models.checkpoints.length} · LoRAs: {engineStatus.comfyUi.models.loras.length}
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--muted-foreground)' }}>
+            <span>checkpoints: {engineStatus.comfyUi.models.checkpoints.length} · LoRAs: {engineStatus.comfyUi.models.loras.length}</span>
+            {engineStatus.comfyUi.models.checkpoints.length > 0 && (
+              <select
+                aria-label="Checkpoint ComfyUI"
+                value={selectedCheckpoint}
+                onChange={(e) => void saveImageEngineSettings({ checkpoint: e.target.value })}
+                style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11 }}
+              >
+                {engineStatus.comfyUi.models.checkpoints.map((checkpoint) => <option key={checkpoint} value={checkpoint}>{checkpoint}</option>)}
+              </select>
+            )}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <input
+                type="checkbox"
+                checked={releaseMemoryAfterGeneration}
+                onChange={(e) => void saveImageEngineSettings({ releaseMemoryAfterGeneration: e.target.checked })}
+              />
+              liberar após gerar
+            </label>
+            {getBridge()?.creativeReleaseImageMemory && (
+              <button
+                onClick={async () => {
+                  const released = await getBridge()?.creativeReleaseImageMemory?.();
+                  setStatusMsg(released ? 'Memória do ComfyUI liberada.' : 'O gateway ComfyUI não expõe liberação de memória.');
+                }}
+                style={{ padding: '4px 8px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer', fontSize: 11 }}
+              >
+                Liberar VRAM
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -359,12 +422,19 @@ export function CreativeStudioPanel() {
                 <option value="transparent">Transparente</option>
               </select>
             )}
+            <input
+              value={referencePath}
+              onChange={(e) => setReferencePath(e.target.value)}
+              placeholder="Referência local opcional (.png/.jpg)"
+              aria-label="Caminho da imagem de referência"
+              style={{ flex: 1.2, minWidth: 220, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+            />
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <select
               aria-label="Preset profissional"
               value={professionalPreset}
-              onChange={(e) => setProfessionalPreset(e.target.value as ProfessionalPresetId)}
+              onChange={(e) => void saveImageEngineSettings({ preferredPreset: e.target.value as ProfessionalPresetId })}
               style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
             >
               <option value="youtube_thumbnail_1280x720">YouTube Thumbnail 1280×720</option>
@@ -436,6 +506,12 @@ export function CreativeStudioPanel() {
               {generationReport.recipe && (
                 <div style={{ color: 'var(--muted-foreground)', marginTop: 4 }}>
                   preset {generationReport.recipe.preset} · seed {generationReport.recipe.seed} · origem {generationReport.recipe.source}
+                </div>
+              )}
+              {generationReport.qualityAudit && (
+                <div style={{ color: generationReport.qualityAudit.passed ? 'var(--success)' : 'var(--destructive)', marginTop: 4 }}>
+                  Auditoria estrutural: {generationReport.qualityAudit.passed ? 'aprovada' : 'rejeitada'} · σ luminância {generationReport.qualityAudit.metrics.lumaStdDev.toFixed(2)}
+                  {generationReport.qualityAudit.findings.length > 0 ? ` · ${generationReport.qualityAudit.findings.map((finding) => finding.message).join(' ')}` : ''}
                 </div>
               )}
             </div>

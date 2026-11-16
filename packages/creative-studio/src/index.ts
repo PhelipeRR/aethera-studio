@@ -25,3 +25,5 @@ export * from './comfyui-workflow.js';
 export * from './comfyui-discovery.js';
 export * from './comfyui-image-adapter.js';
 export * from './creative-presets.js';
+export * from './gpu-generation-lease.js';
+export * from './generated-image-quality.js';

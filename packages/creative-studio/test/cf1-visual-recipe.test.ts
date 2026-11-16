@@ -110,6 +110,8 @@ describe('CF-1 orchestration order and AI background report', () => {
 
   const png = (w: number, h: number) =>
     sharp({ create: { width: w, height: h, channels: 3, background: '#3355aa' } }).png().toBuffer();
+  const richPng = (w: number, h: number) =>
+    sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="g"><stop stop-color="#06152d"/><stop offset="1" stop-color="#ff3a8c"/></linearGradient></defs><rect width="${w}" height="${h}" fill="url(#g)"/><circle cx="${Math.round(w * 0.75)}" cy="${Math.round(h * 0.5)}" r="${Math.round(Math.min(w, h) * 0.25)}" fill="#00e5ff"/></svg>`)).png().toBuffer();
 
   it('runs creative direction once, asks for JSON and exposes the structured notes', async () => {
     const prompts: string[] = [];
@@ -159,7 +161,7 @@ describe('CF-1 orchestration order and AI background report', () => {
       isAvailable: async () => true,
       generateImage: async (req) => {
         seen = req;
-        return png(req.width, req.height);
+        return richPng(req.width, req.height);
       },
     };
     const res = await generateAiBackground({
