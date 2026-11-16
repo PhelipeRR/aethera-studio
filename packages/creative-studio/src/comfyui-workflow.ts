@@ -39,6 +39,12 @@ export interface ComfyUiInpaintInput extends ComfyUiTxt2ImgInput {
   growMaskBy: number;
 }
 
+export interface ComfyUiUpscaleInput {
+  model: string;
+  inputImage: ComfyUiImageRef;
+  filenamePrefix: string;
+}
+
 /**
  * Native ComfyUI graph used by the first production adapter. It deliberately avoids custom nodes so the graph can
  * be audited against /object_info and remains portable across a clean ComfyUI installation.
@@ -170,6 +176,17 @@ export function buildComfyUiInpaintWorkflow(input: ComfyUiInpaintInput): ComfyUi
   };
 }
 
+/** Native model-based upscale graph. It intentionally does not require a checkpoint or custom nodes. */
+export function buildComfyUiUpscaleWorkflow(input: ComfyUiUpscaleInput): ComfyUiWorkflow {
+  const imageName = input.inputImage.subfolder ? `${input.inputImage.subfolder}/${input.inputImage.filename}` : input.inputImage.filename;
+  return {
+    '1': { class_type: 'UpscaleModelLoader', inputs: { model_name: input.model }, _meta: { title: 'Aethera upscale model' } },
+    '2': { class_type: 'LoadImage', inputs: { image: imageName }, _meta: { title: 'Aethera upscale input' } },
+    '3': { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['1', 0], image: ['2', 0] }, _meta: { title: 'Aethera model upscale' } },
+    '4': { class_type: 'SaveImage', inputs: { filename_prefix: input.filenamePrefix, images: ['3', 0] }, _meta: { title: 'Aethera upscale output' } },
+  };
+}
+
 function checkpointNames(objectInfo: Record<string, unknown>): string[] {
   const loader = objectInfo['CheckpointLoaderSimple'];
   if (!loader || typeof loader !== 'object') return [];
@@ -184,13 +201,16 @@ function checkpointNames(objectInfo: Record<string, unknown>): string[] {
 
 export function validateComfyUiWorkflow(workflow: ComfyUiWorkflow, objectInfo: Record<string, unknown>): ComfyUiWorkflowValidation {
   const errors: string[] = [];
-  const requiredNodeTypes = new Set(['CheckpointLoaderSimple', 'CLIPTextEncode', 'EmptyLatentImage', 'KSampler', 'VAEDecode', 'SaveImage']);
+  const requiredNodeTypes = new Set<string>();
+  if (workflow['1']?.class_type === 'CheckpointLoaderSimple') {
+    for (const nodeType of ['CheckpointLoaderSimple', 'CLIPTextEncode', 'EmptyLatentImage', 'KSampler', 'VAEDecode', 'SaveImage']) requiredNodeTypes.add(nodeType);
+  }
   for (const node of Object.values(workflow)) requiredNodeTypes.add(node.class_type);
   const availableTypes = new Set(Object.keys(objectInfo));
   for (const nodeType of requiredNodeTypes) {
     if (!availableTypes.has(nodeType)) errors.push(`ComfyUI does not expose required node "${nodeType}".`);
   }
-  const checkpoint = workflow['1']?.inputs['ckpt_name'];
+  const checkpoint = workflow['1']?.class_type === 'CheckpointLoaderSimple' ? workflow['1'].inputs['ckpt_name'] : undefined;
   if (typeof checkpoint === 'string' && availableTypes.has('CheckpointLoaderSimple')) {
     const installed = checkpointNames(objectInfo);
     if (installed.length > 0 && !installed.includes(checkpoint)) {

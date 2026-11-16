@@ -3,6 +3,7 @@ import {
   buildComfyUiTxt2ImgWorkflow,
   buildComfyUiImg2ImgWorkflow,
   buildComfyUiInpaintWorkflow,
+  buildComfyUiUpscaleWorkflow,
   extractComfyUiImages,
   validateComfyUiWorkflow,
 } from '../src/comfyui-workflow.js';
@@ -117,5 +118,16 @@ describe('ComfyUI workflow registry', () => {
     expect(workflow['5']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/mask.png' } });
     expect(workflow['6']).toMatchObject({ class_type: 'VAEEncodeForInpaint', inputs: { pixels: ['4', 0], mask: ['5', 0], vae: ['1', 2], grow_mask_by: 8 } });
     expect(workflow['9']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['8', 0] } });
+  });
+
+  it('builds a checkpoint-independent model upscale graph', () => {
+    const workflow = buildComfyUiUpscaleWorkflow({
+      model: '4x-UltraSharp.pth',
+      inputImage: { filename: 'generated.png', subfolder: 'aethera', type: 'input' },
+      filenamePrefix: 'Aethera/upscale',
+    });
+    expect(workflow['1']).toMatchObject({ class_type: 'UpscaleModelLoader', inputs: { model_name: '4x-UltraSharp.pth' } });
+    expect(workflow['3']).toMatchObject({ class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['1', 0], image: ['2', 0] } });
+    expect(validateComfyUiWorkflow(workflow, { UpscaleModelLoader: {}, LoadImage: {}, ImageUpscaleWithModel: {}, SaveImage: {} })).toEqual({ ok: true, errors: [] });
   });
 });

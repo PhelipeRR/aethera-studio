@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import { ComfyUiClient, type ComfyUiHistoryEntry, type ComfyUiImageRef, type ComfyUiSystemStats } from './comfyui-client.js';
 import {
   buildComfyUiInpaintWorkflow,
+  buildComfyUiUpscaleWorkflow,
   extractComfyUiImages,
   buildComfyUiImg2ImgWorkflow,
   buildComfyUiTxt2ImgWorkflow,
@@ -12,6 +13,7 @@ import {
 } from './comfyui-workflow.js';
 import type {
   ExternalImageAdapter,
+  ImageUpscaleRequest,
   ImageGenerationRequest,
   LocalizedInpaintRequest,
 } from './image-generation-adapter.js';
@@ -120,6 +122,10 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     return this.gpuLease.run(() => this.inpaintRegionInternal(request));
   }
 
+  async upscaleImage(request: ImageUpscaleRequest): Promise<Buffer> {
+    return this.gpuLease.run(() => this.upscaleImageInternal(request));
+  }
+
   private async generateImageInternal(request: ImageGenerationRequest): Promise<Buffer> {
     const objectInfo = await this.gateway.getObjectInfo();
     const referencePath = request.referenceImagePaths?.[0];
@@ -174,6 +180,25 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     if (!validation.ok) {
       this.availabilityError = validation.errors.join(' ');
       throw new Error(`ComfyUI is not configured for localized repair: ${this.availabilityError}`);
+    }
+    return this.runWorkflow(workflow);
+  }
+
+  private async upscaleImageInternal(request: ImageUpscaleRequest): Promise<Buffer> {
+    if (!request.model.trim()) throw new Error('ComfyUI upscale requires a model reported by upscale_models.');
+    if (!this.gateway.uploadImage) throw new Error('ComfyUI gateway does not support upscale image upload.');
+    if (request.imageBuffer.byteLength === 0) throw new Error('ComfyUI upscale cannot process an empty image.');
+    const uploaded = await this.gateway.uploadImage(request.imageBuffer, 'aethera-upscale-input.png', 'aethera', true);
+    const workflow = buildComfyUiUpscaleWorkflow({
+      model: request.model,
+      inputImage: { filename: uploaded.name, ...(uploaded.subfolder ? { subfolder: uploaded.subfolder } : {}), type: uploaded.type },
+      filenamePrefix: `${this.filenamePrefix}/upscale`,
+    });
+    const objectInfo = await this.gateway.getObjectInfo();
+    const validation = validateComfyUiWorkflow(workflow, objectInfo);
+    if (!validation.ok) {
+      this.availabilityError = validation.errors.join(' ');
+      throw new Error(`ComfyUI is not configured for upscale: ${this.availabilityError}`);
     }
     return this.runWorkflow(workflow);
   }

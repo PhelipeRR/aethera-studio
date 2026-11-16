@@ -9,7 +9,7 @@ import type { ComfyUiHistoryEntry } from '../src/comfyui-client.js';
 function readyObjectInfo(): Record<string, unknown> {
   return {
     CheckpointLoaderSimple: { input: { required: { ckpt_name: [['sdxl.safetensors']] } } },
-    CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {}, VAEEncodeForInpaint: {},
+    CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {}, VAEEncodeForInpaint: {}, UpscaleModelLoader: {}, ImageUpscaleWithModel: {},
   };
 }
 
@@ -98,5 +98,15 @@ describe('ComfyUiImageAdapter', () => {
     const maskUpload = uploads.at(1);
     expect(maskUpload).toBeDefined();
     await expect(sharp(maskUpload?.bytes ?? Buffer.alloc(0)).metadata()).resolves.toMatchObject({ width: 96, height: 64, format: 'png' });
+  });
+
+  it('uploads an input and runs native model-based upscale', async () => {
+    const gateway = fakeGateway();
+    gateway.uploadImage = async (_buffer, filename) => ({ name: filename, subfolder: 'aethera', type: 'input' });
+    const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
+
+    await expect(adapter.upscaleImage({ imageBuffer: Buffer.from('PNG bytes'), model: '4x-UltraSharp.pth' })).resolves.toEqual(Buffer.from('PNG bytes'));
+    expect(gateway.queued?.['1']).toMatchObject({ class_type: 'UpscaleModelLoader', inputs: { model_name: '4x-UltraSharp.pth' } });
+    expect(gateway.queued?.['3']).toMatchObject({ class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['1', 0], image: ['2', 0] } });
   });
 });

@@ -84,11 +84,11 @@ The Aethera path is now:
 5. the generated buffer receives a structural audit for dimensions and luminance variation;
 6. only a real output is composed; fallback reports remain visible in the panel and production console.
 
-Reference images use `/upload/image` and a native `LoadImage → VAEEncode → KSampler` graph. Localized repair uses a bounded mask with `VAEEncodeForInpaint` when that node is exposed. Jobs are serialized by a process-local GPU lease; memory can be released explicitly or after each generation.
+Reference images use `/upload/image` and a native `LoadImage → VAEEncode → KSampler` graph. Localized repair uses a bounded mask with `VAEEncodeForInpaint` when that node is exposed. The adapter also has a checkpoint-independent `LoadImage → UpscaleModelLoader → ImageUpscaleWithModel` graph; the desktop UI does not yet expose a user-facing upscale action. Jobs are serialized by a process-local GPU lease; memory can be released explicitly or after each generation.
 
 ## What is still blocked
 
-The real six-case ComfyUI acceptance pass cannot be claimed until a server is running with at least one compatible checkpoint. ControlNet, IP-Adapter, LoRA, upscale and face-detail models also cannot be validated while their model inventory is empty. The current reference path is native img2img; it does not pretend to provide IP-Adapter identity locking.
+The real six-case ComfyUI acceptance pass cannot be claimed until a server is running with at least one compatible checkpoint. The native upscale graph is implemented but cannot be validated until an `upscale_models` file is installed; the desktop UI action is still pending. ControlNet, IP-Adapter, LoRA and face-detail workflows also cannot be validated while their models/nodes are absent. The current reference path is native img2img; it does not pretend to provide IP-Adapter identity locking.
 
 To unblock the real pass, install/import a licensed checkpoint into the audited ComfyUI `models\checkpoints` directory, start ComfyUI on `127.0.0.1:8188`, and rerun the audit. The panel will then expose the reported checkpoint list rather than accepting an arbitrary model name.
 

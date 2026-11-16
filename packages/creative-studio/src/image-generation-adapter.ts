@@ -78,6 +78,12 @@ export interface LocalizedInpaintRequest {
   strength?: number;
 }
 
+export interface ImageUpscaleRequest {
+  imageBuffer: Buffer;
+  /** Relative model name reported by ComfyUI's upscale_models inventory. */
+  model: string;
+}
+
 /**
  * Optional external AI image generation / segmentation / multimodal evaluation adapter.
  * Kept strictly separate from deterministic Sharp/SVG layer composition.
@@ -90,6 +96,7 @@ export interface ExternalImageAdapter {
   evaluateImageSemantics?(request: SemanticEvaluationRequest): Promise<SemanticEvaluationResult>;
   inspectVisualQuality?(request: VisualQualityInspectionRequest): Promise<VisualQualityInspectionResult>;
   inpaintRegion?(request: LocalizedInpaintRequest): Promise<Buffer>;
+  upscaleImage?(request: ImageUpscaleRequest): Promise<Buffer>;
 }
 
 function escapeXml(value: string): string {
@@ -395,10 +402,13 @@ export async function removeBorderColorBackground(inputBuffer: Buffer, tolerance
 function parseHexColorRgb(hex: string): { r: number; g: number; b: number; alpha: number } {
   const clean = hex.replace('#', '');
   if (clean.length === 3) {
+    const red = clean.charAt(0);
+    const green = clean.charAt(1);
+    const blue = clean.charAt(2);
     return {
-      r: parseInt(clean[0]! + clean[0]!, 16),
-      g: parseInt(clean[1]! + clean[1]!, 16),
-      b: parseInt(clean[2]! + clean[2]!, 16),
+      r: parseInt(red + red, 16),
+      g: parseInt(green + green, 16),
+      b: parseInt(blue + blue, 16),
       alpha: 1,
     };
   }
