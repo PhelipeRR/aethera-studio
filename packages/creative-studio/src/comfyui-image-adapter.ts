@@ -194,7 +194,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     try {
       bytes = readFileSync(path);
     } catch (error) {
-      throw new Error(`Reference image could not be read: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Reference image could not be read: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
     const uploaded = await this.gateway.uploadImage(bytes, basename(path), 'aethera', true);
     return {

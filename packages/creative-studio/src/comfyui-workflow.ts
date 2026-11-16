@@ -97,18 +97,23 @@ export function buildComfyUiImg2ImgWorkflow(input: ComfyUiImg2ImgInput): ComfyUi
   const height = Math.max(64, Math.round(input.height / 8) * 8);
   const imageName = input.inputImage.subfolder ? `${input.inputImage.subfolder}/${input.inputImage.filename}` : input.inputImage.filename;
   const base = buildComfyUiTxt2ImgWorkflow({ ...input, width, height });
+  const node = (id: string): ComfyUiWorkflowNode => {
+    const value = base[id];
+    if (!value) throw new Error(`Base ComfyUI workflow is missing node ${id}.`);
+    return value;
+  };
   return {
-    '1': base['1']!,
-    '2': base['2']!,
-    '3': base['3']!,
+    '1': node('1'),
+    '2': node('2'),
+    '3': node('3'),
     '4': { class_type: 'LoadImage', inputs: { image: imageName }, _meta: { title: 'Aethera reference image' } },
     '5': { class_type: 'VAEEncode', inputs: { pixels: ['4', 0], vae: ['1', 2] }, _meta: { title: 'Aethera reference encode' } },
     '6': {
-      ...base['5']!,
-      inputs: { ...base['5']!.inputs, denoise: Math.min(1, Math.max(0.01, input.denoise)), latent_image: ['5', 0] },
+      ...node('5'),
+      inputs: { ...node('5').inputs, denoise: Math.min(1, Math.max(0.01, input.denoise)), latent_image: ['5', 0] },
     },
-    '7': { ...base['6']!, inputs: { samples: ['6', 0], vae: ['1', 2] } },
-    '8': { ...base['7']!, inputs: { filename_prefix: input.filenamePrefix, images: ['7', 0] } },
+    '7': { ...node('6'), inputs: { samples: ['6', 0], vae: ['1', 2] } },
+    '8': { ...node('7'), inputs: { filename_prefix: input.filenamePrefix, images: ['7', 0] } },
   };
 }
 

@@ -147,7 +147,12 @@ const MAX_PROMPT_WORDS = 62;
 function sanitizeNote(value: unknown, maxChars = 160): string | undefined {
   if (typeof value !== 'string') return undefined;
   const cleaned = value
-    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .split('')
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code < 32 || code === 127 ? ' ' : char;
+    })
+    .join('')
     .replace(/["`<>{}[\]\\]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -206,7 +211,9 @@ export function detectVisualPreset(artType: CreativeArtType, prompt: string): Vi
 export function describeHexColor(hex: string): string {
   const m = /^#?([0-9a-f]{6})/i.exec(hex);
   if (!m) return 'neutral';
-  const n = Number.parseInt(m[1]!, 16);
+  const hexDigits = m[1];
+  if (!hexDigits) return 'neutral';
+  const n = Number.parseInt(hexDigits, 16);
   const r = (n >> 16) / 255;
   const g = ((n >> 8) & 0xff) / 255;
   const b = (n & 0xff) / 255;
@@ -215,18 +222,15 @@ export function describeHexColor(hex: string): string {
   const l = (max + min) / 2;
   const d = max - min;
   if (d < 0.08) return l < 0.2 ? 'black' : l > 0.85 ? 'white' : 'grey';
-  let h = 0;
-  if (max === r) h = ((g - b) / d) % 6;
-  else if (max === g) h = (b - r) / d + 2;
-  else h = (r - g) / d + 4;
-  h = (h * 60 + 360) % 360;
-  if (h < 15 || h >= 345) return 'red';
-  if (h < 40) return 'orange';
-  if (h < 65) return 'yellow';
-  if (h < 160) return 'green';
-  if (h < 200) return 'cyan';
-  if (h < 250) return 'blue';
-  if (h < 290) return 'purple';
+  const hue = (max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4) * 60;
+  const normalizedHue = (hue + 360) % 360;
+  if (normalizedHue < 15 || normalizedHue >= 345) return 'red';
+  if (normalizedHue < 40) return 'orange';
+  if (normalizedHue < 65) return 'yellow';
+  if (normalizedHue < 160) return 'green';
+  if (normalizedHue < 200) return 'cyan';
+  if (normalizedHue < 250) return 'blue';
+  if (normalizedHue < 290) return 'purple';
   return 'magenta';
 }
 

@@ -255,9 +255,9 @@ export class ComfyUiClient {
     } catch (error) {
       if (error instanceof ComfyUiRequestError) throw error;
       if (error instanceof DOMException && error.name === 'AbortError') {
-        throw new Error(`ComfyUI request timed out: ${path}`);
+        throw new Error(`ComfyUI request timed out: ${path}`, { cause: error });
       }
-      throw error;
+      throw new Error(error instanceof Error ? error.message : String(error), { cause: error });
     } finally {
       clearTimeout(timer);
     }

@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ComfyUiClient, normalizeComfyUiBaseUrl, type ComfyUiSystemStats } from './comfyui-client.js';
+import { ComfyUiClient, type ComfyUiSystemStats } from './comfyui-client.js';
 
 export type ComfyUiRuntimeState = 'ready' | 'misconfigured' | 'offline' | 'not_installed';
 

@@ -806,7 +806,8 @@ export class AetheraCreativeStudioService {
       ...(input.sceneHints ? { sceneHints: input.sceneHints } : {}),
     });
 
-    const best = [...lab.variants].sort((a, b) => b.audit.scorecard.overall - a.audit.scorecard.overall)[0]!;
+    const best = [...lab.variants].sort((a, b) => b.audit.scorecard.overall - a.audit.scorecard.overall)[0];
+    if (!best) throw new Error('Thumbnail Lab returned no variants.');
     return {
       document: best.document,
       audit: best.audit,
@@ -925,6 +926,7 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
           `• Forneça frames extraídos do vídeo como fonte de mídia autêntica.\n` +
           `• Ajuste o prompt para incluir termos mais específicos do assunto.\n` +
           `• Se o modelo local não estiver carregado, aguarde o download ou configure um adapter remoto.`,
+          { cause: err },
         );
       }
       throw err;
@@ -939,6 +941,7 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
       if (message.includes('[VisualContentGate]')) {
         throw new Error(
           `🚫 Combinação de conceitos bloqueada pelo VisualContentGate.\n\n${message}\n\n💡 Verifique se as mídias de origem são relevantes ao tema e não são placeholders.`,
+          { cause: err },
         );
       }
       throw err;
@@ -953,6 +956,7 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
       if (message.includes('[VisualContentGate]')) {
         throw new Error(
           `🚫 Laboratório de tipografia bloqueado pelo VisualContentGate.\n\n${message}\n\n💡 Forneça mídia real ou verifique a disponibilidade do adapter de IA.`,
+          { cause: err },
         );
       }
       throw err;

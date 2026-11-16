@@ -32,7 +32,8 @@ if (status.state !== 'ready' || status.models.checkpoints.length === 0) {
   console.log(JSON.stringify({ state: 'blocked', reason: status.reason ?? 'ComfyUI is not ready.', status }, null, 2));
   process.exitCode = 2;
 } else {
-  const checkpoint = requestedCheckpoint ?? status.models.checkpoints[0]!;
+  const checkpoint = requestedCheckpoint ?? status.models.checkpoints[0];
+  if (!checkpoint) throw new Error('ComfyUI reported ready without a checkpoint.');
   const adapter = new ComfyUiImageAdapter({ endpoint: status.endpoint, checkpoint, timeoutMs: 15 * 60_000 });
   const cases: Array<{ id: string; preset: ProfessionalPresetId; prompt: string; width: number; height: number; reference?: string }> = [
     { id: 'anime-single-character', preset: 'anime_premium_cinematic', prompt: 'one original anime hero, dynamic but clean pose, cinematic key light', width: 768, height: 768 },
