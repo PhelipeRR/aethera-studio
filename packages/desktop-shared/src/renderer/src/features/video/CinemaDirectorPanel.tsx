@@ -24,6 +24,7 @@ import { notify } from '@/components/NotificationsOverlay';
 import { TrendRadarPanel, type TrendRadarBridgeApi } from './TrendRadarPanel';
 import { MediaCoveragePanel } from './MediaCoveragePanel';
 import { VoiceDirectorPanel } from './VoiceDirectorPanel';
+import { DeletePromptDialog, promptDeleteLabel } from './DeletePromptDialog';
 import {
   EditorialAuditPanel,
   type EditorialAuditTrailView,
@@ -404,7 +405,15 @@ export function CinemaDirectorPanel() {
   } | null>(null);
   const [deletingProject, setDeletingProject] = useState(false);
 
+  const deleteTargetIdRef = useRef<string | null>(null);
+
+  function closeDeleteModal() {
+    deleteTargetIdRef.current = null;
+    setDeleteTarget(null);
+  }
+
   async function openDeleteModal(job: StagedJobView) {
+    deleteTargetIdRef.current = job.projectId;
     setDeleteTarget(job);
     setDeleteInspection({
       itemsToRemove: [
@@ -418,7 +427,7 @@ export function CinemaDirectorPanel() {
     if (api?.cinemaInspectDeleteProject) {
       try {
         const info = await api.cinemaInspectDeleteProject(job.projectId);
-        if (info?.itemsToRemove) {
+        if (info?.itemsToRemove && deleteTargetIdRef.current === job.projectId) {
           setDeleteInspection({
             itemsToRemove: info.itemsToRemove,
             sharedCacheEntriesPreserved: info.sharedCacheEntriesPreserved ?? 0,
@@ -431,20 +440,23 @@ export function CinemaDirectorPanel() {
   }
 
   async function handleConfirmDeleteJob() {
-    if (!deleteTarget) return;
+    if (!deleteTarget || deletingProject) return;
     const api = bridge();
     if (!api?.cinemaDeleteProject) return;
+    // Snapshot the selected target so only this prompt's project is ever removed.
+    const targetId = deleteTarget.projectId;
+    const label = promptDeleteLabel({ prompt: deleteTarget.prompt, fallback: targetId });
     setDeletingProject(true);
     try {
-      await api.cinemaDeleteProject(deleteTarget.projectId);
-      setStagedJobs((prev) => prev.filter((j) => j.projectId !== deleteTarget.projectId));
-      setStagedJob((prev) => (prev?.projectId === deleteTarget.projectId ? null : prev));
+      await api.cinemaDeleteProject(targetId);
+      setStagedJobs((prev) => prev.filter((j) => j.projectId !== targetId));
+      setStagedJob((prev) => (prev?.projectId === targetId ? null : prev));
       notify({
-        title: 'Projeto excluído',
-        message: `O projeto "${deleteTarget.prompt || deleteTarget.projectId}" foi removido.`,
+        title: 'Prompt excluído',
+        message: `"${label}" foi removido.`,
         type: 'success',
       });
-      setDeleteTarget(null);
+      closeDeleteModal();
     } catch (err) {
       notify({
         title: 'Erro ao excluir projeto',
@@ -1289,7 +1301,7 @@ export function CinemaDirectorPanel() {
                           type="button"
                           onClick={() => void openDeleteModal(job)}
                           title="Excluir projeto"
-                          aria-label={`Excluir projeto ${job.prompt || job.projectId}`}
+                          aria-label={`Excluir prompt ${promptDeleteLabel({ prompt: job.prompt, fallback: job.projectId })}`}
                           className="inline-flex items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-300 hover:border-rose-400 hover:bg-rose-500/20"
                         >
                           <Trash2 className="size-3.5" />
@@ -1605,63 +1617,18 @@ export function CinemaDirectorPanel() {
       </div>
 
       {deleteTarget && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Confirmar exclusão de projeto"
-        >
-          <div className="w-full max-w-md rounded-2xl border border-border bg-[#0d0d17] p-5 shadow-2xl">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold text-foreground">Excluir Projeto com IA</h2>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Tem certeza que deseja excluir <span className="font-semibold text-foreground">"{deleteTarget.prompt || deleteTarget.projectId}"</span>?
-                </p>
-                {deleteInspection && (
-                  <div className="mt-3 space-y-1.5 rounded-xl border border-border/70 bg-background/60 p-3 text-[11px]">
-                    <p className="font-medium text-rose-300">Dados exclusivos que serão removidos:</p>
-                    <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground">
-                      {deleteInspection.itemsToRemove.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                    <p className="pt-1 text-[10px] text-emerald-300/90">
-                      Biblioteca global (SFX/VFX/músicas/templates) e {deleteInspection.sharedCacheEntriesPreserved} referência(s) compartilhada(s) com outros projetos serão preservadas.
-                    </p>
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => setDeleteTarget(null)}
-                className="rounded-lg border border-border p-1 text-muted-foreground hover:text-foreground"
-                aria-label="Fechar"
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-            <div className="mt-5 flex justify-end gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => setDeleteTarget(null)}
-                disabled={deletingProject}
-                className="rounded-lg border border-border px-3 py-1.5 text-muted-foreground hover:text-foreground"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleConfirmDeleteJob()}
-                disabled={deletingProject}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3.5 py-1.5 font-semibold text-white hover:bg-rose-500 disabled:opacity-50"
-              >
-                <Trash2 className="size-3.5" />
-                {deletingProject ? 'Excluindo...' : 'Confirmar Exclusão'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <DeletePromptDialog
+          label={promptDeleteLabel({ prompt: deleteTarget.prompt, fallback: deleteTarget.projectId })}
+          pending={deletingProject}
+          details={deleteInspection?.itemsToRemove}
+          footnote={
+            deleteInspection
+              ? `Biblioteca global (SFX/VFX/músicas/templates) e ${deleteInspection.sharedCacheEntriesPreserved} referência(s) compartilhada(s) com outros projetos serão preservadas.`
+              : undefined
+          }
+          onCancel={closeDeleteModal}
+          onConfirm={() => void handleConfirmDeleteJob()}
+        />
       )}
         </>
       )}
