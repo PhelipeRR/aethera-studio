@@ -80,6 +80,27 @@ test('Aethera home — light bento layout', async () => {
     await win.setViewportSize({ width: 1024, height: 900 });
     await win.screenshot({ path: join(shotsDir, '03-home-1024px.png') });
 
+    // Pale dark-theme tints (with or without opacity) render as legible ink; over a black overlay they stay light.
+    const tints = await win.evaluate(() => {
+      const probe = (className: string) => {
+        const el = document.createElement('span');
+        el.className = className;
+        el.textContent = 'probe';
+        document.querySelector('main')?.appendChild(el);
+        const color = getComputedStyle(el).color;
+        el.remove();
+        return color;
+      };
+      return {
+        amberOpacity: probe('text-amber-200/90'),
+        rose: probe('text-rose-300'),
+        overBlack: probe('bg-black/75 text-slate-200'),
+      };
+    });
+    expect(tints.amberOpacity).toBe('rgb(138, 83, 0)');
+    expect(tints.rose).toBe('rgb(180, 40, 64)');
+    expect(tints.overBlack).not.toBe('rgb(58, 58, 68)');
+
     // The rest of the system follows the same light palette.
     await win.setViewportSize({ width: 1440, height: 900 });
     await win.locator('aside nav').getByRole('link', { name: 'Produção com IA' }).click();

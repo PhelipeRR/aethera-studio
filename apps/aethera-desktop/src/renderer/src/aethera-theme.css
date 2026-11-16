@@ -108,12 +108,53 @@ body:has([data-studio-theme='aethera']) {
   --tw-gradient-to: #ffffff;
 }
 
-/* Pale tints meant for a dark canvas become legible ink tones on light. */
-[data-studio-theme='aethera'] :is(.text-purple-200, .text-purple-300, .text-purple-400, .text-violet-200, .text-violet-300, .text-violet-400, .text-fuchsia-300) { color: #5b3cc4; }
-[data-studio-theme='aethera'] :is(.text-amber-100, .text-amber-200, .text-amber-300, .text-amber-400, .text-yellow-300, .text-yellow-400, .text-orange-300) { color: #8a5300; }
-[data-studio-theme='aethera'] :is(.text-emerald-200, .text-emerald-300, .text-emerald-400, .text-green-300, .text-green-400, .text-lime-300) { color: #23703a; }
-[data-studio-theme='aethera'] :is(.text-sky-200, .text-sky-300, .text-sky-400, .text-blue-300, .text-blue-400, .text-cyan-300) { color: #2f5fd0; }
-[data-studio-theme='aethera'] :is(.text-rose-200, .text-rose-300, .text-rose-400, .text-red-200, .text-red-300, .text-red-400, .text-pink-300) { color: #b42840; }
+/*
+ * Pale tints meant for a dark canvas become legible ink tones on light. Substring selectors also catch the
+ * opacity variants (text-amber-200/90). Text sitting on a black overlay (badges over thumbnails) keeps its tint.
+ */
+[data-studio-theme='aethera'] [class*='text-purple-200']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-purple-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-purple-400']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-violet-200']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-violet-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-violet-400']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-fuchsia-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-indigo-200']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-indigo-300']:not([class*='bg-black']) { color: #5b3cc4; }
+[data-studio-theme='aethera'] [class*='text-amber-100']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-amber-200']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-amber-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-amber-400']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-yellow-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-yellow-400']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-orange-300']:not([class*='bg-black']) { color: #8a5300; }
+[data-studio-theme='aethera'] [class*='text-emerald-200']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-emerald-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-emerald-400']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-green-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-green-400']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-lime-300']:not([class*='bg-black']) { color: #23703a; }
+[data-studio-theme='aethera'] [class*='text-teal-200']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-teal-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-teal-400']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-cyan-300']:not([class*='bg-black']) { color: #0f766e; }
+[data-studio-theme='aethera'] [class*='text-sky-200']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-sky-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-sky-400']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-blue-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-blue-400']:not([class*='bg-black']) { color: #2f5fd0; }
+[data-studio-theme='aethera'] [class*='text-rose-200']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-rose-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-rose-400']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-red-200']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-red-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-red-400']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-pink-300']:not([class*='bg-black']) { color: #b42840; }
+[data-studio-theme='aethera'] [class*='text-slate-200']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-slate-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-slate-400']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-zinc-300']:not([class*='bg-black']),
+[data-studio-theme='aethera'] [class*='text-gray-300']:not([class*='bg-black']) { color: #3a3a44; }
 
 /* Production console: light tones for the dark-canvas literals (dark fallbacks stay in the components). */
 [data-studio-theme='aethera'] {
