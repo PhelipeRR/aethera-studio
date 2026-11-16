@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CreativeStudioPanel } from './CreativeStudioPanel.js';
-import { ProductionConsoleAccordion } from './ProductionConsoleAccordion.js';
-import { TtsProviderSelector } from './TtsProviderSelector.js';
+import { ProductionConsoleAccordion } from '@/features/video/ProductionConsoleAccordion';
+import { TtsProviderSelector } from '@/features/aethera/TtsProviderSelector';
 
 interface StagedJobSummary {
   jobId?: string;

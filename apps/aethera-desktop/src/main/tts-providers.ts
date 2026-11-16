@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { ELEVENLABS_PCM_FORMAT, synthesizeElevenLabsWav } from '@neuralbridge/cinema';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { StudioSecretStore } from '../../../../packages/desktop-shared/src/main/studio-secret-store.js';
@@ -197,6 +198,15 @@ export class ElevenLabsProvider implements TtsProvider {
     return this.secretStore.load()?.modelId || 'eleven_multilingual_v2';
   }
 
+  /**
+   * Credentials for the render pipeline (main process only). Never send this to the renderer.
+   */
+  getSynthesisCredentials(): { apiKey: string; modelId: string } | null {
+    const creds = this.secretStore.load();
+    if (!creds?.apiKey) return null;
+    return { apiKey: creds.apiKey, modelId: creds.modelId || 'eleven_multilingual_v2' };
+  }
+
   saveCredentials(credentials: ElevenLabsCredentials): void {
     this.secretStore.save(credentials);
   }
@@ -282,45 +292,26 @@ export class ElevenLabsProvider implements TtsProvider {
   async synthesize(options: TtsSynthesizeOptions): Promise<{ mode: string; cached: boolean }> {
     const modelId = options.modelId || this.getModelId();
     const cacheKey = createHash('sha256')
-      .update(`${options.voiceId}:${modelId}:${options.language ?? 'pt'}:${options.text}`)
+      .update(`${ELEVENLABS_PCM_FORMAT}:${options.voiceId}:${modelId}:${options.language ?? 'pt'}:${options.text}`)
       .digest('hex')
       .slice(0, 24);
     const cachedPath = join(join(options.outWavPath, '..'), `_cache_${cacheKey}.wav`);
     if (existsSync(cachedPath)) {
-      const { copyFileSync } = await import('node:fs');
       copyFileSync(cachedPath, options.outWavPath);
       return { mode: 'elevenlabs_tts', cached: true };
     }
 
-    const res = await fetch(`${ELEVENLABS_BASE}/v1/text-to-speech/${options.voiceId}`, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': this.getApiKey(),
-        'content-type': 'application/json',
-        accept: 'audio/wav',
-      },
-      body: JSON.stringify({
-        text: options.text,
-        model_id: modelId,
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-        ...(options.language ? { language_code: options.language } : {}),
-      }),
-      signal: options.signal ?? AbortSignal.timeout(60_000),
+    await synthesizeElevenLabsWav({
+      apiKey: this.getApiKey(),
+      voiceId: options.voiceId,
+      text: options.text,
+      outWavPath: options.outWavPath,
+      modelId,
+      ...(options.language ? { languageCode: options.language } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
-
-    if (!res.ok) {
-      if (res.status === 401) throw new Error('unauthorized: API Key do ElevenLabs inválida.');
-      if (res.status === 403) throw new Error('forbidden: Conta ElevenLabs sem acesso ao modelo solicitado.');
-      if (res.status === 422) throw new Error('validation: Texto ou parâmetros inválidos para o ElevenLabs.');
-      if (res.status === 429) throw new Error('rate_limited: Limite de caracteres/requisições do ElevenLabs atingido.');
-      throw new Error(`ElevenLabs TTS falhou: HTTP ${res.status}`);
-    }
-
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.byteLength < 1024) throw new Error('ElevenLabs TTS retornou áudio vazio.');
-    writeFileSync(options.outWavPath, buf);
     try {
-      writeFileSync(cachedPath, buf);
+      copyFileSync(options.outWavPath, cachedPath);
     } catch {
       // cache write failure is non-fatal
     }

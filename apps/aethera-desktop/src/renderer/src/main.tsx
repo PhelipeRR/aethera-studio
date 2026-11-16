@@ -6,6 +6,7 @@ import {
   Film,
   FolderKanban,
   Home,
+  ImagePlus,
   Library,
   ListOrdered,
   Radio,
@@ -37,6 +38,7 @@ import { ContentPackagePage } from '@/features/aethera/ContentPackagePage';
 import { ContentProjectPage } from '@/features/aethera/ContentProjectPage';
 import { ContentQueuePage } from '@/features/aethera/ContentQueuePage';
 import { ContentVariantsPage } from '@/features/aethera/ContentVariantsPage';
+import { CreativeStudioPanel } from './CreativeStudioPanel';
 import '@/styles.css';
 import './aethera-theme.css';
 
@@ -49,6 +51,7 @@ const AETHERA_ROUTES: readonly AppRoute[] = [
   { path: '/aethera/projects', label: 'Projeto Manual', icon: FolderKanban, group: 'Trabalho', description: 'Gerenciamento manual de produções.' },
   { path: '/aethera/cinema', label: 'Produção com IA', icon: Clapperboard, group: 'Trabalho', description: 'Direção criativa, storyboard e humor pontual.' },
   { path: '/aethera/console', label: 'Console Geral', icon: SquareTerminal, group: 'Trabalho', description: 'Eventos de todas as produções e serviços.' },
+  { path: '/aethera/creative', label: 'Thumbs & Artes', icon: ImagePlus, group: 'Trabalho', description: 'Creative Studio: thumbnails, banners, avatar e marca d’água.' },
   { path: '/video', label: 'Editor', icon: Film, group: 'Trabalho', description: 'Editor profissional com timeline multifaixa.' },
   { path: '/aethera/library', label: 'Biblioteca', icon: Library, group: 'Conhecimento', description: 'Mídias, áudios, roteiros e direitos.' },
   { path: '/agents', label: 'Agentes', icon: Bot, group: 'Integrações', description: 'Equipe cinematográfica de IA com fallback RF-07.' },
@@ -104,6 +107,7 @@ const router = createHashRouter([
           { path: 'projects', element: <AetheraProjectsPage /> },
           { path: 'cinema', element: <CinemaDirectorPanel /> },
           { path: 'console', element: <GeneralConsolePage /> },
+          { path: 'creative', element: <div className="p-6"><CreativeStudioPanel /></div> },
           { path: 'editor', element: <AetheraStudioEditor /> },
           { path: 'review', element: <AetheraReviewRoomPage /> },
           { path: 'queue', element: <ContentQueuePage /> },

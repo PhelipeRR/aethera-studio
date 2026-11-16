@@ -690,3 +690,21 @@ composição, ritmo e coerência.
   - **Vitest** (`visual-critic-vision.test.ts`, `evolution-2.0.test.ts`, `nle-editor-integration.test.ts`, `waveform-extractor.test.ts`, `trend-radar.test.ts`): **5 arquivos / 23 testes passando**.
   - **TypeScript (`typecheck`)**: **0 erros**.
   - **E2E Real v2**: MP4 `298s` (`80.09 MB`), `-14.0 LUFS`, `-3.6 dBTP`, `18` frames amostrados, `cacheHits: 2 / reRenderedScenes: 4`. Fades escuros internos dos trailers originais continuam reportados honestamente no QC para avaliação manual na Sala de Revisão.
+
+## ElevenLabs TTS — correções de integração (2026-11-15)
+
+- [x] **API Key na interface**: `TtsProviderSelector` ganhou formulário (campo senha, "Salvar e testar", "Trocar chave", "Remover") usando o IPC existente; a chave é verificada via `tts:health-check` e nunca volta para o renderer.
+- [x] **Render usa a chave salva**: `StagedCinemaPipeline` recebe `resolveTtsCredentials` e resolve a chave do `StudioSecretStore` só no momento do render; nada é persistido no job. `ELEVENLABS_API_KEY` ficou apenas como fallback.
+- [x] **Formato de áudio real**: helper único `synthesizeElevenLabsWav` (`packages/cinema/src/render/elevenlabs-tts.ts`) pede `output_format=pcm_24000` (todos os planos) e grava WAV RIFF válido; antes o arquivo `.wav` continha MP3.
+- [x] **Cache de narração por provedor**: segmentos ElevenLabs usam chave de cache própria (`elevenlabs:<voz>:<modelo>`) e um fallback para VoiceStudio/SAPI nunca é gravado sob essa chave; a falha agora é registrada em log em vez de engolida.
+- [x] **Validação**: `tts-providers.test.ts` `18/18`; typecheck web limpo e node limpo exceto o erro pré-existente em `creative-studio-service.ts:460`; `build:aethera` aprovado; lint sem erros novos.
+- [ ] **Pendências**: síntese real contra a API ElevenLabs não testada (exige chave do usuário). Testes de render real do `packages/cinema` falham também no código original (`project-isolation-and-preview`, `editorial-integrity`); "Audit Item 3 & 8" leva 28–32 s contra limite de 30 s nos dois códigos.
+
+### Telas ligadas à interface real (2026-11-15)
+
+- [x] **Causa**: `apps/aethera-desktop/src/renderer/src/App.tsx` não é importado por nada; o app usa as rotas de `main.tsx`. Production Console, seletor ElevenLabs e Creative Studio estavam montados só nesse arquivo morto.
+- [x] `TtsProviderSelector` e `ProductionConsoleAccordion` movidos para `packages/desktop-shared/src/renderer/src/features/aethera/`.
+- [x] "Produção com IA" (`CinemaDirectorPanel`): seletor "Motor de voz" (VoiceStudio/ElevenLabs), formulário de API Key e vozes ElevenLabs; a produção envia `ttsProviderId`/`ttsVoiceId`; cada card de projeto exibe o Production Console.
+- [x] Nova rota `/aethera/creative` e item de menu "Thumbs & Artes" para o Creative Studio.
+- [x] **Validação**: typecheck web limpo; `build:aethera` aprovado; E2E Electron temporário confirmou menu, formulário de chave e Creative Studio com capturas. Falhas restantes em `apps/aethera-desktop/test` são pré-existentes (`sharp-native-smoke` exige instalador empacotado; `staged-pipeline` falha igual no código original).
+- [ ] Production Console no card não foi verificado visualmente: exige um job de produção existente.

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ProductionConsoleAccordion } from './ProductionConsoleAccordion.js';
+import { ProductionConsoleAccordion } from '@/features/video/ProductionConsoleAccordion';
 import type {
   BrandKit,
   CreativeArtType,
