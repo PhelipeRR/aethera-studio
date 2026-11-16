@@ -32,13 +32,7 @@ function AetheraPrismLogo({ className }: { className?: string }) {
           <stop offset="100%" stopColor="#f59e0b" />
         </linearGradient>
       </defs>
-      {/* Inner triangle is a real cut-out (evenodd), so the mark reads the same on any background. */}
-      <path
-        fillRule="evenodd"
-        clipRule="evenodd"
-        d="M18 3L32 30H24.5L18 17.5L11.5 30H4L18 3Z M18 19L23 28H13L18 19Z"
-        fill="url(#aetheraPrism)"
-      />
+      <path d="M18 3L32 30H24.5L18 17.5L11.5 30H4L18 3Z" fill="url(#aetheraPrism)" />
     </svg>
   );
 }
