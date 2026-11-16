@@ -33,6 +33,7 @@ import {
   type ScriptCoverageSegment,
 } from './media-coverage-planner.js';
 import type { MediaProviderRegistry } from './media-providers/registry.js';
+import { inferContentDomain, type MediaCandidateAssessment } from './media-providers/semantic-media.js';
 import type {
   AcquisitionMethod,
   LicenseDecision,
@@ -75,6 +76,8 @@ export interface MediaSourceCandidate {
   licenseDecision?: LicenseDecision;
   classification?: MediaClassification;
   acquisitionMethod?: AcquisitionMethod;
+  /** Pre-download assessment: media type, identity, editorial-role ceiling and rights (never approval by itself). */
+  assessment?: MediaCandidateAssessment;
 }
 
 export interface ProviderAttemptStatus {
@@ -310,7 +313,15 @@ export async function searchResilientMediaSources(
   });
 
   // 1b. Anime-specific source adapter (e.g. Sakugabooru) — strictly isolated to anime topics
-  if (deps.animeMediaSource && isAnimeSubjectOrGenre(`${options?.prompt ?? ''} ${query}`, options?.genre)) {
+  // Domain, not narrative format: an anime top list or essay still reaches anime sources.
+  const searchDomain = inferContentDomain({
+    ...(deps.mediaProviders?.context ?? {}),
+    ...(options?.scene ?? {}),
+    ...(options?.prompt ? { prompt: options.prompt } : {}),
+    ...(options?.genre ? { genre: options.genre } : {}),
+    query,
+  }).domain;
+  if (deps.animeMediaSource && searchDomain === 'anime') {
     try {
       const animeRes = await deps.animeMediaSource.searchClips({
         query,
@@ -372,7 +383,7 @@ export async function searchResilientMediaSources(
     };
     try {
       const res = await registry.searchForScene(query, sceneContext, { ...(signal ? { signal } : {}) });
-      candidates.push(...res.accepted.map((s) => providerItemToCandidate(s.item, s.license)));
+      candidates.push(...res.accepted.map((s) => providerItemToCandidate(s.item, s.license, s.assessment)));
       for (const a of res.attempts) {
         providerStatuses.push({ provider: a.provider, status: a.status, count: a.count, ...(a.detail ? { detail: a.detail } : {}) });
       }
@@ -668,8 +679,10 @@ export function resolveRightsStatus(meta: {
   if (meta.origin === 'local_library') {
     return { rightsStatus: 'licensed', rightsNote: 'Arquivo da biblioteca local do usuário (direitos sob responsabilidade do usuário).' };
   }
+  // Rights come from the provider's license terms, never from relevance, title or a channel-name match alone.
   if (
     meta.providerItem &&
+    meta.providerItem.license.licenseId === 'publisher_promotional' &&
     OFFICIAL_CLASSES.has(meta.providerItem.classification) &&
     meta.providerItem.classificationConfidence >= 0.8
   ) {
@@ -686,7 +699,7 @@ export function resolveRightsStatus(meta: {
 }
 
 /** Maps a registry item into the pipeline's candidate shape without losing provenance. */
-export function providerItemToCandidate(item: ProviderMediaItem, license: LicenseDecision): MediaSourceCandidate {
+export function providerItemToCandidate(item: ProviderMediaItem, license: LicenseDecision, assessment?: MediaCandidateAssessment): MediaSourceCandidate {
   return {
     url: item.acquisition.url ?? item.pageUrl,
     title: item.title,
@@ -707,6 +720,7 @@ export function providerItemToCandidate(item: ProviderMediaItem, license: Licens
     licenseDecision: license,
     classification: item.classification,
     acquisitionMethod: item.acquisition.method,
+    ...(assessment ? { assessment } : {}),
   };
 }
 

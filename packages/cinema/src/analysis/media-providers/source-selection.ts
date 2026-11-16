@@ -1,13 +1,21 @@
-import { isAnimeSubjectOrGenre } from '../anime-source-adapters.js';
-import { IDENTITY_GRADE_CLASSES } from './classification.js';
 import type { MediaClassification, MediaProviderKey, ProviderMediaItem, SceneSourceContext } from './types.js';
+import {
+  assessCandidate,
+  inferContentDomain,
+  type CandidateRejectionCode,
+  type ContentDomain,
+  type DomainInference,
+  type MediaCandidateAssessment,
+  type MediaType,
+} from './semantic-media.js';
 
 /**
  * Context-aware source selection.
  *
- * Decides, per scene, which providers are worth asking and in what order, and which result classes the scene may use.
- * Identity scenes (a named game or character) only accept identity-grade classes; aesthetic similarity is never
- * accepted as proof of identity, so stock or reaction media cannot stand in for them.
+ * The content domain (anime, game, movie…) decides which providers are worth asking; the narrative format
+ * (`gameplay_essay`, `top_list`) never does. Identity scenes accept only identity-capable media, but an uncertain
+ * classification is kept for frame analysis instead of being rejected. Aesthetic or textual similarity is never
+ * accepted as proof of identity.
  */
 
 export type SceneMediaIntent =
@@ -15,162 +23,175 @@ export type SceneMediaIntent =
   | 'game_ranking'
   | 'anime_identity'
   | 'anime_reaction'
+  /** A named movie/series. */
+  | 'screen_identity'
+  /** A named subject whose domain is unknown or ambiguous: broad, domain-neutral sources first. */
+  | 'named_subject'
   | 'generic_broll'
   | 'dataset_research';
 
 export interface SourcePlan {
   intent: SceneMediaIntent;
+  domain: ContentDomain;
+  domainInference: DomainInference;
   /** Providers to try in order; later ones are fallbacks. */
   providers: MediaProviderKey[];
   /** Providers used for research/metadata only (never as media for this scene). */
   researchProviders: MediaProviderKey[];
+  /** Legacy classes, still enforced for scenes without identity (stock, reaction GIFs, datasets). */
   allowedClasses: MediaClassification[];
+  allowedMediaTypes: MediaType[];
   requiresIdentity: boolean;
   rationale: string;
 }
 
-const GAME_PATTERN =
-  /\b(game|games|jogo|jogos|gameplay|boss|chefe|rpg|fps|playstation|ps5|xbox|nintendo|switch|steam|dlc|trailer do jogo|cyberpunk|elden ring|zelda|gta|witcher|halo|mario|souls|minecraft|fortnite)\b/i;
 const RANKING_PATTERN = /\b(top\s*\d+|\d+\s+(?:melhores|best|maiores|piores|worst)|ranking|melhores jogos|best games|jogos (?:mais )?(?:aguardados|esperados) |most anticipated|jogos de \d{4}|games of \d{4})\b/i;
 const REACTION_PATTERN = /\b(reação|reacao|reaction|meme|emoji|emoção|emocao|vergonha|facepalm|chorando|crying|happy dance|celebra(?:ção|r)|surpres[ao]|shocked|blush|hug|abraço|smug)\b/i;
 const DATASET_PATTERN = /\b(dataset|datasets|conjunto de dados|training data|dados de treino)\b/i;
-const TECH_GENERIC_PATTERN =
-  /\b(tecnologia|technology|tech|computador|computer|smartphone|celular|inteligência artificial|artificial intelligence|programação|coding|data center|servidor|cidade|city|natureza|nature|escritório|office|pessoas|people|negócios|business|ciência|science)\b/i;
 
 const IDENTITY_CLASSES: MediaClassification[] = ['official_game_trailer', 'authentic_gameplay', 'official_screenshot', 'promotional_artwork'];
 
-export function classifySceneIntent(context: SceneSourceContext & { query?: string }): SceneMediaIntent {
+const namedEntities = (context: SceneSourceContext) =>
+  [context.work?.canonicalTitle, ...(context.entities ?? [])].filter((e): e is string => typeof e === 'string' && e.trim().length >= 3);
+
+export function classifySceneIntent(context: SceneSourceContext & { query?: string }, inference: DomainInference = inferContentDomain(context)): SceneMediaIntent {
   const text = `${context.prompt ?? ''} ${context.narrationText ?? ''} ${context.query ?? ''} ${(context.entities ?? []).join(' ')}`;
-  const genre = context.genre ?? '';
   if (DATASET_PATTERN.test(text)) return 'dataset_research';
-  const anime = isAnimeSubjectOrGenre(text, genre);
-  if (anime) {
-    // A reaction beat with no named work/character is the only place reaction GIFs fit.
-    const named = (context.entities ?? []).some((e) => e.trim().length >= 3);
-    return REACTION_PATTERN.test(`${context.narrationText ?? ''} ${context.query ?? ''}`) && !named ? 'anime_reaction' : 'anime_identity';
+  const named = namedEntities(context).length > 0;
+  switch (inference.domain) {
+    case 'anime':
+      // A reaction beat with no named work/character is the only place reaction GIFs fit.
+      return REACTION_PATTERN.test(`${context.narrationText ?? ''} ${context.query ?? ''}`) && !named ? 'anime_reaction' : 'anime_identity';
+    case 'game':
+      if (RANKING_PATTERN.test(`${context.prompt ?? ''} ${context.query ?? ''}`) && (context.entities ?? []).length === 0) return 'game_ranking';
+      return 'game_specific';
+    case 'movie':
+    case 'series':
+      return named ? 'screen_identity' : 'generic_broll';
+    case 'technology':
+    case 'documentary':
+      return 'generic_broll';
+    case 'generic':
+    default:
+      // Unknown or ambiguous domain with a named subject: domain-neutral sources, never game sources by default.
+      return named ? 'named_subject' : 'generic_broll';
   }
-  const gaming = genre === 'gameplay_essay' || genre === 'gaming' || genre === 'top_list' || GAME_PATTERN.test(text);
-  if (gaming) {
-    if (RANKING_PATTERN.test(`${context.prompt ?? ''} ${context.query ?? ''}`) && (context.entities ?? []).length === 0) return 'game_ranking';
-    return 'game_specific';
-  }
-  if (REACTION_PATTERN.test(`${context.narrationText ?? ''} ${context.query ?? ''}`) && /\banime\b/i.test(text)) return 'anime_reaction';
-  if (TECH_GENERIC_PATTERN.test(text)) return 'generic_broll';
-  return 'generic_broll';
 }
 
 export function planSceneSources(context: SceneSourceContext & { query?: string }): SourcePlan {
-  const intent = classifySceneIntent(context);
+  const domainInference = inferContentDomain(context);
+  const intent = classifySceneIntent(context, domainInference);
+  const base = { intent, domain: domainInference.domain, domainInference };
   switch (intent) {
     case 'game_specific':
       return {
-        intent,
+        ...base,
         providers: ['steam', 'igdb', 'youtube'],
         researchProviders: ['igdb'],
         allowedClasses: IDENTITY_CLASSES,
+        allowedMediaTypes: ['gameplay', 'game_trailer', 'screenshot', 'promotional_artwork', 'unknown', 'anime_footage'],
         requiresIdentity: true,
-        rationale: 'Cena sobre um jogo específico: priorizar Steam (trailers/screenshots oficiais), IGDB e YouTube oficial; stock não prova identidade.',
+        rationale: 'Cena sobre um jogo específico: priorizar Steam (trailers/screenshots oficiais), IGDB e YouTube; stock não prova identidade.',
       };
     case 'game_ranking':
       return {
-        intent,
+        ...base,
         providers: ['steam', 'youtube', 'igdb'],
         researchProviders: ['igdb'],
         allowedClasses: IDENTITY_CLASSES,
+        allowedMediaTypes: ['gameplay', 'game_trailer', 'screenshot', 'promotional_artwork', 'unknown'],
         requiresIdentity: true,
         rationale: 'Ranking de jogos: IGDB para pesquisa dos títulos; Steam/YouTube para a mídia de cada jogo.',
       };
     case 'anime_identity':
       return {
-        intent,
+        ...base,
         providers: ['youtube'],
         researchProviders: [],
-        allowedClasses: ['anime_footage', 'official_game_trailer', 'authentic_gameplay', 'promotional_artwork', 'anime_image'],
+        allowedClasses: ['anime_footage', 'promotional_artwork', 'anime_image'],
+        allowedMediaTypes: ['anime_footage', 'unknown', 'promotional_artwork', 'image', 'gameplay', 'game_trailer'],
         requiresIdentity: true,
         rationale:
-          'Identidade de obra/personagem de anime: footage da obra (canal oficial aumenta a confiança; uploads de terceiros seguem para verificação por frames e revisão de direitos); GIFs de reação não provam identidade.',
+          'Domínio anime: footage da obra no YouTube (canal oficial aumenta a confiança; uploads de terceiros seguem para verificação por frames e revisão de direitos). Steam/IGDB não são consultados; jogos derivados só servem de apoio contextual.',
+      };
+    case 'screen_identity':
+      return {
+        ...base,
+        providers: ['youtube'],
+        researchProviders: [],
+        allowedClasses: [],
+        allowedMediaTypes: ['movie_footage', 'unknown', 'promotional_artwork', 'image'],
+        requiresIdentity: true,
+        rationale: 'Filme/série nomeado: trailers e canais oficiais no YouTube; identidade confirmada por frames.',
+      };
+    case 'named_subject':
+      return {
+        ...base,
+        providers: ['youtube', 'pexels', 'pixabay'],
+        researchProviders: [],
+        allowedClasses: [],
+        allowedMediaTypes: ['anime_footage', 'gameplay', 'game_trailer', 'movie_footage', 'screenshot', 'promotional_artwork', 'image', 'unknown'],
+        requiresIdentity: true,
+        rationale: 'Assunto nomeado com domínio incerto: YouTube primeiro (fonte comum a todos os domínios); stock não prova identidade.',
       };
     case 'anime_reaction':
       return {
-        intent,
+        ...base,
         providers: ['nekos_best', 'kawaii_red'],
         researchProviders: [],
         allowedClasses: ['anime_reaction_gif', 'anime_image'],
+        allowedMediaTypes: ['image'],
         requiresIdentity: false,
         rationale: 'Beat de reação/emoção sem personagem nomeado: provedores de reação de anime são apropriados.',
       };
     case 'dataset_research':
       return {
-        intent,
+        ...base,
         providers: ['huggingface_datasets'],
         researchProviders: ['huggingface_datasets'],
         allowedClasses: ['dataset_media'],
+        allowedMediaTypes: ['unknown'],
         requiresIdentity: false,
         rationale: 'Pedido explícito de datasets: Hugging Face apenas para descoberta, com licença por dataset.',
       };
     case 'generic_broll':
     default:
       return {
+        ...base,
         intent: 'generic_broll',
         providers: ['pexels', 'pixabay'],
         researchProviders: [],
         allowedClasses: ['stock_video', 'stock_image'],
+        allowedMediaTypes: ['stock_video', 'image'],
         requiresIdentity: false,
-        rationale: 'Cena genérica: bancos de stock (Pexels, Pixabay) com licença conhecida.',
+        rationale: `Cena genérica (domínio ${domainInference.domain}): bancos de stock (Pexels, Pixabay) com licença conhecida.`,
       };
   }
 }
 
 export interface SourceFidelityVerdict {
   pass: boolean;
-  code?: 'class_not_allowed_for_scene' | 'ai_generated_for_identity_scene' | 'low_classification_confidence' | 'subject_mismatch';
+  code?: CandidateRejectionCode;
   reason: string;
+  assessment: MediaCandidateAssessment;
 }
 
-const tokens = (value: string) =>
-  value
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((t) => t.length >= 3);
-
 /**
- * Pre-download gate: does the item's class and the identity the provider asserts fit the scene?
+ * Pre-download gate: media type, identity and rights of the item against the scene plan.
  * Passing here never approves media — the Media Relevance Gate (frames + vision) still decides.
  */
 export function checkSourceFidelity(item: ProviderMediaItem, plan: SourcePlan, context: SceneSourceContext): SourceFidelityVerdict {
-  if (plan.requiresIdentity && (item.aiGenerated === true || item.classification === 'ai_generated')) {
-    return { pass: false, code: 'ai_generated_for_identity_scene', reason: 'Mídia gerada por IA não pode representar jogo/personagem real.' };
+  const assessment = assessCandidate(
+    item,
+    { domain: plan.domain, requiresIdentity: plan.requiresIdentity, allowedMediaTypes: plan.allowedMediaTypes, allowedClasses: plan.allowedClasses, label: plan.intent },
+    context,
+  );
+  if (assessment.verdict === 'rejected') {
+    return { pass: false, ...(assessment.rejectionCode ? { code: assessment.rejectionCode } : {}), reason: assessment.reasons[0] ?? 'Rejeitado.', assessment };
   }
-  if (!plan.allowedClasses.includes(item.classification)) {
-    return {
-      pass: false,
-      code: 'class_not_allowed_for_scene',
-      reason: `Classe ${item.classification} não é adequada para cena "${plan.intent}".`,
-    };
-  }
-  // Official origin raises confidence but is not a condition of authenticity: identity is decided by frames in the
-  // Media Relevance Gate. Only near-certain non-authentic material (fan concept, AI) is dropped before download.
-  if (plan.requiresIdentity && IDENTITY_GRADE_CLASSES.has(item.classification) && item.classificationConfidence < 0.2) {
-    return {
-      pass: false,
-      code: 'low_classification_confidence',
-      reason: `Indícios de material não autêntico (fã/conceito; confiança ${item.classificationConfidence.toFixed(2)} < 0.20).`,
-    };
-  }
-  const asserted = item.provenance.subject?.gameTitle ?? item.provenance.subject?.animeTitle;
-  const expected = (context.entities ?? []).filter((e) => e.trim().length >= 3);
-  if (plan.requiresIdentity && asserted && expected.length > 0) {
-    const assertedTokens = new Set(tokens(asserted));
-    const overlap = expected.some((e) => tokens(e).some((t) => assertedTokens.has(t)));
-    if (!overlap) {
-      return {
-        pass: false,
-        code: 'subject_mismatch',
-        reason: `Provedor identifica "${asserted}", que não corresponde às entidades da cena (${expected.slice(0, 3).join(', ')}).`,
-      };
-    }
-  }
-  return { pass: true, reason: 'Classe e identidade declarada compatíveis com a cena (sujeito ainda à validação visual).' };
+  return {
+    pass: true,
+    reason: `Candidato mantido para análise (${assessment.mediaType}; papel máximo ${assessment.maxEditorialRole}; identidade ${assessment.identity.status}).`,
+    assessment,
+  };
 }

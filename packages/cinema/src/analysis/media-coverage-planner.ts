@@ -1,3 +1,4 @@
+import { inferContentDomain } from './media-providers/semantic-media.js';
 import {
   extractNarrativeVisualExpectation,
   extractTopicEntities,
@@ -832,10 +833,15 @@ export function expandScriptOrientedQueries(input: {
   maxQueries?: number;
 }): string[] {
   const maxQueries = Math.max(4, Math.min(48, input.maxQueries ?? Math.max(8, input.segments.length * 3)));
-  const isAnime =
-    input.genre === 'anime_essay' || /\b(anime|mang[aá]|epis[oó]dio|personagem)\b/i.test(input.prompt);
+  // Content domain decides the query vocabulary; the narrative format (gameplay_essay/top_list) does not.
+  const domain = inferContentDomain({
+    prompt: input.prompt,
+    ...(input.genre ? { genre: input.genre } : {}),
+    narrationText: input.segments.map((s) => `${s.subject} ${s.narrationText}`).join(' ').slice(0, 2000),
+  }).domain;
+  const isAnime = domain === 'anime' || /\b(anime|mang[aá]|epis[oó]dio|personagem)\b/i.test(input.prompt);
   const isGaming =
-    input.genre === 'gameplay_essay' ||
+    domain === 'game' ||
     /\b(game|jogo|jogos|boss|chefes?|chefe|gameplay|elden ring|dark souls|sekiro|bloodborne|rpg|playstation|xbox|nintendo|steam)\b/i.test(
       `${input.prompt} ${input.segments.map((s) => `${s.subject} ${s.narrationText}`).join(' ')}`,
     );

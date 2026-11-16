@@ -2,6 +2,7 @@ export * from './types.js';
 export * from './resilience.js';
 export * from './licensing.js';
 export * from './classification.js';
+export * from './semantic-media.js';
 export * from './source-selection.js';
 export * from './registry.js';
 export * from './http.js';

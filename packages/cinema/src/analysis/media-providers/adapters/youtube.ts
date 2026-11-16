@@ -1,5 +1,5 @@
-import { isAnimeSubjectOrGenre } from '../../anime-source-adapters.js';
 import { classifyProviderItem } from '../classification.js';
+import { inferContentDomain } from '../semantic-media.js';
 import { healthFromProbe, nowIso, requestJson } from '../http.js';
 import {
   MediaProviderError,
@@ -85,13 +85,15 @@ export class YouTubeAdapter implements MediaProviderAdapter {
     const vp = new URLSearchParams({ part: 'snippet,contentDetails,status', id: ids.join(','), key });
     const { data: videos } = await requestJson<VideosResponse>('youtube', `https://www.googleapis.com/youtube/v3/videos?${vp}`, common);
     const publishers = request.context?.knownPublishers ?? [];
-    // Anime scenes classify anime footage (episode clips, openings, PVs) instead of trailer/gameplay/stock.
-    const animeContext = isAnimeSubjectOrGenre(`${request.context?.prompt ?? ''} ${(request.context?.entities ?? []).join(' ')} ${request.query}`, request.context?.genre);
+    // The content domain (never the narrative format) tells whether "fight/scene/clip" titles are anime footage.
+    const animeContext = inferContentDomain({ ...(request.context ?? {}), query: request.query }).domain === 'anime';
     const items: ProviderMediaItem[] = (videos.items ?? []).map((v) => {
       const sn = v.snippet ?? {};
       const title = sn.title ?? v.id;
       const cls = classifyProviderItem({ provider: 'youtube', hint: 'youtube_video', kind: 'video', title, description: sn.description ?? '', tags: sn.tags ?? [], ...(sn.channelTitle ? { channelTitle: sn.channelTitle } : {}), officialPublishers: publishers, animeContext });
-      const official = cls.confidence >= 0.8 && (cls.classification === 'official_game_trailer' || cls.classification === 'authentic_gameplay' || cls.classification === 'anime_footage');
+      // Publisher-promotional terms only when the channel matches a publisher the game's own records (IGDB/Steam) name.
+      // Anime channels are recognised by name only, which raises identity confidence but never grants rights.
+      const official = cls.confidence >= 0.8 && publishers.length > 0 && (cls.classification === 'official_game_trailer' || cls.classification === 'authentic_gameplay');
       const cc = v.status?.license === 'creativeCommon';
       const license: LicenseInfo = cc
         ? { licenseId: 'cc-by-3.0', licenseName: 'Creative Commons BY (YouTube)', licenseUrl: 'https://creativecommons.org/licenses/by/3.0/', ...(sn.channelTitle ? { author: sn.channelTitle, attributionText: `"${title}" por ${sn.channelTitle} (CC BY) — YouTube` } : {}), commercialUse: 'allowed', automatedDownload: 'unknown', attributionRequired: true, restrictions: ['attribution_required'] }

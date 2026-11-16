@@ -15,6 +15,7 @@ import {
   type Clock,
 } from './resilience.js';
 import { checkSourceFidelity, planSceneSources, type SourcePlan } from './source-selection.js';
+import { buildSemanticQueries, mentionsName, normalizeText, type MediaCandidateAssessment, type SemanticQuery } from './semantic-media.js';
 import {
   MediaProviderError,
   type LicenseDecision,
@@ -74,6 +75,8 @@ export interface ScoredProviderItem {
   item: ProviderMediaItem;
   license: LicenseDecision;
   score: number;
+  /** Media type, identity, editorial-role ceiling and rights, independent of each other. */
+  assessment?: MediaCandidateAssessment;
 }
 
 export interface RejectedProviderItem {
@@ -82,6 +85,7 @@ export interface RejectedProviderItem {
   code: string;
   reason: string;
   license?: LicenseDecision;
+  assessment?: MediaCandidateAssessment;
 }
 
 export interface ProviderAttempt {
@@ -97,6 +101,8 @@ export interface SceneSearchResult {
   accepted: ScoredProviderItem[];
   rejected: RejectedProviderItem[];
   attempts: ProviderAttempt[];
+  /** Reformulated queries tried when the original query did not reach `minResults` (bounded, one per strategy). */
+  recovery: Array<{ query: string; strategy: SemanticQuery['strategy']; accepted: number; rejected: number }>;
 }
 
 export interface AcquireOptions {
@@ -332,7 +338,7 @@ export class MediaProviderRegistry {
   async searchForScene(
     query: string,
     context: SceneSourceContext,
-    options: { signal?: AbortSignal; minResults?: number; perProvider?: number; providers?: MediaProviderKey[] } = {},
+    options: { signal?: AbortSignal; minResults?: number; perProvider?: number; providers?: MediaProviderKey[]; maxRecoveryQueries?: number } = {},
   ): Promise<SceneSearchResult> {
     const plan = planSceneSources({ ...context, query });
     const minResults = options.minResults ?? 6;
@@ -350,8 +356,10 @@ export class MediaProviderRegistry {
     const rejected: RejectedProviderItem[] = [];
     const seen = new Set<string>();
     const policy = this.licensePolicy(context, true);
-    let previousFailure: { provider: MediaProviderKey; reason: string } | null = null;
+    const recovery: SceneSearchResult['recovery'] = [];
 
+    const runPass = async (query: string): Promise<void> => {
+    let previousFailure: { provider: MediaProviderKey; reason: string } | null = null;
     for (const id of order) {
       if (options.signal?.aborted) {
         attempts.push({ provider: id, status: 'cancelled', count: 0, durationMs: 0 });
@@ -384,17 +392,17 @@ export class MediaProviderRegistry {
           for (const k of dedupKeys) seen.add(k);
           const fidelity = checkSourceFidelity(item, plan, context);
           if (!fidelity.pass) {
-            rejected.push({ item, stage: 'source_fidelity', code: fidelity.code ?? 'source_fidelity', reason: fidelity.reason });
+            rejected.push({ item, stage: 'source_fidelity', code: fidelity.code ?? 'source_fidelity', reason: fidelity.reason, assessment: fidelity.assessment });
             this.emit({ type: 'media_rejected', provider: id, ...(context.jobId ? { jobId: context.jobId } : {}), ...(context.sceneId ? { sceneId: context.sceneId } : {}), itemId: item.id, title: item.title, reason: fidelity.reason });
             continue;
           }
           const license = evaluateItemLicense(item, policy);
           if (license.status === 'blocked') {
-            rejected.push({ item, stage: 'license', code: 'license_incompatible', reason: license.reasons.join(' '), license });
+            rejected.push({ item, stage: 'license', code: 'license_incompatible', reason: license.reasons.join(' '), license, assessment: fidelity.assessment });
             this.emit({ type: 'media_rejected', provider: id, ...(context.jobId ? { jobId: context.jobId } : {}), ...(context.sceneId ? { sceneId: context.sceneId } : {}), itemId: item.id, title: item.title, reason: license.reasons.join(' ') });
             continue;
           }
-          accepted.push({ item, license, score: scoreItem(item, license, context) });
+          accepted.push({ item, license, score: scoreItem(item, license, context), assessment: fidelity.assessment });
         }
       } catch (error) {
         const err = toProviderError(id, error, options.signal);
@@ -408,12 +416,33 @@ export class MediaProviderRegistry {
     if (previousFailure && accepted.length < minResults) {
       this.emit({ type: 'provider_fallback', from: previousFailure.provider, to: null, ...(context.jobId ? { jobId: context.jobId } : {}), ...(context.sceneId ? { sceneId: context.sceneId } : {}), reason: `${previousFailure.reason} Sem mais provedores adequados para a cena.` });
     }
+    };
+
+    await runPass(query);
+    // Recovery: reformulate with the work's titles/characters/event/media type, one query per strategy, bounded.
+    // Criteria never relax: every reformulated result goes through the same fidelity and license gates.
+    const maxRecovery = Math.max(0, options.maxRecoveryQueries ?? 2);
+    if (accepted.length < minResults && maxRecovery > 0 && !options.signal?.aborted) {
+      const tried = new Set([normalizeText(query)]);
+      const usedStrategies = new Set<SemanticQuery['strategy']>();
+      for (const sq of buildSemanticQueries(context, plan.domain)) {
+        if (recovery.length >= maxRecovery || accepted.length >= minResults || options.signal?.aborted) break;
+        const key = normalizeText(sq.query);
+        if (tried.has(key) || usedStrategies.has(sq.strategy)) continue;
+        tried.add(key);
+        usedStrategies.add(sq.strategy);
+        const beforeAccepted = accepted.length;
+        const beforeRejected = rejected.length;
+        await runPass(sq.query);
+        recovery.push({ query: sq.query, strategy: sq.strategy, accepted: accepted.length - beforeAccepted, rejected: rejected.length - beforeRejected });
+      }
+    }
 
     const ranked = diversify(accepted.sort((a, b) => b.score - a.score));
     for (const s of ranked.slice(0, minResults)) {
       this.emit({ type: 'media_selected', provider: s.item.provider, ...(context.jobId ? { jobId: context.jobId } : {}), ...(context.sceneId ? { sceneId: context.sceneId } : {}), itemId: s.item.id, title: s.item.title, classification: s.item.classification, license: s.license.status });
     }
-    return { plan, accepted: ranked, rejected, attempts };
+    return { plan, accepted: ranked, rejected, attempts, recovery };
   }
 
   async healthCheck(id: MediaProviderKey, signal?: AbortSignal): Promise<ProviderHealthResult> {
@@ -581,10 +610,9 @@ const LICENSE_RANK: Record<LicenseDecision['status'], number> = { allowed: 3, al
 export function scoreItem(item: ProviderMediaItem, license: LicenseDecision, context: SceneSourceContext): number {
   let score = item.classificationConfidence * 10;
   score += LICENSE_RANK[license.status];
-  const text = `${item.title} ${item.description ?? ''} ${item.tags.join(' ')}`.toLowerCase();
+  const text = `${item.title} ${item.description ?? ''} ${item.tags.join(' ')}`;
   for (const entity of context.entities ?? []) {
-    const e = entity.toLowerCase().trim();
-    if (e.length >= 3 && text.includes(e)) score += 3;
+    if (entity.trim().length >= 3 && mentionsName(text, entity)) score += 3;
   }
   const px = (item.width ?? 0) * (item.height ?? 0);
   if (px >= 1920 * 1080) score += 2;

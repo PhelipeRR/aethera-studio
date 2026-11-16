@@ -55,6 +55,10 @@ const GAMEPLAY_PATTERN = /\b(gameplay|walkthrough|playthrough|no commentary|long
 const REACTION_PATTERN = /\b(reaction|reacts?|react|review|análise|analise|podcast|tier list|ranking)\b/i;
 const ANIME_FOOTAGE_PATTERN =
   /\b(anime|episod(?:e|io)|epis[oó]dio|ep\.?\s*\d+|opening|op\s*\d+|ending|pv|promotional video|trailer|teaser|clip|clipe|scene|cena|fight|luta|batalha|dublado|legendado|sub(?:bed)?|dub(?:bed)?|sakuga|amv)\b/i;
+/** Explicit video-game markers: a game adaptation of an anime is a game, not anime footage. */
+const GAME_MARKER_PATTERN = /\b(video ?games?|game|gameplay|playthrough|walkthrough|steam|ps[45]|playstation|xbox|nintendo switch|pc gameplay|jogo)\b/i;
+/** Markers that only anime footage carries (episode/opening/PV), which outweigh a game marker. */
+const STRONG_ANIME_PATTERN = /\b(anime|episod(?:e|io)|epis[oó]dio|ep\.?\s*\d+|opening|ending|pv|sakuga)\b/i;
 const AMV_EDIT_PATTERN = /\b(amv|edit|4k edit|twixtor|tiktok|shorts?)\b|#shorts/i;
 /** Channels of rights holders / licensed distributors that publish anime footage officially. */
 const OFFICIAL_ANIME_CHANNELS = [
@@ -138,7 +142,9 @@ export function classifyProviderItem(input: ClassificationInput): Classification
       if (fan) evidence.push('Título indica conteúdo de fã/conceito — não é material oficial.');
       if (official) evidence.push(`Canal "${input.channelTitle}" corresponde a desenvolvedora/publisher conhecida.`);
       else evidence.push('Canal não verificado como oficial.');
-      if (input.animeContext && (ANIME_FOOTAGE_PATTERN.test(text) || channelIsOfficialAnime(input.channelTitle))) {
+      const gameAdaptation = GAME_MARKER_PATTERN.test(text) && !STRONG_ANIME_PATTERN.test(text);
+      if (input.animeContext && gameAdaptation) evidence.push('Título indica jogo (adaptação/derivado), não footage do anime.');
+      if (input.animeContext && !gameAdaptation && (ANIME_FOOTAGE_PATTERN.test(text) || channelIsOfficialAnime(input.channelTitle))) {
         // Anime footage: an official distributor channel raises confidence; a third-party upload is still candidate
         // footage (identity is decided by frames, not by the uploader), with lower confidence and rights review.
         const officialAnime = channelIsOfficialAnime(input.channelTitle);
@@ -170,7 +176,13 @@ export function classifyProviderItem(input: ClassificationInput): Classification
           aiGenerated: 'unknown',
         };
       }
-      return { classification: 'stock_video', confidence: 0.2, evidence: [...evidence, 'Sem sinais de trailer ou gameplay.'], aiGenerated: 'unknown' };
+      // A video platform is not a stock library: without signals the type stays open for visual analysis.
+      return {
+        classification: 'unclassified_video',
+        confidence: fan ? 0.1 : 0.3,
+        evidence: [...evidence, 'Sem sinais suficientes nos metadados; tipo decidido pela análise visual.'],
+        aiGenerated: 'unknown',
+      };
     }
     case 'stock_photo':
       return { classification: 'stock_image', confidence: 0.9, evidence: ['Foto de banco de imagens.'], aiGenerated: 'unknown' };

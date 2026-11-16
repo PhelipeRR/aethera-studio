@@ -1,3 +1,5 @@
+import type { ContentDomain, WorkReference } from './semantic-media.js';
+
 /**
  * Shared contract of the Aethera media-provider layer.
  *
@@ -43,6 +45,8 @@ export type MediaClassification =
   | 'anime_footage'
   | 'anime_reaction_gif'
   | 'dataset_media'
+  /** Video-platform result without enough metadata signals: the type is decided by visual analysis, never "stock". */
+  | 'unclassified_video'
   | 'ai_generated';
 
 export const MEDIA_CLASSIFICATION_LABELS: Record<MediaClassification, string> = {
@@ -56,6 +60,7 @@ export const MEDIA_CLASSIFICATION_LABELS: Record<MediaClassification, string> = 
   anime_footage: 'Anime Footage',
   anime_reaction_gif: 'Anime Reaction GIF',
   dataset_media: 'Dataset Media',
+  unclassified_video: 'Unclassified Video',
   ai_generated: 'AI Generated',
 };
 
@@ -154,6 +159,10 @@ export interface SceneSourceContext {
   knownPublishers?: string[];
   /** Commercial (monetised) production — the default, since Aethera publishes to channels. */
   commercialUse?: boolean;
+  /** Content domain of the project when the briefing states it; otherwise inferred (never from the narrative format). */
+  projectDomain?: ContentDomain;
+  /** Work the scene is about: canonical/alternative titles, characters, event, language. */
+  work?: WorkReference;
 }
 
 export interface ProviderSearchRequest {
