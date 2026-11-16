@@ -84,6 +84,7 @@ interface CreativeBridge {
       version?: string;
       reason?: string;
       models: { checkpoints: string[]; loras: string[]; controlnet: string[] };
+      capabilities: { nativeTxt2Img: boolean; nativeImg2Img: boolean; controlNet: boolean; ipAdapter: boolean; faceDetailer: boolean; upscale: boolean; lora: boolean };
     };
     localAvailable: boolean;
     activeProvider: string;
@@ -350,6 +351,17 @@ export function CreativeStudioPanel() {
         </div>
         {engineStatus?.comfyUi.reason && (
           <span style={{ color: 'var(--muted-foreground)', maxWidth: 620 }}>{engineStatus.comfyUi.reason}</span>
+        )}
+        {engineStatus && (
+          <span style={{ color: 'var(--muted-foreground)' }}>
+            recursos: {[
+              engineStatus.comfyUi.capabilities.controlNet && 'ControlNet',
+              engineStatus.comfyUi.capabilities.ipAdapter && 'IP-Adapter',
+              engineStatus.comfyUi.capabilities.faceDetailer && 'FaceDetailer',
+              engineStatus.comfyUi.capabilities.upscale && 'upscale',
+              engineStatus.comfyUi.capabilities.lora && 'LoRA',
+            ].filter(Boolean).join(' · ') || 'somente nodes básicos'}
+          </span>
         )}
         {engineStatus && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--muted-foreground)' }}>

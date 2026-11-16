@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ComfyUiClient, type ComfyUiSystemStats } from './comfyui-client.js';
+import { inspectComfyUiCapabilities, type ComfyUiCapabilities } from './comfyui-capabilities.js';
 
 export type ComfyUiRuntimeState = 'ready' | 'misconfigured' | 'offline' | 'not_installed';
 
@@ -32,6 +33,7 @@ export interface ComfyUiStatus {
     vramFreeBytes?: number;
   };
   models: ComfyUiModelInventory;
+  capabilities: ComfyUiCapabilities;
   reason?: string;
 }
 
@@ -124,6 +126,10 @@ function emptyInventory(): ComfyUiModelInventory {
   };
 }
 
+function emptyCapabilities(): ComfyUiCapabilities {
+  return { nativeTxt2Img: false, nativeImg2Img: false, controlNet: false, ipAdapter: false, faceDetailer: false, upscale: false, lora: false };
+}
+
 function inventoryFor(resourceRoot: string, fileSystem: ComfyUiFileSystem): ComfyUiModelInventory {
   const inventory = emptyInventory();
   for (const category of MODEL_CATEGORIES) {
@@ -198,6 +204,7 @@ export async function discoverComfyUi(options?: ComfyUiDiscoveryOptions): Promis
         ...(install?.version ? { version: install.version } : {}),
         ...(device ? { device } : {}),
         models: mergedModels,
+        capabilities: inspectComfyUiCapabilities(objectInfo, mergedModels),
         ...(reason ? { reason } : {}),
       };
     } catch (error) {
@@ -206,13 +213,14 @@ export async function discoverComfyUi(options?: ComfyUiDiscoveryOptions): Promis
   }
 
   if (!install) {
-    return { state: 'not_installed', models, reason: 'ComfyUI installation was not found and no endpoint is reachable.' };
+    return { state: 'not_installed', models, capabilities: emptyCapabilities(), reason: 'ComfyUI installation was not found and no endpoint is reachable.' };
   }
   return {
     state: 'offline',
     ...(install.root ? { installRoot: install.root } : {}),
     ...(install.version ? { version: install.version } : {}),
     models,
+    capabilities: emptyCapabilities(),
     reason: `ComfyUI is installed but not reachable. ${errors.join(' ')}`.trim(),
   };
 }

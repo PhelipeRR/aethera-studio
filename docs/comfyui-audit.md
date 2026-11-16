@@ -40,6 +40,15 @@ The reproducible result is therefore:
     "vae": [],
     "upscale_models": [],
     "embeddings": []
+  },
+  "capabilities": {
+    "nativeTxt2Img": false,
+    "nativeImg2Img": false,
+    "controlNet": false,
+    "ipAdapter": false,
+    "faceDetailer": false,
+    "upscale": false,
+    "lora": false
   }
 }
 ```
