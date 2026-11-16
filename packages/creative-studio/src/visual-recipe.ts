@@ -1,0 +1,323 @@
+import { createHash } from 'node:crypto';
+import { ART_SPECIFICATIONS, type BrandKit, type CreativeArtType } from './schemas.js';
+
+/**
+ * CF-1 — Visual recipe: turns the user's brief (any language), the creative direction from the reasoning engines and
+ * the Brand Kit into a structured English prompt for diffusion models.
+ *
+ * Why: SDXL's CLIP text encoders are English-trained and truncate at 77 tokens, so the raw pt-BR brief (with words
+ * like "identidade visual profissional") produced weak, generic images. The recipe keeps the important visual nouns,
+ * states the composition explicitly (where the title will live) and never puts the channel name / headline into the
+ * image prompt: text is always rendered by the editor, never by the diffusion model.
+ */
+
+export type VisualPresetId =
+  | 'anime_thumbnail'
+  | 'game_thumbnail'
+  | 'geek_banner'
+  | 'cinematic_cover'
+  | 'avatar'
+  | 'logo_element';
+
+/** Structured direction returned by a reasoning engine (all fields optional, English, untrusted). */
+export interface CreativeDirectionNotes {
+  headline?: string;
+  subject?: string;
+  setting?: string;
+  effects?: string;
+  lighting?: string;
+  camera?: string;
+  style?: string;
+}
+
+export interface TextSafeZone {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface VisualRecipe {
+  preset: VisualPresetId;
+  positivePrompt: string;
+  negativePrompt: string;
+  seed: number;
+  /** Generation size requested from the image engine (aspect of the final art, max side 1024). */
+  width: number;
+  height: number;
+  /** Where the editor will place text, in final-art pixels. The image must stay calm there. */
+  textSafeZones: TextSafeZone[];
+  source: 'deterministic' | 'reasoning_engine';
+  /** Visual terms recognised in the brief (for traceability in the console / reports). */
+  recognisedTerms: string[];
+}
+
+export interface VisualRecipeInput {
+  artType: CreativeArtType;
+  prompt: string;
+  headline?: string;
+  brandKit?: BrandKit | null;
+  direction?: CreativeDirectionNotes | null;
+  /** Explicit seed; otherwise derived from `seedKey` (or the prompt) so a recipe is reproducible. */
+  seed?: number;
+  seedKey?: string;
+  /** Max side of the generation size (default 1024). */
+  maxSide?: number;
+}
+
+/** Ordered pt-BR/EN visual vocabulary → English phrase. Longer, more specific patterns first. */
+const VISUAL_GLOSSARY: Array<[RegExp, string]> = [
+  [/personage(?:m|ns)\s+origina(?:l|is)|original\s+characters?/i, 'original characters'],
+  [/efeitos?\s+de\s+energia|energy\s+effects?/i, 'glowing energy effects'],
+  [/cen[aá]rios?\s+futurist[ao]s?|futuristic\s+(?:city|scenery|setting)s?/i, 'futuristic skyline with glowing towers'],
+  [/ilumina[cç][aã]o\s+dram[aá]tica|dramatic\s+lighting/i, 'dramatic rim lighting'],
+  // "neon city/signs" makes guidance-free models (SDXL-Turbo) paint gibberish signage: keep it to light only.
+  [/ilumina[cç][aã]o\s+neon|neon/i, 'neon glow lighting'],
+  [/cyberpunk/i, 'cyberpunk'],
+  [/animes?\b|mang[aá]s?\b/i, 'anime'],
+  [/\b(?:games?|jogos?|videogames?|video\s*games?|gamer)\b/i, 'video game'],
+  [/\bmecha\b|rob[oô]s?\b|robots?\b/i, 'giant mecha robots'],
+  [/drag(?:[aã]o|[oõ]es)|dragons?/i, 'dragon'],
+  [/espadas?|swords?/i, 'sword'],
+  [/guerreir[oa]s?|warriors?/i, 'warrior'],
+  [/samurai/i, 'samurai'],
+  [/ninjas?/i, 'ninja'],
+  [/her[oó]is?|heroes|hero\b/i, 'heroes'],
+  [/vil[aã]o|vil[oõ]es|villains?/i, 'villain'],
+  [/magia|m[aá]gic[ao]s?|magic/i, 'magic spells'],
+  [/fogo|chamas?|fire|flames?/i, 'fire'],
+  [/raios?\b|rel[aâ]mpagos?|lightning/i, 'lightning'],
+  [/explos[aã]o|explos[oõ]es|explosions?/i, 'explosion'],
+  [/batalhas?|lutas?|combate|battles?|fight/i, 'epic battle'],
+  [/espa[cç]o\s+sideral|gal[aá]xias?|cosmos|outer\s+space|galax(?:y|ies)/i, 'outer space galaxy'],
+  [/fantasia|fantasy/i, 'fantasy'],
+  [/terror|horror/i, 'horror'],
+  [/floresta|forest/i, 'forest'],
+  [/castelos?|castles?/i, 'castle'],
+  [/montanhas?|mountains?/i, 'mountains'],
+  [/oceano|mar\b|ocean|sea\b/i, 'ocean'],
+  [/chuva|rain/i, 'rain'],
+  [/noite|noturn[oa]|night/i, 'night'],
+  [/p[oô]r\s+do\s+sol|sunset/i, 'sunset'],
+  [/cidade|city/i, 'city'],
+  [/ru[ií]nas|ruins/i, 'ancient ruins'],
+  [/tecnologia|tech(?:nology)?/i, 'high technology'],
+  [/retr[oô]|pixel\s*art|8[- ]?bit/i, 'retro pixel art'],
+];
+
+const PRESET_STYLE: Record<VisualPresetId, string> = {
+  anime_thumbnail: 'anime key visual, cel shading, vibrant saturated colors, clean line art',
+  game_thumbnail: 'AAA video game cover art, highly detailed 3d render',
+  geek_banner: 'epic cinematic key art, anime and video game inspired digital painting',
+  cinematic_cover: 'cinematic movie poster, film still, anamorphic lens, color graded',
+  avatar: 'character portrait illustration, clean shapes, strong silhouette',
+  logo_element: 'flat vector emblem icon, bold simple shapes',
+};
+
+const COMPOSITION: Record<CreativeArtType, string> = {
+  banner: 'ultra wide panoramic shot, heroes at far left and far right, calm dark empty center band, deep background',
+  thumbnail: 'main subject on the right third, clean darker negative space on the left, strong silhouette, high contrast',
+  avatar: 'single centered bust portrait, plain simple background',
+  watermark: 'single centered emblem, plain flat background',
+};
+
+const DEFAULT_SUBJECT: Record<VisualPresetId, string> = {
+  anime_thumbnail: 'expressive anime character',
+  game_thumbnail: 'heroic video game character',
+  geek_banner: 'original anime and video game heroes in dynamic poses',
+  cinematic_cover: 'lone heroic figure',
+  avatar: 'friendly original mascot character',
+  logo_element: 'abstract geometric emblem',
+};
+
+const BASE_NEGATIVE =
+  'text, letters, words, typography, title, caption, watermark, logo, signature, ' +
+  'blurry, lowres, jpeg artifacts, deformed, bad anatomy, extra limbs, flat empty background, plain gradient';
+
+/** Cap applied to the positive prompt: CLIP truncates at 77 tokens, so the most important parts go first. */
+const MAX_PROMPT_WORDS = 62;
+
+function sanitizeNote(value: unknown, maxChars = 160): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const cleaned = value
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/["`<>{}[\]\\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxChars);
+  return cleaned.length >= 3 ? cleaned : undefined;
+}
+
+/**
+ * Parses the creative-direction answer of a reasoning engine. Accepts a JSON object (preferred) and the legacy
+ * `HEADLINE: ...` line. Everything is treated as untrusted data: unknown keys are dropped and values are sanitised.
+ */
+export function parseCreativeDirectionNotes(text: string): CreativeDirectionNotes | null {
+  if (!text) return null;
+  const notes: CreativeDirectionNotes = {};
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const raw = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+      for (const key of ['subject', 'setting', 'effects', 'lighting', 'camera', 'style'] as const) {
+        const v = sanitizeNote(raw[key]);
+        if (v) notes[key] = v;
+      }
+      const h = sanitizeNote(raw['headline'], 42);
+      if (h) notes.headline = h;
+    } catch {
+      // not JSON: fall through to the legacy line format
+    }
+  }
+  if (!notes.headline) {
+    const legacy = text.match(/HEADLINE:\s*([^\n\r]{3,42})/i);
+    const h = sanitizeNote(legacy?.[1], 42);
+    if (h) notes.headline = h;
+  }
+  return Object.keys(notes).length > 0 ? notes : null;
+}
+
+/** Deterministic 31-bit seed from a key (project id + variant label, or the prompt). */
+export function deriveSeed(key: string): number {
+  return createHash('sha256').update(key).digest().readUInt32BE(0) & 0x7fffffff;
+}
+
+export function detectVisualPreset(artType: CreativeArtType, prompt: string): VisualPresetId {
+  if (artType === 'avatar') return 'avatar';
+  if (artType === 'watermark') return 'logo_element';
+  const lower = prompt.toLowerCase();
+  const anime = /\banimes?\b|mang[aá]|otaku/.test(lower);
+  const game = /\b(?:games?|jogos?|videogames?|gamer|gameplay)\b/.test(lower);
+  const geek = /\bgeek|nerd|cultura\s+pop/.test(lower);
+  if (artType === 'banner') return anime || game || geek ? 'geek_banner' : 'cinematic_cover';
+  if (anime && !game) return 'anime_thumbnail';
+  if (game) return 'game_thumbnail';
+  return 'cinematic_cover';
+}
+
+/** Coarse English colour name for a hex value (used to steer the palette without exact hex codes). */
+export function describeHexColor(hex: string): string {
+  const m = /^#?([0-9a-f]{6})/i.exec(hex);
+  if (!m) return 'neutral';
+  const n = Number.parseInt(m[1]!, 16);
+  const r = (n >> 16) / 255;
+  const g = ((n >> 8) & 0xff) / 255;
+  const b = (n & 0xff) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d < 0.08) return l < 0.2 ? 'black' : l > 0.85 ? 'white' : 'grey';
+  let h = 0;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h = (h * 60 + 360) % 360;
+  if (h < 15 || h >= 345) return 'red';
+  if (h < 40) return 'orange';
+  if (h < 65) return 'yellow';
+  if (h < 160) return 'green';
+  if (h < 200) return 'cyan';
+  if (h < 250) return 'blue';
+  if (h < 290) return 'purple';
+  return 'magenta';
+}
+
+function textSafeZonesFor(artType: CreativeArtType): TextSafeZone[] {
+  const spec = ART_SPECIFICATIONS[artType];
+  if (artType === 'banner' && spec.safeArea) return [spec.safeArea];
+  if (artType === 'thumbnail') {
+    return [{ x: 0, y: 0, width: Math.round(spec.width * 0.55), height: spec.height }];
+  }
+  return [];
+}
+
+function capWords(text: string, maxWords: number): string {
+  const words = text.split(/\s+/).filter(Boolean);
+  return words.length <= maxWords ? text : words.slice(0, maxWords).join(' ').replace(/[,\s]+$/, '');
+}
+
+function stripBrandTokens(value: string, banned: string[]): string {
+  let out = value;
+  for (const token of banned) {
+    if (token.length < 2) continue;
+    out = out.replace(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ');
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
+  const preset = detectVisualPreset(input.artType, input.prompt);
+  const direction = input.direction ?? null;
+  const recognised: string[] = [];
+  for (const [pattern, phrase] of VISUAL_GLOSSARY) {
+    if (pattern.test(input.prompt) && !recognised.includes(phrase)) recognised.push(phrase);
+  }
+  // "anime" and "video game" are already carried by the preset style for these presets
+  const subjectTerms = recognised.filter(
+    (t) => !(preset === 'geek_banner' && (t === 'anime' || t === 'video game' || t === 'original characters')),
+  );
+
+  // Never let the channel name or the headline reach the image prompt: diffusion would try to draw letters.
+  const banned = [input.headline ?? '', input.brandKit?.channelName ?? '', direction?.headline ?? '']
+    .flatMap((v) => v.split(/\s+/))
+    .filter((w) => w.length >= 3);
+
+  const palette = input.brandKit?.palette;
+  const paletteText = palette
+    ? `${Array.from(new Set([describeHexColor(palette.primary), describeHexColor(palette.secondary)])).join(' and ')} color palette`
+    : '';
+
+  const subject = direction?.subject ?? DEFAULT_SUBJECT[preset];
+  const parts = [
+    direction?.style ?? PRESET_STYLE[preset],
+    subject,
+    COMPOSITION[input.artType],
+    direction?.setting,
+    direction?.effects,
+    subjectTerms.join(', '),
+    direction?.lighting ?? (preset === 'logo_element' ? undefined : 'dramatic rim lighting, volumetric light'),
+    direction?.camera,
+    paletteText,
+    preset === 'logo_element' || preset === 'avatar' ? undefined : 'highly detailed, depth of field',
+  ]
+    .map((p) => (p ? stripBrandTokens(p, banned) : ''))
+    .filter((p) => p.length > 0);
+
+  // Phrase-level de-duplication (glossary terms often repeat the preset defaults).
+  const phrases: string[] = [];
+  for (const phrase of parts.join(', ').split(/\s*,\s*/)) {
+    const key = phrase.toLowerCase();
+    if (phrase && !phrases.some((p) => p.toLowerCase() === key)) phrases.push(phrase);
+  }
+  const positivePrompt = capWords(phrases.join(', '), MAX_PROMPT_WORDS);
+  const spec = ART_SPECIFICATIONS[input.artType];
+  const maxSide = input.maxSide ?? 1024;
+  const scale = Math.min(1, maxSide / Math.max(spec.width, spec.height));
+  const width = Math.max(256, Math.round((spec.width * scale) / 8) * 8);
+  const height = Math.max(256, Math.round((spec.height * scale) / 8) * 8);
+  const seed = input.seed ?? deriveSeed(input.seedKey ?? `${input.artType}:${input.prompt}`);
+
+  return {
+    preset,
+    positivePrompt,
+    negativePrompt: BASE_NEGATIVE,
+    seed,
+    width,
+    height,
+    textSafeZones: textSafeZonesFor(input.artType),
+    source: direction && (direction.subject || direction.setting || direction.style) ? 'reasoning_engine' : 'deterministic',
+    recognisedTerms: recognised,
+  };
+}
+
+/** Prompt sent to the creative-direction engine: asks for a structured English answer (parsed as untrusted data). */
+export function buildCreativeDirectionPrompt(artType: CreativeArtType, safeBrief: string): string {
+  return [
+    `[Aethera Creative Studio :: creative_direction] ArtType=${artType}. UserBrief=${JSON.stringify(safeBrief)}.`,
+    'You are the art director. Describe ONE strong image for a diffusion model, in English.',
+    'Reply with a single JSON object and nothing else, keys: headline (max 3 words, for the editor overlay),',
+    'subject (who/what, pose, action), setting (environment, depth layers), effects (vfx), lighting, camera (shot, lens, angle), style.',
+    'Each value under 25 words. Do not ask for any text, letters, logo or channel name inside the image.',
+  ].join(' ');
+}

@@ -1,0 +1,73 @@
+{
+  "mode": "cf1",
+  "generatedAt": "2026-11-16T23:02:21.181Z",
+  "scenario": "Crie um banner geek cinematográfico para o canal NextWorth, com universo de animes e games, personagens originais, efeitos de energia, cenários futuristas, iluminação dramática e identidade visual profissional.",
+  "headline": "NEXTWORTH",
+  "aiAvailable": true,
+  "rows": [
+    {
+      "id": "no-ai-fallback",
+      "description": "Sem IA (indisponível ou desmarcada): fallback atual",
+      "preview": "no-ai-fallback.jpg",
+      "edgeEnergy": 126.55,
+      "lumaStdev": 3.19,
+      "clipPositive": 0.537,
+      "clipNegative": 0.695,
+      "clipOffTopic": true,
+      "gateOverall": 78,
+      "gatePassed": true
+    },
+    {
+      "id": "cf1-raw-s11",
+      "description": "CF-1: imagem crua (receita geek_banner, 1024×576, seed 11)",
+      "preview": "cf1-raw-s11.jpg",
+      "ms": 18632,
+      "vramBaseMiB": 954,
+      "vramPeakMiB": 6560,
+      "edgeEnergy": 39.01,
+      "lumaStdev": 58.4,
+      "clipPositive": 0.696,
+      "clipNegative": 0.544,
+      "clipOffTopic": false,
+      "notes": "epic cinematic key art, anime and video game inspired digital painting, original anime and video game heroes in dynamic poses, ultra wide panoramic shot, heroes at far left and far right, calm dark empty center band, deep background, glowing energy effects, futuristic skyline with glowing towers, dramatic rim lighting, volumetric light, cyan and magenta color palette, highly detailed, depth of field"
+    },
+    {
+      "id": "cf1-final-s11",
+      "description": "CF-1: banner final (fundo composto sem degradação + scrim local), seed 11",
+      "preview": "cf1-final-s11.jpg",
+      "edgeEnergy": 107.37,
+      "lumaStdev": 52.07,
+      "clipPositive": 0.653,
+      "clipNegative": 0.582,
+      "clipOffTopic": false,
+      "gateOverall": 86,
+      "gatePassed": true
+    },
+    {
+      "id": "cf1-raw-s22",
+      "description": "CF-1: imagem crua (receita geek_banner, 1024×576, seed 22)",
+      "preview": "cf1-raw-s22.jpg",
+      "ms": 16514,
+      "vramBaseMiB": 958,
+      "vramPeakMiB": 6565,
+      "edgeEnergy": 42.06,
+      "lumaStdev": 59.48,
+      "clipPositive": 0.752,
+      "clipNegative": 0.532,
+      "clipOffTopic": false,
+      "notes": "epic cinematic key art, anime and video game inspired digital painting, original anime and video game heroes in dynamic poses, ultra wide panoramic shot, heroes at far left and far right, calm dark empty center band, deep background, glowing energy effects, futuristic skyline with glowing towers, dramatic rim lighting, volumetric light, cyan and magenta color palette, highly detailed, depth of field"
+    },
+    {
+      "id": "cf1-final-s22",
+      "description": "CF-1: banner final (fundo composto sem degradação + scrim local), seed 22",
+      "preview": "cf1-final-s22.jpg",
+      "edgeEnergy": 106.26,
+      "lumaStdev": 52.85,
+      "clipPositive": 0.717,
+      "clipNegative": 0.573,
+      "clipOffTopic": false,
+      "gateOverall": 87,
+      "gatePassed": true
+    }
+  ]
+}

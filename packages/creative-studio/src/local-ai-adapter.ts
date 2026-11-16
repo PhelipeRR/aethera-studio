@@ -118,6 +118,11 @@ export class LocalPythonAiAdapter implements ExternalImageAdapter {
           args.push('--strength', String(request.strength));
         }
       }
+      if (typeof request.seed === 'number' && Number.isInteger(request.seed) && request.seed >= 0) {
+        args.push('--seed', String(request.seed));
+      }
+      // request.negativePrompt is intentionally not forwarded: SDXL-Turbo runs with guidance_scale=0, where a
+      // negative prompt has no effect. Engines with CFG (ComfyUI, CF-4) use it.
       if (this.forceCpu) args.push('--cpu');
 
       await execFileAsync(this.pythonPath, args, { timeout: this.timeoutMs });

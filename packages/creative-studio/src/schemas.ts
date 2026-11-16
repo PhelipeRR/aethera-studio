@@ -326,6 +326,8 @@ export const shapeLayerSchema = z.object({
   strokeColor: hexColorSchema.optional(),
   strokeWidth: z.number().nonnegative().default(0),
   borderRadius: z.number().nonnegative().default(16),
+  /** CF-1: soft edge (px) — the shape fades out inside its box. Used by the legibility scrim behind text. */
+  featherPx: z.number().nonnegative().max(400).optional(),
 });
 
 export const watermarkLayerSchema = z.object({

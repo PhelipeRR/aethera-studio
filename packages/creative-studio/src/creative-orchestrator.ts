@@ -7,6 +7,11 @@ import {
 import { CreativeDirectorAgent, type DirectorCritiqueIssue } from './creative-director.js';
 import type { QualityGateService } from './quality-gate.js';
 import type { CreativeProjectDocument, QualityAuditReport } from './schemas.js';
+import {
+  buildCreativeDirectionPrompt,
+  parseCreativeDirectionNotes,
+  type CreativeDirectionNotes,
+} from './visual-recipe.js';
 
 export type TechnicalEngineId = 'claude-code' | 'codex-cli' | 'antigravity-cli' | 'claude-gateway';
 
@@ -35,6 +40,16 @@ export interface CreativeOrchestrationResult {
   directorIssues: DirectorCritiqueIssue[];
   document: CreativeProjectDocument;
   audit: QualityAuditReport;
+  /** CF-1: structured direction used for the image recipe (null when no engine answered usefully). */
+  direction: CreativeDirectionNotes | null;
+}
+
+/** CF-1: result of the reasoning roles, computed BEFORE image generation so the recipe can use it. */
+export interface CreativeDirectionResult {
+  availableEngines: TechnicalEngineId[];
+  traces: OrchestrationStepTrace[];
+  headline?: string;
+  direction: CreativeDirectionNotes | null;
 }
 
 const ROLE_PREFERRED_ENGINE: Record<OrchestratorRole, TechnicalEngineId> = {
@@ -94,7 +109,11 @@ export class CreativeOrchestrator {
     return { provider: null, fallbackUsed: true };
   }
 
-  async orchestrateCreation(input: CreativePlanInput): Promise<CreativeOrchestrationResult> {
+  /**
+   * Runs the four reasoning roles. `creative_direction` is asked for a structured English JSON answer that feeds
+   * the visual recipe; the other roles keep producing notes for the trace. Must run before the image is generated.
+   */
+  async runCreativeDirection(input: Pick<CreativePlanInput, 'artType' | 'prompt' | 'headline'>): Promise<CreativeDirectionResult> {
     const safePrompt = sanitizeUntrustedCreativeInput(input.prompt);
     const availableProviders: ReasoningEngineProvider[] = [];
     for (const p of this.providers) {
@@ -114,6 +133,7 @@ export class CreativeOrchestrator {
     ];
 
     let refinedHeadline = input.headline;
+    let direction: CreativeDirectionNotes | null = null;
 
     for (const role of roles) {
       const { provider, fallbackUsed } = this.pickProviderForRole(role, availableProviders);
@@ -129,11 +149,13 @@ export class CreativeOrchestrator {
 
       try {
         const res = await provider.runPrompt(
-          `[Aethera Creative Studio :: ${role}] ArtType=${input.artType}. UserBrief=${JSON.stringify(safePrompt)}. Respond concisely with visual direction notes.`,
+          role === 'creative_direction'
+            ? buildCreativeDirectionPrompt(input.artType, safePrompt)
+            : `[Aethera Creative Studio :: ${role}] ArtType=${input.artType}. UserBrief=${JSON.stringify(safePrompt)}. Respond concisely with visual direction notes.`,
         );
-        if (role === 'creative_direction' && !refinedHeadline) {
-          const match = res.text.match(/HEADLINE:\s*([^\n\r]{3,42})/i);
-          if (match?.[1]) refinedHeadline = match[1].trim();
+        if (role === 'creative_direction') {
+          direction = parseCreativeDirectionNotes(res.text);
+          if (!refinedHeadline && direction?.headline) refinedHeadline = direction.headline;
         }
         traces.push({
           role,
@@ -151,6 +173,26 @@ export class CreativeOrchestrator {
       }
     }
 
+    return {
+      availableEngines: availableProviders.map((p) => p.id),
+      traces,
+      ...(refinedHeadline ? { headline: refinedHeadline } : {}),
+      direction,
+    };
+  }
+
+  /**
+   * Plans the layered document. Pass `precomputedDirection` when `runCreativeDirection` already ran (desktop flow:
+   * direction → image recipe → composition) so the engines are not called twice.
+   */
+  async orchestrateCreation(
+    input: CreativePlanInput,
+    precomputedDirection?: CreativeDirectionResult,
+  ): Promise<CreativeOrchestrationResult> {
+    const safePrompt = sanitizeUntrustedCreativeInput(input.prompt);
+    const directionResult = precomputedDirection ?? (await this.runCreativeDirection(input));
+    const refinedHeadline = input.headline || directionResult.headline;
+
     const planned = this.planner.buildDocument({
       ...input,
       prompt: safePrompt,
@@ -162,8 +204,9 @@ export class CreativeOrchestrator {
     });
 
     return {
-      availableEngines: availableProviders.map((p) => p.id),
-      traces,
+      availableEngines: directionResult.availableEngines,
+      traces: directionResult.traces,
+      direction: directionResult.direction,
       directorIssues: directorLoop.issues,
       document: directorLoop.document,
       audit: directorLoop.audit,

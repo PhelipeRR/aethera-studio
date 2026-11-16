@@ -23,6 +23,12 @@ interface CreativeBridge {
     audit: QualityAuditReport;
     previewDataUrl: string;
     availableEngines: string[];
+    generation?: {
+      status: 'generated' | 'disabled' | 'unavailable' | 'failed' | 'skipped_existing_background';
+      engineId: string;
+      message: string;
+      recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine' };
+    };
   }>;
   creativeThumbnailLab?: (input: Record<string, unknown>) => Promise<{
     availableEngines: string[];
@@ -120,6 +126,8 @@ export function CreativeStudioPanel() {
     }>
   >([]);
   const [statusMsg, setStatusMsg] = useState<string>('');
+  /** CF-1: AI fallback is never silent — this warning explains why the art used only the palette. */
+  const [generationWarning, setGenerationWarning] = useState<string>('');
 
   const refreshLists = async () => {
     const bridge = getBridge();
@@ -144,6 +152,7 @@ export function CreativeStudioPanel() {
     const bridge = getBridge();
     if (!bridge?.creativeCreateFromPrompt || !prompt.trim()) return;
     setStatusMsg('Gerando composição editável...');
+    setGenerationWarning('');
     try {
       const res = await bridge.creativeCreateFromPrompt({
         artType,
@@ -157,7 +166,16 @@ export function CreativeStudioPanel() {
       setPreviewUrl(res.previewDataUrl);
       setAudit(res.audit);
       setSelectedLayerId(res.document.layers[res.document.layers.length - 1]?.id ?? '');
-      setStatusMsg(`Projeto criado (${res.document.width}×${res.document.height}) e salvo automaticamente.`);
+      const gen = res.generation;
+      setStatusMsg(
+        `Projeto criado (${res.document.width}×${res.document.height}) e salvo automaticamente.` +
+          (gen?.status === 'generated' && gen.recipe
+            ? ` Fundo por IA: preset ${gen.recipe.preset}, seed ${gen.recipe.seed}.`
+            : ''),
+      );
+      if (gen && useAiGeneration && (gen.status === 'unavailable' || gen.status === 'failed')) {
+        setGenerationWarning(gen.message);
+      }
       await refreshLists();
     } catch (err) {
       setStatusMsg(err instanceof Error ? err.message : String(err));
@@ -322,6 +340,11 @@ export function CreativeStudioPanel() {
             </label>
           </div>
           {statusMsg && <div style={{ fontSize: 12, color: 'var(--success)' }}>{statusMsg}</div>}
+          {generationWarning && (
+            <div role="alert" style={{ fontSize: 12, color: 'var(--warning)' }}>
+              ⚠ {generationWarning}
+            </div>
+          )}
         </div>
 
         <div style={{ padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24, display: 'flex', flexDirection: 'column', gap: 8 }}>

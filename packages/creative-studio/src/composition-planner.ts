@@ -32,6 +32,12 @@ export interface CreativePlanInput {
   sourceVideoAssetId?: string;
   variantStyle?: ThumbnailVariantStyle;
   avatarBackdrop?: 'light' | 'dark' | 'transparent';
+  /**
+   * CF-1: where `backgroundAsset` came from. `ai_composed` = a full composition generated from the visual recipe
+   * (characters, scenery, effects). It is shown crisp — no blur/darkening — and legibility comes from a soft local
+   * scrim behind the text instead. Omitted = legacy treatment (photo/frame used as backdrop).
+   */
+  backgroundOrigin?: 'ai_composed' | 'media';
 }
 
 export interface ThumbnailLabVariant {
@@ -186,6 +192,59 @@ export function extractTopicVisualBrief(
   };
 }
 
+/**
+ * CF-1: a generated composition is the artwork, not a backdrop. The legacy treatment (blur up to 5px, brightness
+ * 0.74, vignette 0.58) turned it into a dark blurry texture — one of the proven causes of "plain background with a
+ * centred title". Blur/darkening stays only when a cut-out subject sits in front (depth separation).
+ */
+export function applyComposedBackgroundTreatment(
+  layers: CreativeLayer[],
+  palette: BrandKit['palette'],
+  canvasW: number,
+  canvasH: number,
+): CreativeLayer[] {
+  const hasSubject = layers.some((l) => l.type === 'subject' && l.visible);
+  const next = layers.map((l) => {
+    if (l.type !== 'background' || !l.assetId) return l;
+    if (hasSubject) return { ...l, generatedByAi: true };
+    return {
+      ...l,
+      generatedByAi: true,
+      blurRadius: 0,
+      brightness: 0.97,
+      effects: l.effects.map((e) => (e.kind === 'vignette' ? { ...e, strength: Math.min(e.strength, 0.32) } : e)),
+    };
+  });
+  const texts = next.filter((l) => l.type === 'text' && l.visible);
+  if (texts.length === 0) return next;
+  const feather = Math.round(Math.min(canvasW, canvasH) * 0.06);
+  const pad = 36 + feather;
+  const x0 = Math.max(0, Math.min(...texts.map((t) => t.transform.x)) - pad);
+  const y0 = Math.max(0, Math.min(...texts.map((t) => t.transform.y)) - pad);
+  const x1 = Math.min(canvasW, Math.max(...texts.map((t) => t.transform.x + t.transform.width)) + pad);
+  const y1 = Math.min(canvasH, Math.max(...texts.map((t) => t.transform.y + t.transform.height)) + pad);
+  const minTextZ = Math.min(...texts.map((t) => t.zIndex));
+  next.push({
+    id: 'scrim-text',
+    type: 'shape',
+    name: 'Véu de Legibilidade (atrás do texto)',
+    zIndex: minTextZ - 1,
+    visible: true,
+    locked: false,
+    opacity: 0.55,
+    blendMode: 'over',
+    shapeKind: 'rect',
+    fillColor: palette.background,
+    strokeWidth: 0,
+    borderRadius: feather,
+    featherPx: feather,
+    transform: { x: x0, y: y0, width: x1 - x0, height: y1 - y0, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+    mask: { kind: 'none' },
+    effects: [],
+  });
+  return next;
+}
+
 export class CompositionPlanner {
   buildDocument(input: CreativePlanInput): CreativeProjectDocument {
     const spec = ART_SPECIFICATIONS[input.artType];
@@ -289,6 +348,10 @@ export class CompositionPlanner {
         label: (input.headline?.trim() || input.brandKit?.channelName || 'AETHERA').slice(0, 12).toUpperCase(),
         watermarkAsset: resolvedWatermarkAsset ?? resolvedSubjectAsset ?? null,
       });
+    }
+
+    if (input.backgroundOrigin === 'ai_composed' && (input.artType === 'banner' || input.artType === 'thumbnail')) {
+      layers = applyComposedBackgroundTreatment(layers, palette, spec.width, spec.height);
     }
 
     return creativeProjectDocumentSchema.parse({

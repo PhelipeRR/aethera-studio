@@ -19,6 +19,10 @@ export interface ImageGenerationRequest {
   referenceImagePaths?: string[];
   /** Optional img2img denoising strength (0..1) when referenceImagePaths[0] is provided */
   strength?: number;
+  /** CF-1: things the model must avoid. Engines without classifier-free guidance (SDXL-Turbo) cannot use it. */
+  negativePrompt?: string;
+  /** CF-1: reproducible generation; omitted = engine-random. */
+  seed?: number;
 }
 
 export interface BackgroundRemovalRequest {
@@ -792,7 +796,14 @@ export class SharpSvgCompositionEngine {
           ? `stroke="${escapeXml(layer.strokeColor)}" stroke-width="${layer.strokeWidth}"`
           : '';
         const fillAttr = layer.shapeKind === 'frame' ? 'fill="none"' : `fill="${escapeXml(layer.fillColor)}"`;
-        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${targetW}" height="${targetH}">
+        const feather = Math.min(layer.featherPx ?? 0, Math.floor(Math.min(targetW, targetH) / 3));
+        const svg =
+          feather > 0
+            ? `<svg xmlns="http://www.w3.org/2000/svg" width="${targetW}" height="${targetH}">
+          <defs><filter id="f" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${(feather / 2).toFixed(1)}"/></filter></defs>
+          <rect x="${feather}" y="${feather}" width="${Math.max(1, targetW - feather * 2)}" height="${Math.max(1, targetH - feather * 2)}" rx="${rx}" ry="${rx}" ${fillAttr} filter="url(#f)"/>
+        </svg>`
+            : `<svg xmlns="http://www.w3.org/2000/svg" width="${targetW}" height="${targetH}">
           <rect x="${layer.strokeWidth / 2}" y="${layer.strokeWidth / 2}" width="${Math.max(1, targetW - layer.strokeWidth)}" height="${Math.max(1, targetH - layer.strokeWidth)}" rx="${rx}" ry="${rx}" ${fillAttr} ${strokeAttr}/>
         </svg>`;
         buf = await sharp(Buffer.from(svg)).png().toBuffer();

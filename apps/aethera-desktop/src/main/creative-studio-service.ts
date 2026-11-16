@@ -18,7 +18,9 @@ import {
   VideoFrameAnalyzer,
   brandKitSchema,
   creativeProjectDocumentSchema,
+  generateAiBackground,
   generateTypographyConceptLab,
+  type AiGenerationReport,
   type AlignTarget,
   type AuthenticMediaSource,
   type ApprovalStates,
@@ -406,24 +408,48 @@ export class AetheraCreativeStudioService {
     audit: QualityAuditReport;
     previewDataUrl: string;
     availableEngines: string[];
+    /** CF-1: what happened in the AI image step (shown to the user instead of a silent gradient fallback). */
+    generation: AiGenerationReport;
   }> {
     const brandKit = input.brandKitId ? this.brandKits.get(input.brandKitId) : null;
     let backgroundAsset = input.backgroundAssetId ? input.assetManifest?.[input.backgroundAssetId] ?? null : null;
     let subjectAsset = input.subjectAssetId ? input.assetManifest?.[input.subjectAssetId] ?? null : null;
+    let backgroundOrigin: 'ai_composed' | 'media' | undefined = backgroundAsset ? 'media' : undefined;
 
-    if (input.useAiGeneration && !backgroundAsset && (await this.imageAdapter.isAvailable())) {
-      const genBuffer = await this.imageAdapter.generateImage({
+    // CF-1: creative direction runs BEFORE the image so its structured answer feeds the visual recipe.
+    const direction = await this.orchestrator.runCreativeDirection({
+      artType: input.artType,
+      prompt: input.prompt,
+      ...(input.headline ? { headline: input.headline } : {}),
+    });
+
+    let generation: AiGenerationReport;
+    if (!input.useAiGeneration) {
+      generation = {
+        status: 'disabled',
+        engineId: this.imageAdapter.id,
+        message: 'IA de imagem desmarcada: a arte usa só a paleta do Brand Kit.',
+      };
+    } else if (backgroundAsset) {
+      generation = {
+        status: 'skipped_existing_background',
+        engineId: this.imageAdapter.id,
+        message: 'Fundo fornecido pelo usuário; geração por IA não executada.',
+      };
+    } else {
+      const generated = await generateAiBackground({
+        artType: input.artType,
         prompt: input.prompt,
-        width: input.artType === 'avatar' ? 768 : 1024,
-        height: input.artType === 'avatar' ? 768 : 576,
+        ...(input.headline || direction.headline ? { headline: input.headline || direction.headline } : {}),
+        brandKit,
+        direction: direction.direction,
+        imageAdapter: this.imageAdapter,
+        ingestion: this.ingestion,
       });
-      const generatedAsset = await this.ingestion.ingestBuffer({
-        buffer: genBuffer,
-        kind: 'image',
-        extension: 'png',
-        originalName: `ai-gen-${Date.now()}.png`,
-      });
-      if (input.artType === 'avatar' && !subjectAsset) {
+      generation = generated.report;
+      this.reportGeneration(generation);
+      const generatedAsset = generated.asset;
+      if (generatedAsset && input.artType === 'avatar' && !subjectAsset) {
         try {
           const genAbsPath = this.ingestion.resolvePortablePath(generatedAsset.relativePath);
           const cutoutBuffer = await this.imageAdapter.removeBackground({ inputImagePath: genAbsPath });
@@ -438,24 +464,30 @@ export class AetheraCreativeStudioService {
           }
         } catch {
           backgroundAsset = generatedAsset;
+          backgroundOrigin = 'ai_composed';
         }
-      } else {
+      } else if (generatedAsset) {
         backgroundAsset = generatedAsset;
+        backgroundOrigin = 'ai_composed';
       }
     }
 
     const activeBrandKit = input.brandKitId ? this.brandKits.get(input.brandKitId) : brandKit;
-    const result = await this.orchestrator.orchestrateCreation({
-      artType: input.artType,
-      prompt: input.prompt,
-      ...(input.title ? { title: input.title } : {}),
-      ...(input.headline ? { headline: input.headline } : {}),
-      brandKit: activeBrandKit,
-      backgroundAsset,
-      subjectAsset,
-      ...(input.sourceCinemaProjectId ? { sourceCinemaProjectId: input.sourceCinemaProjectId } : {}),
-      ...(input.avatarBackdrop ? { avatarBackdrop: input.avatarBackdrop } : {}),
-    });
+    const result = await this.orchestrator.orchestrateCreation(
+      {
+        artType: input.artType,
+        prompt: input.prompt,
+        ...(input.title ? { title: input.title } : {}),
+        ...(input.headline ? { headline: input.headline } : {}),
+        brandKit: activeBrandKit,
+        backgroundAsset,
+        subjectAsset,
+        ...(backgroundOrigin ? { backgroundOrigin } : {}),
+        ...(input.sourceCinemaProjectId ? { sourceCinemaProjectId: input.sourceCinemaProjectId } : {}),
+        ...(input.avatarBackdrop ? { avatarBackdrop: input.avatarBackdrop } : {}),
+      },
+      direction,
+    );
 
     const saved = this.saveDocument(result.document);
     this.editors.set(saved.id, new LayeredDocumentEditor(saved));
@@ -477,7 +509,38 @@ export class AetheraCreativeStudioService {
       audit: result.audit,
       previewDataUrl,
       availableEngines: result.availableEngines,
+      generation,
     };
+  }
+
+  /** CF-1: the AI image step is visible in the production console, including why it fell back. */
+  private reportGeneration(report: AiGenerationReport): void {
+    const consoleService = this.productionConsole;
+    const job = this.consoleJob.getStore();
+    if (!consoleService || !job) return;
+    consoleService.emit({
+      ...job,
+      attempt: 1,
+      stage: 'prompt',
+      origin: 'pipeline',
+      source: report.engineId,
+      channel: 'progress',
+      event: report.status === 'generated' ? 'command_completed' : 'command_failed',
+      severity: report.status === 'generated' ? 'info' : 'warn',
+      message: report.message,
+      ...(report.durationMs !== undefined ? { durationMs: report.durationMs } : {}),
+      ...(report.recipe
+        ? {
+            details: {
+              preset: report.recipe.preset,
+              seed: report.recipe.seed,
+              size: `${report.recipe.width}x${report.recipe.height}`,
+              recipeSource: report.recipe.source,
+              promptPreview: report.recipe.positivePrompt.slice(0, 240),
+            },
+          }
+        : {}),
+    });
   }
 
   private async runThumbnailLabFromVideoImpl(input: {

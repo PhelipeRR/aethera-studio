@@ -1,6 +1,6 @@
 # Aethera Creative Studio — Integração do ComfyUI ao módulo Thumbs & Artes
 
-> Status: **PLANEJADO — aguardando aprovação** (2026-11-16). Nenhum código foi alterado.
+> Status: plano aprovado para CF-0 e CF-1 (2026-11-16). **CF-0 CONCLUÍDA**, **CF-1 IMPLEMENTADA** — ver §15. CF-2+ aguardam pedido.
 > Escopo: evoluir o módulo existente (`CreativeStudioPanel` + `@neuralbridge/creative-studio`). Não cria módulo novo, não substitui o editor, não remove o SDXL-Turbo, não toca no pipeline de vídeo além de um lease de GPU compartilhado (Etapa CF-3).
 
 ---
@@ -300,3 +300,44 @@ Instalação gerenciada do ComfyUI e ControlNet ficam como etapas opcionais, só
 - **Tempo por arte** (hipótese: dezenas de segundos para rascunho, mais com upscale) — medir antes de prometer.
 - **ComfyUI Desktop** desta máquina ainda não concluiu o setup inicial — dependência do usuário para a CF-4 em diante (o desenvolvimento usa fake server até lá).
 - Edição por regex continua limitada a intenções conhecidas; a edição por IA é uma ação separada, para não quebrar a previsibilidade atual.
+
+---
+
+## 15. Execução
+
+### CF-0 — Baseline medido (2026-11-16)
+
+Script: `npx tsx scripts/cf-banner-acceptance.ts baseline` → `artifacts/cf-banner/baseline/` (`report.md`, `report.json`, prévias JPG; PNGs completos ficam só no disco). Cenário: banner NextWorth 2560×1440, título `NEXTWORTH`, Brand Kit padrão. SDXL-Turbo local, RTX 4060 Ti 8 GB, 3 passos.
+
+| Caso | Tempo | VRAM base→pico | luma σ | CLIP +/− | Gate |
+|---|---|---|---|---|---|
+| Sem IA (fallback atual) | — | — | **3,19** | 0,537/0,695 (fora do tema) | **78 ✓** |
+| Fluxo atual — imagem crua (pt-BR, 1024×576) | 44,1 s | 5060→7607 MiB | 68,62 | 0,717/0,516 | — |
+| Fluxo atual — banner final | — | — | 44,82 | 0,715/0,561 | 84 ✓ |
+| Sonda pt-BR 1024×576 (seeds 11/22) | 35,7/32,3 s | →7429/7600 | 66,3/67,7 | 0,667/0,694 | — |
+| Sonda EN estruturado 1024×576 (seeds 11/22) | 33,1/35,1 s | →7474/7487 | 59,9/59,9 | **0,867/0,757** | — |
+| Sonda EN 768×432 (seeds 11/22) | 28,9/**210,0** s | →7418/7698 | 59,6/58,0 | 0,802/0,729 | — |
+
+Conclusões (por hipótese/causa):
+- **C1 confirmada visualmente**: sem IA o resultado é exatamente "gradiente escuro + NEXTWORTH" (luma σ 3,19) — e o Quality Gate **aprova** (78 ✓). **H4 confirmada.**
+- **C2 confirmada (2/2 seeds)**: o mesmo modelo com prompt EN estruturado sobe a aderência CLIP de 0,667→0,867 e 0,694→0,757. Visualmente, o pt-BR gerou um mosaico apertado de rostos de anime sem ponto focal; o EN gerou cena cinematográfica com personagens, energia e cidade futurista.
+- **C4 confirmada**: o tratamento do banner reduz a dispersão de luminância da arte de 68,6 para 44,8 (borrada e escurecida).
+- **H1 não confirmada como formulada**: 768×432 não melhorou; 1024×576 teve CLIP maior nas duas seeds. A resolução de geração continua 1024 no lado maior.
+- **H2 plausível**: todo job chega a 7,4–7,7 GB de 8 GB; uma execução levou 210 s (vs ~30 s) sob ocupação de VRAM por outros processos. Fica para o lease de GPU (CF-3).
+- **Achado novo**: SDXL-Turbo (guidance 0) pinta letreiros/pseudo-texto quando o prompt fala em "neon city"; o prompt negativo não tem efeito nesse modelo. Mitigado no vocabulário da receita; solução definitiva com CFG no ComfyUI (CF-4).
+- Métrica `edge` no banner final é inflada pela camada de partículas — usar `luma σ` + CLIP para "vazio" até o gate de composição (CF-10).
+
+### CF-1 — Correções sem ComfyUI
+
+Implementado:
+- `packages/creative-studio/src/visual-recipe.ts`: `buildVisualRecipe` (prompt EN estruturado, preset por tipo/tema, composição explícita com zona do título, paleta do Brand Kit em nomes de cor, sem nome do canal/título, limite de 62 palavras para o CLIP, seed determinística `deriveSeed`), `parseCreativeDirectionNotes` (JSON da direção tratado como dado não confiável; mantém `HEADLINE:` legado), `buildCreativeDirectionPrompt`.
+- `src/ai-background.ts`: `generateAiBackground` — nunca lança; devolve `AiGenerationReport` (`generated | disabled | unavailable | failed | skipped_existing_background`).
+- Contrato `ImageGenerationRequest` ganhou `seed` e `negativePrompt` (opcionais). `LocalPythonAiAdapter` repassa `--seed`; o negativo é documentado como sem efeito no SDXL-Turbo.
+- `CreativeOrchestrator.runCreativeDirection` roda **antes** da geração; `orchestrateCreation(input, precomputedDirection?)` não chama as CLIs de novo e expõe `direction`.
+- `CompositionPlanner`: `backgroundOrigin: 'ai_composed'` mantém a arte nítida (blur 0, brilho 0,97, vinheta ≤ 0,32, `generatedByAi`) e adiciona `scrim-text` (forma com `featherPx`, opacidade 0,55, abaixo do texto). Com sujeito recortado à frente o desfoque de profundidade continua.
+- `shapeLayerSchema.featherPx` (opcional) + render com `feGaussianBlur`.
+- Desktop: `createFromPromptImpl` segue direção → receita → geração → composição; retorna `generation`; o console de produção registra preset/seed/prompt ou o motivo do fallback; o painel mostra aviso (`role="alert"`) quando a IA estava marcada e não gerou.
+
+Fora do escopo da CF-1 (registrado): seeds/receitas por conceito no Thumbnail Lab (CF-8); prompt negativo efetivo (CF-4); gate de composição vazia (CF-10).
+
+Validação real da CF-1 (2026-11-16): `npx tsx scripts/cf-banner-acceptance.ts cf1` concluiu com 2/2 seeds, geração em 16,5–18,6 s, picos de 6560–6565 MiB, `luma σ` 58,40/59,48 e gates 86/87. As prévias confirmam a composição com personagens, skyline e energia, sem o gradiente vazio do fallback; o gate de composição vazia continua deliberadamente reservado à CF-10.

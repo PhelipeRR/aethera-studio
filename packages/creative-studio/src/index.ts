@@ -18,3 +18,5 @@ export * from './typography-geometry-audit.js';
 export * from './approval-states.js';
 export * from './identity-verification.js';
 export * from './authentic-media-source.js';
+export * from './visual-recipe.js';
+export * from './ai-background.js';
