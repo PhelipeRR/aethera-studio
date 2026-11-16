@@ -114,3 +114,35 @@ body:has([data-studio-theme='aethera']) {
 [data-studio-theme='aethera'] :is(.text-emerald-200, .text-emerald-300, .text-emerald-400, .text-green-300, .text-green-400, .text-lime-300) { color: #23703a; }
 [data-studio-theme='aethera'] :is(.text-sky-200, .text-sky-300, .text-sky-400, .text-blue-300, .text-blue-400, .text-cyan-300) { color: #2f5fd0; }
 [data-studio-theme='aethera'] :is(.text-rose-200, .text-rose-300, .text-rose-400, .text-red-200, .text-red-300, .text-red-400, .text-pink-300) { color: #b42840; }
+
+/* Production console: light tones for the dark-canvas literals (dark fallbacks stay in the components). */
+[data-studio-theme='aethera'] {
+  --console-teal: #0f766e;
+  --console-violet: #6a46d8;
+  --console-violet-strong: #5b3cc4;
+  --console-violet-dot: #8b6cf0;
+  --console-blue: #2f5fd0;
+  --console-sky: #0369a1;
+  --console-amber: #8a5300;
+  --console-amber-strong: #9a6200;
+  --console-pink: #be185d;
+  --console-rose: #be123c;
+  --console-mint: #047857;
+  --console-green: #23703a;
+  --console-green-dot: #2f9e44;
+  --console-red: #d23c4f;
+  --console-red-text: #b42840;
+  --console-slate: #62626c;
+  --console-slate-dim: #6b7280;
+  --console-slate-dot: #c4c4cc;
+  --console-text-soft: #3a3a44;
+  --console-muted: #62626c;
+  --console-subtle: #7a7a85;
+  --console-run-title: #111111;
+  --console-run-accent: #5b3cc4;
+  --console-run-border: #cdbff7;
+  --console-danger-border: #f2b8c0;
+  --console-run-bg: #f6f2ff;
+  --console-error-badge-bg: #fde8ea;
+  --console-error-row-bg: #fff4f5;
+}

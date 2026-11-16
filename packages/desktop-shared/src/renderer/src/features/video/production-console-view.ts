@@ -123,23 +123,23 @@ export const ORIGIN_LABELS: Record<ConsoleOrigin, string> = {
 };
 
 export const ORIGIN_COLORS: Record<ConsoleOrigin, string> = {
-  pipeline: '#5eead4',
-  agent: '#c4b5fd',
-  pesquisa: '#93c5fd',
-  aquisicao: '#fcd34d',
-  narracao: '#f9a8d4',
-  renderizacao: '#7dd3fc',
-  sfx_vfx: '#fda4af',
-  vision: '#a7f3d0',
-  tool: '#94a3b8',
-  system: '#64748b',
+  pipeline: 'var(--console-teal, #5eead4)',
+  agent: 'var(--console-violet, #c4b5fd)',
+  pesquisa: 'var(--console-blue, #93c5fd)',
+  aquisicao: 'var(--console-amber, #fcd34d)',
+  narracao: 'var(--console-pink, #f9a8d4)',
+  renderizacao: 'var(--console-sky, #7dd3fc)',
+  sfx_vfx: 'var(--console-rose, #fda4af)',
+  vision: 'var(--console-mint, #a7f3d0)',
+  tool: 'var(--console-slate, #94a3b8)',
+  system: 'var(--console-slate-dim, #64748b)',
 };
 
 export const SEVERITY_COLORS: Record<ConsoleSeverity, string> = {
-  info: '#5eead4',
-  warn: '#fbbf24',
-  error: '#f87171',
-  debug: '#94a3b8',
+  info: 'var(--console-teal, #5eead4)',
+  warn: 'var(--console-amber-strong, #fbbf24)',
+  error: 'var(--console-red, #f87171)',
+  debug: 'var(--console-slate, #94a3b8)',
 };
 
 export const EVENT_LABELS: Record<ConsoleEvent, string> = {
@@ -339,14 +339,14 @@ export const AGENT_STATE_LABELS: Record<AgentRunState, string> = {
 };
 
 export const AGENT_STATE_COLORS: Record<AgentRunState, string> = {
-  starting: '#94a3b8',
+  starting: 'var(--console-slate, #94a3b8)',
   active: '#2dd4bf',
-  silent: '#a78bfa',
-  stalled: '#f87171',
-  completed: '#34d399',
-  failed: '#f87171',
-  cancelled: '#94a3b8',
-  timed_out: '#fbbf24',
+  silent: 'var(--console-violet-dot, #a78bfa)',
+  stalled: 'var(--console-red, #f87171)',
+  completed: 'var(--console-green-dot, #34d399)',
+  failed: 'var(--console-red, #f87171)',
+  cancelled: 'var(--console-slate, #94a3b8)',
+  timed_out: 'var(--console-amber-strong, #fbbf24)',
 };
 
 export interface LiveAgentRun {
@@ -537,11 +537,11 @@ export const JOB_STATUS_LABELS: Record<ConsoleJobStatus, string> = {
 
 export const JOB_STATUS_COLORS: Record<ConsoleJobStatus, string> = {
   running: '#2dd4bf',
-  completed: '#34d399',
-  failed: '#f87171',
-  paused: '#a78bfa',
-  cancelled: '#94a3b8',
-  idle: '#64748b',
+  completed: 'var(--console-green-dot, #34d399)',
+  failed: 'var(--console-red, #f87171)',
+  paused: 'var(--console-violet-dot, #a78bfa)',
+  cancelled: 'var(--console-slate, #94a3b8)',
+  idle: 'var(--console-slate-dim, #64748b)',
 };
 
 export const JOB_KIND_LABELS: Record<ConsoleJobKind, string> = {

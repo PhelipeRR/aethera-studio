@@ -81,12 +81,12 @@ const PERIODS: Array<{ id: ConsoleFilters['period']; label: string }> = [
 const ADVANCED_FILTER_KEYS = ['jobId', 'status', 'origin', 'source', 'stage', 'severity', 'channel', 'period'] as const;
 
 const STATUS_STYLE: Record<string, { dot: string; label: string }> = {
-  pending: { dot: '#334155', label: '#64748b' },
-  active: { dot: '#a78bfa', label: '#ddd6fe' },
-  done: { dot: '#34d399', label: '#6ee7b7' },
-  failed: { dot: '#f87171', label: '#fca5a5' },
-  retry: { dot: '#fbbf24', label: '#fcd34d' },
-  paused: { dot: '#a78bfa', label: '#c4b5fd' },
+  pending: { dot: 'var(--console-slate-dot, #334155)', label: 'var(--console-slate-dim, #64748b)' },
+  active: { dot: 'var(--console-violet-dot, #a78bfa)', label: 'var(--console-violet-strong, #ddd6fe)' },
+  done: { dot: 'var(--console-green-dot, #34d399)', label: 'var(--console-green, #6ee7b7)' },
+  failed: { dot: 'var(--console-red, #f87171)', label: 'var(--console-red-text, #fca5a5)' },
+  retry: { dot: 'var(--console-amber-strong, #fbbf24)', label: 'var(--console-amber, #fcd34d)' },
+  paused: { dot: 'var(--console-violet-dot, #a78bfa)', label: 'var(--console-violet, #c4b5fd)' },
 };
 
 const STATUS_ICON: Record<string, string> = {
@@ -436,7 +436,7 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
               {/* Stage chips stay mounted (filter state and test hooks) and are only shown on demand. */}
               <div style={timelineStyle} hidden={!stagesOpen}>
                 {timeline.map((item) => {
-                  const style = STATUS_STYLE[item.status] ?? { dot: '#334155', label: '#64748b' };
+                  const style = STATUS_STYLE[item.status] ?? { dot: 'var(--console-slate-dot, #334155)', label: 'var(--console-slate-dim, #64748b)' };
                   const selected = filters.stage === item.stage;
                   return (
                     <button
@@ -637,7 +637,7 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
                 onClick={() => void handleClear()}
                 disabled={!clearTarget}
                 title={clearTarget ? `Limpa apenas o log do job ${clearTarget}` : 'Selecione um job para limpar o log dele'}
-                style={{ ...linkBtnStyle, color: '#fca5a5', opacity: clearTarget ? 1 : 0.4 }}
+                style={{ ...linkBtnStyle, color: 'var(--console-red-text, #fca5a5)', opacity: clearTarget ? 1 : 0.4 }}
               >
                 Limpar
               </button>
@@ -666,7 +666,7 @@ const ConsoleRow = memo(function ConsoleRow({ entry, showJob, expanded, onToggle
   const stream = isStreamEntry(entry);
   const details = entryDetailRows(entry);
   const hasDetails = details.length > 3;
-  const originColor = ORIGIN_COLORS[entry.origin] ?? '#94a3b8';
+  const originColor = ORIGIN_COLORS[entry.origin] ?? 'var(--console-slate, #94a3b8)';
   const notable = entry.severity === 'warn' || entry.severity === 'error';
   const failedExit = entry.exitCode !== undefined && entry.exitCode !== null && entry.exitCode !== 0;
   return (
@@ -693,18 +693,18 @@ const ConsoleRow = memo(function ConsoleRow({ entry, showJob, expanded, onToggle
           </span>
         )}
         {notable && (
-          <span style={{ ...severityStyle, color: SEVERITY_COLORS[entry.severity] ?? '#c4b5fd' }}>
+          <span style={{ ...severityStyle, color: SEVERITY_COLORS[entry.severity] ?? 'var(--console-violet, #c4b5fd)' }}>
             {entry.severity === 'error' ? 'ERRO' : 'AVISO'}
           </span>
         )}
         <span style={{ color: originColor }}>{ORIGIN_LABELS[entry.origin] ?? entry.origin}</span>
         <span style={mutedStyle}>· {STAGE_LABELS[entry.stage] ?? entry.stage}</span>
         {entry.event !== 'log' && (
-          <span style={{ ...eventStyle, color: error ? '#fca5a5' : '#c4b5fd' }}>{EVENT_LABELS[entry.event]}</span>
+          <span style={{ ...eventStyle, color: error ? 'var(--console-red-text, #fca5a5)' : 'var(--console-violet, #c4b5fd)' }}>{EVENT_LABELS[entry.event]}</span>
         )}
         <span style={mutedStyle}>{entry.source}</span>
         {stream && <span style={mutedStyle}>{entry.channel}</span>}
-        {failedExit && <span style={{ color: '#fca5a5' }}>exit {entry.exitCode}</span>}
+        {failedExit && <span style={{ color: 'var(--console-red-text, #fca5a5)' }}>exit {entry.exitCode}</span>}
         {hasDetails && (
           <button type="button" onClick={() => onToggle(entry.id)} style={detailsBtnStyle} aria-expanded={expanded}>
             {expanded ? '▾ detalhes' : '▸ detalhes'}
@@ -752,8 +752,8 @@ function FilterSelect({
 }
 
 // Quiet console: one accent (primary), muted metadata, colour only where it carries meaning (errors, warnings, status).
-const MUTED = '#8b8aa3';
-const SUBTLE = '#6b6a82';
+const MUTED = 'var(--console-muted, #8b8aa3)';
+const SUBTLE = 'var(--console-subtle, #6b6a82)';
 
 const panelStyle: React.CSSProperties = {
   marginTop: 8,
@@ -784,10 +784,10 @@ const headerMetaStyle: React.CSSProperties = { fontSize: 12, fontWeight: 400, co
 const headerErrorStyle: React.CSSProperties = {
   fontSize: 12,
   fontWeight: 500,
-  color: '#fca5a5',
+  color: 'var(--console-red-text, #fca5a5)',
   padding: '1px 8px',
   borderRadius: 999,
-  background: 'rgba(248, 113, 113, 0.14)',
+  background: 'var(--console-error-badge-bg, rgba(248, 113, 113, 0.14))',
 };
 const headerToggleStyle: React.CSSProperties = { fontSize: 12, fontWeight: 400, color: MUTED, flexShrink: 0 };
 
@@ -818,7 +818,7 @@ const jobChipTitleStyle: React.CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 };
-const rowJobStyle: React.CSSProperties = { color: '#fcd34d' };
+const rowJobStyle: React.CSSProperties = { color: 'var(--console-amber, #fcd34d)' };
 
 const progressRowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10 };
 const progressTrackStyle: React.CSSProperties = {
@@ -890,7 +890,7 @@ const ghostBtnStyle: React.CSSProperties = {
   fontSize: 12,
   whiteSpace: 'nowrap',
 };
-const activeFilterBtnStyle: React.CSSProperties = { borderColor: 'var(--primary)', color: '#ddd6fe' };
+const activeFilterBtnStyle: React.CSSProperties = { borderColor: 'var(--primary)', color: 'var(--console-violet-strong, #ddd6fe)' };
 
 const filtersPanelStyle: React.CSSProperties = {
   display: 'grid',
@@ -944,7 +944,7 @@ const rowStyle: React.CSSProperties = {
   borderLeft: '2px solid transparent',
   borderRadius: 3,
 };
-const rowErrorStyle: React.CSSProperties = { borderLeftColor: '#f87171', background: 'rgba(248, 113, 113, 0.06)' };
+const rowErrorStyle: React.CSSProperties = { borderLeftColor: 'var(--console-red, #f87171)', background: 'var(--console-error-row-bg, rgba(248, 113, 113, 0.06))' };
 const rowDebugStyle: React.CSSProperties = { opacity: 0.6 };
 const rowHeaderStyle: React.CSSProperties = {
   display: 'flex',
@@ -956,7 +956,7 @@ const timeStyle: React.CSSProperties = { color: SUBTLE };
 const severityStyle: React.CSSProperties = { fontWeight: 700 };
 const eventStyle: React.CSSProperties = { fontWeight: 600 };
 const messageStyle: React.CSSProperties = { color: 'var(--foreground)', wordBreak: 'break-word', whiteSpace: 'pre-wrap' };
-const streamMessageStyle: React.CSSProperties = { color: '#cbd5e1' };
+const streamMessageStyle: React.CSSProperties = { color: 'var(--console-text-soft, #cbd5e1)' };
 const detailsBtnStyle: React.CSSProperties = {
   marginLeft: 'auto',
   padding: 0,
@@ -978,7 +978,7 @@ const detailLabelStyle: React.CSSProperties = { minWidth: 96, color: MUTED, font
 const detailValueStyle: React.CSSProperties = {
   margin: 0,
   flex: 1,
-  color: '#cbd5e1',
+  color: 'var(--console-text-soft, #cbd5e1)',
   fontSize: 12,
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
@@ -1001,7 +1001,7 @@ const linkBtnStyle: React.CSSProperties = {
   borderRadius: 4,
   border: 0,
   background: 'transparent',
-  color: '#ddd6fe',
+  color: 'var(--console-violet-strong, #ddd6fe)',
   cursor: 'pointer',
   fontSize: 12,
 };

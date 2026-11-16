@@ -17,27 +17,27 @@ function getBridge(): AgentRunBridge | undefined {
 }
 
 const cardStyle: React.CSSProperties = {
-  border: '1px solid #115e59',
+  border: '1px solid var(--console-run-border, #115e59)',
   borderRadius: 8,
   padding: '8px 10px',
   marginBottom: 8,
-  background: 'rgba(17, 94, 89, 0.12)',
+  background: 'var(--console-run-bg, rgba(17, 94, 89, 0.12))',
   fontSize: 11,
   display: 'grid',
   gap: 4,
 };
 
 const buttonStyle: React.CSSProperties = {
-  border: '1px solid #115e59',
+  border: '1px solid var(--console-run-border, #115e59)',
   borderRadius: 6,
   background: 'transparent',
-  color: '#99f6e4',
+  color: 'var(--console-run-accent, #99f6e4)',
   padding: '3px 8px',
   fontSize: 11,
   cursor: 'pointer',
 };
 
-const dangerButtonStyle: React.CSSProperties = { ...buttonStyle, borderColor: '#7f1d1d', color: '#fca5a5' };
+const dangerButtonStyle: React.CSSProperties = { ...buttonStyle, borderColor: 'var(--console-danger-border, #7f1d1d)', color: 'var(--console-red-text, #fca5a5)' };
 
 /**
  * Live status of the agents running for a production: elapsed time, last event received and state. A long run is
@@ -95,16 +95,16 @@ export function AgentRunStatus({ runs, projectId }: { runs: LiveAgentRun[]; proj
               <span style={{ color }} aria-hidden>
                 ●
               </span>
-              <strong style={{ color: '#ecfdf5' }}>{run.label}</strong>
-              <span style={{ color: '#94a3b8' }}>{STAGE_LABELS[run.stage] ?? run.stage}</span>
+              <strong style={{ color: 'var(--console-run-title, #ecfdf5)' }}>{run.label}</strong>
+              <span style={{ color: 'var(--console-slate, #94a3b8)' }}>{STAGE_LABELS[run.stage] ?? run.stage}</span>
               <span style={{ color, fontWeight: 600 }} data-agent-state-label>
                 {AGENT_STATE_LABELS[run.state]}
               </span>
-              <span style={{ fontFamily: 'monospace', color: '#99f6e4' }} data-agent-elapsed>
+              <span style={{ fontFamily: 'monospace', color: 'var(--console-run-accent, #99f6e4)' }} data-agent-elapsed>
                 {formatDuration(elapsed)} decorridos
               </span>
             </div>
-            <div style={{ color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div style={{ color: 'var(--console-text-soft, #cbd5e1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               Último evento:{' '}
               {run.lastEventAt ? (
                 <>
@@ -115,7 +115,7 @@ export function AgentRunStatus({ runs, projectId }: { runs: LiveAgentRun[]; proj
                 'nenhum evento ainda (agente pode estar raciocinando)'
               )}
             </div>
-            <div style={{ color: '#64748b' }}>
+            <div style={{ color: 'var(--console-slate-dim, #64748b)' }}>
               Encerra só após{' '}
               {run.inactivityTimeoutMs ? formatDuration(run.inactivityTimeoutMs) : '—'} sem progresso real
               {run.maxDurationMs ? ` · limite máximo ${formatDuration(run.maxDurationMs)}` : ' · sem limite máximo'}
@@ -148,7 +148,7 @@ export function AgentRunStatus({ runs, projectId }: { runs: LiveAgentRun[]; proj
         );
       })}
       {message && (
-        <div role="status" style={{ fontSize: 11, color: '#99f6e4', marginBottom: 8 }}>
+        <div role="status" style={{ fontSize: 11, color: 'var(--console-run-accent, #99f6e4)', marginBottom: 8 }}>
           {message}
         </div>
       )}

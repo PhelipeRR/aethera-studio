@@ -90,7 +90,7 @@ test('Aethera home — light bento layout', async () => {
     await win.locator('aside nav').getByRole('link', { name: 'Thumbs & Artes' }).click();
     await win.waitForTimeout(1500);
     await win.screenshot({ path: join(shotsDir, '06-thumbs-artes-tema-claro.png'), fullPage: true });
-    console.log('CREATIVE_TEXT', (await win.locator('main').innerText()).slice(0, 600));
+
   } finally {
     await electronApp.close();
     rmSync(tempHome, { recursive: true, force: true });
