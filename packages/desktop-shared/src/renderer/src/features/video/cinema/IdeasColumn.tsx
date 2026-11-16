@@ -160,7 +160,7 @@ export function IdeasColumn({ api, onApplyIdea }: IdeasColumnProps) {
           if (!open) void reload();
         }}
       >
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
+        <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-6xl">
           <DialogHeader>
             <DialogTitle>Pesquisar novas ideias</DialogTitle>
             <DialogDescription>

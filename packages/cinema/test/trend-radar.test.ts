@@ -11,7 +11,7 @@ import {
   type TrendRadarConnectors,
   type TrendSearchConfig,
 } from '../../../apps/aethera-desktop/src/main/trend-radar.js';
-import { formatBriefingToProductionPrompt } from '../../../packages/desktop-shared/src/renderer/src/features/video/TrendRadarPanel.js';
+import { formatBriefingToProductionPrompt, formatIsoDates } from '../../../packages/desktop-shared/src/renderer/src/features/video/trend-radar-model.js';
 
 const tempDirs: string[] = [];
 
@@ -292,5 +292,13 @@ describe('TrendRadarEngine', () => {
     expect(recovered[0].sessionId).toBe(created.sessionId);
     expect(recovered[0].ideas).toHaveLength(5);
     expect(recovered[0].briefings[created.ideas[0].ideaId]).toBeDefined();
+  });
+});
+
+describe('formatIsoDates', () => {
+  it('replaces ISO timestamps with pt-BR dates and keeps the rest of the text', () => {
+    const text = formatIsoDates('Fonte publicada em 2026-11-14T20:08:00.000Z (Crunchyroll)');
+    expect(text).not.toContain('T20:08');
+    expect(text).toMatch(/^Fonte publicada em \d{2}\/\d{2}\/2026 \(Crunchyroll\)$/);
   });
 });

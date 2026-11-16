@@ -1,177 +1,49 @@
 import React, { useEffect, useState } from 'react';
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  ExternalLink,
+  LoaderCircle,
+  Plus,
+  RefreshCw,
+  Search,
+  Shuffle,
+  SlidersHorizontal,
+  Sparkles,
+  Wand2,
+} from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Field, Input, Select, Textarea } from '@/components/ui/field';
+import { cn } from '@/lib/utils';
 
-export const TREND_RADAR_PRESET_NICHES = [
-  'Games',
-  'Tecnologia e IA',
-  'Cinema e Séries',
-  'Anime e Mangá',
-  'Ciência',
-  'História',
-  'Mistérios',
-  'Curiosidades',
-  'Cultura Pop',
-  'Esportes',
-] as const;
+import {
+  FORMAT_LABELS,
+  PERIOD_LABELS,
+  TREND_RADAR_PRESET_NICHES,
+  formatBriefingToProductionPrompt,
+  formatIsoDates,
+  type AppliedTrendIdeaPayload,
+  type BriefingTextField,
+  type CinematicBriefing,
+  type TrendFormat,
+  type TrendPeriod,
+  type TrendRadarBridgeApi,
+  type TrendSearchConfig,
+  type TrendSearchSession,
+} from './trend-radar-model';
 
-export type TrendPeriod = '24h' | '7d' | '30d' | '90d';
-export type TrendFormat = 'auto' | 'top_10' | 'documentary' | 'analysis' | 'news' | 'curiosities';
-
-export interface TrendSearchConfig {
-  niche: string;
-  subniche?: string;
-  country: string;
-  language: string;
-  period: TrendPeriod;
-  format: TrendFormat;
-  ideaCount: number;
-  targetDurationMin: number;
-}
-
-export interface TrendEvidenceSource {
-  title: string;
-  url: string;
-  source: string;
-  publishedAt: string;
-  origin: 'youtube' | 'news' | 'reddit' | 'trends' | 'official';
-  snippet?: string;
-}
-
-export interface TrendIdea {
-  ideaId: string;
-  title: string;
-  niche: string;
-  format: TrendFormat;
-  summary: string;
-  whyNow: string;
-  evidences: TrendEvidenceSource[];
-  interestPotential: string;
-  competitionLevel: 'baixo' | 'moderado' | 'alto' | 'não verificável';
-  competitionNotes: string;
-  editorialDifferentiator: string;
-  mediaAvailability: string;
-  suggestedDurationMin: number;
-  narrativeTone: string;
-  productionChallenges: string[];
-  directorNotes: {
-    researchMedia: string;
-    narrative: string;
-    generalDirector: string;
-    comedy: string;
-    editCinema: string;
-    quality: string;
-  };
-}
-
-export interface CinematicBriefing {
-  briefingId: string;
-  ideaId: string;
-  approachLabel: string;
-  objective: string;
-  targetAudience: string;
-  openingHook: string;
-  narrativeStructure: string;
-  factsAndTopics: string;
-  verifiableReferences: string[];
-  sceneProposal: string;
-  editingStyle: string;
-  narrationAndMusic: string;
-  sfxVfxMotion: string;
-  contextualHumor: string;
-  durationAndFormat: string;
-  compiledPrompt: string;
-  recommendedGenre: 'documentary' | 'gameplay_essay' | 'top_list' | 'trailer';
-  recommendedFormat: 'youtube_16_9' | 'shorts_9_16';
-  recommendedDurationMin: number;
-  recommendedHumorIntensity: number;
-  updatedAt: string;
-}
-
-export interface TrendSearchSession {
-  sessionId: string;
-  config: TrendSearchConfig;
-  searchedAt: string;
-  sources: TrendEvidenceSource[];
-  providerWarnings: string[];
-  noSourcesFound: boolean;
-  ideas: TrendIdea[];
-  briefings: Record<string, CinematicBriefing>;
-  selectedIdeaId?: string;
-}
-
-export interface TrendRadarBridgeApi {
-  trendRadarSearch?: (input: {
-    config: TrendSearchConfig;
-    sessionId?: string;
-    appendMore?: boolean;
-    refresh?: boolean;
-  }) => Promise<TrendSearchSession>;
-  trendRadarListSessions?: () => Promise<TrendSearchSession[]>;
-  trendRadarGenerateBriefing?: (input: {
-    sessionId: string;
-    ideaId: string;
-    alternativeApproach?: boolean;
-  }) => Promise<CinematicBriefing>;
-  trendRadarRefineBriefing?: (input: {
-    sessionId: string;
-    ideaId: string;
-    instruction: string;
-    updatedFields?: Partial<CinematicBriefing>;
-  }) => Promise<CinematicBriefing>;
-}
-
-export interface AppliedTrendIdeaPayload {
-  promptText: string;
-  genre: 'documentary' | 'gameplay_essay' | 'top_list' | 'trailer';
-  format: 'youtube_16_9' | 'shorts_9_16';
-  durationMin: number;
-  humorIntensity: number;
-}
+export * from './trend-radar-model';
 
 interface TrendRadarPanelProps {
   api: TrendRadarBridgeApi;
   onApplyIdea: (payload: AppliedTrendIdeaPayload) => void;
   /** Opens the radar already expanded (used inside the "Pesquisar novas ideias" dialog). */
   defaultExpanded?: boolean;
-}
-
-export const FORMAT_LABELS: Record<TrendFormat, string> = {
-  auto: 'Automático da IA',
-  top_10: 'TOP 10',
-  documentary: 'Documentário',
-  analysis: 'Análise',
-  news: 'Notícias',
-  curiosities: 'Curiosidades',
-};
-
-const PERIOD_LABELS: Record<TrendPeriod, string> = {
-  '24h': '24 horas',
-  '7d': '7 dias',
-  '30d': '30 dias',
-  '90d': '90 dias',
-};
-
-export function formatBriefingToProductionPrompt(
-  idea: TrendIdea,
-  briefing: CinematicBriefing,
-): string {
-  return [
-    `Título: ${idea.title}`,
-    `Nicho: ${idea.niche} | Duração alvo: ${briefing.recommendedDurationMin || idea.suggestedDurationMin} min | Tom: ${idea.narrativeTone}`,
-    '',
-    `Objetivo: ${briefing.objective}`,
-    `Público-alvo: ${briefing.targetAudience}`,
-    `Gancho de abertura: ${briefing.openingHook}`,
-    `Estrutura narrativa: ${briefing.narrativeStructure}`,
-    '',
-    `Assuntos e fatos verificáveis: ${briefing.factsAndTopics}`,
-    `Proposta de cenas: ${briefing.sceneProposal}`,
-    '',
-    `Estilo de edição: ${briefing.editingStyle}`,
-    `Narração e música: ${briefing.narrationAndMusic}`,
-    `SFX, VFX e motion graphics: ${briefing.sfxVfxMotion}`,
-    `Humor contextual: ${briefing.contextualHumor}`,
-    `Duração e formato: ${briefing.durationAndFormat}`,
-  ].join('\n');
 }
 
 export const TrendRadarPanel: React.FC<TrendRadarPanelProps> = ({ api, onApplyIdea, defaultExpanded = false }) => {
@@ -185,6 +57,7 @@ export const TrendRadarPanel: React.FC<TrendRadarPanelProps> = ({ api, onApplyId
   const [format, setFormat] = useState<TrendFormat>('auto');
   const [ideaCount, setIdeaCount] = useState<number>(5);
   const [durationMin, setDurationMin] = useState<number>(10);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   const [sessions, setSessions] = useState<TrendSearchSession[]>([]);
   const [activeSession, setActiveSession] = useState<TrendSearchSession | null>(null);
@@ -363,500 +236,405 @@ export const TrendRadarPanel: React.FC<TrendRadarPanelProps> = ({ api, onApplyId
     );
   };
 
+  const searchResultsCount = activeSession?.ideas.length ?? 0;
+  const filtersSummary = `${country.trim() || 'BR'} · ${language.trim() || 'pt-BR'} · ${ideaCount} ideias · ${durationMin} min`;
+
+  const briefingFields: { key: BriefingTextField; label: string; rows: number }[] = [
+    { key: 'objective', label: 'Objetivo do vídeo', rows: 2 },
+    { key: 'targetAudience', label: 'Público-alvo', rows: 2 },
+    { key: 'openingHook', label: 'Gancho de abertura', rows: 2 },
+    { key: 'narrativeStructure', label: 'Estrutura narrativa', rows: 2 },
+    { key: 'editingStyle', label: 'Estilo de edição', rows: 2 },
+    { key: 'narrationAndMusic', label: 'Narração e música', rows: 2 },
+    { key: 'sfxVfxMotion', label: 'SFX, VFX e motion graphics', rows: 2 },
+    { key: 'contextualHumor', label: 'Humor contextual', rows: 2 },
+    { key: 'durationAndFormat', label: 'Duração e formato', rows: 1 },
+  ];
+
   return (
-    <section
-      className="rounded-xl border border-[#2a2342] bg-[#0e0b18]/90 p-4 space-y-4"
-      data-testid="trend-radar-panel"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="flex items-center gap-2 text-left group"
-          aria-expanded={expanded}
-        >
-          <span className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[#2d2647] bg-[#161124] text-xs text-purple-300 group-hover:border-purple-500/60">
-            {expanded ? '▾' : '▸'}
-          </span>
+    <section className="flex flex-col gap-5 text-foreground" data-testid="trend-radar-panel" aria-label="Radar de tendências">
+      {!defaultExpanded && (
+        <div className="flex items-center justify-between gap-2">
           <div>
-            <span className="block text-[11px] uppercase tracking-wider text-purple-300 font-semibold">
-              Pesquisa Inteligente &amp; Pauta
-            </span>
-            <h3 className="text-base font-semibold text-white">
-              Radar de Tendências e Ideias com IA
-            </h3>
+            <p className="text-xs font-medium text-muted-foreground">Pesquisa inteligente e pauta</p>
+            <h3 className="text-base font-semibold tracking-tight">Radar de Tendências e Ideias com IA</h3>
           </div>
-        </button>
-        <div className="flex items-center gap-2">
-          {sessions.length > 0 && (
-            <select
-              aria-label="Histórico de pesquisas de tendências"
-              value={activeSession?.sessionId ?? ''}
-              onChange={(e) => {
-                const found = sessions.find((s) => s.sessionId === e.target.value);
-                if (found) {
-                  setActiveSession(found);
-                  setSelectedIdeaId(found.selectedIdeaId ?? found.ideas[0]?.ideaId ?? null);
-                }
-              }}
-              className="rounded-lg border border-[#2d2647] bg-[#161124] px-2.5 py-1.5 text-xs text-slate-200"
-            >
-              {sessions.map((s) => (
-                <option key={s.sessionId} value={s.sessionId}>
-                  {s.config.niche}
-                  {s.config.subniche ? ` / ${s.config.subniche}` : ''} ({PERIOD_LABELS[s.config.period]}) ·{' '}
-                  {s.ideas.length} ideias
-                </option>
-              ))}
-            </select>
-          )}
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="rounded-lg border border-[#2d2647] bg-[#161124] px-3 py-1.5 text-xs text-slate-300 hover:text-white"
-          >
+          <Button type="button" variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded((v) => !v)}>
+            <ChevronDown className={cn('transition-transform motion-reduce:transition-none', expanded && 'rotate-180')} aria-hidden />
             {expanded ? 'Recolher Radar' : 'Expandir Radar'}
-          </button>
+          </Button>
         </div>
-      </div>
+      )}
 
       {expanded && (
-        <div className="space-y-4">
-          {/* Nichos sugeridos + livre */}
-          <div className="space-y-2">
-            <label className="block text-xs text-slate-300 font-medium">
-              Nicho (escolha uma sugestão ou digite livremente)
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {TREND_RADAR_PRESET_NICHES.map((item) => {
-                const active = !customNiche.trim() && niche === item;
-                return (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => {
-                      setNiche(item);
-                      setCustomNiche('');
-                    }}
-                    className={`rounded-full px-3 py-1 text-xs transition ${
-                      active
-                        ? 'bg-purple-600 text-white'
-                        : 'border border-[#2d2647] bg-[#161124] text-slate-300 hover:border-purple-500/60'
-                    }`}
-                  >
-                    {item}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-1">
-              <input
-                type="text"
-                value={customNiche}
-                onChange={(e) => setCustomNiche(e.target.value)}
-                placeholder="Ou digite qualquer nicho personalizado (ex: Aviação Militar, Culinária Coreana...)"
-                className="rounded-lg border border-[#2d2647] bg-[#140f22] px-3 py-2 text-xs text-white placeholder-slate-500"
-              />
-              <input
-                type="text"
-                value={subniche}
-                onChange={(e) => setSubniche(e.target.value)}
-                placeholder="Subnicho ou assunto específico (opcional)"
-                className="rounded-lg border border-[#2d2647] bg-[#140f22] px-3 py-2 text-xs text-white placeholder-slate-500"
-              />
-            </div>
-          </div>
-
-          {/* Configuração da pesquisa */}
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
-            <div>
-              <label className="block text-[11px] text-slate-400 mb-1">País</label>
-              <input
-                type="text"
-                value={country}
-                onChange={(e) => setCountry(e.target.value.toUpperCase())}
-                className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2.5 py-1.5 text-xs text-white"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] text-slate-400 mb-1">Idioma</label>
-              <input
-                type="text"
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-                className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2.5 py-1.5 text-xs text-white"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] text-slate-400 mb-1">Período</label>
-              <select
-                value={period}
-                onChange={(e) => setPeriod(e.target.value as TrendPeriod)}
-                className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2.5 py-1.5 text-xs text-white"
-              >
-                {(Object.keys(PERIOD_LABELS) as TrendPeriod[]).map((p) => (
-                  <option key={p} value={p}>
-                    {PERIOD_LABELS[p]}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-[11px] text-slate-400 mb-1">Formato</label>
-              <select
-                value={format}
-                onChange={(e) => setFormat(e.target.value as TrendFormat)}
-                className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2.5 py-1.5 text-xs text-white"
-              >
-                {(Object.keys(FORMAT_LABELS) as TrendFormat[]).map((f) => (
-                  <option key={f} value={f}>
-                    {FORMAT_LABELS[f]}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-[11px] text-slate-400 mb-1">Qtd. Ideias</label>
-              <input
-                type="number"
-                min={1}
-                max={10}
-                value={ideaCount}
-                onChange={(e) => setIdeaCount(Number(e.target.value) || 5)}
-                className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2.5 py-1.5 text-xs text-white"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] text-slate-400 mb-1">Duração (min)</label>
-              <input
-                type="number"
-                min={1}
-                max={60}
-                value={durationMin}
-                onChange={(e) => setDurationMin(Number(e.target.value) || 10)}
-                className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2.5 py-1.5 text-xs text-white"
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              disabled={loadingSearch}
-              onClick={() => void handleSearch()}
-              className="rounded-lg bg-gradient-to-r from-purple-600 to-amber-500 px-4 py-2 text-xs font-semibold text-white hover:opacity-95 disabled:opacity-50"
-            >
-              {loadingSearch ? 'Pesquisando fontes reais...' : 'Pesquisar tendências'}
-            </button>
-            {activeSession && (
-              <>
-                <button
-                  type="button"
-                  disabled={loadingSearch}
-                  onClick={() => void handleSearch({ refresh: true })}
-                  className="rounded-lg border border-[#2d2647] bg-[#161124] px-3 py-2 text-xs text-slate-200 hover:border-purple-500/60 disabled:opacity-50"
-                >
-                  Atualizar tendências
-                </button>
-                <button
-                  type="button"
-                  disabled={loadingSearch}
-                  onClick={() => void handleSearch({ appendMore: true })}
-                  className="rounded-lg border border-[#2d2647] bg-[#161124] px-3 py-2 text-xs text-slate-200 hover:border-purple-500/60 disabled:opacity-50"
-                >
-                  Pesquisar mais
-                </button>
-              </>
-            )}
-          </div>
-
-          {statusMessage && (
-            <div className="rounded-lg border border-emerald-500/40 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
-              {statusMessage}
-            </div>
-          )}
-          {errorMessage && (
-            <div className="rounded-lg border border-rose-500/40 bg-rose-950/30 px-3 py-2 text-xs text-rose-200">
-              {errorMessage}
-            </div>
-          )}
-          {activeSession && activeSession.providerWarnings.length > 0 && (
-            <div className="rounded-lg border border-amber-500/40 bg-amber-950/25 px-3 py-2 text-[11px] text-amber-200 space-y-0.5">
-              {activeSession.providerWarnings.map((warn, idx) => (
-                <div key={idx}>{warn}</div>
-              ))}
-            </div>
-          )}
-
-          {/* Lista de ideias + Briefing */}
-          {activeSession && activeSession.ideas.length > 0 && (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-              <div className="lg:col-span-5 space-y-2 max-h-[520px] overflow-y-auto pr-1">
-                {activeSession.ideas.map((idea) => {
-                  const selected = idea.ideaId === selectedIdeaId;
+        <>
+          {/* 1. O que pesquisar */}
+          <div className="flex flex-col gap-4">
+            <fieldset className="flex flex-col gap-2">
+              <legend className="mb-2 text-[13px] font-medium">Nicho</legend>
+              <div className="flex flex-wrap gap-1.5">
+                {TREND_RADAR_PRESET_NICHES.map((item) => {
+                  const active = !customNiche.trim() && niche === item;
                   return (
                     <button
-                      key={idea.ideaId}
+                      key={item}
                       type="button"
-                      onClick={() => void handleSelectIdea(idea.ideaId)}
-                      className={`w-full text-left rounded-xl border p-3 transition space-y-1.5 ${
-                        selected
-                          ? 'border-purple-500 bg-[#1a1330]'
-                          : 'border-[#28213e] bg-[#120e1f] hover:border-purple-500/40'
-                      }`}
+                      aria-pressed={active}
+                      onClick={() => {
+                        setNiche(item);
+                        setCustomNiche('');
+                      }}
+                      className={cn(
+                        'h-8 cursor-pointer rounded-full border px-3 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        active
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border bg-transparent text-muted-foreground hover:border-primary/50 hover:text-foreground',
+                      )}
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <span className="text-xs font-semibold text-white leading-snug">
-                          {idea.title}
-                        </span>
-                        <span className="shrink-0 rounded bg-purple-900/60 px-2 py-0.5 text-[10px] text-purple-200">
-                          {FORMAT_LABELS[idea.format]} · {idea.suggestedDurationMin}m
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-300 line-clamp-2">{idea.summary}</p>
-                      <div className="text-[11px] text-amber-200/90">
-                        <span className="font-medium">Por que agora:</span> {idea.whyNow}
-                      </div>
-                      <div className="flex flex-wrap gap-2 text-[10px] text-slate-400 pt-0.5">
-                        <span>Fontes: {idea.evidences.length}</span>
-                        <span>Concorrência: {idea.competitionLevel}</span>
-                        <span>Tom: {idea.narrativeTone}</span>
-                      </div>
+                      {item}
                     </button>
                   );
                 })}
               </div>
+              <div className="grid grid-cols-1 gap-3 pt-1 md:grid-cols-2">
+                <Input
+                  aria-label="Nicho personalizado"
+                  value={customNiche}
+                  onChange={(e) => setCustomNiche(e.target.value)}
+                  placeholder="Outro nicho (ex.: Aviação Militar, Culinária Coreana)"
+                />
+                <Input
+                  aria-label="Subnicho ou assunto específico"
+                  value={subniche}
+                  onChange={(e) => setSubniche(e.target.value)}
+                  placeholder="Subnicho ou assunto específico (opcional)"
+                />
+              </div>
+            </fieldset>
 
-              <div className="lg:col-span-7 rounded-xl border border-[#28213e] bg-[#120e1f] p-3.5 space-y-3 max-h-[520px] overflow-y-auto">
-                {!selectedIdea && (
-                  <p className="text-xs text-slate-400">
-                    Selecione uma ideia ao lado para inspecionar fontes, parecer dos diretores e gerar o briefing cinematográfico editável.
-                  </p>
-                )}
+            <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+              <Field label="Período" htmlFor="trend-period">
+                <Select id="trend-period" value={period} onChange={(e) => setPeriod(e.target.value as TrendPeriod)}>
+                  {(Object.keys(PERIOD_LABELS) as TrendPeriod[]).map((p) => (
+                    <option key={p} value={p}>
+                      {PERIOD_LABELS[p]}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Formato" htmlFor="trend-format">
+                <Select id="trend-format" value={format} onChange={(e) => setFormat(e.target.value as TrendFormat)}>
+                  {(Object.keys(FORMAT_LABELS) as TrendFormat[]).map((f) => (
+                    <option key={f} value={f}>
+                      {FORMAT_LABELS[f]}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Button
+                type="button"
+                className="sm:col-span-2 lg:col-span-1"
+                disabled={loadingSearch}
+                onClick={() => void handleSearch()}
+              >
+                {loadingSearch ? <LoaderCircle className="motion-safe:animate-spin" aria-hidden /> : <Search aria-hidden />}
+                {loadingSearch ? 'Pesquisando fontes reais...' : 'Pesquisar tendências'}
+              </Button>
+            </div>
 
-                {selectedIdea && (
-                  <>
-                    <div className="space-y-1">
-                      <div className="text-xs text-purple-300 font-medium">
-                        {selectedIdea.niche} · {FORMAT_LABELS[selectedIdea.format]} ·{' '}
-                        {selectedIdea.suggestedDurationMin} min
-                      </div>
-                      <h4 className="text-sm font-semibold text-white">{selectedIdea.title}</h4>
-                    </div>
+            <Collapsible open={filtersOpen} onOpenChange={setFiltersOpen}>
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  className="flex cursor-pointer items-center gap-1.5 rounded-sm text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <SlidersHorizontal className="size-3.5" aria-hidden />
+                  Mais filtros
+                  <span className="text-muted-foreground/80">· {filtersSummary}</span>
+                  <ChevronDown className={cn('size-3.5 transition-transform motion-reduce:transition-none', filtersOpen && 'rotate-180')} aria-hidden />
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="grid grid-cols-2 gap-x-4 gap-y-3 pt-3 md:grid-cols-4">
+                <Field label="País" htmlFor="trend-country">
+                  <Input id="trend-country" value={country} onChange={(e) => setCountry(e.target.value.toUpperCase())} />
+                </Field>
+                <Field label="Idioma" htmlFor="trend-language">
+                  <Input id="trend-language" value={language} onChange={(e) => setLanguage(e.target.value)} />
+                </Field>
+                <Field label="Qtd. de ideias" htmlFor="trend-idea-count">
+                  <Input
+                    id="trend-idea-count"
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={ideaCount}
+                    onChange={(e) => setIdeaCount(Number(e.target.value) || 5)}
+                  />
+                </Field>
+                <Field label="Duração (min)" htmlFor="trend-duration">
+                  <Input
+                    id="trend-duration"
+                    type="number"
+                    min={1}
+                    max={60}
+                    value={durationMin}
+                    onChange={(e) => setDurationMin(Number(e.target.value) || 10)}
+                  />
+                </Field>
+              </CollapsibleContent>
+            </Collapsible>
+          </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] text-slate-300">
-                      <div className="rounded-lg bg-[#171226] p-2">
-                        <span className="font-semibold text-slate-200">Potencial de interesse:</span>{' '}
-                        {selectedIdea.interestPotential}
-                      </div>
-                      <div className="rounded-lg bg-[#171226] p-2">
-                        <span className="font-semibold text-slate-200">Diferencial editorial:</span>{' '}
-                        {selectedIdea.editorialDifferentiator}
-                      </div>
-                      <div className="rounded-lg bg-[#171226] p-2">
-                        <span className="font-semibold text-slate-200">Mídias disponíveis:</span>{' '}
-                        {selectedIdea.mediaAvailability}
-                      </div>
-                      <div className="rounded-lg bg-[#171226] p-2">
-                        <span className="font-semibold text-slate-200">Dificuldades de produção:</span>{' '}
-                        {selectedIdea.productionChallenges.join('; ')}
-                      </div>
-                    </div>
+          {/* Feedback */}
+          <div aria-live="polite" className="flex flex-col gap-2 empty:hidden">
+            {errorMessage && (
+              <Alert variant="destructive">
+                <AlertCircle aria-hidden />
+                <AlertDescription>{errorMessage}</AlertDescription>
+              </Alert>
+            )}
+            {statusMessage && !errorMessage && (
+              <Alert>
+                <CheckCircle2 className="text-success" aria-hidden />
+                <AlertDescription>{statusMessage}</AlertDescription>
+              </Alert>
+            )}
+            {activeSession && activeSession.providerWarnings.length > 0 && (
+              <Alert variant="warning">
+                <AlertTriangle aria-hidden />
+                <AlertDescription>
+                  {activeSession.providerWarnings.map((warn, idx) => (
+                    <p key={idx}>{warn}</p>
+                  ))}
+                </AlertDescription>
+              </Alert>
+            )}
+          </div>
 
-                    <div className="space-y-1">
-                      <div className="text-[11px] font-semibold text-slate-200">
-                        Evidências e fontes verificadas ({selectedIdea.evidences.length})
-                      </div>
-                      {selectedIdea.evidences.length === 0 ? (
-                        <div className="text-[11px] text-amber-300">
-                          Nenhuma fonte externa verificada foi encontrada para esta ideia neste período.
-                        </div>
-                      ) : (
-                        <ul className="space-y-1 text-[11px]">
-                          {selectedIdea.evidences.map((src, idx) => (
-                            <li key={`${src.url}_${idx}`} className="text-slate-300">
-                              <span className="text-purple-300">[{src.source}]</span>{' '}
-                              <a
-                                href={src.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="underline hover:text-white"
-                              >
-                                {src.title}
-                              </a>{' '}
-                              {src.publishedAt && (
-                                <span className="text-slate-400">
-                                  ({new Date(src.publishedAt).toLocaleDateString('pt-BR')})
-                                </span>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
+          {/* 2. Resultados */}
+          {!activeSession && !loadingSearch && (
+            <p className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+              Escolha um nicho e clique em <span className="font-medium text-foreground">Pesquisar tendências</span>. As ideias
+              aparecem aqui com fontes reais e um briefing pronto para editar.
+            </p>
+          )}
+          {activeSession && (
+            <div className="flex flex-col gap-3 border-t border-border pt-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-semibold tracking-tight">Ideias encontradas</h3>
+                  <Badge variant="muted">{searchResultsCount}</Badge>
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  {sessions.length > 1 && (
+                    <Select
+                      aria-label="Histórico de pesquisas de tendências"
+                      className="h-8 w-auto max-w-[260px] text-xs"
+                      value={activeSession.sessionId}
+                      onChange={(e) => {
+                        const found = sessions.find((s) => s.sessionId === e.target.value);
+                        if (found) {
+                          setActiveSession(found);
+                          setSelectedIdeaId(found.selectedIdeaId ?? found.ideas[0]?.ideaId ?? null);
+                        }
+                      }}
+                    >
+                      {sessions.map((s) => (
+                        <option key={s.sessionId} value={s.sessionId}>
+                          {s.config.niche}
+                          {s.config.subniche ? ` / ${s.config.subniche}` : ''} ({PERIOD_LABELS[s.config.period]}) · {s.ideas.length} ideias
+                        </option>
+                      ))}
+                    </Select>
+                  )}
+                  <Button type="button" variant="ghost" size="sm" disabled={loadingSearch} onClick={() => void handleSearch({ refresh: true })}>
+                    <RefreshCw aria-hidden /> Atualizar tendências
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" disabled={loadingSearch} onClick={() => void handleSearch({ appendMore: true })}>
+                    <Plus aria-hidden /> Pesquisar mais
+                  </Button>
+                </div>
+              </div>
 
-                    {loadingBriefing && (
-                      <div className="text-xs text-purple-300">
-                        Gerando briefing cinematográfico com os diretores RF-07...
-                      </div>
-                    )}
-
-                    {selectedBriefing && (
-                      <div className="space-y-2.5 border-t border-[#28213e] pt-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-white">
-                            Briefing Cinematográfico Automático (Editável)
-                          </span>
-                          <div className="flex flex-wrap gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => void handleSelectIdea(selectedIdea.ideaId, true)}
-                              className="rounded-lg border border-[#2d2647] bg-[#161124] px-2.5 py-1 text-[11px] text-slate-200 hover:border-purple-500/60"
-                            >
-                              Gerar outra abordagem
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleUseIdea}
-                              className="rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-semibold text-white hover:bg-emerald-500"
-                            >
-                              Usar esta ideia
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                          <div>
-                            <label className="block text-[10px] text-slate-400 mb-0.5">
-                              Objetivo do vídeo
-                            </label>
-                            <textarea
-                              rows={2}
-                              value={selectedBriefing.objective}
-                              onChange={(e) =>
-                                void handleUpdateBriefingField('objective', e.target.value)
-                              }
-                              className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2 py-1.5 text-[11px] text-white"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-slate-400 mb-0.5">
-                              Público-alvo
-                            </label>
-                            <textarea
-                              rows={2}
-                              value={selectedBriefing.targetAudience}
-                              onChange={(e) =>
-                                void handleUpdateBriefingField('targetAudience', e.target.value)
-                              }
-                              className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2 py-1.5 text-[11px] text-white"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-slate-400 mb-0.5">
-                              Gancho de abertura
-                            </label>
-                            <textarea
-                              rows={2}
-                              value={selectedBriefing.openingHook}
-                              onChange={(e) =>
-                                void handleUpdateBriefingField('openingHook', e.target.value)
-                              }
-                              className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2 py-1.5 text-[11px] text-white"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-slate-400 mb-0.5">
-                              Estrutura narrativa
-                            </label>
-                            <textarea
-                              rows={2}
-                              value={selectedBriefing.narrativeStructure}
-                              onChange={(e) =>
-                                void handleUpdateBriefingField('narrativeStructure', e.target.value)
-                              }
-                              className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2 py-1.5 text-[11px] text-white"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-slate-400 mb-0.5">
-                              Estilo de edição
-                            </label>
-                            <input
-                              type="text"
-                              value={selectedBriefing.editingStyle}
-                              onChange={(e) =>
-                                void handleUpdateBriefingField('editingStyle', e.target.value)
-                              }
-                              className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2 py-1.5 text-[11px] text-white"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-slate-400 mb-0.5">
-                              Narração e música
-                            </label>
-                            <input
-                              type="text"
-                              value={selectedBriefing.narrationAndMusic}
-                              onChange={(e) =>
-                                void handleUpdateBriefingField('narrationAndMusic', e.target.value)
-                              }
-                              className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2 py-1.5 text-[11px] text-white"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-slate-400 mb-0.5">
-                              SFX, VFX e motion graphics
-                            </label>
-                            <input
-                              type="text"
-                              value={selectedBriefing.sfxVfxMotion}
-                              onChange={(e) =>
-                                void handleUpdateBriefingField('sfxVfxMotion', e.target.value)
-                              }
-                              className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2 py-1.5 text-[11px] text-white"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-slate-400 mb-0.5">
-                              Humor contextual & Duração/Formato
-                            </label>
-                            <input
-                              type="text"
-                              value={`${selectedBriefing.contextualHumor} | ${selectedBriefing.durationAndFormat}`}
-                              onChange={(e) =>
-                                void handleUpdateBriefingField('contextualHumor', e.target.value)
-                              }
-                              className="w-full rounded-lg border border-[#2d2647] bg-[#140f22] px-2 py-1.5 text-[11px] text-white"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2 pt-1">
-                          <input
-                            type="text"
-                            value={refineInstruction}
-                            onChange={(e) => setRefineInstruction(e.target.value)}
-                            placeholder="Instrução para refinar o briefing (ex: foco em bastidores, mais ritmo)"
-                            className="flex-1 min-w-[220px] rounded-lg border border-[#2d2647] bg-[#140f22] px-2.5 py-1.5 text-xs text-white placeholder-slate-500"
-                          />
+              {activeSession.ideas.length === 0 ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  Nenhuma ideia com fonte verificável neste período. Tente outro nicho ou um período maior.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+                  <ul
+                    aria-label="Ideias encontradas"
+                    className="flex max-h-[min(60vh,640px)] flex-col gap-2 overflow-y-auto pr-1"
+                  >
+                    {activeSession.ideas.map((idea) => {
+                      const selected = idea.ideaId === selectedIdeaId;
+                      return (
+                        <li key={idea.ideaId}>
                           <button
                             type="button"
-                            disabled={loadingBriefing}
-                            onClick={() => void handleRefineBriefing()}
-                            className="rounded-lg border border-purple-500/60 bg-purple-900/30 px-3 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-900/50 disabled:opacity-50"
+                            aria-pressed={selected}
+                            onClick={() => void handleSelectIdea(idea.ideaId)}
+                            className={cn(
+                              'flex w-full cursor-pointer flex-col gap-1.5 rounded-lg border p-3 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                              selected ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/40 hover:bg-muted/40',
+                            )}
                           >
-                            Refinar briefing
+                            <span className="flex items-start justify-between gap-2">
+                              <span className="line-clamp-2 text-sm font-medium leading-snug">{idea.title}</span>
+                              <Badge variant={selected ? 'default' : 'secondary'} className="shrink-0">
+                                {FORMAT_LABELS[idea.format]} · {idea.suggestedDurationMin} min
+                              </Badge>
+                            </span>
+                            <span className="line-clamp-2 text-xs text-muted-foreground">{idea.summary}</span>
+                            <span className="line-clamp-1 text-xs text-foreground/80">
+                              <span className="font-medium text-primary">Por que agora:</span> {formatIsoDates(idea.whyNow)}
+                            </span>
+                            <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                              <span>{idea.evidences.length} fonte(s)</span>
+                              <span>Concorrência {idea.competitionLevel}</span>
+                            </span>
                           </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+
+                  <div className="relative max-h-[min(60vh,640px)] overflow-y-auto rounded-lg border border-border bg-card">
+                    {!selectedIdea ? (
+                      <p className="p-6 text-sm text-muted-foreground">
+                        Selecione uma ideia para ver fontes, parecer dos diretores e o briefing cinematográfico editável.
+                      </p>
+                    ) : (
+                      <>
+                        <div className="sticky top-0 z-10 flex flex-col gap-3 border-b border-border bg-card/95 p-4 backdrop-blur">
+                          <div className="flex flex-col gap-1">
+                            <p className="text-xs text-muted-foreground">
+                              {selectedIdea.niche} · {FORMAT_LABELS[selectedIdea.format]} · {selectedIdea.suggestedDurationMin} min · Tom{' '}
+                              {selectedIdea.narrativeTone}
+                            </p>
+                            <h4 className="text-base font-semibold leading-snug tracking-tight">{selectedIdea.title}</h4>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button type="button" size="sm" disabled={!selectedBriefing || loadingBriefing} onClick={handleUseIdea}>
+                              <Sparkles aria-hidden /> Usar esta ideia
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={loadingBriefing}
+                              onClick={() => void handleSelectIdea(selectedIdea.ideaId, true)}
+                            >
+                              <Shuffle aria-hidden /> Gerar outra abordagem
+                            </Button>
+                          </div>
                         </div>
-                      </div>
+
+                        <div className="flex flex-col gap-5 p-4">
+                          <dl className="grid grid-cols-1 gap-x-6 gap-y-3 text-sm md:grid-cols-2">
+                            {[
+                              ['Potencial de interesse', selectedIdea.interestPotential],
+                              ['Diferencial editorial', selectedIdea.editorialDifferentiator],
+                              ['Mídias disponíveis', selectedIdea.mediaAvailability],
+                              ['Dificuldades de produção', selectedIdea.productionChallenges.join('; ')],
+                            ].map(([term, value]) => (
+                              <div key={term} className="flex flex-col gap-0.5">
+                                <dt className="text-xs font-medium text-muted-foreground">{term}</dt>
+                                <dd className="text-[13px] leading-relaxed text-foreground/90">{value}</dd>
+                              </div>
+                            ))}
+                          </dl>
+
+                          <div className="flex flex-col gap-2">
+                            <h5 className="text-xs font-medium text-muted-foreground">
+                              Fontes verificadas ({selectedIdea.evidences.length})
+                            </h5>
+                            {selectedIdea.evidences.length === 0 ? (
+                              <p className="text-[13px] text-warning">
+                                Nenhuma fonte externa verificada foi encontrada para esta ideia neste período.
+                              </p>
+                            ) : (
+                              <ul className="flex flex-col gap-2">
+                                {selectedIdea.evidences.map((src, idx) => (
+                                  <li key={`${src.url}_${idx}`} className="flex items-start gap-2 text-[13px]">
+                                    <Badge variant="outline" className="mt-0.5 shrink-0">
+                                      {src.source}
+                                    </Badge>
+                                    <span className="min-w-0">
+                                      <a
+                                        href={src.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-foreground underline-offset-4 hover:text-primary hover:underline"
+                                      >
+                                        {src.title}
+                                        <ExternalLink className="ml-1 inline size-3 align-baseline" aria-hidden />
+                                        <span className="sr-only"> (abre em nova janela)</span>
+                                      </a>
+                                      {src.publishedAt && (
+                                        <span className="ml-1.5 text-xs text-muted-foreground">
+                                          {new Date(src.publishedAt).toLocaleDateString('pt-BR')}
+                                        </span>
+                                      )}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+
+                          {loadingBriefing && (
+                            <p className="flex items-center gap-2 text-sm text-muted-foreground" aria-live="polite">
+                              <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden />
+                              Gerando briefing cinematográfico com os diretores RF-07...
+                            </p>
+                          )}
+
+                          {selectedBriefing && (
+                            <div className="flex flex-col gap-3 border-t border-border pt-4">
+                              <div>
+                                <h5 className="text-sm font-semibold tracking-tight">Briefing cinematográfico</h5>
+                                <p className="text-xs text-muted-foreground">Gerado automaticamente. Edite antes de usar a ideia.</p>
+                              </div>
+                              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                {briefingFields.map(({ key, label, rows }) => (
+                                  <Field key={key} label={label} htmlFor={`trend-briefing-${key}`}>
+                                    <Textarea
+                                      id={`trend-briefing-${key}`}
+                                      rows={rows}
+                                      className="text-[13px]"
+                                      value={selectedBriefing[key]}
+                                      onChange={(e) => void handleUpdateBriefingField(key, e.target.value)}
+                                    />
+                                  </Field>
+                                ))}
+                              </div>
+                              <div className="flex flex-wrap items-end gap-2 pt-1">
+                                <div className="min-w-[220px] flex-1">
+                                  <Field label="Refinar com a IA" htmlFor="trend-refine">
+                                    <Input
+                                      id="trend-refine"
+                                      value={refineInstruction}
+                                      onChange={(e) => setRefineInstruction(e.target.value)}
+                                      placeholder="Ex.: foco em bastidores, mais ritmo"
+                                    />
+                                  </Field>
+                                </div>
+                                <Button type="button" variant="secondary" disabled={loadingBriefing} onClick={() => void handleRefineBriefing()}>
+                                  <Wand2 aria-hidden /> Refinar briefing
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </>
                     )}
-                  </>
-                )}
-              </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
-        </div>
+        </>
       )}
     </section>
   );
