@@ -94,6 +94,7 @@ interface PendingMediaSlotView {
   uncoveredIntervals?: Array<{ startSec: number; endSec: number }>;
   missingDurationSec?: number;
   attempts?: number;
+  editorialAlternatives?: Array<{ kind: string; detail: string; countsAsFootage: false }>;
   resolvedUri?: string;
   allowProcedural?: boolean;
 }
@@ -1219,6 +1220,13 @@ export function CinemaDirectorPanel() {
                       {slot.missingDurationSec !== undefined ? ` · faltam ${slot.missingDurationSec}s` : ''}
                       {slot.attempts !== undefined ? ` · ${slot.attempts} tentativa(s)` : ''}
                     </p>
+                  )}
+                  {slot.editorialAlternatives && slot.editorialAlternatives.length > 0 && (
+                    <ul className="space-y-1 text-[11px] text-sky-200/80">
+                      {slot.editorialAlternatives.map((alternative) => (
+                        <li key={alternative.kind}>Alternativa editorial ({alternative.kind}): {alternative.detail}</li>
+                      ))}
+                    </ul>
                   )}
                   <p className="text-[11px] text-muted-foreground">{slot.reason}</p>
                   <div className="flex flex-wrap gap-2">

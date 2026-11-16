@@ -240,6 +240,7 @@ describe('Scene Grounding Real E2E Integration Audit', () => {
       expect(job.coverageReport?.coverageRatio ?? 1).toBeLessThan(0.8);
       expect(job.pendingMedia.length).toBeGreaterThan(0);
       expect(job.pendingMedia.some((slot) => (slot.uncoveredIntervals?.length ?? 0) > 0)).toBe(true);
+      expect(job.pendingMedia[0]?.editorialAlternatives?.every((alternative) => alternative.countsAsFootage === false)).toBe(true);
       expect(job.autonomousAudit?.recoveryAttempts.length).toBeGreaterThan(0);
       expect(job.autonomousAudit?.affectedSegmentIds.length).toBeGreaterThan(0);
       expect(latestRender).toBeUndefined();

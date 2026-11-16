@@ -102,6 +102,11 @@ export interface PendingMediaSlot {
   uncoveredIntervals?: Array<{ startSec: number; endSec: number }>;
   missingDurationSec?: number;
   attempts?: number;
+  editorialAlternatives?: Array<{
+    kind: 'explanatory_graphic' | 'localized_editorial_adjustment';
+    detail: string;
+    countsAsFootage: false;
+  }>;
   resolvedUri?: string;
   allowProcedural?: boolean;
 }
@@ -1587,6 +1592,7 @@ export class StagedCinemaPipeline {
                 uncoveredIntervals: gap.uncoveredIntervals,
                 missingDurationSec: gap.missingDurationSec,
                 attempts: gap.attempts,
+                editorialAlternatives: gap.editorialAlternatives,
               });
             }
           }
