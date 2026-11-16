@@ -1,0 +1,110 @@
+{
+  "summary": {
+    "generatedAt": "2026-11-15T23:53:27.645Z",
+    "model": "openai/clip-vit-base-patch32 (image embeddings)",
+    "rules": {
+      "minTargetReferences": 3,
+      "minDistractorReferences": 3,
+      "minTargetSimilarity": 0.8,
+      "minMargin": 0.05,
+      "authenticProvenances": [
+        "official_media",
+        "licensed_reference",
+        "real_video_frame",
+        "user_supplied_reference"
+      ]
+    },
+    "references": {
+      "targets": 3,
+      "distractors": 4
+    },
+    "truePositives": 0,
+    "falseNegatives": 2,
+    "trueNegatives": 5,
+    "falsePositives": 0,
+    "caveats": [
+      "Only 3 target references and 2 held-out controls from 2 VODs: statistically weak; thresholds were fixed before this run and not tuned.",
+      "The game lock-on marker sits on Malenia in targets and controls and on none of the distractors: a possible confound.",
+      "References were curated by Claude visual review; human confirmation pending."
+    ]
+  },
+  "results": [
+    {
+      "id": "control:controls/vod1-t9300.png",
+      "path": "C:\\dev\\neuralbridge-studio\\.claude\\worktrees\\cs9-image-validation-reference-cb8110\\artifacts\\cs9-reference-set\\identity-references\\malenia\\controls\\vod1-t9300.png",
+      "expected": "confirmed",
+      "status": "not_confirmed",
+      "targetScore": 0.8254,
+      "bestDistractorScore": 0.832,
+      "bestDistractorLabel": "Elden Ring (no Malenia) t=6600",
+      "margin": -0.0066,
+      "correct": false
+    },
+    {
+      "id": "control:controls/vod2-t4600.png",
+      "path": "C:\\dev\\neuralbridge-studio\\.claude\\worktrees\\cs9-image-validation-reference-cb8110\\artifacts\\cs9-reference-set\\identity-references\\malenia\\controls\\vod2-t4600.png",
+      "expected": "confirmed",
+      "status": "not_confirmed",
+      "targetScore": 0.8108,
+      "bestDistractorScore": 0.8067,
+      "bestDistractorLabel": "Elden Ring (no Malenia) t=6600",
+      "margin": 0.0041,
+      "correct": false
+    },
+    {
+      "id": "cs9-malenia-step3",
+      "path": "C:\\dev\\neuralbridge-studio\\.claude\\worktrees\\cs9-image-validation-reference-cb8110\\artifacts\\cs9-real-generation\\elden-ring-malenia-step3.png",
+      "expected": "not_confirmed",
+      "status": "not_confirmed",
+      "targetScore": 0.4116,
+      "bestDistractorScore": 0.4959,
+      "bestDistractorLabel": "Elden Ring (no Malenia) t=3900",
+      "margin": -0.0843,
+      "correct": true
+    },
+    {
+      "id": "cs9-johnny-step2",
+      "path": "C:\\dev\\neuralbridge-studio\\.claude\\worktrees\\cs9-image-validation-reference-cb8110\\artifacts\\cs9-real-generation\\cyberpunk-2077-johnny-silverhand-step2.png",
+      "expected": "not_confirmed",
+      "status": "not_confirmed",
+      "targetScore": 0.5415,
+      "bestDistractorScore": 0.5882,
+      "bestDistractorLabel": "Elden Ring (no Malenia) t=3000",
+      "margin": -0.0467,
+      "correct": true
+    },
+    {
+      "id": "cs9-hornet-step3",
+      "path": "C:\\dev\\neuralbridge-studio\\.claude\\worktrees\\cs9-image-validation-reference-cb8110\\artifacts\\cs9-real-generation\\silksong-hornet-step3.png",
+      "expected": "not_confirmed",
+      "status": "not_confirmed",
+      "targetScore": 0.488,
+      "bestDistractorScore": 0.5868,
+      "bestDistractorLabel": "Elden Ring (no Malenia) t=3900",
+      "margin": -0.0987,
+      "correct": true
+    },
+    {
+      "id": "cs9-cyberpunk-B",
+      "path": "C:\\dev\\neuralbridge-studio\\.claude\\worktrees\\cs9-image-validation-reference-cb8110\\artifacts\\cs9-real-generation\\cyberpunk-2077-concept-B-environmental_story.png",
+      "expected": "not_confirmed",
+      "status": "not_confirmed",
+      "targetScore": 0.526,
+      "bestDistractorScore": 0.5756,
+      "bestDistractorLabel": "Elden Ring (no Malenia) t=3000",
+      "margin": -0.0496,
+      "correct": true
+    },
+    {
+      "id": "cs8-implante",
+      "path": "C:\\dev\\neuralbridge-studio\\.claude\\worktrees\\cs9-image-validation-reference-cb8110\\artifacts\\creative-studio-cs8\\cyberpunk-2077-concept-A-implante-secreto.png",
+      "expected": "not_confirmed",
+      "status": "not_confirmed",
+      "targetScore": 0.4613,
+      "bestDistractorScore": 0.5218,
+      "bestDistractorLabel": "Elden Ring (no Malenia) t=4800",
+      "margin": -0.0605,
+      "correct": true
+    }
+  ]
+}

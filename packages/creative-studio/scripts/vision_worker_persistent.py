@@ -193,6 +193,29 @@ class PersistentWorker:
             "scores": {labels[i]: round(float(cal_scores[i]), 4) for i in range(len(labels))},
         }
 
+    def handle_embed_images(self, args: dict) -> dict:
+        """CS-9: L2-normalised CLIP image embeddings, used for image-to-image identity comparison."""
+        import torch
+        from PIL import Image
+
+        model_id = args.get("clip_model", "openai/clip-vit-base-patch32")
+        model, processor = self._get_clip(model_id)
+        paths = [p for p in args["images"].split("|") if p.strip()]
+        if not paths:
+            raise ValueError("At least one image path required.")
+        images = [Image.open(p).convert("RGB") for p in paths]
+        inputs = processor(images=images, return_tensors="pt").to(self._device)
+        with torch.no_grad():
+            feats = model.get_image_features(**inputs)
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+        return {
+            "ok": True,
+            "mode": "embed-images",
+            "model": model_id,
+            "device": self._device,
+            "embeddings": [[round(float(v), 6) for v in row] for row in feats.detach().cpu().tolist()],
+        }
+
     def handle_shutdown(self, args: dict) -> dict:
         import torch
         if self._device == "cuda":
@@ -210,6 +233,8 @@ class PersistentWorker:
                 return self.handle_generate(cmd)
             elif mode == "evaluate-semantic":
                 return self.handle_evaluate_semantic(cmd)
+            elif mode == "embed-images":
+                return self.handle_embed_images(cmd)
             elif mode == "shutdown":
                 return self.handle_shutdown(cmd)
             else:

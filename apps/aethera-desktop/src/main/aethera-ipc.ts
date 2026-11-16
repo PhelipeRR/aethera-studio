@@ -10,6 +10,8 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } 
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
+import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
+import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
 import {
   estimateSystemBackup,
   exportSystemBackup,
@@ -133,6 +135,7 @@ import {
   DerivativeService,
   fetchPublicPage,
   IgdbClient,
+  pickExactGame,
   ProductionRunService,
   productionBriefFromContentProject,
   RawgClient,
@@ -309,11 +312,17 @@ export function registerAetheraDomainIpc(options: {
   const claude = new ClaudeCliAdapter({ resolveEnv: resolveClaudeGatewayEnv });
   const codex = new CodexCliAdapter();
   const agents = [claude, codex];
+  let creativeAuthenticSource: AuthenticMediaSource | null = null;
   const creativeStudioService = database.handle
     ? new AetheraCreativeStudioService({
         db: database.handle.db,
         userDataDir,
         resolveClaudeGatewayEnv,
+        // CS-9: authentic media from the sources Aethera already ships, bound below once ytDlp/IGDB/ffmpeg exist.
+        authenticMediaSource: {
+          id: 'aethera-existing-sources',
+          acquire: (request) => (creativeAuthenticSource ? creativeAuthenticSource.acquire(request) : Promise.resolve(null)),
+        },
       })
     : null;
   if (creativeStudioService) {
@@ -1149,6 +1158,44 @@ export function registerAetheraDomainIpc(options: {
 
   const ytDlp = defaultYtDlp();
   const studioMediaTools = motionMediaTools(motionApp());
+  creativeAuthenticSource = createCinemaAuthenticMediaSource({
+    mediaDir: join(userDataDir, 'creative-studio', 'authentic-media'),
+    localMediaDirs: (() => {
+      const dirs = [join(userDataDir, 'cinema-media')];
+      try { dirs.push(videoRoot()); } catch { /* no video project configured yet */ }
+      return dirs;
+    })(),
+    ytDlpSearchFn: (q, count, sig) => ytDlpSearch(ytDlp, q, count, sig),
+    ytDlpAcquireFn: async (targetUrl, idx, dir, sig, downloadSection) => {
+      const relativeDir = `acq_${idx}`;
+      mkdirSync(join(dir, relativeDir), { recursive: true });
+      const out = await acquireWithYtDlp({
+        ytDlp,
+        url: targetUrl,
+        root: dir,
+        relativeDir,
+        fileStem: 'source',
+        maxHeight: 720,
+        downloadSection: downloadSection ?? '*0:00-0:45',
+        maxFilesize: '60M',
+        ...(sig ? { signal: sig } : {}),
+        ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),
+      });
+      return out.relativePath ? join(dir, out.relativePath) : null;
+    },
+    ...(studioMediaTools ? { ffmpegPath: studioMediaTools.ffmpeg } : {}),
+    igdbImages: async (query, sig) => {
+      if (!igdbSecretStore.load()) return [];
+      const games = await igdbClient.searchGames(query, sig);
+      const game = pickExactGame(query, games) ?? games[0];
+      if (!game) return [];
+      const toUrl = (id: string) => `https://images.igdb.com/igdb/image/upload/t_1080p/${id}.jpg`;
+      return [
+        ...(game.screenshots ?? []).map((i: { image_id: string }) => ({ url: toUrl(i.image_id), title: `${game.name} — screenshot`, kind: 'screenshot' as const })),
+        ...(game.artworks ?? []).map((i: { image_id: string }) => ({ url: toUrl(i.image_id), title: `${game.name} — artwork`, kind: 'artwork' as const })),
+      ];
+    },
+  });
   const mediaLibrary = database.handle ? new VelixDiscoveryRepository(database.handle.db) : null;
   const gameResearchAdapter = studioRepository ? createGameResearchStageAdapter({ repository: studioRepository, igdb: () => (igdbSecretStore.load() ? igdbClient : null), rawg: () => (rawgClient.configured() ? rawgClient : null), fetchPage: fetchPublicPage }) : null;
   const mediaDiscoveryAdapter = studioRepository && mediaLibrary ? createMediaDiscoveryStageAdapter({ repository: studioRepository, library: mediaLibrary, igdb: () => (igdbSecretStore.load() ? igdbClient : null), videoInfo: (urls, signal) => ytDlpVideoInfo(ytDlp, urls, signal), search: (query, count, signal) => ytDlpSearch(ytDlp, query, count, signal) }) : null;

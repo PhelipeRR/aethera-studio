@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import type { AssetIngestionService } from './asset-ingestion.js';
+import type { AuthenticMediaSource } from './authentic-media-source.js';
 import type { ExternalImageAdapter, SharpSvgCompositionEngine } from './image-generation-adapter.js';
 import type { QualityGateService } from './quality-gate.js';
 import { evaluateVisualContent } from './visual-content-gate.js';
@@ -50,6 +51,8 @@ export interface ConceptEngineInput {
   height?: number;
   /** Genre hint for VisualContentGate subject-expectation calibration */
   genre?: 'games' | 'anime' | 'documentary' | 'general';
+  /** CS-9: character whose identity the piece claims (e.g. "Malenia"); authentic media must name it. */
+  identitySubject?: string;
 }
 
 export interface AcquiredMediaItem {
@@ -58,6 +61,8 @@ export interface AcquiredMediaItem {
   asset: ManagedAssetRef;
   provenance: MediaProvenance;
   description: string;
+  /** CS-9: where authentic media came from (URL, license, origin provider). */
+  source?: { origin: string; sourceUrl: string; license: string; title?: string; frameTimestampSec?: number };
 }
 
 export interface ConceptLabProposalResult {
@@ -231,6 +236,8 @@ export class ConceptDrivenEngine {
     private readonly options?: {
       imageAdapter?: ExternalImageAdapter | null;
       providers?: ReasoningEngineProvider[];
+      /** CS-9: existing authentic sources (local library, Wikimedia, Internet Archive, Sakugabooru, yt-dlp). */
+      authenticMediaSource?: AuthenticMediaSource | null;
     },
   ) {}
 
@@ -731,6 +738,42 @@ export class ConceptDrivenEngine {
         }
       }
 
+      // CS-9: content-faithful and authentic-gameplay concepts try the existing authentic sources BEFORE any
+      // synthetic generation. Provenance is whatever the source proves; AI is never relabelled as authentic.
+      let source: AcquiredMediaItem['source'];
+      const wantsAuthentic = input.fidelityMode === 'content_faithful' || input.fidelityMode === 'authentic_gameplay';
+      const authenticSource = this.options?.authenticMediaSource;
+      if (!chosenAsset && wantsAuthentic && authenticSource) {
+        const query = (input.title ?? input.headline ?? input.prompt).replace(/[—:|]+/g, ' ').replace(/\s+/g, ' ').trim();
+        const found = await authenticSource
+          .acquire({
+            query,
+            role: req.role,
+            ...(input.identitySubject ? { subject: input.identitySubject } : {}),
+            ...(input.genre ? { genre: input.genre } : {}),
+          })
+          .catch(() => null);
+        if (found) {
+          chosenAsset = await this.ingestion.ingestFile({ sourcePath: found.imagePath, kind: 'image' });
+          actualProvenance = found.provenance;
+          source = {
+            origin: found.origin,
+            sourceUrl: found.sourceUrl,
+            license: found.license,
+            ...(found.title ? { title: found.title } : {}),
+            ...(found.frameTimestampSec !== undefined ? { frameTimestampSec: found.frameTimestampSec } : {}),
+          };
+          desc = `Mídia autêntica (${found.origin}, ${found.license}): ${found.title ?? found.sourceUrl}`;
+        }
+      }
+      if (!chosenAsset && input.fidelityMode === 'authentic_gameplay') {
+        throw new Error(
+          `[AuthenticMedia] Modo Gameplay Autêntico exige mídia real para "${req.id}" (role=${req.role}); ` +
+            `nenhuma fonte autêntica retornou resultado${authenticSource ? '' : ' (nenhuma fonte configurada)'}. ` +
+            `Geração sintética não substitui gameplay autêntico.`,
+        );
+      }
+
       if (!chosenAsset && adapter && adapter.generateImage && adapterAvailable) {
         try {
           let refPaths: string[] | undefined;
@@ -841,6 +884,7 @@ export class ConceptDrivenEngine {
         asset: chosenAsset,
         provenance: actualProvenance,
         description: desc,
+        ...(source ? { source } : {}),
       });
     }
 

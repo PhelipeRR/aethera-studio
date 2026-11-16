@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { approvalStatesSchema } from './approval-states.js';
 
 export const CREATIVE_PROJECT_SCHEMA_VERSION = 1 as const;
 
@@ -362,6 +363,8 @@ export const creativeProjectDocumentSchema = z.object({
   tags: z.array(z.string()).default([]),
   approvedBy: z.string().optional(),
   approvedAt: z.string().optional(),
+  /** CS-9: independent technical / semantic-fidelity / human-aesthetic states (see approval-states.ts). */
+  approvalStates: approvalStatesSchema.optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 });
@@ -398,6 +401,8 @@ export const qualityAuditReportSchema = z.object({
   findings: z.array(qualityAuditFindingSchema),
   scorecard: heuristicScorecardSchema,
   checkedAt: z.string().min(1),
+  /** CS-9: per-text-layer measurements from rendered glyph geometry (see typography-geometry-audit.ts). */
+  typographyGeometry: z.array(z.record(z.string(), z.unknown())).optional(),
 });
 export type QualityAuditReport = z.infer<typeof qualityAuditReportSchema>;
 
@@ -432,6 +437,9 @@ export const mediaProvenanceSchema = z.enum([
   'synthetic_video_frame',
   'ai_generated',
   'brand_asset',
+  // CS-9: still images from existing authentic sources (official media / licensed or open references).
+  'official_media',
+  'licensed_reference',
 ]);
 export type MediaProvenance = z.infer<typeof mediaProvenanceSchema>;
 

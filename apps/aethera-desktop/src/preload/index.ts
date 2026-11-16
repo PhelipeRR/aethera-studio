@@ -176,6 +176,10 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeEditLayer: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:edit-layer', input),
   creativeExport: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:export', input),
   creativeApprove: (input: { projectId: string; approvedBy: string }) => ipcRenderer.invoke('creative:approve', input),
+  creativeAestheticDecision: (input: { projectId: string; decision: 'approved' | 'rejected'; reviewer: string; notes?: string }) =>
+    ipcRenderer.invoke('creative:aesthetic-decision', input),
+  creativeEvaluateTechnical: (projectId: string) => ipcRenderer.invoke('creative:evaluate-technical', projectId),
+  creativeApprovalStatus: (projectId: string) => ipcRenderer.invoke('creative:approval-status', projectId),
   creativeIngestFile: (input: { sourcePath: string; kind: string }) => ipcRenderer.invoke('creative:ingest-file', input),
   creativeAiStatus: () => ipcRenderer.invoke('creative:ai-status'),
 });

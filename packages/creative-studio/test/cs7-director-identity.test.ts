@@ -232,7 +232,7 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
       expect(variants).toHaveLength(3);
       for (const v of variants) {
         expect(v.editorialRationale.length).toBeGreaterThan(40);
-        expect(v.audit.passed, `${topic.title} variant ${v.label}`).toBe(true);
+        expect(v.audit.passed, `${topic.title} variant ${v.label}: ${v.audit.findings.filter((f) => f.severity === "critical").map((f) => f.code + " " + f.message).join(" | ")}`).toBe(true);
       }
     }
 
@@ -257,7 +257,7 @@ describe('CS-7 — Visual Quality, Creative Director Agent & Persistent Identity
     expect(bannerAudit.findings.some((f) => f.code === 'BANNER_BRAND_REDUNDANCY' && f.severity === 'critical')).toBe(true);
     expect(bannerAudit.findings.some((f) => f.code === 'BANNER_SAFE_AREA_VIOLATION' && f.severity === 'critical')).toBe(true);
     expect(bannerAudit.passed).toBe(false);
-  });
+  }, 30_000); // CS-9: each of the 9 Thumbnail Lab variants now runs the pixel-level typography geometry audit.
 
   it('regenerates real CS-7 artifacts with adaptive segmentation, clean AI background, distinct A/B/C layouts, and persistent mascot identity', async () => {
     const ai = new LocalPythonAiAdapter();

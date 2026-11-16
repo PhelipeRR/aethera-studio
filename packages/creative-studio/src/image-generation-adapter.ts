@@ -807,10 +807,16 @@ export class SharpSvgCompositionEngine {
       }
 
       case 'text': {
+        // Vertical spines are laid out horizontally in a virtual (H×W) box and rotated -90° into the layer box,
+        // so the line runs along the tall side (reads bottom-to-top, like a book spine). Laying the text out in
+        // the narrow width and rotating around the centre pushed every glyph outside the viewport (CS-9 finding).
+        const isVerticalSpine = layer.orientation === 'vertical';
+        const layoutW = isVerticalSpine ? targetH : targetW;
+        const layoutH = isVerticalSpine ? targetW : targetH;
         const fit = fitTextToBox({
           text: layer.text,
-          targetW,
-          targetH,
+          targetW: layoutW,
+          targetH: layoutH,
           fontSize: layer.fontSize,
           lineHeight: layer.lineHeight,
           letterSpacing: layer.letterSpacing,
@@ -821,18 +827,18 @@ export class SharpSvgCompositionEngine {
         const lines = fit.lines;
         const lineHeightPx = Math.round(fittedFs * layer.lineHeight);
         const anchor = layer.align === 'center' ? 'middle' : layer.align === 'right' ? 'end' : 'start';
-        const pad = Math.min(18, Math.round(targetW * 0.03));
-        const textX = layer.align === 'center' ? Math.round(targetW / 2) : layer.align === 'right' ? targetW - pad : pad;
+        const pad = Math.min(18, Math.round(layoutW * 0.03));
+        const textX = layer.align === 'center' ? Math.round(layoutW / 2) : layer.align === 'right' ? layoutW - pad : pad;
 
         let pillSvg = '';
         if (layer.pillColor) {
-          const pillW = Math.min(targetW, Math.max(80, fit.estimatedMaxLineWidth + pad * 2.2));
-          const pillH = Math.min(targetH, Math.max(28, Math.round(fit.estimatedTotalHeight + 14)));
+          const pillW = Math.min(layoutW, Math.max(80, fit.estimatedMaxLineWidth + pad * 2.2));
+          const pillH = Math.min(layoutH, Math.max(28, Math.round(fit.estimatedTotalHeight + 14)));
           const pillX =
             layer.align === 'center'
-              ? Math.round((targetW - pillW) / 2)
+              ? Math.round((layoutW - pillW) / 2)
               : layer.align === 'right'
-                ? targetW - pillW
+                ? layoutW - pillW
                 : 0;
           const rx = layer.pillRadius ?? 8;
           pillSvg = `<rect x="${pillX}" y="0" width="${Math.round(pillW)}" height="${pillH}" rx="${rx}" ry="${rx}" fill="${escapeXml(layer.pillColor)}"/>`;
@@ -867,7 +873,7 @@ export class SharpSvgCompositionEngine {
         const buildTextNodes = (dx: number, dy: number, fillOverride?: string, isExtrude = false): string =>
           lines
             .map((line, idx) => {
-              const yPos = Math.round(fittedFs + (layer.pillColor ? 4 : 0) + idx * lineHeightPx) + dy;
+              const yPos = Math.round(fittedFs + (layer.pillColor ? 4 : 0) + (isVerticalSpine ? pad : 0) + idx * lineHeightPx) + dy;
               const strokeAttrs =
                 !isExtrude && layer.strokeWidth > 0
                   ? `stroke="${escapeXml(layer.strokeColor)}" stroke-width="${layer.strokeWidth}" paint-order="stroke fill"`
@@ -886,10 +892,10 @@ export class SharpSvgCompositionEngine {
         const mainTspans = buildTextNodes(0, 0);
         const skewX = layer.perspectiveSkewXDeg ?? 0;
         const skewY = layer.perspectiveSkewYDeg ?? 0;
-        const isVert = layer.orientation === 'vertical';
         const groupTransforms: string[] = [];
-        if (isVert) {
-          groupTransforms.push(`translate(${Math.round(targetW / 2)}, ${Math.round(targetH / 2)}) rotate(-90) translate(${-Math.round(targetW / 2)}, ${-Math.round(targetH / 2)})`);
+        if (isVerticalSpine) {
+          // Maps the virtual layoutW×layoutH (= targetH×targetW) box onto the targetW×targetH layer box.
+          groupTransforms.push(`translate(0, ${targetH}) rotate(-90)`);
         }
         if (skewX !== 0 || skewY !== 0) {
           groupTransforms.push(`skewX(${skewX}) skewY(${skewY})`);

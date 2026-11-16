@@ -19,6 +19,13 @@ import {
   creativeProjectDocumentSchema,
   generateTypographyConceptLab,
   type AlignTarget,
+  type AuthenticMediaSource,
+  type ApprovalStates,
+  type ReleaseReadiness,
+  defaultApprovalStates,
+  recordHumanAestheticDecision,
+  recordTechnicalAudit,
+  releaseReadiness,
   type BrandKit,
   type BrandKitStore,
   type CreativeArtType,
@@ -76,6 +83,8 @@ export interface CreativeStudioServiceOptions {
   ffmpegPath?: string;
   ffprobePath?: string;
   resolveClaudeGatewayEnv?: () => Record<string, string | undefined>;
+  /** CS-9: authentic media from the existing Aethera sources (see creative-authentic-media.ts). */
+  authenticMediaSource?: AuthenticMediaSource | null;
 }
 
 export class AetheraCreativeStudioService {
@@ -125,6 +134,7 @@ export class AetheraCreativeStudioService {
     this.conceptEngine = new ConceptDrivenEngine(this.ingestion, this.engine, this.qualityGate, {
       imageAdapter: this.imageAdapter,
       providers,
+      authenticMediaSource: options.authenticMediaSource ?? null,
     });
   }
 
@@ -457,7 +467,7 @@ export class AetheraCreativeStudioService {
         ...(input.headline ? { headline: input.headline } : {}),
         brandKit,
       },
-      compositionEngine: this.compositionEngine,
+      compositionEngine: this.engine,
     });
     const variants: Array<{
       label: 'A' | 'B' | 'C';
@@ -518,26 +528,56 @@ export class AetheraCreativeStudioService {
     };
   }
 
-  async approveProject(projectId: string, approvedBy: string): Promise<CreativeProjectDocument> {
+  /** Technical state only: re-runs the automated gate and records it without touching the human decision. */
+  async evaluateTechnicalApproval(projectId: string): Promise<CreativeProjectDocument> {
     const doc = this.loadDocument(projectId);
     if (!doc) throw new Error(`Creative project not found: ${projectId}`);
     const brandKit = doc.brandKitId ? this.brandKits.get(doc.brandKitId) : null;
     const audit = await this.qualityGate.auditProject(doc, { brandKit });
-    if (!audit.passed) {
-      throw new Error(
-        `Aprovação bloqueada pelo Quality Gate (${audit.criticalCount} problema(s) crítico(s)): ${audit.findings
-          .filter((f) => f.severity === 'critical')
-          .map((f) => f.message)
-          .join('; ')}`,
-      );
-    }
+    const states = recordTechnicalAudit(doc.approvalStates ?? defaultApprovalStates(), audit);
+    return this.saveDocument({ ...doc, approvalStates: states, updatedAt: new Date().toISOString() });
+  }
+
+  /**
+   * Human aesthetic decision. It is recorded as given by the named reviewer and is NOT blocked by the technical
+   * gate (independent states); the technical state is refreshed alongside so both are visible, and release
+   * readiness requires technical + semantic fidelity + human approval.
+   */
+  async recordAestheticDecision(
+    projectId: string,
+    decision: 'approved' | 'rejected',
+    reviewer: string,
+    notes?: string,
+  ): Promise<{ document: CreativeProjectDocument; readiness: ReleaseReadiness }> {
+    const technical = await this.evaluateTechnicalApproval(projectId);
+    const states = recordHumanAestheticDecision(technical.approvalStates ?? defaultApprovalStates(), {
+      decision,
+      reviewer,
+      ...(notes ? { notes } : {}),
+    });
     const updated: CreativeProjectDocument = {
-      ...doc,
-      approvedBy: approvedBy.trim() || 'Criador',
-      approvedAt: new Date().toISOString(),
+      ...technical,
+      approvalStates: states,
+      // Legacy fields mirror ONLY the human aesthetic approval.
+      ...(decision === 'approved'
+        ? { approvedBy: states.humanAesthetic.reviewer, approvedAt: states.humanAesthetic.decidedAt }
+        : { approvedBy: undefined, approvedAt: undefined }),
       updatedAt: new Date().toISOString(),
     };
-    return this.saveDocument(updated);
+    const saved = this.saveDocument(updated);
+    return { document: saved, readiness: releaseReadiness(states) };
+  }
+
+  /** Kept for the existing IPC contract: records a human aesthetic approval (no longer gated by QualityGate). */
+  async approveProject(projectId: string, approvedBy: string): Promise<CreativeProjectDocument> {
+    return (await this.recordAestheticDecision(projectId, 'approved', approvedBy.trim() || 'Criador')).document;
+  }
+
+  approvalStatus(projectId: string): { states: ApprovalStates; readiness: ReleaseReadiness } {
+    const doc = this.loadDocument(projectId);
+    if (!doc) throw new Error(`Creative project not found: ${projectId}`);
+    const states = doc.approvalStates ?? defaultApprovalStates();
+    return { states, readiness: releaseReadiness(states) };
   }
 }
 
@@ -729,6 +769,22 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
 
   ipcMain.handle('creative:approve', async (_ev, input: { projectId: string; approvedBy: string }) => {
     return service.approveProject(input.projectId, input.approvedBy);
+  });
+
+  ipcMain.handle(
+    'creative:aesthetic-decision',
+    async (_ev, input: { projectId: string; decision: 'approved' | 'rejected'; reviewer: string; notes?: string }) => {
+      return service.recordAestheticDecision(input.projectId, input.decision, input.reviewer, input.notes);
+    },
+  );
+
+  ipcMain.handle('creative:evaluate-technical', async (_ev, projectId: string) => {
+    const doc = await service.evaluateTechnicalApproval(projectId);
+    return service.approvalStatus(doc.id);
+  });
+
+  ipcMain.handle('creative:approval-status', async (_ev, projectId: string) => {
+    return service.approvalStatus(projectId);
   });
 
   ipcMain.handle('creative:ingest-file', async (_ev, input: { sourcePath: string; kind: ManagedAssetRef['kind'] }) => {
