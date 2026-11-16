@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { ART_SPECIFICATIONS, type BrandKit, type CreativeArtType } from './schemas.js';
+import { getProfessionalPreset, resolveProfessionalPreset, type ProfessionalPresetId } from './creative-presets.js';
 
 /**
  * CF-1 — Visual recipe: turns the user's brief (any language), the creative direction from the reasoning engines and
@@ -39,6 +40,7 @@ export interface TextSafeZone {
 
 export interface VisualRecipe {
   preset: VisualPresetId;
+  professionalPreset: ProfessionalPresetId;
   positivePrompt: string;
   negativePrompt: string;
   seed: number;
@@ -50,6 +52,10 @@ export interface VisualRecipe {
   source: 'deterministic' | 'reasoning_engine';
   /** Visual terms recognised in the brief (for traceability in the console / reports). */
   recognisedTerms: string[];
+  steps: number;
+  cfg: number;
+  samplerName: string;
+  scheduler: string;
 }
 
 export interface VisualRecipeInput {
@@ -63,6 +69,7 @@ export interface VisualRecipeInput {
   seedKey?: string;
   /** Max side of the generation size (default 1024). */
   maxSide?: number;
+  professionalPreset?: ProfessionalPresetId;
 }
 
 /** Ordered pt-BR/EN visual vocabulary → English phrase. Longer, more specific patterns first. */
@@ -248,6 +255,8 @@ function stripBrandTokens(value: string, banned: string[]): string {
 
 export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
   const preset = detectVisualPreset(input.artType, input.prompt);
+  const professionalPresetId = input.professionalPreset ?? resolveProfessionalPreset(input.artType, input.prompt);
+  const professionalPreset = getProfessionalPreset(professionalPresetId);
   const direction = input.direction ?? null;
   const recognised: string[] = [];
   for (const [pattern, phrase] of VISUAL_GLOSSARY) {
@@ -270,6 +279,7 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
 
   const subject = direction?.subject ?? DEFAULT_SUBJECT[preset];
   const parts = [
+    input.professionalPreset ? professionalPreset.promptPrefix : undefined,
     direction?.style ?? PRESET_STYLE[preset],
     subject,
     COMPOSITION[input.artType],
@@ -300,14 +310,19 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
 
   return {
     preset,
+    professionalPreset: professionalPresetId,
     positivePrompt,
-    negativePrompt: BASE_NEGATIVE,
+    negativePrompt: `${BASE_NEGATIVE}, ${professionalPreset.negativePrompt}`,
     seed,
     width,
     height,
     textSafeZones: textSafeZonesFor(input.artType),
     source: direction && (direction.subject || direction.setting || direction.style) ? 'reasoning_engine' : 'deterministic',
     recognisedTerms: recognised,
+    steps: professionalPreset.steps,
+    cfg: professionalPreset.cfg,
+    samplerName: professionalPreset.samplerName,
+    scheduler: professionalPreset.scheduler,
   };
 }
 

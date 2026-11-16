@@ -44,6 +44,7 @@ import {
   type LayerTransform,
   type ManagedAssetRef,
   type QualityAuditReport,
+  type ProfessionalPresetId,
   type ReasoningEngineProvider,
   type ThumbnailLabVariant,
   type VideoSceneHint,
@@ -127,11 +128,13 @@ export class AetheraCreativeStudioService {
   readonly conceptEngine: ConceptDrivenEngine;
   private readonly editors = new Map<string, LayeredDocumentEditor>();
   private readonly productionConsole: ProductionConsoleService | undefined;
+  private readonly comfyUiEndpoint: string | undefined;
   /** Console job of the creative execution in progress; concurrent thumbnails each carry their own. */
   private readonly consoleJob = new AsyncLocalStorage<CreativeConsoleJob>();
 
   constructor(options: CreativeStudioServiceOptions) {
     this.productionConsole = options.productionConsole;
+    this.comfyUiEndpoint = options.comfyUiEndpoint;
     this.repo = new AetheraCreativeStudioRepository(options.db);
     this.storageRoot = join(options.userDataDir, 'creative-studio');
     this.ingestion = new AssetIngestionService({
@@ -174,14 +177,18 @@ export class AetheraCreativeStudioService {
   }
 
   async imageEngineStatus(): Promise<{ comfyUi: ComfyUiStatus; localAvailable: boolean; activeProvider: string }> {
-    const [comfyUi, localAvailable] = await Promise.all([
-      discoverComfyUi({ requestTimeoutMs: 750 }),
+    const [comfyUi, localAvailable, comfyAvailable] = await Promise.all([
+      discoverComfyUi({
+        requestTimeoutMs: 750,
+        ...(this.comfyUiEndpoint ? { endpoints: [this.comfyUiEndpoint] } : {}),
+      }),
       this.localImageAdapter.isAvailable(),
+      this.comfyUiAdapter.isAvailable(),
     ]);
     return {
       comfyUi,
       localAvailable,
-      activeProvider: comfyUi.state === 'ready' ? this.comfyUiAdapter.id : localAvailable ? this.localImageAdapter.id : 'none',
+      activeProvider: comfyAvailable ? this.comfyUiAdapter.id : localAvailable ? this.localImageAdapter.id : 'none',
     };
   }
 
@@ -431,6 +438,7 @@ export class AetheraCreativeStudioService {
     sourceCinemaProjectId?: string;
     avatarBackdrop?: 'light' | 'dark' | 'transparent';
     useAiGeneration?: boolean;
+    professionalPreset?: ProfessionalPresetId;
     assetManifest?: Record<string, ManagedAssetRef>;
   }): Promise<{
     document: CreativeProjectDocument;
@@ -474,6 +482,7 @@ export class AetheraCreativeStudioService {
         direction: direction.direction,
         imageAdapter: this.imageAdapter,
         ingestion: this.ingestion,
+        ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
       });
       generation = generated.report;
       this.reportGeneration(generation);

@@ -5,6 +5,7 @@ import type {
   CreativeArtType,
   CreativeLayer,
   CreativeProjectDocument,
+  ProfessionalPresetId,
   QualityAuditReport,
 } from '@neuralbridge/creative-studio';
 
@@ -113,6 +114,7 @@ export function CreativeStudioPanel() {
   const [bannerPreviewMode, setBannerPreviewMode] = useState<'desktop' | 'mobile' | 'tv'>('desktop');
   const [avatarBackdrop, setAvatarBackdrop] = useState<'dark' | 'light' | 'transparent'>('dark');
   const [useAiGeneration, setUseAiGeneration] = useState<boolean>(true);
+  const [professionalPreset, setProfessionalPreset] = useState<ProfessionalPresetId>('youtube_thumbnail_1280x720');
   const [fidelityMode, setFidelityMode] = useState<'conceptual_art' | 'content_faithful' | 'authentic_gameplay'>(
     'conceptual_art',
   );
@@ -187,6 +189,7 @@ export function CreativeStudioPanel() {
         ...(selectedBrandKitId ? { brandKitId: selectedBrandKitId } : {}),
         ...(artType === 'avatar' ? { avatarBackdrop } : {}),
         useAiGeneration,
+        professionalPreset,
       });
       setActiveDoc(res.document);
       setPreviewUrl(res.previewDataUrl);
@@ -281,7 +284,11 @@ export function CreativeStudioPanel() {
           {(['thumbnail', 'banner', 'avatar', 'watermark'] as CreativeArtType[]).map((t) => (
             <button
               key={t}
-              onClick={() => setArtType(t)}
+              onClick={() => {
+                setArtType(t);
+                if (t === 'banner') setProfessionalPreset('banner_2560x1440');
+                else if (t === 'thumbnail' && professionalPreset === 'banner_2560x1440') setProfessionalPreset('youtube_thumbnail_1280x720');
+              }}
               style={{
                 padding: '6px 12px',
                 borderRadius: 6,
@@ -354,6 +361,18 @@ export function CreativeStudioPanel() {
             )}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <select
+              aria-label="Preset profissional"
+              value={professionalPreset}
+              onChange={(e) => setProfessionalPreset(e.target.value as ProfessionalPresetId)}
+              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+            >
+              <option value="youtube_thumbnail_1280x720">YouTube Thumbnail 1280×720</option>
+              <option value="anime_premium_cinematic">Anime Premium / Cinematic</option>
+              <option value="gaming_cinematic">Gaming Cinematic</option>
+              <option value="cyberpunk_neon">Cyberpunk Neon</option>
+              <option value="banner_2560x1440">Banner 2560×1440</option>
+            </select>
             <button disabled={generationBusy} onClick={handleCreate} style={{ padding: '8px 14px', background: generationBusy ? 'var(--muted)' : 'var(--brand-lime)', color: 'var(--brand-ink)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: generationBusy ? 'wait' : 'pointer' }}>
               {generationBusy ? 'Gerando…' : 'Gerar Arte Editável'}
             </button>

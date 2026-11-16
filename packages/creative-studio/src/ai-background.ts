@@ -2,6 +2,7 @@ import type { AssetIngestionService } from './asset-ingestion.js';
 import type { ExternalImageAdapter } from './image-generation-adapter.js';
 import type { BrandKit, CreativeArtType, ManagedAssetRef } from './schemas.js';
 import { buildVisualRecipe, type CreativeDirectionNotes, type VisualRecipe } from './visual-recipe.js';
+import type { ProfessionalPresetId } from './creative-presets.js';
 
 /**
  * Outcome of the AI image step of "Gerar Arte Editável". It is always returned (never thrown) so the caller can
@@ -25,6 +26,7 @@ export interface GenerateAiBackgroundInput {
   ingestion: AssetIngestionService;
   seed?: number;
   seedKey?: string;
+  professionalPreset?: ProfessionalPresetId;
 }
 
 export async function generateAiBackground(
@@ -51,6 +53,7 @@ export async function generateAiBackground(
     direction: input.direction ?? null,
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
     ...(input.seedKey ? { seedKey: input.seedKey } : {}),
+    ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
   });
   const started = Date.now();
   try {
@@ -60,6 +63,11 @@ export async function generateAiBackground(
       seed: recipe.seed,
       width: recipe.width,
       height: recipe.height,
+      steps: recipe.steps,
+      cfg: recipe.cfg,
+      samplerName: recipe.samplerName,
+      scheduler: recipe.scheduler,
+      preset: recipe.professionalPreset,
     });
     const asset = await input.ingestion.ingestBuffer({
       buffer,

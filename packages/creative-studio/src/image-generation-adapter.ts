@@ -23,6 +23,14 @@ export interface ImageGenerationRequest {
   negativePrompt?: string;
   /** CF-1: reproducible generation; omitted = engine-random. */
   seed?: number;
+  /** Optional engine controls carried by a professional visual preset. */
+  model?: string;
+  steps?: number;
+  cfg?: number;
+  samplerName?: string;
+  scheduler?: string;
+  batchSize?: number;
+  preset?: string;
 }
 
 export interface BackgroundRemovalRequest {

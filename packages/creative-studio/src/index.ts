@@ -24,3 +24,4 @@ export * from './comfyui-client.js';
 export * from './comfyui-workflow.js';
 export * from './comfyui-discovery.js';
 export * from './comfyui-image-adapter.js';
+export * from './creative-presets.js';
