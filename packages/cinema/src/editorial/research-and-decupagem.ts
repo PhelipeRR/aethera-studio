@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { sha256Hex } from '../ir/sha256.js';
 import type { EditorialScript, EditorialSegment } from './editorial-integrity.js';
 import {
   buildContextualSceneQueries,
@@ -155,7 +155,7 @@ export interface IncrementalInvalidationReport {
 }
 
 function sha12(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 12);
+  return sha256Hex(JSON.stringify(value)).slice(0, 12);
 }
 
 export function interpretProductionPrompt(
