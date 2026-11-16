@@ -72,6 +72,6 @@
 - [x] **Step 1: Red — atualizar** o E2E para aceitar `paused_pending_media` no caso insuficiente e adicionar um cenário completo com fontes comprovadas que chega ao editor e gera MP4 válido.
 - [x] **Step 2: Verify RED** usando a expectativa antiga (`editor`) contra o novo gate.
 - [x] **Step 3: Green — ajustar** fixtures/adapters determinísticos sem relaxar thresholds ou transformar gráficos em prova.
-- [x] **Step 4: Verify GREEN**: E2E Scene Grounding 1/1, suíte focada 34/34, typecheck web aprovado; typecheck node permanece bloqueado por erros preexistentes da implementação concorrente do Contrato de Produção.
+- [x] **Step 4: Verify GREEN**: E2E Scene Grounding 1/1, suíte focada 34/34; o typecheck web passou após o loop, mas a rodada final foi bloqueada por erros novos em arquivos concorrentes de Formato/Contrato (`master_4k`, `deliveryValidation`, `previewProfile`). O typecheck node permanece bloqueado pela mesma implementação concorrente.
 - [x] **Step 5: Reportar** separadamente o estado do Contrato de Produção Inteligente: já há integração parcial não pertencente a este lote; persistem erros de tipo e a validação completa do contrato fica como dependência posterior.
 - [ ] **Step 6: Commit** será feito após seleção dos hunks próprios; push não será feito.
