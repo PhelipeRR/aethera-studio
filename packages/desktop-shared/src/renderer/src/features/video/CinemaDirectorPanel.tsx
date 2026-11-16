@@ -58,7 +58,6 @@ import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitl
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { cn } from '@/lib/utils';
 import { ProductionConsoleAccordion } from './ProductionConsoleAccordion';
 import { healthOf, useAgents } from '@/app/useAgents';
@@ -69,11 +68,8 @@ import { JobStatusIcon, STATUS_TONE } from './cinema/JobStatusIcon';
 import { ProductionRail } from './cinema/ProductionRail';
 import { ProductionStepper } from './cinema/ProductionStepper';
 import {
-  FAVORITE_DELIVERY_PRESET_IDS,
-  FAVORITE_NARRATIVE_FORMAT_IDS,
   RENDER_PROFILE_OPTIONS,
   STAGE_DISPLAY_LABELS,
-  favoriteOptionsWith,
   humorLabelOf,
   jobStatusOf,
   stageProgressOf,
@@ -441,9 +437,7 @@ export function CinemaDirectorPanel() {
   }, []);
   const totalReadyProviders = readyAgents.length + readyExtraCount;
 
-  const [prompt, setPrompt] = useState(
-    'Crie um vídeo cinematográfico sobre os 10 chefes mais difíceis de Elden Ring, com narrativa épica, humor pontual e duração de 12 minutos.',
-  );
+  const [prompt, setPrompt] = useState('');
   const [genre, setGenre] = useState<'documentary' | 'gameplay_essay' | 'top_list' | 'trailer'>('gameplay_essay');
   const [format, setFormat] = useState<'youtube_16_9' | 'shorts_9_16'>('youtube_16_9');
   const [creativeSelection, setCreativeSelection] = useState<AetheraCreativeSelection>(DEFAULT_CREATIVE_SELECTION);
@@ -1048,12 +1042,10 @@ export function CinemaDirectorPanel() {
   const voiceLabel = voiceOptions.find((item) => item.id === selectedVoiceId)?.label ?? (voiceStudioAvailable ? 'Voz padrão' : 'Voz padrão (VoiceStudio offline)');
   const renderOption = RENDER_PROFILE_OPTIONS.find((item) => item.id === renderProfile);
   const advancedSummary = [
-    summaryOf(NARRATIVE_FORMATS, creativeSelection.narrativeFormatId),
     summaryOf(CONTENT_CATEGORIES, creativeSelection.contentCategoryId),
     summaryOf(AESTHETIC_DIRECTIONS, creativeSelection.aestheticDirectionId),
   ].join(' · ');
-  const deliveryOptions = favoriteOptionsWith(FAVORITE_DELIVERY_PRESET_IDS, deliveryPresetId);
-  const narrativeOptions = favoriteOptionsWith(FAVORITE_NARRATIVE_FORMAT_IDS, creativeSelection.narrativeFormatId);
+  const hasBriefing = prompt.trim().length > 0;
   const auditErrors = stagedJob?.editorialAudit?.integrityReport;
 
   function selectJob(job: StagedJobView) {
@@ -1228,6 +1220,7 @@ export function CinemaDirectorPanel() {
                     id="cinema-prompt"
                     value={prompt}
                     onChange={(e) => handlePromptChange(e.target.value)}
+                    placeholder={BRIEFING_PLACEHOLDER}
                     rows={5}
                     className="min-h-32 resize-y text-[15px]"
                   />
@@ -1239,6 +1232,7 @@ export function CinemaDirectorPanel() {
                       </Button>
                     </div>
                   )}
+                  {hasBriefing && (
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     <span className="inline-flex items-center gap-1.5 text-success">
                       <CheckCircle2 aria-hidden className="size-3.5" /> Entendi:
@@ -1251,7 +1245,8 @@ export function CinemaDirectorPanel() {
                       ajustar
                     </Button>
                   </div>
-                  {durationSyncedFromPrompt && (
+                  )}
+                  {hasBriefing && durationSyncedFromPrompt && (
                     <p className="text-xs text-muted-foreground">
                       Duração sincronizada automaticamente com o briefing: {targetDurationSec}s ({Math.round(targetDurationSec / 60)} min)
                     </p>
@@ -1295,96 +1290,73 @@ export function CinemaDirectorPanel() {
                   </Alert>
                 )}
 
-                {/* Decisions that change the result the most: visible as buttons */}
-                <div className="grid grid-cols-1 items-center gap-x-6 gap-y-4 sm:grid-cols-[96px_minmax(0,1fr)]">
-                  <span id="cinema-format-label" className="text-sm font-medium text-muted-foreground">
-                    Formato
-                  </span>
-                  <ToggleGroup
-                    type="single"
-                    variant="outline"
-                    size="sm"
-                    spacing={1}
-                    aria-labelledby="cinema-format-label"
-                    value={deliveryPresetId}
-                    onValueChange={(value) => value && handleDeliveryPresetChange(value)}
-                    className="flex-wrap"
-                  >
-                    <ToggleGroupItem value="automatic">Automático</ToggleGroupItem>
-                    {deliveryOptions.map((id) => {
-                      const preset = DELIVERY_PRESETS.find((item) => item.id === id);
-                      return preset ? (
-                        <ToggleGroupItem key={id} value={id} title={preset.description}>
-                          {preset.label} <span className="text-xs text-muted-foreground">{preset.aspectRatio}</span>
-                        </ToggleGroupItem>
-                      ) : null;
-                    })}
-                  </ToggleGroup>
-
-                  <span id="cinema-style-label" className="text-sm font-medium text-muted-foreground">
-                    Estilo
-                  </span>
-                  <ToggleGroup
-                    type="single"
-                    variant="outline"
-                    size="sm"
-                    spacing={1}
-                    aria-labelledby="cinema-style-label"
-                    value={creativeSelection.narrativeFormatId}
-                    onValueChange={(value) => value && handleCreativeDimensionChange('narrativeFormatId', value)}
-                    className="flex-wrap"
-                  >
-                    <ToggleGroupItem value="automatic">Automático</ToggleGroupItem>
-                    {narrativeOptions.map((id) => {
-                      const item = NARRATIVE_FORMATS.find((candidate) => candidate.id === id);
-                      return item ? (
-                        <ToggleGroupItem key={id} value={id} title={item.description}>
+                {/* Decisions that change the result the most: compact selects, full catalog included */}
+                <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2">
+                  <Field label="Formato" htmlFor="cinema-delivery-preset">
+                    <Select id="cinema-delivery-preset" value={deliveryPresetId} onChange={(e) => handleDeliveryPresetChange(e.target.value)}>
+                      <option value="automatic">
+                        Automático{effectiveDelivery && deliveryPresetId === 'automatic' ? ` (${effectiveDelivery.label})` : ''}
+                      </option>
+                      {DELIVERY_PRESETS.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.label} · {item.aspectRatio}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field label="Estilo" htmlFor="cinema-narrative-format">
+                    <Select
+                      id="cinema-narrative-format"
+                      value={creativeSelection.narrativeFormatId}
+                      onChange={(e) => handleCreativeDimensionChange('narrativeFormatId', e.target.value)}
+                    >
+                      <option value="automatic">Automático{creativeSelection.narrativeFormatId === 'automatic' ? ` (${detectedNarrative})` : ''}</option>
+                      {NARRATIVE_FORMATS.map((item) => (
+                        <option key={item.id} value={item.id}>
                           {item.label}
-                        </ToggleGroupItem>
-                      ) : null;
-                    })}
-                  </ToggleGroup>
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
 
-                  <label htmlFor="cinema-duration" className="text-sm font-medium text-muted-foreground">
-                    Duração (min)
-                  </label>
-                  <div className="flex items-center gap-3">
-                    <Input
-                      id="cinema-duration"
-                      type="number"
-                      min={0.5}
-                      max={60}
-                      step={0.5}
-                      value={Number((targetDurationSec / 60).toFixed(2))}
-                      onChange={(e) => handleManualControlChange('targetDurationSec', Math.max(15, Math.round((Number(e.target.value) || 1) * 60)))}
-                      className="w-24 font-mono"
-                    />
-                    <span className="text-xs text-muted-foreground">
-                      {durationSyncedFromPrompt ? 'sincronizada com o briefing' : 'definida manualmente'}
-                    </span>
-                  </div>
+                  <Field label="Duração (min)" htmlFor="cinema-duration">
+                    <div className="flex items-center gap-3">
+                      <Input
+                        id="cinema-duration"
+                        type="number"
+                        min={0.5}
+                        max={60}
+                        step={0.5}
+                        value={Number((targetDurationSec / 60).toFixed(2))}
+                        onChange={(e) => handleManualControlChange('targetDurationSec', Math.max(15, Math.round((Number(e.target.value) || 1) * 60)))}
+                        className="w-24 font-mono"
+                      />
+                      <span className="text-xs text-muted-foreground">
+                        {durationSyncedFromPrompt && prompt.trim() ? 'sincronizada com o briefing' : 'definida manualmente'}
+                      </span>
+                    </div>
+                  </Field>
 
-                  <label htmlFor="cinema-humor" className="text-sm font-medium text-muted-foreground">
-                    Humor
-                  </label>
-                  <div className="flex items-center gap-4">
-                    <input
-                      id="cinema-humor"
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={5}
-                      value={humorIntensity}
-                      aria-valuetext={`${humorIntensity}% · ${humorLabelOf(humorIntensity)}`}
-                      onChange={(e) => handleManualControlChange('humorIntensity', Number(e.target.value))}
-                      className="w-full max-w-80 accent-primary"
-                    />
-                    <span className="inline-flex items-center gap-1.5 text-sm">
-                      <Laugh aria-hidden className="size-3.5 text-primary" />
-                      <span className="font-mono tabular-nums">{humorIntensity}%</span>
-                      <span className="text-muted-foreground">{humorLabelOf(humorIntensity)}</span>
-                    </span>
-                  </div>
+                  <Field label="Humor" htmlFor="cinema-humor">
+                    <div className="flex min-h-9 items-center gap-4">
+                      <input
+                        id="cinema-humor"
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={5}
+                        value={humorIntensity}
+                        aria-valuetext={`${humorIntensity}% · ${humorLabelOf(humorIntensity)}`}
+                        onChange={(e) => handleManualControlChange('humorIntensity', Number(e.target.value))}
+                        className="w-full min-w-0 accent-primary"
+                      />
+                      <span className="inline-flex shrink-0 items-center gap-1.5 text-sm">
+                        <Laugh aria-hidden className="size-3.5 text-primary" />
+                        <span className="font-mono tabular-nums">{humorIntensity}%</span>
+                        <span className="text-muted-foreground">{humorLabelOf(humorIntensity)}</span>
+                      </span>
+                    </div>
+                  </Field>
                 </div>
 
                 {/* Progressive disclosure: one-line summaries that open on demand */}
@@ -1491,20 +1463,6 @@ export function CinemaDirectorPanel() {
                   <Disclosure label="Configurações avançadas" summary={advancedSummary} open={advancedOpen} onOpenChange={setAdvancedOpen}>
                     <div className="grid gap-x-4 gap-y-5 md:grid-cols-2">
                       <Field
-                        label="Formato narrativo"
-                        htmlFor="cinema-narrative-format"
-                        hint={NARRATIVE_FORMATS.find((item) => item.id === creativeSelection.narrativeFormatId)?.description ?? 'O briefing escolhe a estrutura narrativa.'}
-                      >
-                        <Select
-                          id="cinema-narrative-format"
-                          value={creativeSelection.narrativeFormatId}
-                          onChange={(e) => handleCreativeDimensionChange('narrativeFormatId', e.target.value)}
-                        >
-                          <option value="automatic">Automático (Detectar pelo Prompt)</option>
-                          {NARRATIVE_FORMATS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-                        </Select>
-                      </Field>
-                      <Field
                         label="Categoria do conteúdo"
                         htmlFor="cinema-content-category"
                         hint={CONTENT_CATEGORIES.find((item) => item.id === creativeSelection.contentCategoryId)?.description ?? 'A categoria define pesquisa e critérios de evidência.'}
@@ -1530,19 +1488,6 @@ export function CinemaDirectorPanel() {
                         >
                           <option value="automatic">Automático (Detectar pelo Prompt)</option>
                           {AESTHETIC_DIRECTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-                        </Select>
-                      </Field>
-                      <Field
-                        label="Entrega audiovisual"
-                        htmlFor="cinema-delivery-preset"
-                        hint={
-                          DELIVERY_PRESETS.find((item) => item.id === deliveryPresetId)?.description ??
-                          `Detectado: ${DELIVERY_PRESETS.find((item) => item.id === detectedDeliveryPresetId)?.label ?? detectedDeliveryPresetId}`
-                        }
-                      >
-                        <Select id="cinema-delivery-preset" value={deliveryPresetId} onChange={(e) => handleDeliveryPresetChange(e.target.value)}>
-                          <option value="automatic">Automático (Detectar pelo Prompt)</option>
-                          {DELIVERY_PRESETS.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.aspectRatio}</option>)}
                         </Select>
                       </Field>
                       <div className="flex flex-col gap-3 md:col-span-2">
@@ -1583,7 +1528,7 @@ export function CinemaDirectorPanel() {
                   <p className="text-xs text-muted-foreground">
                     Estimativa de render: {renderOption ? `${renderOption.label} · ${renderOption.vram}` : renderProfile}
                   </p>
-                  <Button type="submit" size="lg" disabled={busy || renderingReal}>
+                  <Button type="submit" size="lg" disabled={busy || renderingReal || !hasBriefing}>
                     {busy || renderingReal ? <LoaderCircle className="motion-safe:animate-spin" aria-hidden /> : <Sparkles aria-hidden />}
                     {busy || renderingReal ? 'Produzindo e renderizando...' : 'Gerar Direção & Storyboard'}
                   </Button>
@@ -2097,6 +2042,9 @@ export function CinemaDirectorPanel() {
     </div>
   );
 }
+
+const BRIEFING_PLACEHOLDER =
+  'Ex.: Crie um vídeo cinematográfico sobre os 10 chefes mais difíceis de Elden Ring, com narrativa épica, humor pontual e duração de 12 minutos.';
 
 const LANGUAGE_OPTIONS: ReadonlyArray<{ id: string; label: string }> = [
   { id: 'pt-BR', label: 'Português (BR)' },

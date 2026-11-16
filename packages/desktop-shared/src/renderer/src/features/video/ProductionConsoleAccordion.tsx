@@ -77,6 +77,9 @@ const PERIODS: Array<{ id: ConsoleFilters['period']; label: string }> = [
   { id: '1h', label: '1 h' },
 ];
 
+/** Filters behind the "Filtros" toggle; view tab and search stay always visible. */
+const ADVANCED_FILTER_KEYS = ['jobId', 'status', 'origin', 'source', 'stage', 'severity', 'channel', 'period'] as const;
+
 const STATUS_STYLE: Record<string, { dot: string; label: string }> = {
   pending: { dot: '#334155', label: '#64748b' },
   active: { dot: '#a78bfa', label: '#ddd6fe' },
@@ -133,6 +136,8 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
   const [autoScroll, setAutoScroll] = useState(true);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [stagesOpen, setStagesOpen] = useState(false);
   const queueRef = useRef<ConsoleEntry[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const jobKindsRef = useRef(new Map<string, ConsoleJobKind>());
@@ -273,6 +278,7 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
     [focusedEntries],
   );
   const errorTabOpen = filters.tab === 'errors';
+  const activeFilterCount = ADVANCED_FILTER_KEYS.filter((key) => filters[key] !== INITIAL_FILTERS[key]).length;
 
   // Errors open their technical details by default in the Erros tab; elsewhere they stay one click away.
   const isExpanded = useCallback(
@@ -338,6 +344,9 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
   if (!consoleAvailable || (!general && !jobId)) return null;
   const heading = props.title ?? (general ? 'Console Geral de Produções' : 'Console de Produção');
 
+  const runningJobs = jobs.filter((job) => job.status === 'running').length;
+  const footerDetail = `${counters.commands} comando(s) · ${counters.streams} linha(s) de stream · ${counters.warnings} aviso(s)`;
+
   return (
     <div
       style={panelStyle}
@@ -350,33 +359,29 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
         style={open ? headerOpenStyle : headerStyle}
         aria-expanded={open}
       >
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontFamily: 'monospace' }}>▍</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0 }}>
           <span>{heading}</span>
-          {!general && (
-            <span style={headerJobStyle} title={jobId}>
-              {jobId}
-              {attempt > 1 ? ` · tentativa ${attempt}` : ''}
-            </span>
-          )}
           {general && jobs.length > 0 && (
-            <span style={headerProgressStyle}>
-              {jobs.length} job(s) · {jobs.filter((job) => job.status === 'running').length} em execução
+            <span style={headerMetaStyle}>
+              {jobs.length} produção(ões) · {runningJobs} em execução
             </span>
           )}
-          {progress && (
-            <span style={headerProgressStyle} data-console-header-progress>
+          {/* Collapsed: the header summarises progress. Open: the progress bar below says it once. */}
+          {progress && !open && (
+            <span style={headerMetaStyle} data-console-header-progress>
               {progress.label} · {progress.pct}%
             </span>
           )}
           {counters.errors > 0 && <span style={headerErrorStyle}>{counters.errors} erro(s)</span>}
-          {counters.retries > 0 && <span style={headerRetryStyle}>{counters.retries} retry</span>}
+          {counters.retries > 0 && <span style={headerMetaStyle}>{counters.retries} retry</span>}
         </span>
-        <span style={{ fontSize: 12, opacity: 0.8 }}>{open ? '▲ Recolher' : '▼ Abrir'}</span>
+        <span style={headerToggleStyle} aria-hidden>
+          {open ? '▴ Recolher' : '▾ Abrir'}
+        </span>
       </button>
 
       {open && (
-        <div style={{ padding: 10 }}>
+        <div style={bodyStyle}>
           {general && jobs.length > 0 && (
             <div style={jobStripStyle} role="list" aria-label="Produções">
               {jobs.slice(0, 24).map((job) => {
@@ -391,16 +396,16 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
                     aria-pressed={selected}
                     title={`${job.title ?? job.jobId} — ${JOB_STATUS_LABELS[job.status]}${job.agents.length ? ` · agentes: ${job.agents.join(', ')}` : ''}`}
                     onClick={() => patchFilters({ jobId: selected ? 'all' : job.jobId })}
-                    style={{
-                      ...jobChipStyle,
-                      borderColor: selected ? JOB_STATUS_COLORS[job.status] : 'var(--input)',
-                      background: selected ? 'var(--input)' : 'transparent',
-                    }}
+                    style={{ ...jobChipStyle, ...(selected ? jobChipSelectedStyle : {}) }}
                   >
-                    <span style={{ color: JOB_STATUS_COLORS[job.status] }}>●</span>
-                    <span style={{ color: 'var(--foreground)' }}>{jobLabel(job)}</span>
-                    <span style={{ color: '#c4b5fd' }}>{job.pct !== undefined ? `${job.pct}%` : '—'}</span>
-                    <span style={{ color: '#94a3b8' }}>{JOB_STATUS_LABELS[job.status]}</span>
+                    <span style={{ color: JOB_STATUS_COLORS[job.status] }} aria-hidden>
+                      ●
+                    </span>
+                    <span style={jobChipTitleStyle}>{jobLabel(job)}</span>
+                    <span style={{ ...mutedStyle, whiteSpace: 'nowrap' }}>
+                      {job.pct !== undefined ? `${job.pct}% · ` : ''}
+                      {JOB_STATUS_LABELS[job.status]}
+                    </span>
                   </button>
                 );
               })}
@@ -414,33 +419,40 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
                 <div style={progressTrackStyle}>
                   <div data-console-progress-fill style={{ ...progressFillStyle, width: `${progress?.pct ?? 0}%` }} />
                 </div>
-                <span
-                  data-console-progress-label
-                  style={{ fontFamily: 'monospace', fontSize: 12, color: '#ddd6fe', minWidth: 132 }}
-                >
+                <span data-console-progress-label style={progressLabelStyle}>
                   {progress ? `${progress.pct}% · ${progress.label}` : 'aguardando progresso'}
                 </span>
+                <button
+                  type="button"
+                  onClick={() => setStagesOpen((value) => !value)}
+                  aria-expanded={stagesOpen}
+                  style={ghostBtnStyle}
+                >
+                  {stagesOpen ? 'Ocultar etapas' : 'Etapas'}
+                  {filters.stage !== 'all' ? ` · ${STAGE_LABELS[filters.stage] ?? filters.stage}` : ''}
+                </button>
               </div>
 
-              <div style={timelineStyle}>
+              {/* Stage chips stay mounted (filter state and test hooks) and are only shown on demand. */}
+              <div style={timelineStyle} hidden={!stagesOpen}>
                 {timeline.map((item) => {
                   const style = STATUS_STYLE[item.status] ?? { dot: '#334155', label: '#64748b' };
+                  const selected = filters.stage === item.stage;
                   return (
                     <button
                       key={item.stage}
                       type="button"
                       data-stage-status={item.status}
+                      aria-pressed={selected}
                       title={`${item.label} — ${item.status}${item.pct !== undefined ? ` (${item.pct}%)` : ''}${
                         item.durationMs !== undefined ? ` · ${item.durationMs}ms` : ''
                       }`}
-                      onClick={() => patchFilters({ stage: filters.stage === item.stage ? 'all' : item.stage })}
-                      style={{
-                        ...stageChipStyle,
-                        borderColor: filters.stage === item.stage ? style.dot : 'var(--input)',
-                        background: filters.stage === item.stage ? 'var(--input)' : 'transparent',
-                      }}
+                      onClick={() => patchFilters({ stage: selected ? 'all' : item.stage })}
+                      style={{ ...stageChipStyle, ...(selected ? jobChipSelectedStyle : {}) }}
                     >
-                      <span style={{ color: style.dot }}>{STATUS_ICON[item.status] ?? '○'}</span>
+                      <span style={{ color: style.dot }} aria-hidden>
+                        {STATUS_ICON[item.status] ?? '○'}
+                      </span>
                       <span style={{ color: style.label }}>{item.label}</span>
                     </button>
                   );
@@ -450,28 +462,43 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
           )}
 
           <div style={toolbarStyle}>
-            {TABS.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => patchFilters({ tab: tab.id })}
-                style={{
-                  ...tabStyle,
-                  fontWeight: filters.tab === tab.id ? 700 : 400,
-                  background: filters.tab === tab.id ? 'var(--primary)' : 'color-mix(in srgb, var(--primary) 14%, var(--card))',
-                  color: filters.tab === tab.id ? 'var(--primary-foreground)' : '#ddd6fe',
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
+            <div style={segmentedStyle} role="group" aria-label="Visão do console">
+              {TABS.map((tab) => {
+                const active = filters.tab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => patchFilters({ tab: tab.id })}
+                    style={{ ...segmentStyle, ...(active ? segmentActiveStyle : {}) }}
+                  >
+                    {tab.label}
+                    {tab.id === 'errors' && counters.errors > 0 ? ` ${counters.errors}` : ''}
+                  </button>
+                );
+              })}
+            </div>
             <input
+              type="search"
               value={filters.search}
               onChange={(event) => patchFilters({ search: event.target.value })}
               placeholder="Filtrar logs..."
               aria-label="Filtrar logs"
               style={searchStyle}
             />
+            <button
+              type="button"
+              onClick={() => setFiltersOpen((value) => !value)}
+              aria-expanded={filtersOpen}
+              style={{ ...ghostBtnStyle, ...(activeFilterCount > 0 ? activeFilterBtnStyle : {}) }}
+            >
+              Filtros{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+            </button>
+          </div>
+
+          {/* Advanced filters stay mounted (their state survives) and only take space when asked for. */}
+          <div style={filtersPanelStyle} hidden={!filtersOpen}>
             {general && (
               <>
                 <FilterSelect
@@ -554,30 +581,13 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
               onChange={(value) => patchFilters({ period: value as ConsoleFilters['period'] })}
               options={PERIODS.map((period) => ({ value: period.id, label: period.label }))}
             />
-            <label style={checkboxStyle}>
-              <input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />
-              Auto-scroll
-            </label>
-            <button type="button" onClick={() => setFilters(INITIAL_FILTERS)} style={toolbarBtnStyle}>
-              Limpar filtros
-            </button>
-            <button type="button" onClick={() => void handleCopy()} style={toolbarBtnStyle}>
-              Copiar
-            </button>
-            <button type="button" onClick={() => void handleExport('txt')} style={toolbarBtnStyle}>
-              TXT
-            </button>
-            <button type="button" onClick={() => void handleExport('json')} style={toolbarBtnStyle}>
-              JSON
-            </button>
             <button
               type="button"
-              onClick={() => void handleClear()}
-              disabled={!clearTarget}
-              title={clearTarget ? `Limpa apenas o log do job ${clearTarget}` : 'Selecione um job para limpar o log dele'}
-              style={{ ...toolbarBtnStyle, color: '#f87171', opacity: clearTarget ? 1 : 0.4 }}
+              onClick={() => setFilters((prev) => ({ ...INITIAL_FILTERS, tab: prev.tab, search: prev.search }))}
+              disabled={activeFilterCount === 0}
+              style={{ ...ghostBtnStyle, alignSelf: 'end', opacity: activeFilterCount === 0 ? 0.5 : 1 }}
             >
-              Limpar
+              Limpar filtros
             </button>
           </div>
 
@@ -588,7 +598,7 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
               <ConsoleRow
                 key={entry.id}
                 entry={entry}
-                showJob={general}
+                showJob={general && !focusedJobId}
                 expanded={isExpanded(entry)}
                 onToggle={toggleExpand}
               />
@@ -596,18 +606,41 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
           </div>
 
           <div style={footerStyle}>
-            <span>
-              {visible.length} de {entries.length} na janela · {total} no histórico
+            <span title={`${footerDetail} · ${total} no histórico`}>
+              {visible.length} de {entries.length} linha(s)
+              <span data-console-footer-job style={{ marginLeft: 8 }}>
+                {general
+                  ? focusedJobId
+                    ? `· ${focusedJobId}`
+                    : `· ${uniqueSorted(visible.map(entryJobId)).length} produção(ões)`
+                  : attempt > 1
+                    ? `· tentativa ${attempt}`
+                    : ''}
+              </span>
             </span>
-            <span>
-              {counters.commands} comando(s) · {counters.streams} linha(s) de stream · {counters.warnings} aviso(s)
-            </span>
-            <span data-console-footer-job>
-              {general
-                ? focusedJobId
-                  ? `Job: ${focusedJobId}`
-                  : `${uniqueSorted(visible.map(entryJobId)).length} job(s) na janela`
-                : `Job: ${jobId}${attempt > 1 ? ` · tentativa ${attempt}` : ''}`}
+            <span style={footerActionsStyle}>
+              <label style={checkboxStyle}>
+                <input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />
+                Auto-scroll
+              </label>
+              <button type="button" onClick={() => void handleCopy()} style={linkBtnStyle}>
+                Copiar
+              </button>
+              <button type="button" onClick={() => void handleExport('txt')} style={linkBtnStyle} title="Exportar como texto">
+                TXT
+              </button>
+              <button type="button" onClick={() => void handleExport('json')} style={linkBtnStyle} title="Exportar como JSON">
+                JSON
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleClear()}
+                disabled={!clearTarget}
+                title={clearTarget ? `Limpa apenas o log do job ${clearTarget}` : 'Selecione um job para limpar o log dele'}
+                style={{ ...linkBtnStyle, color: '#fca5a5', opacity: clearTarget ? 1 : 0.4 }}
+              >
+                Limpar
+              </button>
             </span>
           </div>
         </div>
@@ -624,12 +657,18 @@ interface ConsoleRowProps {
   onToggle: (id: string) => void;
 }
 
+/**
+ * One log line. Only what changes the reading stays on the line: time, severity when it is not routine, origin, stage,
+ * notable events and the exit code of failures. Source, duration, channel and the rest are one click away in details.
+ */
 const ConsoleRow = memo(function ConsoleRow({ entry, showJob, expanded, onToggle }: ConsoleRowProps) {
   const error = isErrorEntry(entry);
   const stream = isStreamEntry(entry);
   const details = entryDetailRows(entry);
   const hasDetails = details.length > 3;
   const originColor = ORIGIN_COLORS[entry.origin] ?? '#94a3b8';
+  const notable = entry.severity === 'warn' || entry.severity === 'error';
+  const failedExit = entry.exitCode !== undefined && entry.exitCode !== null && entry.exitCode !== 0;
   return (
     <div
       data-console-row
@@ -639,7 +678,11 @@ const ConsoleRow = memo(function ConsoleRow({ entry, showJob, expanded, onToggle
       data-console-origin={entry.origin}
       data-console-severity={entry.severity}
       data-console-event={entry.event}
-      style={{ ...rowStyle, ...(error ? rowErrorStyle : {}), ...(stream ? rowStreamStyle : {}) }}
+      style={{
+        ...rowStyle,
+        ...(error ? rowErrorStyle : {}),
+        ...(entry.severity === 'debug' && !error ? rowDebugStyle : {}),
+      }}
     >
       <div style={rowHeaderStyle}>
         <span style={timeStyle}>{formatTime(entry.timestamp)}</span>
@@ -649,27 +692,21 @@ const ConsoleRow = memo(function ConsoleRow({ entry, showJob, expanded, onToggle
             {entry.attempt && entry.attempt > 1 ? `#${entry.attempt}` : ''}
           </span>
         )}
-        <span style={{ ...severityStyle, color: SEVERITY_COLORS[entry.severity] ?? '#c4b5fd' }}>
-          {entry.severity.toUpperCase()}
-        </span>
-        <span style={{ ...originBadgeStyle, borderColor: originColor, color: originColor }}>
-          {ORIGIN_LABELS[entry.origin] ?? entry.origin}
-        </span>
-        <span style={stageStyle}>{STAGE_LABELS[entry.stage] ?? entry.stage}</span>
-        {entry.pct !== undefined && <span style={pctStyle}>{entry.pct}%</span>}
-        {entry.event !== 'log' && (
-          <span style={{ ...eventStyle, color: error ? '#fca5a5' : '#7dd3fc' }}>{EVENT_LABELS[entry.event]}</span>
-        )}
-        {stream && <span style={streamStyle}>{entry.channel}</span>}
-        <span style={sourceStyle}>{entry.source}</span>
-        {entry.durationMs !== undefined && <span style={metaStyle}>{entry.durationMs}ms</span>}
-        {entry.exitCode !== undefined && entry.exitCode !== null && (
-          <span style={{ ...metaStyle, color: entry.exitCode === 0 ? '#6ee7b7' : '#fca5a5' }}>
-            exit {entry.exitCode}
+        {notable && (
+          <span style={{ ...severityStyle, color: SEVERITY_COLORS[entry.severity] ?? '#c4b5fd' }}>
+            {entry.severity === 'error' ? 'ERRO' : 'AVISO'}
           </span>
         )}
+        <span style={{ color: originColor }}>{ORIGIN_LABELS[entry.origin] ?? entry.origin}</span>
+        <span style={mutedStyle}>· {STAGE_LABELS[entry.stage] ?? entry.stage}</span>
+        {entry.event !== 'log' && (
+          <span style={{ ...eventStyle, color: error ? '#fca5a5' : '#c4b5fd' }}>{EVENT_LABELS[entry.event]}</span>
+        )}
+        <span style={mutedStyle}>{entry.source}</span>
+        {stream && <span style={mutedStyle}>{entry.channel}</span>}
+        {failedExit && <span style={{ color: '#fca5a5' }}>exit {entry.exitCode}</span>}
         {hasDetails && (
-          <button type="button" onClick={() => onToggle(entry.id)} style={detailsBtnStyle}>
+          <button type="button" onClick={() => onToggle(entry.id)} style={detailsBtnStyle} aria-expanded={expanded}>
             {expanded ? '▾ detalhes' : '▸ detalhes'}
           </button>
         )}
@@ -714,6 +751,10 @@ function FilterSelect({
   );
 }
 
+// Quiet console: one accent (primary), muted metadata, colour only where it carries meaning (errors, warnings, status).
+const MUTED = '#8b8aa3';
+const SUBTLE = '#6b6a82';
+
 const panelStyle: React.CSSProperties = {
   marginTop: 8,
   borderRadius: 8,
@@ -724,66 +765,67 @@ const panelStyle: React.CSSProperties = {
 
 const headerStyle: React.CSSProperties = {
   width: '100%',
+  minHeight: 40,
   textAlign: 'left',
-  padding: '8px 12px',
-  background: 'color-mix(in srgb, var(--primary) 14%, var(--card))',
+  padding: '8px 14px',
+  background: 'transparent',
   color: 'var(--foreground)',
   border: 0,
   cursor: 'pointer',
-  fontSize: 12,
+  fontSize: 13,
   fontWeight: 600,
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
   gap: 8,
 };
-
-const headerOpenStyle: React.CSSProperties = { ...headerStyle, background: 'color-mix(in srgb, var(--primary) 30%, var(--card))' };
-const headerProgressStyle: React.CSSProperties = {
-  fontFamily: 'monospace',
+const headerOpenStyle: React.CSSProperties = { ...headerStyle, borderBottom: '1px solid var(--border)' };
+const headerMetaStyle: React.CSSProperties = { fontSize: 12, fontWeight: 400, color: MUTED };
+const headerErrorStyle: React.CSSProperties = {
   fontSize: 12,
-  fontWeight: 400,
-  padding: '1px 6px',
+  fontWeight: 500,
+  color: '#fca5a5',
+  padding: '1px 8px',
   borderRadius: 999,
-  background: 'rgb(0 0 0 / 28%)',
+  background: 'rgba(248, 113, 113, 0.14)',
 };
-const headerJobStyle: React.CSSProperties = {
-  fontFamily: 'monospace',
-  fontSize: 12,
-  fontWeight: 400,
-  color: '#ddd6fe',
-  opacity: 0.9,
-};
-const jobStripStyle: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 };
+const headerToggleStyle: React.CSSProperties = { fontSize: 12, fontWeight: 400, color: MUTED, flexShrink: 0 };
+
+const bodyStyle: React.CSSProperties = { padding: 12, display: 'flex', flexDirection: 'column', gap: 10 };
+const mutedStyle: React.CSSProperties = { color: MUTED };
+
+const jobStripStyle: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 6 };
 const jobChipStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
-  gap: 6,
-  padding: '3px 8px',
+  gap: 8,
+  minHeight: 32,
+  padding: '4px 10px',
   borderRadius: 6,
-  border: '1px solid var(--input)',
+  border: '1px solid var(--border)',
+  background: 'transparent',
   fontSize: 12,
-  fontFamily: '"JetBrains Mono", "Fira Code", monospace',
   cursor: 'pointer',
   maxWidth: 420,
 };
-const rowJobStyle: React.CSSProperties = {
-  color: '#fcd34d',
-  fontSize: 12,
-  padding: '0 4px',
-  borderRadius: 3,
-  border: '1px solid rgba(252, 211, 77, 0.4)',
+const jobChipSelectedStyle: React.CSSProperties = {
+  borderColor: 'var(--primary)',
+  background: 'color-mix(in srgb, var(--primary) 14%, transparent)',
 };
-const headerErrorStyle: React.CSSProperties = { ...headerProgressStyle, background: 'rgba(248, 113, 113, 0.25)' };
-const headerRetryStyle: React.CSSProperties = { ...headerProgressStyle, background: 'rgba(251, 191, 36, 0.25)' };
+const jobChipTitleStyle: React.CSSProperties = {
+  color: 'var(--foreground)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+const rowJobStyle: React.CSSProperties = { color: '#fcd34d' };
 
-const progressRowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 };
+const progressRowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10 };
 const progressTrackStyle: React.CSSProperties = {
   flex: 1,
-  height: 6,
+  height: 4,
   borderRadius: 999,
-  background: 'var(--background)',
-  border: '1px solid var(--input)',
+  background: 'var(--muted)',
   overflow: 'hidden',
 };
 const progressFillStyle: React.CSSProperties = {
@@ -791,68 +833,97 @@ const progressFillStyle: React.CSSProperties = {
   background: 'var(--primary)',
   transition: 'width 220ms ease-out',
 };
+const progressLabelStyle: React.CSSProperties = { fontSize: 12, color: MUTED, whiteSpace: 'nowrap' };
 
-const timelineStyle: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 };
+const timelineStyle: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 6 };
 const stageChipStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
-  gap: 4,
-  padding: '2px 7px',
+  gap: 6,
+  minHeight: 28,
+  padding: '2px 10px',
   borderRadius: 999,
-  border: '1px solid var(--input)',
+  border: '1px solid var(--border)',
   background: 'transparent',
   fontSize: 12,
-  fontFamily: '"JetBrains Mono", "Fira Code", monospace',
   cursor: 'pointer',
 };
 
-const toolbarStyle: React.CSSProperties = {
-  display: 'flex',
-  gap: 6,
-  marginBottom: 8,
-  flexWrap: 'wrap',
-  alignItems: 'center',
+const toolbarStyle: React.CSSProperties = { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' };
+const segmentedStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  padding: 2,
+  borderRadius: 6,
+  background: 'var(--muted)',
 };
-const tabStyle: React.CSSProperties = {
-  padding: '4px 10px',
+const segmentStyle: React.CSSProperties = {
+  minHeight: 28,
+  padding: '4px 12px',
   borderRadius: 4,
   border: 0,
+  background: 'transparent',
+  color: MUTED,
   cursor: 'pointer',
   fontSize: 12,
+  fontWeight: 500,
 };
+const segmentActiveStyle: React.CSSProperties = { background: 'var(--card)', color: 'var(--foreground)' };
 const searchStyle: React.CSSProperties = {
   flex: 1,
-  minWidth: 140,
-  padding: '4px 8px',
-  borderRadius: 4,
+  minWidth: 160,
+  minHeight: 32,
+  padding: '4px 10px',
+  borderRadius: 6,
   border: '1px solid var(--input)',
   background: 'var(--background)',
   color: 'var(--foreground)',
   fontSize: 12,
+};
+const ghostBtnStyle: React.CSSProperties = {
+  minHeight: 32,
+  padding: '4px 12px',
+  borderRadius: 6,
+  border: '1px solid var(--border)',
+  background: 'transparent',
+  color: 'var(--foreground)',
+  cursor: 'pointer',
+  fontSize: 12,
+  whiteSpace: 'nowrap',
+};
+const activeFilterBtnStyle: React.CSSProperties = { borderColor: 'var(--primary)', color: '#ddd6fe' };
+
+const filtersPanelStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+  gap: 10,
+  padding: 10,
+  borderRadius: 6,
+  background: 'color-mix(in srgb, var(--muted) 45%, transparent)',
 };
 const selectLabelStyle: React.CSSProperties = {
   display: 'flex',
-  alignItems: 'center',
+  flexDirection: 'column',
   gap: 4,
   fontSize: 12,
-  color: '#c4b5fd',
-  fontFamily: 'monospace',
+  color: MUTED,
 };
 const selectStyle: React.CSSProperties = {
-  padding: '3px 6px',
-  borderRadius: 4,
+  minHeight: 32,
+  padding: '4px 8px',
+  borderRadius: 6,
   border: '1px solid var(--input)',
   background: 'var(--background)',
   color: 'var(--foreground)',
   fontSize: 12,
-  maxWidth: 150,
+  width: '100%',
 };
 const checkboxStyle: React.CSSProperties = {
   fontSize: 12,
-  color: '#ddd6fe',
-  display: 'flex',
+  color: MUTED,
+  display: 'inline-flex',
   alignItems: 'center',
-  gap: 4,
+  gap: 6,
+  cursor: 'pointer',
 };
 
 const logAreaStyle: React.CSSProperties = {
@@ -861,49 +932,29 @@ const logAreaStyle: React.CSSProperties = {
   overflowX: 'hidden',
   background: 'var(--background)',
   borderRadius: 6,
-  padding: 8,
+  padding: '6px 8px',
   fontFamily: '"JetBrains Mono", "Fira Code", monospace',
   fontSize: 12,
-  lineHeight: 1.55,
+  lineHeight: 1.6,
 };
-const emptyStyle: React.CSSProperties = { color: '#94a3b8', padding: 4 };
+const emptyStyle: React.CSSProperties = { color: MUTED, padding: 4 };
 
 const rowStyle: React.CSSProperties = {
-  padding: '2px 4px',
+  padding: '4px 6px',
   borderLeft: '2px solid transparent',
   borderRadius: 3,
 };
-const rowErrorStyle: React.CSSProperties = { borderLeftColor: '#f87171', background: 'rgba(248, 113, 113, 0.07)' };
-const rowStreamStyle: React.CSSProperties = { background: 'rgba(148, 163, 184, 0.05)' };
+const rowErrorStyle: React.CSSProperties = { borderLeftColor: '#f87171', background: 'rgba(248, 113, 113, 0.06)' };
+const rowDebugStyle: React.CSSProperties = { opacity: 0.6 };
 const rowHeaderStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'baseline',
-  gap: 6,
+  gap: 8,
   flexWrap: 'wrap',
 };
-const timeStyle: React.CSSProperties = { color: '#64748b' };
-const severityStyle: React.CSSProperties = { fontWeight: 700, minWidth: 44, display: 'inline-block' };
-const originBadgeStyle: React.CSSProperties = {
-  padding: '0 5px',
-  borderRadius: 3,
-  border: '1px solid',
-  fontSize: 12,
-  textTransform: 'uppercase',
-  letterSpacing: 0.4,
-};
-const stageStyle: React.CSSProperties = { color: '#a78bfa' };
-const pctStyle: React.CSSProperties = {
-  color: 'var(--card)',
-  background: '#c4b5fd',
-  borderRadius: 999,
-  padding: '0 6px',
-  fontSize: 12,
-  fontWeight: 700,
-};
-const eventStyle: React.CSSProperties = { fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.4 };
-const streamStyle: React.CSSProperties = { fontSize: 12, color: '#94a3b8', textTransform: 'lowercase' };
-const sourceStyle: React.CSSProperties = { color: '#94a3b8' };
-const metaStyle: React.CSSProperties = { color: '#64748b' };
+const timeStyle: React.CSSProperties = { color: SUBTLE };
+const severityStyle: React.CSSProperties = { fontWeight: 700 };
+const eventStyle: React.CSSProperties = { fontWeight: 600 };
 const messageStyle: React.CSSProperties = { color: 'var(--foreground)', wordBreak: 'break-word', whiteSpace: 'pre-wrap' };
 const streamMessageStyle: React.CSSProperties = { color: '#cbd5e1' };
 const detailsBtnStyle: React.CSSProperties = {
@@ -911,25 +962,19 @@ const detailsBtnStyle: React.CSSProperties = {
   padding: 0,
   border: 0,
   background: 'transparent',
-  color: '#67e8f9',
+  color: SUBTLE,
   cursor: 'pointer',
   fontSize: 12,
 };
 const detailsPanelStyle: React.CSSProperties = {
   marginTop: 4,
-  padding: 6,
+  padding: 8,
   borderRadius: 4,
   background: 'var(--card)',
-  border: '1px solid var(--input)',
+  border: '1px solid var(--border)',
 };
 const detailRowStyle: React.CSSProperties = { display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 2 };
-const detailLabelStyle: React.CSSProperties = {
-  minWidth: 96,
-  color: '#c4b5fd',
-  fontSize: 12,
-  textTransform: 'uppercase',
-  letterSpacing: 0.4,
-};
+const detailLabelStyle: React.CSSProperties = { minWidth: 96, color: MUTED, fontSize: 12 };
 const detailValueStyle: React.CSSProperties = {
   margin: 0,
   flex: 1,
@@ -943,18 +988,19 @@ const detailValueStyle: React.CSSProperties = {
 const footerStyle: React.CSSProperties = {
   display: 'flex',
   justifyContent: 'space-between',
+  alignItems: 'center',
   gap: 8,
   flexWrap: 'wrap',
   fontSize: 12,
-  color: '#64748b',
-  marginTop: 6,
+  color: MUTED,
 };
-
-const toolbarBtnStyle: React.CSSProperties = {
-  padding: '4px 8px',
+const footerActionsStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' };
+const linkBtnStyle: React.CSSProperties = {
+  minHeight: 28,
+  padding: '2px 8px',
   borderRadius: 4,
-  border: '1px solid var(--input)',
-  background: 'color-mix(in srgb, var(--primary) 14%, var(--card))',
+  border: 0,
+  background: 'transparent',
   color: '#ddd6fe',
   cursor: 'pointer',
   fontSize: 12,

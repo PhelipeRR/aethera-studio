@@ -134,3 +134,17 @@ Pendências:
 - `aethera-console-jobs.spec.ts` (opt-in) ainda usa o seletor antigo `[data-production-job] [data-console-panel="job"]`;
   o console por projeto agora fica em `#cinema-project-console`.
 - O `TrendRadarPanel` reaproveitado no diálogo mantém o CTA em gradiente próprio.
+
+### 7.1 Ajustes após revisão do usuário (2026-11-16)
+
+- **Formato e Estilo** passaram de grupos de botões para `select`s (catálogo completo, menos espaço); "Automático"
+  mostra o que foi detectado. Os campos duplicados "Formato narrativo" e "Entrega audiovisual" saíram das
+  Configurações avançadas. Componentes `toggle`/`toggle-group` e os favoritos do modelo foram removidos.
+- O exemplo do briefing virou **placeholder**: o campo começa vazio, "Entendi:" e a nota de sincronia só aparecem com
+  texto, e o CTA fica desabilitado sem briefing.
+- **Console** mais silencioso (`ProductionConsoleAccordion`, só apresentação; filtros, exportação e IPC iguais):
+  cabeçalho sem caixas nem id do job; filtros avançados atrás de "Filtros (n)"; etapas atrás de "Etapas"; abas
+  Terminal/Eventos/Erros como controle segmentado com contagem de erros; ações (Auto-scroll, Copiar, TXT, JSON,
+  Limpar) no rodapé; linhas sem badges com borda: nível só para aviso/erro, debug esmaecido, exit code só quando
+  falha, duração e % nos detalhes. `aethera-console-ui.spec.ts` (opt-in) abre "Filtros" antes dos selects.
+

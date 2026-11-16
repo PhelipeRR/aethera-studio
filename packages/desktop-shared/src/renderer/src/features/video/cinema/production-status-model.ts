@@ -136,15 +136,3 @@ export const RENDER_PROFILE_OPTIONS: ReadonlyArray<{ id: 'draft_540p' | 'review_
   { id: 'master_1080p', label: 'Master 1080p', vram: '4,8 GB de VRAM' },
   { id: 'master_4k', label: 'Master 4K', vram: 'alto custo de VRAM' },
 ];
-
-/** Favorite delivery formats shown as buttons; the full catalog stays in the advanced settings. */
-export const FAVORITE_DELIVERY_PRESET_IDS: readonly string[] = ['youtube-1080p', 'shorts', 'tiktok', 'instagram-reels'];
-
-/** Favorite narrative styles shown as buttons; the full catalog stays in the advanced settings. */
-export const FAVORITE_NARRATIVE_FORMAT_IDS: readonly string[] = ['documentary', 'gameplay-essay', 'top-list', 'trailer', 'video-essay'];
-
-/** Favorites plus the current value when it came from the catalog, so the selection is always visible. */
-export function favoriteOptionsWith(favorites: readonly string[], current: string): string[] {
-  if (current === 'automatic' || favorites.includes(current)) return [...favorites];
-  return [...favorites, current];
-}

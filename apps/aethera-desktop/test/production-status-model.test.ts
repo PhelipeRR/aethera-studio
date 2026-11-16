@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   PIPELINE_PHASES,
   PIPELINE_STAGES,
-  favoriteOptionsWith,
   humorLabelOf,
   jobStatusOf,
   stageProgressOf,
@@ -54,11 +53,5 @@ describe('production status model', () => {
 
   it('names the humor bands', () => {
     expect([0, 10, 35, 60, 90].map(humorLabelOf)).toEqual(['Desligado', 'Sutil', 'Pontual', 'Marcante', 'Comédia']);
-  });
-
-  it('keeps a catalog choice visible next to the favorites', () => {
-    expect(favoriteOptionsWith(['a', 'b'], 'automatic')).toEqual(['a', 'b']);
-    expect(favoriteOptionsWith(['a', 'b'], 'b')).toEqual(['a', 'b']);
-    expect(favoriteOptionsWith(['a', 'b'], 'z')).toEqual(['a', 'b', 'z']);
   });
 });

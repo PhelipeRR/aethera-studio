@@ -72,9 +72,11 @@ test('Aethera Studio Redesign — E2E Navigation, Cinema AI IPC & Visual Screens
     // 3. Produção com IA + Production Contract sync + staged pipeline (real IPC)
     await win.locator('aside nav').getByRole('link', { name: 'Produção com IA' }).click();
     await expect(win.getByRole('heading', { name: 'Produção com IA' })).toBeVisible();
-    await expect(win.getByText(/720s \(12 min\)/i)).toBeVisible();
     const briefing = win.locator('#cinema-prompt');
+    await expect(briefing).toHaveValue('');
+    await expect(briefing).toHaveAttribute('placeholder', /Elden Ring/);
     await briefing.fill('Crie um vídeo de 10 minutos sobre os 10 chefes mais difíceis de Elden Ring, com pesquisa verificável.');
+    await expect(win.getByText(/600s \(10 min\)/i)).toBeVisible();
     await win.locator('#cinema-duration').fill('12');
     await win.locator('#cinema-duration').press('Tab');
     await briefing.fill('Crie um vídeo de 10 minutos sobre os 10 chefes mais difíceis de Elden Ring, com pesquisa verificável.');

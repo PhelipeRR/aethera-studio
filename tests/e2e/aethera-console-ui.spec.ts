@@ -110,7 +110,8 @@ test('console de produção — filtros, autoscroll, detalhes, progresso e desem
     metrics.timeline = { doneStages, failedStages };
     expect(doneStages).toBeGreaterThan(0);
 
-    // 3. Origin filter narrows the list to agent rows only.
+    // 3. Origin filter narrows the list to agent rows only (advanced filters live behind "Filtros").
+    await page.getByRole('button', { name: /^Filtros/ }).first().click();
     const originSelect = page.locator('label', { hasText: 'Origem' }).locator('select');
     const filterStart = Date.now();
     await originSelect.selectOption('agent');

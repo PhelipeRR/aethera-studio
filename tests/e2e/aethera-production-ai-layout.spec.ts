@@ -62,11 +62,18 @@ test('Produção com IA — layout minimalista, consoles e acessibilidade', asyn
     await expect(win.getByRole('heading', { name: 'Briefing' })).toBeVisible();
     await expect(win.getByRole('navigation', { name: 'Produções' })).toBeVisible();
     await expect(win.getByRole('heading', { name: 'Ideias pesquisadas' })).toBeVisible();
+    // The example is a placeholder: nothing is pre-filled and the CTA waits for a real briefing.
+    const briefing = win.locator('#cinema-prompt');
+    await expect(briefing).toHaveValue('');
+    await expect(briefing).toHaveAttribute('placeholder', /^Ex\.:/);
+    await expect(win.getByText('Entendi:')).toHaveCount(0);
+    await expect(win.getByRole('button', { name: /Gerar Direção & Storyboard/i })).toBeDisabled();
+    await briefing.fill('Crie um vídeo cinematográfico sobre os 10 chefes mais difíceis de Elden Ring, com narrativa épica, humor pontual e duração de 12 minutos.');
     await expect(win.getByText('Entendi:')).toBeVisible();
-    await expect(win.getByRole('radiogroup', { name: 'Formato' })).toBeVisible();
-    await expect(win.getByRole('radiogroup', { name: 'Estilo' })).toBeVisible();
+    // Formato and Estilo are compact selects carrying the whole catalog.
+    await expect(win.getByRole('combobox', { name: 'Formato', exact: true })).toBeVisible();
+    await expect(win.getByRole('combobox', { name: 'Estilo', exact: true })).toBeVisible();
     await expect(win.getByLabel('Humor')).toHaveAttribute('aria-valuetext', /%/);
-    await expect(win.locator('#cinema-narrative-format')).toHaveCount(0);
     await expect(win.getByRole('button', { name: 'Atualizar lista de vozes do VoiceStudio' })).toHaveCount(0);
     await win.screenshot({ path: join(shotsDir, '01-criar.png') });
 
@@ -79,7 +86,7 @@ test('Produção com IA — layout minimalista, consoles e acessibilidade', asyn
     await expect(advanced).toHaveAttribute('aria-expanded', 'false');
     await advanced.click();
     await expect(advanced).toHaveAttribute('aria-expanded', 'true');
-    for (const label of ['Formato narrativo', 'Categoria do conteúdo', 'Direção estética', 'Entrega audiovisual', 'Perfil de render', 'Resolução de preview']) {
+    for (const label of ['Categoria do conteúdo', 'Direção estética', 'Perfil de render', 'Resolução de preview']) {
       await expect(win.getByLabel(label, { exact: true })).toBeVisible();
     }
     await win.screenshot({ path: join(shotsDir, '02-detalhes-abertos.png'), fullPage: true });
@@ -130,6 +137,13 @@ test('Produção com IA — layout minimalista, consoles e acessibilidade', asyn
     await win.screenshot({ path: join(shotsDir, '04-producao-ativa.png') });
     await win.getByRole('button', { name: /Abrir no console desta produção/ }).click();
     await expect(dock.locator('[data-console-panel="job"] > button')).toHaveAttribute('aria-expanded', 'true');
+    // Quiet console: advanced filters and stage chips stay folded until asked for.
+    const filtersToggle = dock.getByRole('button', { name: /^Filtros/ });
+    await expect(filtersToggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(dock.getByLabel('Origem')).toBeHidden();
+    await filtersToggle.click();
+    await expect(dock.getByLabel('Origem')).toBeVisible();
+    await filtersToggle.click();
     await win.screenshot({ path: join(shotsDir, '05-console-do-projeto.png') });
 
     // Tabs are keyboard operable (Radix roving focus).
