@@ -372,7 +372,7 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
           {counters.errors > 0 && <span style={headerErrorStyle}>{counters.errors} erro(s)</span>}
           {counters.retries > 0 && <span style={headerRetryStyle}>{counters.retries} retry</span>}
         </span>
-        <span style={{ fontSize: 10, opacity: 0.8 }}>{open ? '▲ Recolher' : '▼ Abrir'}</span>
+        <span style={{ fontSize: 12, opacity: 0.8 }}>{open ? '▲ Recolher' : '▼ Abrir'}</span>
       </button>
 
       {open && (
@@ -416,7 +416,7 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
                 </div>
                 <span
                   data-console-progress-label
-                  style={{ fontFamily: 'monospace', fontSize: 11, color: '#ddd6fe', minWidth: 132 }}
+                  style={{ fontFamily: 'monospace', fontSize: 12, color: '#ddd6fe', minWidth: 132 }}
                 >
                   {progress ? `${progress.pct}% · ${progress.label}` : 'aguardando progresso'}
                 </span>
@@ -741,7 +741,7 @@ const headerStyle: React.CSSProperties = {
 const headerOpenStyle: React.CSSProperties = { ...headerStyle, background: 'color-mix(in srgb, var(--primary) 30%, var(--card))' };
 const headerProgressStyle: React.CSSProperties = {
   fontFamily: 'monospace',
-  fontSize: 10,
+  fontSize: 12,
   fontWeight: 400,
   padding: '1px 6px',
   borderRadius: 999,
@@ -749,7 +749,7 @@ const headerProgressStyle: React.CSSProperties = {
 };
 const headerJobStyle: React.CSSProperties = {
   fontFamily: 'monospace',
-  fontSize: 10,
+  fontSize: 12,
   fontWeight: 400,
   color: '#ddd6fe',
   opacity: 0.9,
@@ -762,14 +762,14 @@ const jobChipStyle: React.CSSProperties = {
   padding: '3px 8px',
   borderRadius: 6,
   border: '1px solid var(--input)',
-  fontSize: 10,
+  fontSize: 12,
   fontFamily: '"JetBrains Mono", "Fira Code", monospace',
   cursor: 'pointer',
   maxWidth: 420,
 };
 const rowJobStyle: React.CSSProperties = {
   color: '#fcd34d',
-  fontSize: 9,
+  fontSize: 12,
   padding: '0 4px',
   borderRadius: 3,
   border: '1px solid rgba(252, 211, 77, 0.4)',
@@ -801,7 +801,7 @@ const stageChipStyle: React.CSSProperties = {
   borderRadius: 999,
   border: '1px solid var(--input)',
   background: 'transparent',
-  fontSize: 10,
+  fontSize: 12,
   fontFamily: '"JetBrains Mono", "Fira Code", monospace',
   cursor: 'pointer',
 };
@@ -818,7 +818,7 @@ const tabStyle: React.CSSProperties = {
   borderRadius: 4,
   border: 0,
   cursor: 'pointer',
-  fontSize: 11,
+  fontSize: 12,
 };
 const searchStyle: React.CSSProperties = {
   flex: 1,
@@ -828,13 +828,13 @@ const searchStyle: React.CSSProperties = {
   border: '1px solid var(--input)',
   background: 'var(--background)',
   color: 'var(--foreground)',
-  fontSize: 11,
+  fontSize: 12,
 };
 const selectLabelStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: 4,
-  fontSize: 10,
+  fontSize: 12,
   color: '#c4b5fd',
   fontFamily: 'monospace',
 };
@@ -844,11 +844,11 @@ const selectStyle: React.CSSProperties = {
   border: '1px solid var(--input)',
   background: 'var(--background)',
   color: 'var(--foreground)',
-  fontSize: 11,
+  fontSize: 12,
   maxWidth: 150,
 };
 const checkboxStyle: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 12,
   color: '#ddd6fe',
   display: 'flex',
   alignItems: 'center',
@@ -863,7 +863,7 @@ const logAreaStyle: React.CSSProperties = {
   borderRadius: 6,
   padding: 8,
   fontFamily: '"JetBrains Mono", "Fira Code", monospace',
-  fontSize: 11,
+  fontSize: 12,
   lineHeight: 1.55,
 };
 const emptyStyle: React.CSSProperties = { color: '#94a3b8', padding: 4 };
@@ -887,7 +887,7 @@ const originBadgeStyle: React.CSSProperties = {
   padding: '0 5px',
   borderRadius: 3,
   border: '1px solid',
-  fontSize: 9,
+  fontSize: 12,
   textTransform: 'uppercase',
   letterSpacing: 0.4,
 };
@@ -897,11 +897,11 @@ const pctStyle: React.CSSProperties = {
   background: '#c4b5fd',
   borderRadius: 999,
   padding: '0 6px',
-  fontSize: 9,
+  fontSize: 12,
   fontWeight: 700,
 };
-const eventStyle: React.CSSProperties = { fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.4 };
-const streamStyle: React.CSSProperties = { fontSize: 9, color: '#94a3b8', textTransform: 'lowercase' };
+const eventStyle: React.CSSProperties = { fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.4 };
+const streamStyle: React.CSSProperties = { fontSize: 12, color: '#94a3b8', textTransform: 'lowercase' };
 const sourceStyle: React.CSSProperties = { color: '#94a3b8' };
 const metaStyle: React.CSSProperties = { color: '#64748b' };
 const messageStyle: React.CSSProperties = { color: 'var(--foreground)', wordBreak: 'break-word', whiteSpace: 'pre-wrap' };
@@ -913,7 +913,7 @@ const detailsBtnStyle: React.CSSProperties = {
   background: 'transparent',
   color: '#67e8f9',
   cursor: 'pointer',
-  fontSize: 10,
+  fontSize: 12,
 };
 const detailsPanelStyle: React.CSSProperties = {
   marginTop: 4,
@@ -926,7 +926,7 @@ const detailRowStyle: React.CSSProperties = { display: 'flex', gap: 8, alignItem
 const detailLabelStyle: React.CSSProperties = {
   minWidth: 96,
   color: '#c4b5fd',
-  fontSize: 10,
+  fontSize: 12,
   textTransform: 'uppercase',
   letterSpacing: 0.4,
 };
@@ -934,7 +934,7 @@ const detailValueStyle: React.CSSProperties = {
   margin: 0,
   flex: 1,
   color: '#cbd5e1',
-  fontSize: 10,
+  fontSize: 12,
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
   fontFamily: 'inherit',
@@ -945,7 +945,7 @@ const footerStyle: React.CSSProperties = {
   justifyContent: 'space-between',
   gap: 8,
   flexWrap: 'wrap',
-  fontSize: 10,
+  fontSize: 12,
   color: '#64748b',
   marginTop: 6,
 };
@@ -957,5 +957,5 @@ const toolbarBtnStyle: React.CSSProperties = {
   background: 'color-mix(in srgb, var(--primary) 14%, var(--card))',
   color: '#ddd6fe',
   cursor: 'pointer',
-  fontSize: 11,
+  fontSize: 12,
 };

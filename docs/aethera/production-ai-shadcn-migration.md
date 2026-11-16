@@ -89,7 +89,48 @@ Verificação:
 - `vitest run apps/aethera-desktop/test`: 197 OK, 3 falhas só em `sharp-native-smoke.test.ts`, que exige o instalador
   empacotado em `dist/aethera/win-unpacked` (ausente no worktree).
 
-Pendente: a "segunda proposta visual aprovada" não está registrada no repositório; o layout seguiu os requisitos do
-pedido (minimalista, escuro com roxo, briefing/configurações/acompanhamento reorganizados, consoles geral e por
-projeto). `TrendRadarPanel`, `EditorialAuditPanel`, `MediaCoveragePanel` e `VoiceDirectorPanel` foram reaproveitados
-sem mudança visual.
+Observação: `TrendRadarPanel`, `EditorialAuditPanel`, `MediaCoveragePanel` e `VoiceDirectorPanel` foram
+reaproveitados sem mudança visual. A seção 7 substitui o layout descrito acima.
+
+## 7. Segunda proposta aprovada (v2) — execução e evidências (2026-11-16)
+
+Fonte: `docs/aethera/video-ai-ux-redesign-proposal.md` e `.html` (versionados em `main`, commit `8e03aea`). A
+estrutura da proposta foi adotada integralmente. A paleta petróleo/dourado dos mockups **não** foi usada: o pedido
+original exige manter a identidade escura com detalhes roxos, então tudo usa os tokens do tema Aethera.
+
+| Lote | Entrega |
+|---|---|
+| V1 | Componentes shadcn `dialog`, `popover`, `toggle`, `toggle-group` (com `motion-reduce:animate-none`) |
+| V2 | `cinema/production-status-model.ts` (puro, com teste): status por ícone + texto, etapa "N de 11", 4 fases do stepper, rótulo semântico do humor, opções de render com VRAM, favoritos de formato/estilo |
+| V3 | `ProductionRail`: lista persistente à esquerda; selecionar só troca a produção exibida (sem `scrollTo`); "Nova produção" |
+| V4 | Cabeçalho: chips "N rodando" / "N aguarda você", atalho para o Console Geral e popover ⚙ "Diagnóstico do ambiente" (diretores/provedores, FFmpeg, Benchmark) |
+| V5 | Abas de intenção **Criar · Produção ativa · Revisão · Auditoria Editorial** |
+| V6 | Criar: briefing protagonista, linha "Entendi:" com "ajustar", Formato e Estilo como `ToggleGroup` (favoritos + catálogo completo em Configurações avançadas), duração sincronizada, humor com rótulo semântico, linhas de divulgação progressiva (Narração e idioma, Qualidade, Configurações avançadas), VRAM só na linha de estimativa, ID da voz fora do rótulo, `RefreshCw` com `aria-label`, CTA único |
+| V7 | `IdeasColumn`: histórico real do Trend Radar em coluna com altura limitada e rolagem própria; "Pesquisar novas ideias" abre o `TrendRadarPanel` real num `Dialog`; "Usar ideia" só preenche o briefing e oferece **Desfazer** |
+| V8 | Produção ativa: título/id/tentativa, status com ícone + texto, "Etapa N de 11", % e `Progress`, decorrido/restante, `ProductionStepper` (11 etapas em 4 fases), bloco "Agora" com atalho para o console, falha como `Alert`, "Precisa de você" para mídia pendente; "Autorizar Motion Visual para todas" agora pede confirmação (`ConfirmDialog`) |
+| V9 | Revisão: subnavegação vertical (Roteiro & Storyboard, Qualidade & Render, Mídia & Grounding, Voz & Pronúncia) com estados vazios |
+| V10 | Console do projeto como dock recolhível no rodapé (só a produção selecionada, altura máx. 45vh); **Console Geral** como página própria (`/aethera/console`) no menu principal |
+| V11 | Texto mínimo de 12 px (console 11 → 12 px), botões ≥ 32 px, `motion-safe` nas animações |
+
+Invariantes mantidos: nenhum handler, chamada IPC, estado de produção ou contrato mudou. A única mudança de
+comportamento é a confirmação antes de autorizar motion visual em todas as cenas pendentes, pedida pela proposta.
+Retomar, cancelar, editor e exclusão aparecem só nas mesmas condições de antes (a API decide).
+
+Verificação (worktree `aethera-production-shadcn`):
+
+- `tsc -p apps/aethera-desktop/tsconfig.web.json`: OK. `eslint` nos arquivos alterados: OK. `npm run build:aethera`: OK.
+- `vitest run apps/aethera-desktop/test/production-status-model.test.ts`: 8/8 OK.
+- E2E `aethera-production-ai-layout.spec.ts` (reescrito para a v2) e `aethera-redesign.spec.ts`: 2/2 OK.
+- Capturas revisadas em `docs/aethera/screenshots/production-ai/01..09` (1440×900 e 1024×768). A revisão visual
+  encontrou e corrigiu: o dock aberto cobria as abas em 1024×768, as subabas aninhadas herdavam o indicador
+  horizontal e um rótulo visível divergia do nome acessível.
+
+Pendências:
+
+- Matriz cena × qualidade e a aba SFX/VFX da Revisão: sem dados na API atual.
+- "Agora" mostra a última mensagem do job; ainda não há heartbeat por etapa.
+- Virtualização do trilho e do console para muitas produções.
+- `PromptEditor.tsx`/`prompt-editor-model.ts` (não rastreados, de outra sessão) não foram integrados.
+- `aethera-console-jobs.spec.ts` (opt-in) ainda usa o seletor antigo `[data-production-job] [data-console-panel="job"]`;
+  o console por projeto agora fica em `#cinema-project-console`.
+- O `TrendRadarPanel` reaproveitado no diálogo mantém o CTA em gradiente próprio.

@@ -11,6 +11,7 @@ import {
   Radio,
   Settings,
   ShieldCheck,
+  SquareTerminal,
 } from 'lucide-react';
 import React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -28,6 +29,7 @@ import { AetheraReviewRoomPage } from '@/features/aethera/AetheraReviewRoomPage'
 import { AetheraStudioEditor } from '@/features/aethera/AetheraStudioEditor';
 import { AetheraProductionWorkspace } from '@/features/video/AetheraProductionWorkspace';
 import { CinemaDirectorPanel } from '@/features/video/CinemaDirectorPanel';
+import { GeneralConsolePage } from '@/features/video/cinema/GeneralConsolePage';
 import { ContentAnalyticsIdeasPage } from '@/features/aethera/ContentAnalyticsIdeasPage';
 import { ContentCalendarPage } from '@/features/aethera/ContentCalendarPage';
 import { ContentChannelSetupPage } from '@/features/aethera/ContentChannelSetupPage';
@@ -46,6 +48,7 @@ const AETHERA_ROUTES: readonly AppRoute[] = [
   { path: '/aethera', label: 'Home', icon: Home, group: 'Trabalho', description: 'Centro de produção audiovisual.' },
   { path: '/aethera/projects', label: 'Projeto Manual', icon: FolderKanban, group: 'Trabalho', description: 'Gerenciamento manual de produções.' },
   { path: '/aethera/cinema', label: 'Produção com IA', icon: Clapperboard, group: 'Trabalho', description: 'Direção criativa, storyboard e humor pontual.' },
+  { path: '/aethera/console', label: 'Console Geral', icon: SquareTerminal, group: 'Trabalho', description: 'Eventos de todas as produções e serviços.' },
   { path: '/video', label: 'Editor', icon: Film, group: 'Trabalho', description: 'Editor profissional com timeline multifaixa.' },
   { path: '/aethera/library', label: 'Biblioteca', icon: Library, group: 'Conhecimento', description: 'Mídias, áudios, roteiros e direitos.' },
   { path: '/agents', label: 'Agentes', icon: Bot, group: 'Integrações', description: 'Equipe cinematográfica de IA com fallback RF-07.' },
@@ -100,6 +103,7 @@ const router = createHashRouter([
           { index: true, element: <AetheraStudioHome /> },
           { path: 'projects', element: <AetheraProjectsPage /> },
           { path: 'cinema', element: <CinemaDirectorPanel /> },
+          { path: 'console', element: <GeneralConsolePage /> },
           { path: 'editor', element: <AetheraStudioEditor /> },
           { path: 'review', element: <AetheraReviewRoomPage /> },
           { path: 'queue', element: <ContentQueuePage /> },

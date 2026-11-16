@@ -130,9 +130,11 @@ export interface AppliedTrendIdeaPayload {
 interface TrendRadarPanelProps {
   api: TrendRadarBridgeApi;
   onApplyIdea: (payload: AppliedTrendIdeaPayload) => void;
+  /** Opens the radar already expanded (used inside the "Pesquisar novas ideias" dialog). */
+  defaultExpanded?: boolean;
 }
 
-const FORMAT_LABELS: Record<TrendFormat, string> = {
+export const FORMAT_LABELS: Record<TrendFormat, string> = {
   auto: 'Automático da IA',
   top_10: 'TOP 10',
   documentary: 'Documentário',
@@ -172,8 +174,8 @@ export function formatBriefingToProductionPrompt(
   ].join('\n');
 }
 
-export const TrendRadarPanel: React.FC<TrendRadarPanelProps> = ({ api, onApplyIdea }) => {
-  const [expanded, setExpanded] = useState(false);
+export const TrendRadarPanel: React.FC<TrendRadarPanelProps> = ({ api, onApplyIdea, defaultExpanded = false }) => {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [niche, setNiche] = useState<string>('Games');
   const [customNiche, setCustomNiche] = useState<string>('');
   const [subniche, setSubniche] = useState<string>('');
