@@ -69,7 +69,7 @@ test('Aethera Studio Redesign — E2E Navigation, Cinema AI IPC & Visual Screens
     await expect(win.getByRole('heading', { name: 'Projeto Manual' })).toBeVisible();
     await win.screenshot({ path: join(screenshotsDir, '02-projetos.png') });
 
-    // 3. Produção com IA + Real IPC execution + Duration Sync + Plan Approval
+    // 3. Produção com IA + Production Contract sync + staged pipeline (real IPC)
     await win.locator('aside nav').getByRole('link', { name: 'Produção com IA' }).click();
     await expect(win.getByRole('heading', { name: 'Produção com IA' })).toBeVisible();
     await expect(win.getByText(/720s \(12 min\)/i)).toBeVisible();
@@ -82,12 +82,28 @@ test('Aethera Studio Redesign — E2E Navigation, Cinema AI IPC & Visual Screens
     await win.getByRole('button', { name: 'Manter controle' }).click();
     await win.getByRole('button', { name: /Gerar Direção & Storyboard/i }).click();
     await expect(win.getByRole('region', { name: 'Conformidade do contrato de produção' })).toBeVisible();
-    await expect(win.getByText(/Planejamento Narrativo & Storyboard/i)).toBeVisible({ timeout: 10_000 });
-    await win.getByRole('button', { name: /Aprovar Plano/i }).click();
-    await expect(win.getByRole('button', { name: /Plano Aprovado/i })).toBeVisible();
+    // The button starts the staged pipeline. The E2E fake agents return no verifiable research
+    // dossier, so the job must pause at the research gate instead of inventing facts.
+    await expect(win.getByText(/Pausado \(Pesquisa Pendente\)/i).first()).toBeVisible({ timeout: 60_000 });
+    await expect(win.getByText(/Nenhum fato foi inventado/i).first()).toBeVisible();
+    await expect(win.getByRole('button', { name: 'Retomar Projeto' }).first()).toBeVisible();
     await win.screenshot({ path: join(screenshotsDir, '03-producao-ia.png') });
 
     // 4. Editor NLE Profissional — Importar -> Editar -> Preview -> Renderizar MP4 Real
+    // The staged production above stops at the research gate, so seed a short real package through
+    // the deterministic cinema:produce IPC; the Editor opens the latest project.
+    const seeded = await win.evaluate(async () => {
+      const api = (window as unknown as { aetheraBridge?: { cinemaProduce?: (i: Record<string, unknown>) => Promise<{ timeline?: { projectId?: string } }> } }).aetheraBridge;
+      return api?.cinemaProduce?.({
+        projectId: 'e2e_editor_seed',
+        prompt: 'Mini documentário sobre exploração espacial',
+        genre: 'documentary',
+        format: 'youtube_16_9',
+        targetDurationSec: 12,
+        humorIntensity: 20,
+      }) ?? null;
+    });
+    expect(seeded?.timeline?.projectId).toBe('e2e_editor_seed');
     await win.locator('aside nav').getByRole('link', { name: 'Editor' }).click();
     await expect(win.getByText('Editor NLE Profissional')).toBeVisible();
     await expect(win.getByText('Timeline NLE')).toBeVisible({ timeout: 10_000 });
