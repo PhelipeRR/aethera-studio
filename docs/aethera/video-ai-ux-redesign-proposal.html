@@ -31,7 +31,7 @@
   nav.toc { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:14px; margin-top:20px; }
   nav.toc a { color:var(--foreground); text-decoration:none; border-bottom:1px solid var(--border); }
   nav.toc a:hover, nav.toc a:focus-visible { border-color:var(--primary); outline:none; }
-  .callout { border:1px solid var(--border); border-left:3px solid var(--primary); background:var(--card); border-radius:10px; padding:16px 18px; margin:20px 0; }
+  .callout { border:1px solid var(--border); background:rgba(217,184,117,.06); border-radius:10px; padding:16px 18px; margin:20px 0; }
   .callout strong { color:var(--primary); }
   table.findings { width:100%; border-collapse:collapse; font-size:14px; margin-top:16px; }
   table.findings th, table.findings td { text-align:left; vertical-align:top; padding:10px 12px; border-bottom:1px solid var(--border); }
@@ -65,7 +65,7 @@
 
   .shell { display:grid; grid-template-columns:232px 1fr; min-height:520px; }
   .rail { border-right:1px solid var(--border); background:var(--sidebar); padding:14px 10px; display:flex; flex-direction:column; gap:6px; }
-  .rail h4 { margin:0 6px 6px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted-foreground); font-weight:600; }
+  .rail .hd { margin:0 6px 6px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted-foreground); font-weight:600; }
   .job { border:1px solid transparent; border-radius:10px; padding:9px 10px; display:grid; gap:4px; }
   .job.sel { border-color:var(--border); background:var(--card); box-shadow:inset 3px 0 0 var(--primary); }
   .job .t { display:flex; align-items:center; gap:7px; font-weight:550; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -82,8 +82,8 @@
   .tab .n.warn { background:rgba(230,184,99,.15); color:var(--warning); }
   .content { padding:18px; display:grid; gap:14px; flex:1; }
   .card { border:1px solid var(--border); background:var(--card); border-radius:12px; padding:14px 16px; }
-  .card h5 { margin:0 0 10px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:8px; justify-content:space-between; }
-  .card h5 .sub { font-weight:400; font-size:12px; color:var(--muted-foreground); }
+  .card .hd5 { margin:0 0 10px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:8px; justify-content:space-between; }
+  .card .hd5 .sub { font-weight:400; font-size:12px; color:var(--muted-foreground); }
   .label { font-size:12px; font-weight:550; color:var(--muted-foreground); margin-bottom:6px; display:block; }
   .textarea { border:1px solid var(--input); border-radius:10px; background:var(--background); padding:10px 12px; min-height:84px; color:var(--foreground); font-size:14px; }
   .ent { background:rgba(217,184,117,.14); color:var(--primary); border-radius:4px; padding:0 4px; }
@@ -120,7 +120,7 @@
 
   /* active production */
   .prod-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
-  .prod-head h6 { margin:0; font-size:16px; font-weight:600; }
+  .prod-head .hd6 { margin:0; font-size:16px; font-weight:600; }
   .mono { font-family:var(--font-mono); font-size:12px; color:var(--muted-foreground); }
   .statusline { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:10px 0 8px; font-size:13px; }
   .statusline .pct { font-family:var(--font-mono); font-size:20px; font-weight:600; color:var(--signal); margin-left:auto; }
@@ -137,11 +137,11 @@
   .log { font-family:var(--font-mono); font-size:12px; background:var(--background); border:1px solid var(--border); border-radius:8px; padding:8px 10px; color:var(--muted-foreground); }
   .log .ok { color:var(--success); } .log .t { color:var(--input); margin-right:8px; }
   .needs { border-color:rgba(230,184,99,.45); background:linear-gradient(0deg, rgba(230,184,99,.06), rgba(230,184,99,.06)), var(--card); }
-  .needs h5 { color:var(--warning); }
+  .needs .hd5 { color:var(--warning); }
   .slot { display:flex; align-items:center; gap:12px; padding:9px 0; border-top:1px solid var(--border); flex-wrap:wrap; }
   .slot .q { flex:1; min-width:200px; } .slot .q b { display:block; font-size:13px; } .slot .q span { font-size:12px; color:var(--muted-foreground); }
   .fail { border-color:rgba(239,143,128,.45); }
-  .fail h5 { color:var(--destructive); }
+  .fail .hd5 { color:var(--destructive); }
 
   /* review */
   .rev { display:grid; grid-template-columns:200px 1fr; gap:14px; }
@@ -187,14 +187,14 @@
   /* before diagram */
   .compare { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:20px; }
   .stack { border:1px solid var(--border); border-radius:12px; padding:14px; background:var(--card); }
-  .stack h4 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted-foreground); }
+  .stack .hd { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted-foreground); }
   .blk { border:1px solid var(--border); border-radius:6px; padding:5px 10px; margin-bottom:5px; font-size:12.5px; display:flex; justify-content:space-between; background:var(--background); }
-  .blk.c { border-left:3px solid var(--primary); } .blk.a { border-left:3px solid var(--signal); } .blk.r { border-left:3px solid var(--info); } .blk.x { border-left:3px solid var(--input); color:var(--muted-foreground); }
+  .blk::before { content:""; width:8px; height:8px; border-radius:2px; margin:6px 8px 0 0; flex:none; background:var(--input); } .blk { justify-content:flex-start; } .blk > span { margin-left:auto; color:var(--muted-foreground); } .blk.c::before { background:var(--primary); } .blk.a::before { background:var(--signal); } .blk.r::before { background:var(--info); } .blk.x { color:var(--muted-foreground); }
   .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted-foreground); margin-top:10px; }
   .legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px; }
   .legend .c::before { background:var(--primary); } .legend .a::before { background:var(--signal); } .legend .r::before { background:var(--info); } .legend .x::before { background:var(--input); }
   .newmap { display:grid; grid-template-columns:70px 1fr; gap:6px; }
-  .newmap .rl { border:1px solid var(--border); border-radius:6px; background:var(--background); font-size:11px; color:var(--muted-foreground); padding:6px; writing-mode:vertical-rl; text-align:center; border-left:3px solid var(--signal); }
+  .newmap .rl { border:1px solid var(--border); border-radius:6px; background:var(--background); font-size:11px; color:var(--muted-foreground); padding:6px; writing-mode:vertical-rl; text-align:center; }
 
   /* tokens + plan */
   .swatches { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; margin-top:14px; }
@@ -276,7 +276,7 @@
 
     <div class="compare">
       <div class="stack">
-        <h4>Hoje: uma rolagem</h4>
+        <div class="hd">Hoje: uma rolagem</div>
         <div class="blk x">Hero + status de provedores</div>
         <div class="blk x">Abas Produção | Auditoria</div>
         <div class="blk c">Radar de Tendências <span>861 linhas</span></div>
@@ -291,7 +291,7 @@
         <div class="blk r">AI Voice Director</div>
       </div>
       <div class="stack">
-        <h4>Proposta: separado por tarefa</h4>
+        <div class="hd">Proposta: separado por tarefa</div>
         <div class="newmap">
           <div class="rl">Lista de produções</div>
           <div>
@@ -354,7 +354,7 @@
         </div>
         <div class="shell">
           <aside class="rail">
-            <h4>Produções</h4>
+            <div class="hd">Produções</div>
             <div class="job"><div class="t"><svg class="i sm st-run"><use href="#i-dot"/></svg>Elden Ring — a história…</div><div class="s"><span>Roteiro · 4/11</span><span>34%</span></div><div class="bar"><b style="width:34%"></b></div></div>
             <div class="job"><div class="t"><svg class="i sm st-pause"><use href="#i-pause"/></svg>Top 10 RPGs de 2026</div><div class="s"><span>Aguarda mídia (3)</span><span>58%</span></div></div>
             <div class="job"><div class="t"><svg class="i sm st-done"><use href="#i-check-circle"/></svg>Trailer GTA VI</div><div class="s"><span>Pronto · abrir no editor</span></div></div>
@@ -393,7 +393,7 @@
                   </div>
                 </div>
                 <div class="card">
-                  <h5><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-trend"/></svg>Ideias em alta</span><span class="sub">Games</span></h5>
+                  <div class="hd5"><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-trend"/></svg>Ideias em alta</span><span class="sub">Games</span></div>
                   <div style="display:grid; gap:8px">
                     <div class="idea"><span class="h">Por que Silksong demorou 6 anos</span><span class="m"><span class="heat">↑ 92</span>Documentário · 14 min</span><span class="btn sm">Usar ideia</span></div>
                     <div class="idea"><span class="h">Os 7 chefes mais injustos de 2026</span><span class="m"><span class="heat">↑ 81</span>Top List · 9 min</span><span class="btn sm">Usar ideia</span></div>
@@ -421,7 +421,7 @@
         <div class="win-bar"><div class="dots"><i></i><i></i><i></i></div><span class="title">NeuralBridge Studio — Aethera</span></div>
         <div class="shell" style="min-height:0">
           <aside class="rail">
-            <h4>Produções</h4>
+            <div class="hd">Produções</div>
             <div class="job sel"><div class="t"><svg class="i sm st-run"><use href="#i-dot"/></svg>Elden Ring — a história…</div><div class="s"><span>Roteiro · 4/11</span><span>34%</span></div><div class="bar"><b style="width:34%"></b></div></div>
             <div class="job"><div class="t"><svg class="i sm st-pause"><use href="#i-pause"/></svg>Top 10 RPGs de 2026</div><div class="s"><span>Aguarda mídia (3)</span><span>58%</span></div></div>
             <div class="job"><div class="t"><svg class="i sm st-done"><use href="#i-check-circle"/></svg>Trailer GTA VI</div><div class="s"><span>Pronto · abrir no editor</span></div></div>
@@ -437,7 +437,7 @@
             <div class="content">
               <div class="card">
                 <div class="prod-head">
-                  <div><h6>Elden Ring — a história que ninguém contou</h6><span class="mono">prod_8f2a · tentativa 2 · Documentário · 16:9 · 12 min</span></div>
+                  <div><div class="hd6">Elden Ring — a história que ninguém contou</div><span class="mono">prod_8f2a · tentativa 2 · Documentário · 16:9 · 12 min</span></div>
                   <div class="chips"><span class="btn sm"><svg class="i sm"><use href="#i-pause"/></svg>Pausar</span><span class="btn sm danger"><svg class="i sm"><use href="#i-x"/></svg>Cancelar</span></div>
                 </div>
                 <div class="statusline">
@@ -471,7 +471,7 @@
               </div>
 
               <div class="card now">
-                <h5><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-terminal"/></svg>Agora</span><span class="sub">última atividade há 4 s</span></h5>
+                <div class="hd5"><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-terminal"/></svg>Agora</span><span class="sub">última atividade há 4 s</span></div>
                 <div>Escrevendo o bloco 3 de 7 do roteiro</div>
                 <div class="log">
                   <div><span class="t">14:01:52</span><span class="ok">✓</span> bloco 2/7 aprovado pelo revisor de fatos (3 fontes)</div>
@@ -482,13 +482,13 @@
               </div>
 
               <div class="card needs">
-                <h5><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-alert"/></svg>Precisa de você · Top 10 RPGs de 2026</span><span class="btn sm ghost">Usar motion visual em todas…</span></h5>
+                <div class="hd5"><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-alert"/></svg>Precisa de você · Top 10 RPGs de 2026</span><span class="btn sm ghost">Usar motion visual em todas…</span></div>
                 <div class="slot"><div class="q"><b>Cena 4 · "boss fight Malenia fase 2"</b><span>Nenhuma mídia passou na validação visual (relevância 0,31 &lt; 0,6)</span></div><span class="btn sm"><svg class="i sm"><use href="#i-upload"/></svg>Importar mídia</span><span class="btn sm ghost"><svg class="i sm"><use href="#i-wand"/></svg>Usar motion visual</span></div>
                 <div class="slot"><div class="q"><b>Cena 7 · "mapa das Lands Between"</b><span>Fonte bloqueada por licença</span></div><span class="btn sm"><svg class="i sm"><use href="#i-upload"/></svg>Importar mídia</span><span class="btn sm ghost"><svg class="i sm"><use href="#i-wand"/></svg>Usar motion visual</span></div>
               </div>
 
               <div class="card fail">
-                <h5><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-x-circle"/></svg>Falhou em Montagem · Doc Zelda TotK</span><span class="sub">tentativa 2 · há 6 min</span></h5>
+                <div class="hd5"><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-x-circle"/></svg>Falhou em Montagem · Doc Zelda TotK</span><span class="sub">tentativa 2 · há 6 min</span></div>
                 <div style="font-size:13px">FFmpeg encerrou com código 1 ao concatenar a cena 12 (codec de áudio incompatível).</div>
                 <div class="foot" style="margin-top:10px; justify-content:flex-start; gap:8px">
                   <span class="btn sm primary"><svg class="i sm"><use href="#i-rotate"/></svg>Tentar de novo a partir de Montagem</span>
