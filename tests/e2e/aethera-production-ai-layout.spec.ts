@@ -127,15 +127,15 @@ test('Produção com IA — layout minimalista, consoles e acessibilidade', asyn
     }
     await expect(win.getByRole('heading', { name: 'Agora' })).toBeVisible();
 
-    // The rail lists the production with icon + text status; the project console is the dock, scoped to it.
+    // The rail lists the production with icon + text status; the project console opens in a modal, scoped to it.
     const job = win.locator('[data-production-job]').first();
     await expect(job).toBeVisible();
     await expect(job).toHaveAttribute('aria-current', 'true');
-    const dock = win.locator('#cinema-project-console');
-    await expect(dock.locator('[data-console-panel="job"]')).toHaveCount(1);
-    await expect(win.locator('[data-console-panel="general"]')).toHaveCount(0);
+    await expect(win.locator('[data-console-panel]')).toHaveCount(0);
     await win.screenshot({ path: join(shotsDir, '04-producao-ativa.png') });
     await win.getByRole('button', { name: /Abrir no console desta produção/ }).click();
+    const dock = win.getByRole('dialog', { name: 'Console desta produção' });
+    await expect(dock.locator('[data-console-panel="job"]')).toHaveCount(1);
     await expect(dock.locator('[data-console-panel="job"] > button')).toHaveAttribute('aria-expanded', 'true');
     // Quiet console: advanced filters and stage chips stay folded until asked for.
     const filtersToggle = dock.getByRole('button', { name: /^Filtros/ });
@@ -145,6 +145,8 @@ test('Produção com IA — layout minimalista, consoles e acessibilidade', asyn
     await expect(dock.getByLabel('Origem')).toBeVisible();
     await filtersToggle.click();
     await win.screenshot({ path: join(shotsDir, '05-console-do-projeto.png') });
+    await win.keyboard.press('Escape');
+    await expect(dock).toHaveCount(0);
 
     // Tabs are keyboard operable (Radix roving focus).
     const activeTab = win.getByRole('tab', { name: /Produção ativa/ });

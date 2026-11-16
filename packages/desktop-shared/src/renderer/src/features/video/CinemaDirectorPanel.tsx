@@ -53,6 +53,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Field, Input, Select, Textarea } from '@/components/ui/field';
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from '@/components/ui/popover';
 import { Progress } from '@/components/ui/progress';
@@ -409,7 +410,7 @@ export function CinemaDirectorPanel() {
   const [readyExtraCount, setReadyExtraCount] = useState(0);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('criar');
   const [reviewTab, setReviewTab] = useState<ReviewTab>('storyboard');
-  const [consoleOpenNonce, setConsoleOpenNonce] = useState(0);
+  const [projectConsoleOpen, setProjectConsoleOpen] = useState(false);
   const [ideaUndo, setIdeaUndo] = useState<{ prompt: string; title: string } | null>(null);
   const [confirmMotionAll, setConfirmMotionAll] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -1072,10 +1073,7 @@ export function CinemaDirectorPanel() {
   }
 
   function openProjectConsole() {
-    setConsoleOpenNonce((value) => value + 1);
-    window.requestAnimationFrame(() =>
-      document.getElementById('cinema-project-console')?.scrollIntoView({ block: 'end', behavior: 'smooth' }),
-    );
+    setProjectConsoleOpen(true);
   }
 
   function applyIdea(payload: AppliedTrendIdeaPayload, ideaTitle: string) {
@@ -2009,21 +2007,25 @@ export function CinemaDirectorPanel() {
             </TabsContent>
           </Tabs>
 
-          {/* Project console dock: only events of the selected production */}
+          {/* Project console: opens in a modal, only events of the selected production */}
           {selectedKey && (
-            <section
-              id="cinema-project-console"
-              aria-label="Console desta produção"
-              className="sticky bottom-0 z-10 -mx-2 max-h-[45vh] overflow-y-auto bg-background/95 px-2 pb-2 backdrop-blur supports-[backdrop-filter]:bg-background/80"
-            >
-              <ProductionConsoleAccordion
-                key={`${selectedKey}:${consoleOpenNonce}`}
-                jobId={selectedKey}
-                title="Console desta produção"
-                defaultOpen={consoleOpenNonce > 0}
-              />
-            </section>
+            <div className="mt-6 flex justify-end border-t border-border pt-4">
+              <Button type="button" variant="outline" size="sm" onClick={openProjectConsole}>
+                <SquareTerminal aria-hidden /> Console desta produção
+              </Button>
+            </div>
           )}
+          <Dialog open={projectConsoleOpen && Boolean(selectedKey)} onOpenChange={setProjectConsoleOpen}>
+            <DialogContent id="cinema-project-console" className="max-h-[88vh] overflow-y-auto sm:max-w-5xl">
+              <DialogHeader>
+                <DialogTitle>Console desta produção</DialogTitle>
+                <DialogDescription>Eventos, logs e erros apenas da produção selecionada, em tempo real.</DialogDescription>
+              </DialogHeader>
+              {selectedKey && (
+                <ProductionConsoleAccordion key={selectedKey} jobId={selectedKey} title="Eventos da produção" defaultOpen />
+              )}
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 

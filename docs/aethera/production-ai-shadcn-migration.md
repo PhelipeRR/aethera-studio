@@ -148,3 +148,8 @@ Pendências:
   Limpar) no rodapé; linhas sem badges com borda: nível só para aviso/erro, debug esmaecido, exit code só quando
   falha, duração e % nos detalhes. `aethera-console-ui.spec.ts` (opt-in) abre "Filtros" antes dos selects.
 
+
+### 7.2 Console do projeto em modal (2026-11-16)
+
+- O dock fixo no rodapé (`sticky bottom-0`, 45vh) saiu: cobria o conteúdo. "Console desta produção" agora é um botão no fim da página que abre um `Dialog` (`#cinema-project-console`, `sm:max-w-5xl`, 88vh) com o `ProductionConsoleAccordion` já aberto e só a produção selecionada. "Abrir no console desta produção" e "Ver erro no console" abrem o mesmo modal.
+- Verificação: `tsc` web OK, `eslint` OK, `npm run build:aethera` OK; `aethera-production-ai-layout.spec.ts` atualizado para o modal e aprovado numa cópia temporária que tolera o gate de pesquisa (o spec original falha antes, na linha 120, por mudança não commitada de outra sessão em `packages/cinema/src/analysis/media-providers/*`). Capturas `04` e `05` atualizadas.
