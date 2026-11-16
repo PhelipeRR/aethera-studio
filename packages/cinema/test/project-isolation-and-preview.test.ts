@@ -291,6 +291,11 @@ describe('Project Isolation, Smart Cache, Proportional Script & Full-Length Prev
       },
     };
 
+    // This test checks clip coverage, not the voice: point VoiceStudio at a closed port so a locally running
+    // instance (~3.8 s per segment, 9 segments per render) does not decide the outcome. Narration still runs through
+    // the real fallback chain (Windows SAPI, else the procedural cue), exactly as on machines without VoiceStudio.
+    const offlineVoiceStudio = { voiceStudioUrl: 'http://127.0.0.1:9' };
+
     // 1. Technical sample mode must explicitly flag isTechnicalSample
     const sampleRes = await renderRealCinemaMp4({
       pkg: pkgProcedural,
@@ -299,6 +304,7 @@ describe('Project Isolation, Smart Cache, Proportional Script & Full-Length Prev
       requireRealMedia: false,
       technicalSampleMaxClips: 2,
       previewQuality: 'fast_preview',
+      ...offlineVoiceStudio,
     });
     expect(sampleRes.isTechnicalSample).toBe(true);
     expect(sampleRes.sampleLabel).toMatch(/AMOSTRA TÉCNICA/i);
@@ -311,6 +317,7 @@ describe('Project Isolation, Smart Cache, Proportional Script & Full-Length Prev
       fileName: 'full.mp4',
       requireRealMedia: false,
       previewQuality: 'fast_preview',
+      ...offlineVoiceStudio,
     });
     expect(fullRes.isTechnicalSample).toBe(false);
     expect(fullRes.sampleLabel).toBeUndefined();

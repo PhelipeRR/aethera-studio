@@ -108,6 +108,63 @@ export interface RealRenderResult {
   };
 }
 
+const VOICESTUDIO_PREFERRED_VOICE_ID = '9190edfa'; // Perfil: Narrador YouTube PT-BR
+const VOICESTUDIO_VOICE_CACHE_TTL_MS = 5 * 60_000;
+const voiceStudioVoiceCache = new Map<string, { voiceId: Promise<string>; expiresAt: number }>();
+
+/** Test hook: forget cached VoiceStudio voice lookups. */
+export function clearVoiceStudioVoiceCache(): void {
+  voiceStudioVoiceCache.clear();
+}
+
+/**
+ * Picks the narration voice from VoiceStudio's voice list. A render synthesizes one WAV per narration paragraph, so
+ * the (slow, ~2 s) list lookup is shared per baseUrl for a few minutes instead of being repeated for every paragraph.
+ * Only successful lookups are kept; a failed lookup falls back to the preferred id and is retried next time.
+ */
+export async function resolveVoiceStudioVoiceId(baseUrl: string, now: () => number = Date.now): Promise<string> {
+  const cached = voiceStudioVoiceCache.get(baseUrl);
+  if (cached && cached.expiresAt > now()) return cached.voiceId;
+  const lookup = (async (): Promise<{ voiceId: string; cacheable: boolean }> => {
+    const voicesRes = await fetch(`${baseUrl}/v1/audio/voices`, { signal: AbortSignal.timeout(3_000) });
+    if (!voicesRes.ok) return { voiceId: VOICESTUDIO_PREFERRED_VOICE_ID, cacheable: false };
+    const data = (await voicesRes.json()) as {
+      voices?: Array<{ voice_id?: string; id?: string; name?: string; type?: string }>;
+    };
+    const voices = data.voices ?? [];
+    const preferred = voices.find(
+      (v) =>
+        v.voice_id === VOICESTUDIO_PREFERRED_VOICE_ID ||
+        v.id === VOICESTUDIO_PREFERRED_VOICE_ID ||
+        /narrador\s+youtube\s+pt-br/i.test(v.name ?? ''),
+    );
+    const ptProfile = voices.find((v) => v.type === 'profile' && /pt|brazil|brasil|phelipe/i.test(v.name ?? ''));
+    const anyProfile = voices.find((v) => v.type === 'profile');
+    const voiceId =
+      preferred?.voice_id ??
+      preferred?.id ??
+      ptProfile?.voice_id ??
+      ptProfile?.id ??
+      anyProfile?.voice_id ??
+      anyProfile?.id ??
+      VOICESTUDIO_PREFERRED_VOICE_ID;
+    return { voiceId, cacheable: true };
+  })();
+  const voiceId = lookup.then((r) => r.voiceId);
+  // The caller below observes the failure through `lookup`; the shared copy must not surface as an unhandled rejection.
+  voiceId.catch(() => undefined);
+  // Concurrent renders share the in-flight lookup; drop it again if it fails or is not cacheable.
+  voiceStudioVoiceCache.set(baseUrl, { voiceId, expiresAt: now() + VOICESTUDIO_VOICE_CACHE_TTL_MS });
+  try {
+    const result = await lookup;
+    if (!result.cacheable) voiceStudioVoiceCache.delete(baseUrl);
+    return result.voiceId;
+  } catch (error) {
+    voiceStudioVoiceCache.delete(baseUrl);
+    throw error;
+  }
+}
+
 async function synthesizeViaVoiceStudio(
   text: string,
   outWavPath: string,
@@ -118,37 +175,7 @@ async function synthesizeViaVoiceStudio(
     const healthRes = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2_000) });
     if (!healthRes.ok) return false;
 
-    let voiceId = options?.voiceId;
-    if (!voiceId) {
-      const preferredId = '9190edfa'; // Perfil: Narrador YouTube PT-BR
-      const voicesRes = await fetch(`${baseUrl}/v1/audio/voices`, { signal: AbortSignal.timeout(3_000) });
-      if (voicesRes.ok) {
-        const data = (await voicesRes.json()) as {
-          voices?: Array<{ voice_id?: string; id?: string; name?: string; type?: string }>;
-        };
-        const voices = data.voices ?? [];
-        const preferred = voices.find(
-          (v) =>
-            v.voice_id === preferredId ||
-            v.id === preferredId ||
-            /narrador\s+youtube\s+pt-br/i.test(v.name ?? ''),
-        );
-        const ptProfile = voices.find(
-          (v) => v.type === 'profile' && /pt|brazil|brasil|phelipe/i.test(v.name ?? ''),
-        );
-        const anyProfile = voices.find((v) => v.type === 'profile');
-        voiceId =
-          preferred?.voice_id ??
-          preferred?.id ??
-          ptProfile?.voice_id ??
-          ptProfile?.id ??
-          anyProfile?.voice_id ??
-          anyProfile?.id ??
-          preferredId;
-      } else {
-        voiceId = preferredId;
-      }
-    }
+    const voiceId = options?.voiceId ?? (await resolveVoiceStudioVoiceId(baseUrl));
 
     const speechRes = await fetch(`${baseUrl}/v1/audio/speech`, {
       method: 'POST',
