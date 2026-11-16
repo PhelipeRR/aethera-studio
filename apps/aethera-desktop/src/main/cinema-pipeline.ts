@@ -99,6 +99,9 @@ export interface PendingMediaSlot {
   clipId: string;
   query: string;
   reason: string;
+  uncoveredIntervals?: Array<{ startSec: number; endSec: number }>;
+  missingDurationSec?: number;
+  attempts?: number;
   resolvedUri?: string;
   allowProcedural?: boolean;
 }
@@ -949,6 +952,10 @@ export class StagedCinemaPipeline {
       }
       job.sceneGroundingPolicyVersion = SCENE_GROUNDING_POLICY_VERSION;
       const relevanceDecisions: MediaRelevanceDecision[] = [...(job.mediaRelevanceDecisions ?? [])];
+      const mediaRecoveryRequested =
+        job.state === 'paused_pending_media' ||
+        job.pendingMedia.length > 0 ||
+        (job.autonomousAudit?.unresolvedGapsForReview.length ?? 0) > 0;
 
       // 1. INTERPRETAÇÃO DO PROMPT + INCREMENTALIDADE
       checkCancelled();
@@ -1225,7 +1232,10 @@ export class StagedCinemaPipeline {
         }
 
         const pending: PendingMediaSlot[] = [];
-        if (this.deps.autonomousAcquisitionDeps && (job.acquiredMedia.length < queries.length || groundingPolicyChanged)) {
+        if (
+          this.deps.autonomousAcquisitionDeps &&
+          (job.acquiredMedia.length < queries.length || groundingPolicyChanged || mediaRecoveryRequested)
+        ) {
           const initialSegments =
             scenesForAcquisition.length > 0
               ? scenesForAcquisition.map((s) => ({
@@ -1422,11 +1432,28 @@ export class StagedCinemaPipeline {
             signal,
           });
           job.autonomousAudit = audit;
-          relevanceDecisions.push(...audit.relevanceDecisions);
+          const existingDecisionIds = new Set(relevanceDecisions.map((decision) => decision.mediaId));
+          const affectedSegmentIds = new Set(audit.affectedSegmentIds);
+          const auditMediaIds = new Set(
+            audit.recoveryAttempts.flatMap((attempt) => [
+              ...attempt.acquiredMediaIds,
+              ...attempt.approvedMediaIds,
+              ...attempt.rejectedMediaIds,
+            ]),
+          );
+          const newlyAuditedDecisions = audit.relevanceDecisions.filter(
+            (decision) =>
+              !existingDecisionIds.has(decision.mediaId) &&
+              (affectedSegmentIds.size === 0 ||
+                auditMediaIds.has(decision.mediaId) ||
+                decision.eligibleSegmentIds?.some((segmentId) => affectedSegmentIds.has(segmentId)) ||
+                decision.matchedIntervals?.some((interval) => affectedSegmentIds.has(interval.segmentId))),
+          );
+          relevanceDecisions.push(...newlyAuditedDecisions);
           job.coverageReport = audit.coverageReport;
 
           // Record Grounding Evidences & Placements into EditorialAuditTrail
-          for (const dec of audit.relevanceDecisions) {
+          for (const dec of newlyAuditedDecisions) {
             const approvedAsset = audit.approvedAssets.find((a) => a.mediaId === dec.mediaId);
             const assemblyEligible = isAssemblyEligibleDecision(dec);
             const editorialStatus = dec.editorialStatus ?? (assemblyEligible ? 'approved_for_scene' : dec.accepted ? 'contextual' : 'candidate');
@@ -1557,6 +1584,9 @@ export class StagedCinemaPipeline {
                 clipId: gap.segmentId,
                 query: gap.suggestedQuery,
                 reason: gap.reason,
+                uncoveredIntervals: gap.uncoveredIntervals,
+                missingDurationSec: gap.missingDurationSec,
+                attempts: gap.attempts,
               });
             }
           }
