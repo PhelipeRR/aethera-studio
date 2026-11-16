@@ -20,6 +20,12 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   mediaSourcesClearCredential: (input: { provider: string }) =>
     ipcRenderer.invoke('media-sources:clear-credential', input),
   mediaSourcesTest: (input: { provider: string }) => ipcRenderer.invoke('media-sources:test', input),
+  // Long agent runs: inactivity window / optional ceiling, live runs and manual skip/cancel of one agent.
+  agentExecutionGetSettings: () => ipcRenderer.invoke('agent-execution:get-settings'),
+  agentExecutionSaveSettings: (input: { inactivityTimeoutMinutes?: number; editorialMaxDurationMinutes?: number | null }) =>
+    ipcRenderer.invoke('agent-execution:save-settings', input),
+  agentRunsList: (projectId?: string) => ipcRenderer.invoke('agent-execution:list-runs', projectId),
+  agentRunStop: (input: { runId: string; mode?: 'skip' | 'cancel' }) => ipcRenderer.invoke('agent-execution:stop-run', input),
   cinemaProduce: (input: Record<string, unknown>) => ipcRenderer.invoke('cinema:produce', input),
   cinemaExportOtio: (projectId: string) => ipcRenderer.invoke('cinema:export-otio', projectId),
   cinemaRepair: (projectId: string) => ipcRenderer.invoke('cinema:repair', projectId),

@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import type { CommandCaptureResult } from '../src/main/production-agent-runner.js';
 import type { ProductionAgentProvider, ProductionAgentRunInput } from '../src/main/production-agent-providers.js';
 import {
   buildProductionFallbackChain,
@@ -32,7 +33,10 @@ import { runInstrumentedCommand } from '../src/main/production-agent-runner.js';
 import { findClientCli } from '@neuralbridge/workspace';
 import { findAntigravityCli } from '../src/main/antigravity-cli.js';
 
-const mockRunInstrumentedCommand = vi.mocked(runInstrumentedCommand);
+// Mocks return only the fields each scenario needs; supervision fields default to falsy.
+const mockRunInstrumentedCommand = vi.mocked(runInstrumentedCommand) as unknown as MockInstance<
+  (options: unknown) => Promise<Partial<CommandCaptureResult>>
+>;
 const mockFindClientCli = vi.mocked(findClientCli);
 const mockFindAntigravityCli = vi.mocked(findAntigravityCli);
 

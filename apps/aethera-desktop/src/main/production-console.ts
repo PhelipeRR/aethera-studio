@@ -41,6 +41,7 @@ export type ProductionLogEvent =
   | 'command_started'
   | 'command_completed'
   | 'command_failed'
+  | 'agent_heartbeat'
   | 'job_started'
   | 'job_completed'
   | 'job_failed'

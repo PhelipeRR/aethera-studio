@@ -1,7 +1,15 @@
 import { findClientCli } from '@neuralbridge/workspace';
 import { findAntigravityCli } from './antigravity-cli.js';
 import type { ProductionConsoleService, ProductionLogStage } from './production-console.js';
-import { ClaudeStreamReader, clipLine, runInstrumentedCommand } from './production-agent-runner.js';
+import {
+  ClaudeStreamReader,
+  clipLine,
+  readClaudeStreamLine,
+  runInstrumentedCommand,
+  type AgentActivitySnapshot,
+  type CapturedLine,
+  type LineActivity,
+} from './production-agent-runner.js';
 
 export type ProductionAgentProviderId = 'antigravity-cli' | 'claude-cli' | 'claude-gateway' | 'codex-cli';
 export type ProductionAgentStreamFormat = 'claude-stream-json' | 'antigravity-json' | 'text';
@@ -16,10 +24,15 @@ export type ProductionAgentFailureKind =
   | 'quota_exhausted'
   | 'rate_limited'
   | 'auth_failed'
+  | 'config_error'
   | 'timeout'
+  /** No real progress for the whole inactivity window: hang confirmed by the supervisor. */
+  | 'stalled'
   | 'network_error'
   | 'invalid_response'
   | 'cancelled'
+  /** The user skipped this agent on purpose: the chain moves on, the backend is not penalized. */
+  | 'skipped'
   | 'unknown';
 
 export interface ProductionAgentProvider {
@@ -50,9 +63,19 @@ export interface ProductionAgentProvider {
 export function classifyProductionAgentFailure(reason: string | undefined): ProductionAgentFailureKind {
   if (!reason) return 'unknown';
   const lower = reason.toLowerCase();
+  if (lower.includes('pulado pelo usuário')) return 'skipped';
+  if (CONFIG_ERROR_PATTERN.test(reason)) return 'config_error';
   if (lower.includes('cli_not_installed') || lower.includes('not found') || lower.includes('enoent')) return 'cli_not_installed';
   if (lower.includes('cancelado') || lower.includes('aborted')) return 'cancelled';
-  if (lower.includes('tempo limite') || lower.includes('timed out') || lower.includes('timeout')) return 'timeout';
+  if (lower.includes('travamento confirmado')) return 'stalled';
+  if (
+    lower.includes('tempo limite') ||
+    lower.includes('tempo máximo') ||
+    lower.includes('timed out') ||
+    lower.includes('timeout')
+  ) {
+    return 'timeout';
+  }
   if (lower.includes('econnrefused') || lower.includes('enotfound') || lower.includes('network') || lower.includes('fetch failed')) return 'network_error';
   // Quota exhausted: permanent credit/balance errors — retrying the same backend is pointless.
   if (
@@ -78,6 +101,163 @@ export function classifyProductionAgentFailure(reason: string | undefined): Prod
     return 'invalid_response';
   }
   return 'unknown';
+}
+
+const CONFIG_ERROR_PATTERN =
+  /unknown (option|argument|flag)|unrecognized (option|argument)|invalid (model|option)|model[^\n]{0,60}not (found|available|supported)|not_found_error|missing required (argument|option)/i;
+
+const DEFINITIVE_FAILURES: Array<{ kind: ProductionAgentFailureKind; pattern: RegExp }> = [
+  {
+    kind: 'auth_failed',
+    pattern:
+      /(status|http|code|error)[^\n]{0,12}\b401\b|\b401\b[^\n]{0,40}(unauthori|auth|invalid)|unauthori[sz]ed|authentication[_ ]error|invalid[ _-](api[ _-]?key|x-api-key|token|bearer)|not logged in|please run \/login|oauth token (has )?expired|permission_error/i,
+  },
+  {
+    kind: 'quota_exhausted',
+    pattern:
+      /credit balance is too low|balance is too low|insufficient[_ ](quota|credits?|balance)|quota (exceeded|exhausted)|resource_exhausted|usage limit|passe foi encerrado|billing/i,
+  },
+  { kind: 'config_error', pattern: CONFIG_ERROR_PATTERN },
+];
+
+/**
+ * A line that proves the run can never succeed (credentials refused, quota gone, invalid configuration). The run is
+ * ended at once and the chain falls back immediately instead of waiting for the agent to give up. Only stderr and
+ * structured error events are inspected: the agent's own answer may legitimately talk about "quota" or "billing".
+ */
+export function detectDefinitiveFailure(line: Pick<CapturedLine, 'stream' | 'text'>): string | null {
+  let candidate: string | null = null;
+  if (line.stream === 'stderr') {
+    candidate = line.text;
+  } else {
+    const trimmed = line.text.trim();
+    if (!trimmed.startsWith('{')) return null;
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const type = typeof parsed['type'] === 'string' ? parsed['type'] : '';
+      const subtype = typeof parsed['subtype'] === 'string' ? parsed['subtype'] : '';
+      const status = typeof parsed['error_status'] === 'number' ? parsed['error_status'] : null;
+      if (type === 'system' && /error|retry/i.test(subtype)) {
+        if (status === 401 || status === 403) return `HTTP ${status} (${subtype})`;
+        candidate = JSON.stringify(parsed['error'] ?? parsed['message'] ?? '');
+      } else if (type === 'error') {
+        candidate = JSON.stringify(parsed['error'] ?? parsed['message'] ?? parsed);
+      } else {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+  }
+  if (!candidate) return null;
+  for (const { pattern } of DEFINITIVE_FAILURES) {
+    if (pattern.test(candidate)) return clipLine(candidate.trim(), 300);
+  }
+  return null;
+}
+
+/**
+ * How a long agent run is supervised. Editorial work (research, script, planning) has NO fixed total timeout: it runs
+ * while the agent shows real progress and ends only on confirmed inactivity, a definitive error, cancellation, or the
+ * optional `maxDurationMs` ceiling.
+ */
+export interface AgentExecutionPolicy {
+  /** Window without real progress that confirms a hang. Default 10 min. */
+  inactivityTimeoutMs: number;
+  /** Optional hard ceiling; `null` = disabled (default for editorial work). */
+  maxDurationMs: number | null;
+  /** Heartbeat to the console (elapsed time, last event, state). Default 15 s. */
+  heartbeatIntervalMs?: number;
+  /** After this long without progress the agent shows as "raciocinando (silencioso)". Default 30 s. */
+  silentAfterMs?: number;
+  /** How long an agent may linger after delivering its result before its tree is ended. Default 30 s. */
+  postResultGraceMs?: number;
+  /** SIGTERM → SIGKILL escalation. Default 5 s. */
+  killGraceMs?: number;
+}
+
+export const DEFAULT_EDITORIAL_EXECUTION_POLICY: AgentExecutionPolicy = {
+  inactivityTimeoutMs: 10 * 60_000,
+  maxDurationMs: null,
+  heartbeatIntervalMs: 15_000,
+  silentAfterMs: 30_000,
+  postResultGraceMs: 30_000,
+};
+
+/** Activity description per stream format: repetition is judged on the meaningful content, not on raw bytes. */
+function describeAgentActivity(format: ProductionAgentStreamFormat, line: CapturedLine): LineActivity | null {
+  const text = line.text.trim();
+  if (!text) return null;
+  if (format === 'claude-stream-json' && line.stream === 'stdout' && text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const type = typeof parsed['type'] === 'string' ? parsed['type'] : '';
+      const subtype = typeof parsed['subtype'] === 'string' ? parsed['subtype'] : '';
+      // Retry banners and keep-alives say the agent is waiting, not working.
+      if (type === 'system' && /retry|keep_?alive|ping/i.test(subtype)) {
+        return { key: `system:${subtype}`, summary: `sistema: ${subtype}`, kind: 'noise' };
+      }
+    } catch {
+      // not JSON: treated as plain text below
+    }
+    const activity = readClaudeStreamLine(text);
+    // Structured events: numbers are content (tool inputs), so the comparison is exact.
+    if (activity) return { key: activity.text, summary: activity.text, exact: true };
+    // Other structured events (user/tool results): content is the progress.
+    return { key: text.slice(0, 2000), summary: clipLine(text, 200), exact: true };
+  }
+  return { key: text.slice(0, 2000), summary: clipLine(text, 200) };
+}
+
+function isAgentCompletionLine(format: ProductionAgentStreamFormat, line: CapturedLine): boolean {
+  if (line.stream !== 'stdout') return false;
+  const text = line.text.trim();
+  if (!text.startsWith('{')) return false;
+  if (format === 'claude-stream-json') return /"type"\s*:\s*"result"/.test(text) && readClaudeStreamLine(text)?.finalText !== undefined;
+  if (format === 'antigravity-json') {
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      return typeof parsed['status'] === 'string' && ('response' in parsed || 'error' in parsed);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+// ─── Active runs (manual skip / cancel) ──────────────────────────────────────
+
+export interface ActiveAgentRun {
+  runId: string;
+  projectId: string;
+  jobId?: string;
+  stage: ProductionLogStage;
+  label: string;
+  providerId: ProductionAgentProviderId;
+  providerLabel: string;
+  startedAt: string;
+  activity: AgentActivitySnapshot | null;
+}
+
+const activeAgentRuns = new Map<string, { info: ActiveAgentRun; controller: AbortController }>();
+
+/** Agent runs in progress right now, for the UI. */
+export function listActiveAgentRuns(projectId?: string): ActiveAgentRun[] {
+  return [...activeAgentRuns.values()]
+    .map((entry) => entry.info)
+    .filter((info) => !projectId || info.projectId === projectId);
+}
+
+/**
+ * Ends the running agent of `runId` (its whole process tree). `skip` moves the fallback chain on to the next provider;
+ * `cancel` ends only this agent run and reports it as cancelled (the production itself is cancelled through the
+ * pipeline, which aborts every run of the job).
+ */
+export function stopActiveAgentRun(runId: string, mode: 'skip' | 'cancel' = 'skip'): boolean {
+  const entry = activeAgentRuns.get(runId);
+  if (!entry) return false;
+  entry.controller.abort(mode);
+  return true;
 }
 
 /**
@@ -147,9 +327,20 @@ export interface ProductionAgentRunInput {
   stage: ProductionLogStage;
   label: string;
   prompt: string;
+  /**
+   * Legacy fixed total timeout. Editorial callers pass `execution` instead; when both are absent the editorial policy
+   * (no total limit, 10 min inactivity window) applies.
+   */
   timeoutMs?: number;
+  /** Long-run supervision. Defaults to `DEFAULT_EDITORIAL_EXECUTION_POLICY`. */
+  execution?: AgentExecutionPolicy;
   signal?: AbortSignal;
   env?: Record<string, string | undefined>;
+  /**
+   * Validates the text recovered from a run that hung after producing output. When it returns true, the partial result
+   * is kept and the chain stops there instead of starting the task over on the next provider.
+   */
+  acceptPartial?: (text: string) => boolean;
 }
 
 export interface ProductionAgentRunOutcome {
@@ -161,6 +352,10 @@ export interface ProductionAgentRunOutcome {
   failureReason?: string;
   /** Structured failure kind for fallback decisions (skip duplicate backend, cooldown, etc.). */
   failureKind?: ProductionAgentFailureKind;
+  /** The output was recovered from a run that hung after producing it (only set when `acceptPartial` approved it). */
+  recoveredPartial?: boolean;
+  /** How the supervisor last saw the agent. */
+  finalState?: AgentActivitySnapshot['state'];
 }
 
 /**
@@ -195,37 +390,85 @@ export async function runProductionAgentCommand(
   const mergedEnv = { ...process.env, ...input.env, ...providerEnv };
 
   const reader = new ClaudeStreamReader();
-  const result = await runInstrumentedCommand({
-    console: input.console,
+  const policy = input.execution ?? (input.timeoutMs !== undefined ? null : DEFAULT_EDITORIAL_EXECUTION_POLICY);
+
+  // Own controller per run, linked to the job's signal: the UI can skip this agent without cancelling the production.
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort(typeof input.signal?.reason === 'string' ? input.signal.reason : 'cancel');
+  if (input.signal?.aborted) onParentAbort();
+  else input.signal?.addEventListener('abort', onParentAbort, { once: true });
+  const registryInfo: ActiveAgentRun = {
+    runId: input.runId,
     projectId: input.projectId,
     ...(input.jobId ? { jobId: input.jobId } : {}),
-    runId: input.runId,
     stage: input.stage,
-    origin: 'agent',
-    source: provider.id,
-    label: `${input.label} (${provider.label})`,
-    command: located.command,
-    args: [...located.prefixArgs, ...provider.buildArgs(input.prompt)],
-    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-    ...(input.signal ? { signal: input.signal } : {}),
-    env: mergedEnv,
-    ...(provider.streamFormat === 'claude-stream-json'
-      ? {
-          // Structured events are whole JSON documents, sometimes long (tool lists, usage); they must reach the
-          // parser uncut, and the panel shows the summary instead of the raw blob.
-          maxLineChars: 400_000,
-          transformLine: (line: { stream: 'stdout' | 'stderr'; text: string }) => {
-            if (line.stream !== 'stdout') return clipLine(line.text, 600);
-            const activity = reader.handle(line.text);
-            // Non-event lines (warnings, plain text) are shown as they are; JSON events become readable summaries.
-            return activity ? activity.text : clipLine(line.text, 600);
-          },
-        }
-      : {}),
-  });
+    label: input.label,
+    providerId: provider.id,
+    providerLabel: provider.label,
+    startedAt: new Date().toISOString(),
+    activity: null,
+  };
+  activeAgentRuns.set(input.runId, { info: registryInfo, controller });
+
+  let result: Awaited<ReturnType<typeof runInstrumentedCommand>>;
+  try {
+    result = await runInstrumentedCommand({
+      console: input.console,
+      projectId: input.projectId,
+      ...(input.jobId ? { jobId: input.jobId } : {}),
+      runId: input.runId,
+      stage: input.stage,
+      origin: 'agent',
+      source: provider.id,
+      label: `${input.label} (${provider.label})`,
+      command: located.command,
+      args: [...located.prefixArgs, ...provider.buildArgs(input.prompt)],
+      ...(policy
+        ? {
+            supervision: {
+              inactivityTimeoutMs: policy.inactivityTimeoutMs,
+              maxDurationMs: policy.maxDurationMs,
+              ...(policy.heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs: policy.heartbeatIntervalMs } : {}),
+              ...(policy.silentAfterMs !== undefined ? { silentAfterMs: policy.silentAfterMs } : {}),
+              ...(policy.postResultGraceMs !== undefined ? { postResultGraceMs: policy.postResultGraceMs } : {}),
+              ...(policy.killGraceMs !== undefined ? { killGraceMs: policy.killGraceMs } : {}),
+              describeActivity: (line: CapturedLine) => describeAgentActivity(provider.streamFormat, line),
+              isCompletionLine: (line: CapturedLine) => isAgentCompletionLine(provider.streamFormat, line),
+              detectFatal: detectDefinitiveFailure,
+            },
+          }
+        : { timeoutMs: input.timeoutMs ?? 120_000 }),
+      signal: controller.signal,
+      onActivity: (snapshot: AgentActivitySnapshot) => {
+        registryInfo.activity = snapshot;
+      },
+      env: mergedEnv,
+      ...(provider.streamFormat === 'claude-stream-json'
+        ? {
+            // Structured events are whole JSON documents, sometimes long (tool lists, usage); they must reach the
+            // parser uncut, and the panel shows the summary instead of the raw blob.
+            maxLineChars: 400_000,
+            transformLine: (line: { stream: 'stdout' | 'stderr'; text: string }) => {
+              if (line.stream !== 'stdout') return clipLine(line.text, 600);
+              const activity = reader.handle(line.text);
+              // Non-event lines (warnings, plain text) are shown as they are; JSON events become readable summaries.
+              return activity ? activity.text : clipLine(line.text, 600);
+            },
+          }
+        : {}),
+    });
+  } finally {
+    input.signal?.removeEventListener('abort', onParentAbort);
+    if (activeAgentRuns.get(input.runId)?.controller === controller) activeAgentRuns.delete(input.runId);
+  }
 
   const rawStdout = result.stdout;
-  let ok = result.code === 0 && !result.timedOut && !result.aborted && !result.spawnError;
+  // A run that delivered its result and merely lingered is a success: it is never redone because it was slow.
+  let ok =
+    !result.spawnError &&
+    !result.aborted &&
+    !result.fatalReason &&
+    (result.completedByResult === true || (result.code === 0 && !result.timedOut && !result.stalled));
   let text: string;
   let failureReason: string | undefined;
 
@@ -252,17 +495,54 @@ export async function runProductionAgentCommand(
     // Include stderr tail in the failure reason so classifyProductionAgentFailure can detect quota/auth/rate-limit
     // patterns from the raw CLI output (e.g. "Seu Passe foi encerrado", "credits balance is too low").
     const stderrTail = result.stderr.trim().slice(-500);
-    const baseReason = result.timedOut
-      ? 'tempo limite excedido'
-      : result.aborted
-        ? 'cancelado'
-        : result.spawnError
-          ? result.spawnError
-          : `exit code ${result.code ?? 'desconhecido'}`;
-    failureReason = stderrTail ? `${baseReason} | ${stderrTail}` : baseReason;
+    const baseReason = result.spawnError
+      ? result.spawnError
+      : result.fatalReason
+        ? `erro definitivo: ${result.fatalReason}`
+        : result.aborted
+          ? result.abortReason === 'skip'
+            ? 'pulado pelo usuário'
+            : 'cancelado'
+          : result.stalled
+            ? `travamento confirmado: sem progresso real por ${Math.round((result.idleMsAtEnd ?? 0) / 1000)}s`
+            : result.timedOut
+              ? policy?.maxDurationMs
+                ? `tempo máximo de execução de ${Math.round(policy.maxDurationMs / 1000)}s excedido`
+                : 'tempo limite excedido'
+              : `exit code ${result.code ?? 'desconhecido'}`;
+    // Cancellation/skip/stall are the supervisor's verdict; stderr is context, not the cause.
+    failureReason = stderrTail && !result.aborted ? `${baseReason} | ${stderrTail}` : baseReason;
   }
 
-  const failureKind = ok ? undefined : classifyProductionAgentFailure(failureReason);
+  let failureKind = ok ? undefined : classifyProductionAgentFailure(failureReason);
+  if (!ok && result.aborted) failureKind = result.abortReason === 'skip' ? 'skipped' : 'cancelled';
+  else if (!ok && result.stalled) {
+    // A hang caused by an endless retry loop is better described by its cause (rate limit, quota, auth).
+    const cause = classifyProductionAgentFailure(result.stderr.trim().slice(-500));
+    failureKind = cause === 'rate_limited' || cause === 'quota_exhausted' || cause === 'auth_failed' || cause === 'config_error' ? cause : 'stalled';
+  }
+
+  // Confirmed hang after real output: keep what is valid instead of redoing the task elsewhere.
+  let recoveredPartial = false;
+  if (!ok && (result.stalled || result.timedOut) && text.trim() && input.acceptPartial?.(text)) {
+    ok = true;
+    recoveredPartial = true;
+    failureKind = undefined;
+    input.console.emit({
+      projectId: input.projectId,
+      ...(input.jobId ? { jobId: input.jobId } : {}),
+      runId: input.runId,
+      stage: input.stage,
+      origin: 'agent',
+      channel: 'result',
+      event: 'log',
+      severity: 'warn',
+      source: provider.id,
+      message: `${input.label}: ${provider.label} travou após produzir um resultado válido — resultado intermediário preservado.`,
+      details: { failureReason, textLength: text.length },
+    });
+    failureReason = undefined;
+  }
 
   return {
     providerId: provider.id,
@@ -271,6 +551,8 @@ export async function runProductionAgentCommand(
     durationMs: result.durationMs,
     ...(failureReason ? { failureReason } : {}),
     ...(failureKind ? { failureKind } : {}),
+    ...(recoveredPartial ? { recoveredPartial } : {}),
+    ...(result.lastActivity ? { finalState: result.lastActivity.state } : {}),
   };
 }
 
@@ -351,6 +633,7 @@ const backendFailureState = new Map<string, { kind: ProductionAgentFailureKind; 
 const BACKEND_COOLDOWN_MS: Record<string, number> = {
   quota_exhausted: 10 * 60 * 1000,
   auth_failed: 10 * 60 * 1000,
+  config_error: 10 * 60 * 1000,
   rate_limited: 60 * 1000,
 };
 
@@ -388,6 +671,8 @@ export async function runProductionAgentWithFallback(
   const now = Date.now();
 
   for (let i = 0; i < chain.length; i++) {
+    // A cancelled production stops the chain: no new agent is started for a job the user ended.
+    if (input.signal?.aborted) break;
     const provider = chain[i];
     if (!provider) continue;
     const backendKey = provider.backendKey?.(input.env) ?? null;
@@ -421,7 +706,14 @@ export async function runProductionAgentWithFallback(
 
     // Mark backend as exhausted for quota/auth/rate_limit failures so subsequent duplicates are skipped
     // within this run AND across resumed runs (persistent map survives process lifetime).
-    if (backendKey && outcome.failureKind && outcome.failureKind !== 'unknown' && outcome.failureKind !== 'cancelled') {
+    if (outcome.failureKind === 'cancelled' && input.signal?.aborted) break;
+    if (
+      backendKey &&
+      outcome.failureKind &&
+      outcome.failureKind !== 'unknown' &&
+      outcome.failureKind !== 'cancelled' &&
+      outcome.failureKind !== 'skipped'
+    ) {
       exhaustedBackends.add(backendKey);
       recordBackendFailure(backendKey, outcome.failureKind);
     }
@@ -435,7 +727,13 @@ export async function runProductionAgentWithFallback(
           ? 'rate limit temporário'
           : outcome.failureKind === 'auth_failed'
             ? 'falha de autenticação'
-            : outcome.failureReason ?? 'falha desconhecida';
+            : outcome.failureKind === 'config_error'
+              ? 'erro de configuração'
+              : outcome.failureKind === 'stalled'
+                ? 'travamento confirmado'
+                : outcome.failureKind === 'skipped'
+                  ? 'pulado pelo usuário'
+                  : outcome.failureReason ?? 'falha desconhecida';
       input.console.emit({
         projectId: input.projectId,
         ...(input.jobId ? { jobId: input.jobId } : {}),

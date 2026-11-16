@@ -141,6 +141,13 @@ estágios já concluídos quando a pesquisa simplesmente não existe.
    execução registrada no item 1, 54 s) a produção concluiu. Não é bug do console nem da cascata — é o teto de 90 s
    sendo apertado para um modelo que raciocina. Recomendação: tornar o limite configurável por etapa (ou elevar a
    pesquisa para ~180 s) e manter o evento `command_failed` como está, que já expõe o motivo.
+   **Resolvido em 2026-11-16 (execução longa supervisionada):** pesquisa e roteiro não têm mais tempo total fixo.
+   O supervisor de `captureCommand` encerra o agente só após 10 min sem progresso real (configurável em
+   Configurações → Agentes e IA; repetições sem conteúdo novo não contam como progresso e silêncio dentro da janela
+   não é travamento), com limite máximo opcional (desativado por padrão), heartbeat `agent_heartbeat` no console
+   (tempo decorrido, último evento, estado), fallback imediato em erro definitivo de autenticação/quota/configuração,
+   resultado intermediário válido preservado em travamento confirmado, e encerramento da árvore de processos em
+   cancelamento, falha e saída do app. Testes: `apps/aethera-desktop/test/agent-long-run-supervision.test.ts`.
 3. **Pipeline genérico:** prompts sem obra/entidades reais produzem dossiê inválido e a produção pausa em
    `paused_pending_research` (comportamento correto de "não inventar fatos").
 

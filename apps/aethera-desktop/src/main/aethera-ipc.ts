@@ -32,7 +32,15 @@ import {
   type ProductionLogStage,
 } from './production-console.js';
 import { ProductionStageTracker, recordPipelineSnapshot } from './production-stage-tracker.js';
-import { buildProductionFallbackChain, runProductionAgentCommand, runProductionAgentWithFallback } from './production-agent-providers.js';
+import {
+  buildProductionFallbackChain,
+  listActiveAgentRuns,
+  runProductionAgentCommand,
+  runProductionAgentWithFallback,
+  stopActiveAgentRun,
+} from './production-agent-providers.js';
+import { killAllTrackedProcessTrees } from './production-agent-runner.js';
+import { AGENT_EXECUTION_IPC, AgentExecutionSettingsStore } from './agent-execution-settings.js';
 import { TtsProviderRegistry, VoiceStudioProvider, ElevenLabsProvider, elevenLabsCredentialsSchema } from './tts-providers.js';
 import {
   TrendRadarEngine,
@@ -1959,6 +1967,31 @@ export function registerAetheraDomainIpc(options: {
       return out.relativePath ? join(input.root, out.relativePath) : null;
     },
   });
+  // Long agent runs: inactivity window and optional ceiling (Configurações → Agentes e IA), live runs, manual skip/cancel.
+  const agentExecutionSettings = new AgentExecutionSettingsStore(join(app.getPath('userData'), 'agent-execution-settings.json'));
+  // No agent tree may outlive the app.
+  app.on('will-quit', () => {
+    killAllTrackedProcessTrees();
+  });
+  ipcMain.handle(AGENT_EXECUTION_IPC.get, (event) => {
+    ensureTrusted(event.senderFrame);
+    return agentExecutionSettings.load();
+  });
+  ipcMain.handle(AGENT_EXECUTION_IPC.save, (event, input: unknown) => {
+    ensureTrusted(event.senderFrame);
+    return agentExecutionSettings.save(input);
+  });
+  ipcMain.handle(AGENT_EXECUTION_IPC.listRuns, (event, projectId?: unknown) => {
+    ensureTrusted(event.senderFrame);
+    return listActiveAgentRuns(typeof projectId === 'string' ? projectId : undefined);
+  });
+  ipcMain.handle(AGENT_EXECUTION_IPC.stopRun, (event, input: unknown) => {
+    ensureTrusted(event.senderFrame);
+    const raw = (input ?? {}) as { runId?: unknown; mode?: unknown };
+    if (typeof raw.runId !== 'string' || !raw.runId) throw new Error('runId obrigatório.');
+    const mode = raw.mode === 'cancel' ? 'cancel' : 'skip';
+    return { stopped: stopActiveAgentRun(raw.runId, mode), runId: raw.runId, mode };
+  });
   ipcMain.handle(MEDIA_SOURCES_IPC.list, (event) => {
     ensureTrusted(event.senderFrame);
     return mediaSourcesService.view();
@@ -2498,6 +2531,8 @@ export function registerAetheraDomainIpc(options: {
       let lastProvider: (typeof fallbackChain)[number] | null = null;
 
       for (let i = 0; i < fallbackChain.length; i++) {
+        // Production cancelled: no further agent is started.
+        if (signal.aborted) return null;
         const provider = fallbackChain[i];
         if (!provider) continue;
         const backendKey = provider.backendKey?.() ?? null;
@@ -2525,13 +2560,22 @@ export function registerAetheraDomainIpc(options: {
           stage: 'pesquisa',
           label: 'Pesquisa editorial',
           prompt: researchPrompt,
-          timeoutMs: 90_000,
+          // No fixed total limit: research runs while the agent is healthy (activity supervision, optional ceiling).
+          execution: agentExecutionSettings.policy(),
           signal,
+          // A hang after a complete, valid dossier keeps the dossier instead of redoing the research elsewhere.
+          acceptPartial: (text) => parseDossier(text, provider.id).ok,
         });
         lastProvider = provider;
 
         if (!outcome.ok) {
-          if (backendKey && (outcome.failureKind === 'quota_exhausted' || outcome.failureKind === 'auth_failed')) {
+          if (signal.aborted) return null;
+          if (
+            backendKey &&
+            (outcome.failureKind === 'quota_exhausted' ||
+              outcome.failureKind === 'auth_failed' ||
+              outcome.failureKind === 'config_error')
+          ) {
             exhaustedBackends.add(backendKey);
           }
           const nextProvider = fallbackChain[i + 1];
@@ -2542,7 +2586,13 @@ export function registerAetheraDomainIpc(options: {
                 ? 'rate limit temporário'
                 : outcome.failureKind === 'auth_failed'
                   ? 'falha de autenticação'
-                  : outcome.failureReason ?? 'falha desconhecida';
+                  : outcome.failureKind === 'config_error'
+                    ? 'erro de configuração'
+                    : outcome.failureKind === 'stalled'
+                      ? 'travamento confirmado'
+                      : outcome.failureKind === 'skipped'
+                        ? 'pulado pelo usuário'
+                        : outcome.failureReason ?? 'falha desconhecida';
             productionLog(projectId ?? `research_${interpretation.promptHash.slice(0, 8)}`, {
               runId,
               stage: 'pesquisa',
@@ -2689,7 +2739,14 @@ export function registerAetheraDomainIpc(options: {
         };
 
         const scriptFallbackChain = buildProductionFallbackChain({ resolveGatewayEnv: resolveClaudeGatewayEnv });
-        const runWithCascade = async (promptText: string, timeoutMs: number, blockIdx: number) => {
+        const parsesAsScript = (text: string) => {
+          try {
+            return parseScriptOutput(text) !== null;
+          } catch {
+            return false;
+          }
+        };
+        const runWithCascade = async (promptText: string, blockIdx: number) => {
           const runId = `script_b${blockIdx + 1}_${Date.now().toString(36)}`;
           const result = await runProductionAgentWithFallback(scriptFallbackChain, {
             console: productionConsole,
@@ -2698,7 +2755,10 @@ export function registerAetheraDomainIpc(options: {
             stage: 'roteiro',
             label: `Roteiro bloco ${blockIdx + 1}`,
             prompt: promptText,
-            timeoutMs,
+            // Same long-run policy as research: no fixed total limit while the agent is healthy.
+            execution: agentExecutionSettings.policy(),
+            ...(input.signal ? { signal: input.signal } : {}),
+            acceptPartial: parsesAsScript,
           });
           if (!result) return null;
           const parsed = parseScriptOutput(result.outcome.text);
@@ -2729,7 +2789,6 @@ export function registerAetheraDomainIpc(options: {
           const remainingBeats = desiredBeats - blockIdx * blockSize;
           const countInBlock = Math.min(blockSize, remainingBeats);
           const blockWordsTarget = Math.max(80, Math.round((wordsTarget / desiredBeats) * countInBlock));
-          const adaptiveTimeoutMs = Math.max(45_000, countInBlock * 14_000);
           const prevTail = checkpoint.blocks
             .flat()
             .slice(-2)
@@ -2783,7 +2842,8 @@ export function registerAetheraDomainIpc(options: {
             `Responda SOMENTE com JSON válido: {"treatment":"resumo editorial","beats":[{"stage":"hook|promise|progression|tension|climax|resolution|cta","summary":"fala exata narrada em voz alta"}]}`,
           ].join('\n');
 
-          const res = await runWithCascade(blockPrompt, adaptiveTimeoutMs, blockIdx);
+          if (input.signal?.aborted) return null;
+          const res = await runWithCascade(blockPrompt, blockIdx);
           if (!res) {
             productionLog(input.projectId, {
               stage: 'roteiro',

@@ -25,6 +25,7 @@ import {
   type AetheraSettingsCategoryId,
 } from '@/app/app-settings-isolation';
 import { MediaSourcesSettings } from './MediaSourcesSettings';
+import { AgentExecutionSettings } from './AgentExecutionSettings';
 import { SetupTutorialDrawer } from './SetupTutorialDrawer';
 import type { TutorialIntegrationId } from './settings-tutorials';
 
@@ -859,6 +860,8 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                     Testar provedores
                   </button>
                 </div>
+
+                <AgentExecutionSettings />
 
                 <form
                   onSubmit={(e) => void handleSaveClaudeGateway(e)}

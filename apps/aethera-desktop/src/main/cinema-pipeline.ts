@@ -226,6 +226,8 @@ export interface StagedPipelineDeps {
     queries: string[];
     interpretation?: PromptInterpretation;
     researchDossier?: EditorialResearchDossier;
+    /** Production cancellation: ends the running agent's process tree. */
+    signal?: AbortSignal;
   }) => Promise<{
     treatment?: string;
     beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
@@ -807,6 +809,7 @@ export class StagedCinemaPipeline {
             queries: researchQueries,
             interpretation: nextInterpretation,
             ...(job.researchDossier ? { researchDossier: job.researchDossier } : {}),
+            signal,
           });
           if (generated && (generated.beats?.length || generated.treatment)) {
             externalDirection = generated;

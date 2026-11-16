@@ -21,6 +21,7 @@ import {
   isErrorEntry,
   isStreamEntry,
   jobLabel,
+  liveAgentRuns,
   mergeConsoleEntries,
   summarize,
   uniqueSorted,
@@ -32,6 +33,7 @@ import {
   type ConsoleOrigin,
   type ConsoleSeverity,
 } from './production-console-view.js';
+import { AgentRunStatus } from './AgentRunStatus.js';
 
 interface ConsoleBridge {
   cinemaConsoleList?: (input: {
@@ -264,6 +266,8 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
   );
   const progress = useMemo(() => currentProgress(focusedEntries), [focusedEntries]);
   const timeline = useMemo(() => buildStageTimeline(focusedEntries), [focusedEntries]);
+  const agentRuns = useMemo(() => liveAgentRuns(focusedEntries), [focusedEntries]);
+  const focusedProjectId = focusedEntries.length ? (focusedEntries[focusedEntries.length - 1]?.projectId ?? null) : null;
   const attempt = useMemo(
     () => focusedEntries.reduce((max, entry) => Math.max(max, entry.attempt ?? 1), 1),
     [focusedEntries],
@@ -405,6 +409,7 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
 
           {focusedJobId && (
             <>
+              <AgentRunStatus runs={agentRuns} projectId={focusedProjectId} />
               <div style={progressRowStyle}>
                 <div style={progressTrackStyle}>
                   <div data-console-progress-fill style={{ ...progressFillStyle, width: `${progress?.pct ?? 0}%` }} />

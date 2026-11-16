@@ -10,6 +10,8 @@ import {
   filterEntries,
   formatEntryLine,
   isErrorEntry,
+  formatDuration,
+  liveAgentRuns,
   summarize,
   type ConsoleEntry,
 } from '../../../packages/desktop-shared/src/renderer/src/features/video/production-console-view.js';
@@ -198,5 +200,42 @@ describe('production-console-view — consoles por job', () => {
     const byId = Object.fromEntries(jobs.map((job) => [job.jobId, job]));
     expect(byId.job_A).toMatchObject({ status: 'running', pct: 40, agents: ['claude-cli'], errors: 0 });
     expect(byId.job_B).toMatchObject({ status: 'failed', pct: 10, errors: 1, live: false });
+  });
+});
+
+describe('production-console-view — agentes em execução longa', () => {
+  const agent = (overrides: Partial<ConsoleEntry>) =>
+    entry({ origin: 'agent', source: 'claude-cli', runId: 'research_1', ...overrides });
+
+  it('shows a running agent with its latest heartbeat (state, last event, limits)', () => {
+    const runs = liveAgentRuns([
+      agent({ channel: 'command', event: 'command_started', message: 'Pesquisa editorial (Claude Code (claude)): claude-cli iniciado' }),
+      agent({ channel: 'stdout', severity: 'debug', message: 'ferramenta WebSearch: {"q":"boss"}' }),
+      agent({
+        event: 'agent_heartbeat',
+        details: { state: 'silent', lastEventAt: '2026-11-16T10:00:00.000Z', lastEventSummary: 'ferramenta WebSearch', idleMs: 95_000, inactivityTimeoutMs: 600_000, maxDurationMs: null },
+      }),
+    ]);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.label).toBe('Pesquisa editorial (Claude Code (claude))');
+    expect(runs[0]?.state).toBe('silent');
+    expect(runs[0]?.lastEventSummary).toBe('ferramenta WebSearch');
+    expect(runs[0]?.inactivityTimeoutMs).toBe(600_000);
+    expect(runs[0]?.maxDurationMs).toBeNull();
+  });
+
+  it('drops the agent once its outcome is recorded and ignores runs that never started', () => {
+    const runs = liveAgentRuns([
+      agent({ channel: 'command', event: 'command_started', message: 'x: claude-cli iniciado' }),
+      agent({ channel: 'result', event: 'command_completed', message: 'ok' }),
+      agent({ runId: 'other', event: 'agent_heartbeat', details: { state: 'active' } }),
+    ]);
+    expect(runs).toEqual([]);
+  });
+
+  it('formats long durations', () => {
+    expect(formatDuration(38_000)).toBe('38s');
+    expect(formatDuration(20 * 60_000 + 5_000)).toBe('20m05s');
+    expect(formatDuration(2 * 3_600_000 + 60_000)).toBe('2h01m');
   });
 });

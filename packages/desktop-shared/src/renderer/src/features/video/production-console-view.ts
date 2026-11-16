@@ -9,6 +9,7 @@ export type ConsoleEvent =
   | 'command_started'
   | 'command_completed'
   | 'command_failed'
+  | 'agent_heartbeat'
   | 'job_started'
   | 'job_completed'
   | 'job_failed'
@@ -150,6 +151,7 @@ export const EVENT_LABELS: Record<ConsoleEvent, string> = {
   command_started: 'comando',
   command_completed: 'concluído',
   command_failed: 'falhou',
+  agent_heartbeat: 'agente',
   job_started: 'job iniciado',
   job_completed: 'job concluído',
   job_failed: 'job falhou',
@@ -311,6 +313,126 @@ export function currentProgress(entries: ConsoleEntry[]): ConsoleProgress | null
     };
   }
   return null;
+}
+
+// ─── Live agent runs (long editorial executions) ────────────────────────────
+
+export type AgentRunState =
+  | 'starting'
+  | 'active'
+  | 'silent'
+  | 'stalled'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'timed_out';
+
+export const AGENT_STATE_LABELS: Record<AgentRunState, string> = {
+  starting: 'Iniciando',
+  active: 'Ativo',
+  silent: 'Raciocinando (sem eventos)',
+  stalled: 'Travamento confirmado',
+  completed: 'Concluído',
+  failed: 'Falhou',
+  cancelled: 'Cancelado',
+  timed_out: 'Tempo máximo excedido',
+};
+
+export const AGENT_STATE_COLORS: Record<AgentRunState, string> = {
+  starting: '#94a3b8',
+  active: '#2dd4bf',
+  silent: '#a78bfa',
+  stalled: '#f87171',
+  completed: '#34d399',
+  failed: '#f87171',
+  cancelled: '#94a3b8',
+  timed_out: '#fbbf24',
+};
+
+export interface LiveAgentRun {
+  runId: string;
+  source: string;
+  stage: string;
+  /** Label of the command line ("Pesquisa editorial (Claude Code (claude))"). */
+  label: string;
+  startedAt: string;
+  state: AgentRunState;
+  lastEventAt: string | null;
+  lastEventSummary: string | null;
+  /** Time without real progress at the last heartbeat. */
+  idleMs: number | null;
+  inactivityTimeoutMs: number | null;
+  maxDurationMs: number | null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null;
+}
+
+/**
+ * Agent commands that started and have not reported their outcome yet, with their latest heartbeat. Derived only
+ * from real console entries: nothing is shown for a run that never wrote a `command_started`.
+ */
+export function liveAgentRuns(entries: ConsoleEntry[]): LiveAgentRun[] {
+  const runs = new Map<string, LiveAgentRun>();
+  for (const entry of entries) {
+    if (entry.origin !== 'agent' || !entry.runId) continue;
+    const key = `${entry.runId}::${entry.source}`;
+    if (entry.event === 'command_started') {
+      runs.set(key, {
+        runId: entry.runId,
+        source: entry.source,
+        stage: entry.stage,
+        label: entry.message.replace(/:\s*\S+ iniciado$/, ''),
+        startedAt: entry.timestamp,
+        state: 'starting',
+        lastEventAt: null,
+        lastEventSummary: null,
+        idleMs: null,
+        inactivityTimeoutMs: null,
+        maxDurationMs: null,
+      });
+      continue;
+    }
+    const run = runs.get(key);
+    if (!run) continue;
+    if (entry.event === 'command_completed' || entry.event === 'command_failed') {
+      runs.delete(key);
+      continue;
+    }
+    if (entry.event === 'agent_heartbeat') {
+      const details = entry.details ?? {};
+      const state = asString(details['state']) as AgentRunState | null;
+      if (state && state in AGENT_STATE_LABELS) run.state = state;
+      run.lastEventAt = asString(details['lastEventAt']) ?? run.lastEventAt;
+      run.lastEventSummary = asString(details['lastEventSummary']) ?? run.lastEventSummary;
+      run.idleMs = asNumber(details['idleMs']);
+      run.inactivityTimeoutMs = asNumber(details['inactivityTimeoutMs']);
+      run.maxDurationMs = asNumber(details['maxDurationMs']);
+      continue;
+    }
+    if (isStreamEntry(entry)) {
+      // Real output between heartbeats is the most recent event the user can see.
+      run.lastEventAt = entry.timestamp;
+      run.lastEventSummary = entry.message.slice(0, 240);
+      // State stays with the supervisor: a repeated banner is an event, not progress.
+    }
+  }
+  return [...runs.values()];
+}
+
+/** "4m05s" / "38s". */
+export function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, '0')}m`;
+  return m > 0 ? `${m}m${String(s).padStart(2, '0')}s` : `${s}s`;
 }
 
 export interface ConsoleCounters {
