@@ -33,7 +33,8 @@ import {
   type ScriptCoverageSegment,
 } from './media-coverage-planner.js';
 import type { MediaProviderRegistry } from './media-providers/registry.js';
-import { inferContentDomain, type MediaCandidateAssessment } from './media-providers/semantic-media.js';
+import { inferContentDomain, type ContentDomain, type MediaCandidateAssessment } from './media-providers/semantic-media.js';
+import { buildSceneMediaApproval, type SceneMediaApproval } from './media-approval.js';
 import type {
   AcquisitionMethod,
   LicenseDecision,
@@ -888,6 +889,11 @@ export interface AutonomousAcquisitionAuditReport {
   approvedAssets: AcquiredMediaAsset[];
   approvedMediaDetails: ApprovedMediaAuditDetail[];
   relevanceDecisions: MediaRelevanceDecision[];
+  /**
+   * One entry per media × scene that reached visual analysis: identity, literal correspondence, contextual support
+   * and usage authorization as separate verdicts, with the proving intervals.
+   */
+  mediaApprovals: SceneMediaApproval[];
   observability?: {
     stageTimingsMs: {
       discoveryMs: number;
@@ -1047,6 +1053,7 @@ export function scoreCandidateRelevancePriority(
   cand: MediaSourceCandidate,
   segment: ScriptCoverageSegment,
   prompt: string,
+  projectDomain?: ContentDomain,
 ): number {
   const text = `${cand.title ?? ''} ${cand.description ?? ''}`
     .normalize('NFD')
@@ -1058,10 +1065,12 @@ export function scoreCandidateRelevancePriority(
       : extractTopicEntities(`${segment.subject} ${segment.narrationText}`);
   const promptEntities = extractTopicEntities(prompt);
 
-  const isGamingTopic =
-    /\b(game|jogo|jogos|boss|chefe|gameplay|elden ring|dark souls|sekiro|bloodborne|rpg|playstation|xbox|nintendo|steam)\b/i.test(
-      `${prompt} ${segment.subject} ${segment.narrationText}`,
-    );
+  // Known project domain wins; the keyword test is the fallback for legacy callers without one.
+  const isGamingTopic = projectDomain
+    ? projectDomain === 'game'
+    : /\b(game|jogo|jogos|boss|chefe|gameplay|elden ring|dark souls|sekiro|bloodborne|rpg|playstation|xbox|nintendo|steam)\b/i.test(
+        `${prompt} ${segment.subject} ${segment.narrationText}`,
+      );
 
   let score = 0;
   for (const e of segEntities) {
@@ -1099,8 +1108,9 @@ export function triageCandidateMetadata(
   cand: MediaSourceCandidate,
   segment: ScriptCoverageSegment,
   prompt: string,
+  projectDomain?: ContentDomain,
 ): { pass: boolean; score: number; reason?: string } {
-  const score = scoreCandidateRelevancePriority(cand, segment, prompt);
+  const score = scoreCandidateRelevancePriority(cand, segment, prompt, projectDomain);
   const text = `${cand.title ?? ''} ${cand.description ?? ''}`.toLowerCase();
   const segEntities =
     segment.entities && segment.entities.length > 0
@@ -1138,6 +1148,8 @@ export async function runAutonomousMediaAcquisition(input: {
   projectId: string;
   prompt: string;
   genre?: string;
+  /** Content domain resolved from the briefing (see `resolveProjectDomain`); inferred per scene when absent. */
+  projectDomain?: ContentDomain;
   format?: CoverageFormat;
   segments: ScriptCoverageSegment[];
   mediaDir: string;
@@ -1227,6 +1239,7 @@ export async function runAutonomousMediaAcquisition(input: {
     rejectedUrlByMediaId.set(mediaId, url);
   };
   const relevanceDecisions: MediaRelevanceDecision[] = [];
+  const mediaApprovals: SceneMediaApproval[] = [];
   const approvedAssets: AcquiredMediaAsset[] = [];
   const approvedMetaById = new Map<
     string,
@@ -1361,6 +1374,7 @@ export async function runAutonomousMediaAcquisition(input: {
         }]>;
         rejectedCandidates?: AutonomousAcquisitionAuditReport['rejectedCandidates'];
         relevanceDecisions?: MediaRelevanceDecision[];
+        mediaApprovals?: SceneMediaApproval[];
         recoveryAttempts?: AutonomousAcquisitionAuditReport['recoveryAttempts'];
         segmentMetrics?: SegmentAcquisitionMetrics[];
         visionCacheEntries?: Array<[string, MediaRelevanceDecision]>;
@@ -1407,6 +1421,7 @@ export async function runAutonomousMediaAcquisition(input: {
         }
         if (saved.rejectedCandidates) rejectedCandidates.push(...saved.rejectedCandidates);
         if (saved.relevanceDecisions) relevanceDecisions.push(...saved.relevanceDecisions);
+        if (saved.mediaApprovals) mediaApprovals.push(...saved.mediaApprovals);
         if (saved.recoveryAttempts) {
           recoveryAttempts.push(...saved.recoveryAttempts);
           for (const attempt of saved.recoveryAttempts) recoveryAttemptIdByQueryKey.set(canonicalQueryKey(attempt.query), attempt.attemptId);
@@ -1459,6 +1474,7 @@ export async function runAutonomousMediaAcquisition(input: {
             approvedMetaEntries: [...approvedMetaById.entries()],
             rejectedCandidates,
             relevanceDecisions,
+            mediaApprovals,
             recoveryAttempts,
             segmentMetrics: [...segMetricsMap.values()],
             visionCacheEntries: [...visionCache.entries()],
@@ -1712,6 +1728,8 @@ export async function runAutonomousMediaAcquisition(input: {
                   sceneId: item.segment.segmentId,
                   narrationText: item.segment.narrationText,
                   ...(item.segment.entities ? { entities: item.segment.entities } : {}),
+                  ...(item.segment.work ? { work: item.segment.work } : {}),
+                  ...(input.projectDomain ? { projectDomain: input.projectDomain } : {}),
                 },
               },
             );
@@ -1753,7 +1771,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 continue;
               }
 
-              const triage = triageCandidateMetadata(cand, item.segment, input.prompt);
+              const triage = triageCandidateMetadata(cand, item.segment, input.prompt, input.projectDomain);
               if (!triage.pass) {
                 triageEliminatedCount += 1;
                 candidateStates.set(candKey, 'rejected');
@@ -2130,6 +2148,30 @@ export async function runAutonomousMediaAcquisition(input: {
               visionCache.set(visionCacheKey, decision);
             }
           }
+
+          // Identity / literal / contextual / usage verdicts. Confirms or downgrades the gate, never upgrades it.
+          const approvalCandidate = {
+            mediaId: item.mediaId,
+            ...(item.cand.title ? { title: item.cand.title } : {}),
+            ...(item.cand.description ? { description: item.cand.description } : {}),
+            origin: item.cand.origin,
+            url: item.cand.url,
+            license: item.cand.license,
+            ...(item.cand.providerItem ? { providerItem: item.cand.providerItem } : {}),
+            ...(item.cand.licenseDecision ? { licenseDecision: item.cand.licenseDecision } : {}),
+            ...(item.cand.assessment ? { assessment: item.cand.assessment } : {}),
+          };
+          const approvalScene = {
+            sceneId: seg.segmentId,
+            ...(seg.entities ? { entities: seg.entities } : {}),
+            ...(seg.work ? { work: seg.work } : {}),
+            ...(input.projectDomain ? { projectDomain: input.projectDomain } : {}),
+          };
+          const built = buildSceneMediaApproval(approvalCandidate, decision, approvalScene);
+          const approvalIndex = mediaApprovals.findIndex((a) => a.mediaId === item.mediaId && a.sceneId === seg.segmentId);
+          if (approvalIndex >= 0) mediaApprovals.splice(approvalIndex, 1, built.approval);
+          else mediaApprovals.push(built.approval);
+          decision = built.effectiveDecision;
 
           if (decision.visualVerificationError) {
             if (!canUseCachedDecision && input.analyzeFrames) visionDiagnostics.callsFailed += 1;
@@ -2597,6 +2639,7 @@ export async function runAutonomousMediaAcquisition(input: {
     approvedAssets,
     approvedMediaDetails,
     relevanceDecisions,
+    mediaApprovals,
     observability: {
       stageTimingsMs: { ...stageTimingsMs },
       cacheHits,

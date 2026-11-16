@@ -1,4 +1,4 @@
-import { inferContentDomain } from './media-providers/semantic-media.js';
+import { inferContentDomain, type WorkReference } from './media-providers/semantic-media.js';
 import {
   extractNarrativeVisualExpectation,
   extractTopicEntities,
@@ -21,6 +21,8 @@ export interface ScriptCoverageSegment {
   subject: string;
   narrationText: string;
   entities?: string[];
+  /** Work the scene illustrates (canonical/alternative titles, characters, event, language) from the decupagem. */
+  work?: WorkReference;
   expectedDurationSec: number;
   expectedEvent?: string;
   preferredQueries?: string[];

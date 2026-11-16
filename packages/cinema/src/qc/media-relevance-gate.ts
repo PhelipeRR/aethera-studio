@@ -668,8 +668,10 @@ export async function evaluateMediaRelevance(
           })
         : [];
   const universeEntities = extractTopicEntities(segment.prompt);
+  // Whole-word match: a prompt token such as "com" ("animes com magia") must not match inside "combate".
+  const combinedWords = new Set(combinedText.split(/[^a-z0-9]+/).filter(Boolean));
   const matchedUniverseEntities = universeEntities.filter(
-    (entity) => (metadataOnly || validVisualFrames.length > 0) && (combinedText.includes(entity) || candidateEntities.includes(entity)),
+    (entity) => (metadataOnly || validVisualFrames.length > 0) && (combinedWords.has(entity) || candidateEntities.includes(entity)),
   );
 
   const expectsAnime = segmentExpectsAnime(segment);

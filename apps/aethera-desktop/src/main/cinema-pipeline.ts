@@ -26,6 +26,8 @@ import {
   renderRealCinemaMp4,
   resolveLearnedSceneConstraints,
   runAutonomousMediaAcquisition,
+  resolveProjectDomain,
+  workReferenceForScene,
   runAutonomousSupervisorPass,
   type AetheraEvolutionCore,
   type AutonomousAcquisitionAuditReport,
@@ -1522,6 +1524,17 @@ export class StagedCinemaPipeline {
 
       const scenesForAcquisition = job.sceneDecupagem ?? [];
       const multiWorkProduction = isMultiWorkProduction(nextInterpretation);
+      // Content domain of the project (anime/game/movie…) from the briefing interpretation, reconciled with the
+      // semantic evidence of the prompt and the researched works. The narrative format (genre) never decides it.
+      const projectDomainInference = resolveProjectDomain({
+        promptDomain: nextInterpretation.domain,
+        prompt: job.prompt,
+        workTitles: [
+          ...new Set(scenesForAcquisition.flatMap((s) => (multiWorkProduction ? (s.works ?? []) : [s.workTitle])).filter(Boolean)),
+        ],
+        ...(job.genre ? { genre: job.genre } : {}),
+      });
+      const projectDomain = projectDomainInference.domain;
       const queries =
         scenesForAcquisition.length > 0
           ? scenesForAcquisition.map((s) => s.mediaQueries[0] ?? `${s.workTitle} ${s.entities[0] ?? s.expectedEvent}`)
@@ -1568,6 +1581,10 @@ export class StagedCinemaPipeline {
                   narrationText: s.narrationText,
                   expectedEvent: s.expectedEvent,
                   preferredQueries: s.mediaQueries,
+                  ...(() => {
+                    const work = workReferenceForScene(s, { multiWork: multiWorkProduction, language: nextInterpretation.language });
+                    return work ? { work } : {};
+                  })(),
                   entities: (() => {
                     const raw =
                       s.matchingCriteria.requiredEntities.length > 0
@@ -1628,6 +1645,7 @@ export class StagedCinemaPipeline {
                       projectId: job.projectId,
                       prompt: job.prompt,
                       ...(job.genre ? { genre: job.genre } : {}),
+                      projectDomain,
                       ...(job.creativeSelection ? { creativeSelection: job.creativeSelection } : {}),
                       ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
                       ...(job.contract
@@ -1738,6 +1756,7 @@ export class StagedCinemaPipeline {
             projectId: job.projectId,
             prompt: job.prompt,
             ...(job.genre ? { genre: job.genre } : {}),
+            projectDomain,
             format: job.format === 'shorts_9_16' ? 'shorts' : 'analysis',
             segments: initialSegments,
             mediaDir: projectPaths.mediaDir,

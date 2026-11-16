@@ -217,6 +217,41 @@ export function inferContentDomain(context: SceneSourceContext & { query?: strin
   return { domain: top[0], confidence: Number(Math.min(1, 0.4 + (top[1] / total) * 0.6).toFixed(2)), evidence, ambiguous: false };
 }
 
+const PROMPT_DOMAIN_MAP: Record<string, ContentDomain> = {
+  gaming: 'game',
+  game: 'game',
+  anime: 'anime',
+  technology: 'technology',
+  documentary: 'documentary',
+  movie: 'movie',
+  series: 'series',
+  general: 'generic',
+  generic: 'generic',
+};
+
+/**
+ * Project domain from the briefing interpretation (`PromptInterpretation.domain`) reconciled with the semantic
+ * inference over the prompt and the researched works. The interpretation's regex checks game words before anime
+ * words, so an anime prompt that says "jogo"/"boss" would become gaming; a clear, unambiguous inference wins, and the
+ * interpretation is used when the inference has no specific signal.
+ */
+export function resolveProjectDomain(input: { promptDomain?: string; prompt: string; workTitles?: string[]; genre?: string }): DomainInference {
+  const inferred = inferContentDomain({
+    prompt: input.prompt,
+    ...(input.workTitles && input.workTitles.length ? { entities: input.workTitles } : {}),
+    ...(input.genre ? { genre: input.genre } : {}),
+  });
+  const mapped = input.promptDomain ? PROMPT_DOMAIN_MAP[input.promptDomain] : undefined;
+  if (inferred.domain !== 'generic' && !inferred.ambiguous) {
+    const note = mapped && mapped !== inferred.domain && mapped !== 'generic' ? [`Interpretação do briefing indicou ${mapped}; evidência semântica indica ${inferred.domain}.`] : [];
+    return { ...inferred, evidence: [...inferred.evidence, ...note] };
+  }
+  if (mapped && mapped !== 'generic') {
+    return { domain: mapped, confidence: 0.6, evidence: [...inferred.evidence, `Domínio da interpretação do briefing: ${mapped}.`], ambiguous: inferred.ambiguous };
+  }
+  return inferred;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Media type
 
@@ -291,7 +326,15 @@ export interface ObservedIdentity {
  * Identity of the item relative to the works the scene expects. Provider records and visual/provenance analysis are
  * evidence; a matching title only makes the identity `probable` and always requires visual confirmation.
  */
-export function assessIdentity(item: ProviderMediaItem, context: SceneSourceContext, observed?: ObservedIdentity): IdentityAssessment {
+/** What identity assessment reads from a result: registry items and plain pipeline candidates (yt-dlp, Sakugabooru). */
+export interface IdentitySubject {
+  title: string;
+  description?: string;
+  tags?: readonly string[];
+  provenance?: { subject?: { gameTitle?: string; animeTitle?: string } };
+}
+
+export function assessIdentity(item: IdentitySubject, context: SceneSourceContext, observed?: ObservedIdentity): IdentityAssessment {
   const expected = expectedWorksOf(context);
   const characters = context.work?.characters ?? [];
   const evidence: string[] = [];
@@ -330,7 +373,7 @@ export function assessIdentity(item: ProviderMediaItem, context: SceneSourceCont
     }
   }
 
-  const asserted = item.provenance.subject?.gameTitle ?? item.provenance.subject?.animeTitle;
+  const asserted = item.provenance?.subject?.gameTitle ?? item.provenance?.subject?.animeTitle;
   if (asserted) {
     if (matchesExpected(asserted)) {
       return {
@@ -354,14 +397,14 @@ export function assessIdentity(item: ProviderMediaItem, context: SceneSourceCont
     };
   }
 
-  const metadata = `${item.title} ${item.description ?? ''} ${item.tags.join(' ')}`;
+  const metadata = `${item.title} ${item.description ?? ''} ${(item.tags ?? []).join(' ')}`;
   const mentioned = expected.filter((e) => mentionsName(metadata, e));
   const mentionedCharacters = characters.filter((c) => mentionsName(metadata, c));
   if (mentioned.length > 0 || mentionedCharacters.length > 0) {
-    evidence.push(`Metadados mencionam ${[...mentioned, ...mentionedCharacters].slice(0, 4).join(', ')} (indício, não prova).`);
+    evidence.push(`Metadados mencionam ${[...new Set([...mentioned, ...mentionedCharacters])].slice(0, 4).join(', ')} (indício, não prova).`);
     return {
       expectedWorks: expected,
-      detectedWork: [...mentioned, ...mentionedCharacters].join(', '),
+      detectedWork: [...new Set([...mentioned, ...mentionedCharacters])].join(', '),
       status: 'probable',
       confidence: Math.min(0.5, 0.3 + 0.1 * (mentioned.length + mentionedCharacters.length)),
       evidence,
@@ -462,8 +505,10 @@ export function assessCandidate(item: ProviderMediaItem, policy: CandidatePolicy
   let maxEditorialRole: EditorialRole;
   let canProveScene = false;
   if (!policy.requiresIdentity) {
-    maxEditorialRole = 'contextual_broll';
-    reasons.push('Cena sem identidade obrigatória: mídia serve como apoio visual.');
+    // No work to identify: whether the footage literally shows the narration is decided by frames alone.
+    maxEditorialRole = 'literal_evidence';
+    canProveScene = true;
+    reasons.push('Cena sem identidade obrigatória: correspondência decidida pelos frames.');
   } else if (native.has(mediaType) || (mediaType === 'unknown' && identity.status !== 'unknown')) {
     maxEditorialRole = 'literal_evidence';
     canProveScene = true;
