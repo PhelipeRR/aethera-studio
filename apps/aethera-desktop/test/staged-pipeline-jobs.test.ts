@@ -25,6 +25,44 @@ function researchUntilAborted(calls: AbortSignal[]) {
 }
 
 describe('StagedCinemaPipeline — identidade da execução (jobId + attempt)', () => {
+  it('persists independent creative dimensions, delivery preset and preview profile in the contract', async () => {
+    const root = makeTempDir('aethera-format-persist-');
+    const calls: AbortSignal[] = [];
+    const pipeline = new StagedCinemaPipeline({
+      jobsDir: join(root, 'jobs'),
+      mediaDir: join(root, 'media'),
+      outputDir: join(root, 'renders'),
+      evolutionCore: new AetheraEvolutionCore(join(root, 'evolution.json')),
+      onPackageReady: () => {},
+      onRenderReady: () => {},
+      runEditorialResearch: researchUntilAborted(calls) as never,
+    });
+
+    const run = pipeline.start({
+      projectId: 'format_persist',
+      prompt: 'Documentário sobre anime com linguagem cinematográfica',
+      creativeSelection: {
+        schemaVersion: 1,
+        narrativeFormatId: 'documentary',
+        contentCategoryId: 'anime-manga',
+        aestheticDirectionId: 'cinematic',
+      },
+      deliveryPresetId: 'feed-4-5',
+      previewProfile: 'review_720p',
+      manuallyChangedFields: ['creativeSelection', 'deliveryPresetId', 'previewProfile'],
+      targetDurationSec: 10,
+    });
+    await waitUntil(() => calls.length === 1);
+    const persisted = pipeline.loadJob('format_persist');
+    expect(persisted?.creativeSelection).toMatchObject({ narrativeFormatId: 'documentary', contentCategoryId: 'anime-manga', aestheticDirectionId: 'cinematic' });
+    expect(persisted?.deliveryPresetId).toBe('feed-4-5');
+    expect(persisted?.previewProfile).toBe('review_720p');
+    expect(persisted?.contract?.controls.deliveryPresetId).toBe('feed-4-5');
+    expect(persisted?.contract?.conflicts.some((conflict) => conflict.field === 'deliveryPresetId')).toBe(true);
+    pipeline.cancel('format_persist');
+    await run;
+  }, 30_000);
+
   it('gives each production a unique jobId and counts attempts on resume', async () => {
     const root = makeTempDir('aethera-jobid-');
     const calls: AbortSignal[] = [];

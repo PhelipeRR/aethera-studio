@@ -151,6 +151,55 @@ describe('@neuralbridge/cinema — Core Engine & Master Plan', () => {
     expect(typoCheck.contrastOk).toBe(true);
   });
 
+  it('applies hybrid direction and delivery presets to the real planning package', () => {
+    const pkg = produceCinemaPackage({
+      projectId: 'hybrid_delivery',
+      prompt: 'Documentário sobre anime e mangá com linguagem cinematográfica',
+      genre: 'gameplay_essay',
+      creativeSelection: {
+        schemaVersion: 1,
+        narrativeFormatId: 'documentary',
+        contentCategoryId: 'anime-manga',
+        aestheticDirectionId: 'cinematic',
+      },
+      deliveryPresetId: 'feed-4-5',
+      previewProfile: 'review_720p',
+      targetDurationSec: 30,
+    });
+
+    expect(pkg.direction.brief.creativeSelection).toMatchObject({
+      narrativeFormatId: 'documentary',
+      contentCategoryId: 'anime-manga',
+      aestheticDirectionId: 'cinematic',
+    });
+    expect(pkg.direction.brief.genre).toBe('documentary');
+    expect(pkg.deliveryProfile.preset.id).toBe('feed-4-5');
+    expect(pkg.deliveryProfile.preview).toMatchObject({ width: 720, height: 576, quality: 'review_720p' });
+    expect(pkg.timeline.resolution).toEqual({ width: 1080, height: 1350 });
+    expect(pkg.timeline.fps).toEqual({ value: 30, rate: 1 });
+    expect(pkg.direction.styleBible.soundIdentity.targetLufs).toBe(-14);
+    expect(pkg.exportPresetIds).toEqual(['feed-4-5']);
+  });
+
+  it('plans horizontal, vertical, square and cinematic compositions independently', () => {
+    const cases = [
+      ['youtube-1080p', { width: 1920, height: 1080 }],
+      ['shorts', { width: 1080, height: 1920 }],
+      ['square-1-1', { width: 1080, height: 1080 }],
+      ['cinema-scope', { width: 2560, height: 1071 }],
+    ] as const;
+    for (const [deliveryPresetId, resolution] of cases) {
+      const pkg = produceCinemaPackage({
+        projectId: `composition_${deliveryPresetId}`,
+        prompt: `Teste de composição ${deliveryPresetId}`,
+        deliveryPresetId,
+        targetDurationSec: 15,
+      });
+      expect(pkg.timeline.resolution, deliveryPresetId).toEqual(resolution);
+      expect(pkg.direction.brief.deliveryProfile?.preset.id).toBe(deliveryPresetId);
+    }
+  });
+
   it('detects 100% of injected deterministic critical defects and enforces independent ensemble release gates', () => {
     const pkg = produceCinemaPackage({
       projectId: 'qc_fault_injection',

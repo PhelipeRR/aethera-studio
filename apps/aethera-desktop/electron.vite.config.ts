@@ -23,6 +23,7 @@ export default defineConfig({
     resolve: {
       alias: {
         '@neuralbridge/integration-contracts': resolve('../../packages/integration-contracts/src/index.ts'),
+        '@neuralbridge/cinema/browser': resolve('../../packages/cinema/src/browser.ts'),
         '@neuralbridge/cinema': resolve('../../packages/cinema/src/index.ts'),
         '@neuralbridge/creative-studio': resolve('../../packages/creative-studio/src/index.ts'),
       },
@@ -51,6 +52,7 @@ export default defineConfig({
     resolve: {
       alias: {
         '@': resolve('../../packages/desktop-shared/src/renderer/src'),
+        '@neuralbridge/cinema/browser': resolve('../../packages/cinema/src/browser.ts'),
         '@neuralbridge/cinema': resolve('../../packages/cinema/src/index.ts'),
         '@neuralbridge/creative-studio': resolve('../../packages/creative-studio/src/index.ts'),
       },

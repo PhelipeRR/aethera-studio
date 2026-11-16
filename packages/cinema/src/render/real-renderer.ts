@@ -32,6 +32,7 @@ import {
   type SynthesizedSegmentProbe,
 } from '../audio/voice-director.js';
 import type { AetheraEvolutionCore, ProductionDirectives } from '../evolution/evolution-core.js';
+import { resolveDeliveryProfile, type ResolvedDeliveryProfile } from '../director/aethera-format-catalog.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -52,6 +53,9 @@ export interface RealRenderInput {
   prompt?: string;
   technicalSampleMaxClips?: number;
   previewQuality?: 'fast_preview' | 'standard';
+  renderTarget?: 'preview' | 'master';
+  deliveryPresetId?: string;
+  previewProfile?: import('../director/aethera-format-catalog.js').DeliveryQualityProfile;
   segmentCacheDir?: string;
   pronunciationDictionary?: PronunciationDictionaryEntry[];
   voiceExpressiveness?: number;
@@ -91,6 +95,13 @@ export interface RealRenderResult {
   narrationTextSent?: string;
   editorialConsistency?: EditorialConsistencyReport;
   audioQuality?: AudioQualityGateReport;
+  deliveryValidation?: {
+    valid: boolean;
+    target: 'preview' | 'master';
+    expected: { width: number; height: number; fps: number; durationSec: number; audioCodec: string; videoCodec: string };
+    actual: { width: number; height: number; fps: number; durationSec: number; audioCodec: string | null; videoCodec: string; audioSampleRate: number | null };
+    errors: string[];
+  };
 }
 
 async function synthesizeViaVoiceStudio(
@@ -274,6 +285,27 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const mp4Path = join(input.outputDir, input.fileName ?? `${input.pkg.timeline.projectId}.mp4`);
   const workDir = join(input.outputDir, '_work');
   mkdirSync(workDir, { recursive: true });
+  const fallbackPresetId = input.pkg.timeline.resolution.height > input.pkg.timeline.resolution.width ? 'shorts' : 'youtube-1080p';
+  const deliveryProfile: ResolvedDeliveryProfile = input.deliveryPresetId
+    ? resolveDeliveryProfile({ presetId: input.deliveryPresetId, ...(input.previewProfile ? { previewProfile: input.previewProfile } : {}) })
+    : input.pkg.deliveryProfile ?? resolveDeliveryProfile({ presetId: fallbackPresetId, previewProfile: input.previewProfile ?? 'review_720p' });
+  // Master output must be requested explicitly (renderTarget or a delivery preset). Callers that
+  // pass neither keep the historical review render instead of silently scaling up to the master size.
+  const renderTarget = input.renderTarget ?? (input.deliveryPresetId ? 'master' : 'preview');
+  const target = renderTarget === 'preview' ? deliveryProfile.preview : deliveryProfile.master;
+  const targetWidth = target.width;
+  const targetHeight = target.height;
+  const targetFps = target.fps;
+  const safeArea = deliveryProfile.preset.safeArea;
+  const safeLeft = Math.round((targetWidth * safeArea.left) / 100);
+  const safeRight = Math.round((targetWidth * safeArea.right) / 100);
+  const safeBottom = Math.round((targetHeight * safeArea.bottom) / 100);
+  const baseScale = Math.max(0.5, targetWidth / 1280);
+  // Procedural placeholders run a per-pixel geq; generate them at ≤640px on the long edge
+  // (same aspect as the target) and let the base filter scale up, as the 640x360 source did before.
+  const proceduralFactor = Math.min(1, 640 / Math.max(targetWidth, targetHeight));
+  const proceduralWidth = Math.max(2, Math.round((targetWidth * proceduralFactor) / 2) * 2);
+  const proceduralHeight = Math.max(2, Math.round((targetHeight * proceduralFactor) / 2) * 2);
 
   const primaryVideoClips = input.pkg.timeline.clips.filter(
     (c) => c.trackId === 'v1' || (!c.trackId.startsWith('a') && c.trackId !== 'sub1' && c.trackId !== 'v2' && c.trackId !== 'vfx1'),
@@ -403,8 +435,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
 
     const isImageSource = spec.sourceUri ? /\.(png|jpe?g|webp)$/i.test(spec.sourceUri) : false;
     const baseFilter = spec.sourceUri
-      ? `scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,setpts=(PTS-STARTPTS)/${Math.max(0.25, spec.clip?.speed ?? 1)},trim=duration=${spec.effectiveDur},setpts=PTS-STARTPTS`
-      : `geq=r='clip(44+38*sin(X/45+T*1.4)+24*cos(Y/35-T),24,235)':g='clip(34+28*cos(X/55-T)+30*sin((X+Y)/60+T),20,235)':b='clip(68+58*sin((X-Y)/42+T*1.8),32,235)',scale=1280:720:flags=bilinear`;
+      ? `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2,fps=${targetFps},setpts=(PTS-STARTPTS)/${Math.max(0.25, spec.clip?.speed ?? 1)},trim=duration=${spec.effectiveDur},setpts=PTS-STARTPTS`
+      : `geq=r='clip(44+38*sin(X/45+T*1.4)+24*cos(Y/35-T),24,235)':g='clip(34+28*cos(X/55-T)+30*sin((X+Y)/60+T),20,235)':b='clip(68+58*sin((X-Y)/42+T*1.8),32,235)',scale=${targetWidth}:${targetHeight}:flags=bilinear`;
 
     const isDiscrete = Boolean(directives?.discreteTypography);
     const hasRealFootage = Boolean(spec.sourceUri);
@@ -412,20 +444,23 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     const hideTitle =
       (spec.clip?.effects?.some((e) => e.kind === 'hide_title' && e.enabled) ?? false) ||
       (hasRealFootage && isGenericShotLabel);
-    const headlineSize = isDiscrete ? 22 : directives?.elaborateMotionGraphics ? 36 : 34;
-    const sublineSize = isDiscrete ? 15 : 20;
+    const headlineSize = Math.round((isDiscrete ? 22 : directives?.elaborateMotionGraphics ? 36 : 34) * baseScale);
+    const sublineSize = Math.round((isDiscrete ? 15 : 20) * baseScale);
+    const lowerBoxHeight = Math.round((hasRealFootage ? 72 : isDiscrete ? 82 : 130) * baseScale);
+    const lowerBoxY = Math.max(0, targetHeight - safeBottom - lowerBoxHeight);
+    const lowerBoxWidth = Math.max(1, targetWidth - safeLeft - safeRight);
     const motionBar = isDiscrete || hideTitle || hasRealFootage
       ? ''
       : `drawbox=x='mod(t*220,w-240)':y=140:w=220:h=8:color=${accentHex}@0.92:t=fill`;
     const lowerBox = hideTitle
       ? ''
       : hasRealFootage
-        ? `drawbox=x=72:y=568:w=1136:h=72:color=${bgHex}@0.58:t=fill`
+      ? `drawbox=x=${safeLeft}:y=${lowerBoxY}:w=${lowerBoxWidth}:h=${lowerBoxHeight}:color=${bgHex}@0.58:t=fill`
         : isDiscrete
-          ? `drawbox=x=72:y=560:w=1136:h=82:color=${bgHex}@0.64:t=fill`
-          : `drawbox=x=72:y=515:w=1136:h=130:color=${bgHex}@0.82:t=fill`;
-    const headlineY = hasRealFootage ? 584 : isDiscrete ? 574 : 536;
-    const sublineY = isDiscrete ? 608 : 588;
+        ? `drawbox=x=${safeLeft}:y=${lowerBoxY}:w=${lowerBoxWidth}:h=${lowerBoxHeight}:color=${bgHex}@0.64:t=fill`
+        : `drawbox=x=${safeLeft}:y=${lowerBoxY}:w=${lowerBoxWidth}:h=${lowerBoxHeight}:color=${bgHex}@0.82:t=fill`;
+    const headlineY = Math.round(lowerBoxY + (hasRealFootage ? 16 : isDiscrete ? 14 : 21) * baseScale);
+    const sublineY = Math.round(headlineY + (isDiscrete ? 34 : 52) * baseScale);
     const colorFilterChain =
       input.pkg.colorPlan?.ffmpegColorFilterChain?.trim() ||
       'colorspace=all=bt709:iall=bt709:fast=1,eq=contrast=1.06:saturation=1.12,limiter=min=16:max=235';
@@ -440,17 +475,17 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     const kfOpacity = Math.max(0, Math.min(1, getKf('opacity', 1)));
     const transformFilters: string[] = [];
     if (Math.abs(kfScale - 1) > 0.02) {
-      const sw = Math.max(64, Math.round(1280 * kfScale));
-      const sh = Math.max(36, Math.round(720 * kfScale));
+      const sw = Math.max(64, Math.round(targetWidth * kfScale));
+      const sh = Math.max(36, Math.round(targetHeight * kfScale));
       transformFilters.push(
         kfScale > 1
-          ? `scale=${sw}:${sh},crop=1280:720`
-          : `scale=${sw}:${sh},pad=1280:720:(ow-iw)/2:(oh-ih)/2`,
+          ? `scale=${sw}:${sh},crop=${targetWidth}:${targetHeight}`
+          : `scale=${sw}:${sh},pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2`,
       );
     }
     if (Math.abs(kfRotDeg) > 0.5) {
       const rad = Number(((kfRotDeg * Math.PI) / 180).toFixed(4));
-      transformFilters.push(`rotate=${rad}:ow=1280:oh=720:fillcolor=black`);
+      transformFilters.push(`rotate=${rad}:ow=${targetWidth}:oh=${targetHeight}:fillcolor=black`);
     }
     if (kfOpacity < 0.99) {
       transformFilters.push(`eq=brightness=${Number(((kfOpacity - 1) * 0.45).toFixed(3))}`);
@@ -465,10 +500,10 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       ...(hideTitle
         ? []
         : hasRealFootage
-          ? [`drawtext=text='${headline}'${resolveFontOption()}:expansion=none:x=104:y=${headlineY}:fontsize=${headlineSize}:fontcolor=white`]
+          ? [`drawtext=text='${headline}'${resolveFontOption()}:expansion=none:x=${safeLeft + Math.round(32 * baseScale)}:y=${headlineY}:fontsize=${headlineSize}:fontcolor=white`]
           : [
-              `drawtext=text='${headline}'${resolveFontOption()}:expansion=none:x=104:y=${headlineY}:fontsize=${headlineSize}:fontcolor=white`,
-              `drawtext=text='${subline}'${resolveFontOption()}:expansion=none:x=104:y=${sublineY}:fontsize=${sublineSize}:fontcolor=0xf59e0b`,
+              `drawtext=text='${headline}'${resolveFontOption()}:expansion=none:x=${safeLeft + Math.round(32 * baseScale)}:y=${headlineY}:fontsize=${headlineSize}:fontcolor=white`,
+              `drawtext=text='${subline}'${resolveFontOption()}:expansion=none:x=${safeLeft + Math.round(32 * baseScale)}:y=${sublineY}:fontsize=${sublineSize}:fontcolor=0xf59e0b`,
             ]),
       `vignette=PI/6`,
       colorFilterChain,
@@ -518,7 +553,10 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
           previewQuality: input.previewQuality ?? 'full',
           useNvenc: Boolean(input.useNvenc),
           isImageSource,
-          fps: 30,
+          fps: targetFps,
+          targetWidth,
+          targetHeight,
+          renderTarget,
         }),
       )
       .digest('hex');
@@ -555,7 +593,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
             '-i',
             spec.sourceUri,
           ]
-      : ['-f', 'lavfi', '-i', `color=c=${bgHex}:s=640x360:r=30:d=${spec.effectiveDur}`];
+      : ['-f', 'lavfi', '-i', `color=c=${bgHex}:s=${proceduralWidth}x${proceduralHeight}:r=${targetFps}:d=${spec.effectiveDur}`];
 
     await execFileAsync('ffmpeg', [
       '-y',
@@ -637,7 +675,9 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       );
       const textParam = sc.effects.find((e) => e.kind === 'subtitle_style')?.params['text'];
       const txt = escapeDrawtext(typeof textParam === 'string' ? textParam : sc.label);
-      return `drawtext=text='${txt}'${resolveFontOption()}:expansion=none:x=(w-text_w)/2:y=h-76:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.65:boxborderw=10:enable='between(t,${startSec},${endSec})'`;
+      const subtitleSize = Math.max(18, Math.round(28 * baseScale));
+      const subtitleY = Math.max(0, targetHeight - safeBottom - Math.round(48 * baseScale));
+      return `drawtext=text='${txt}'${resolveFontOption()}:expansion=none:x=(w-text_w)/2:y=${subtitleY}:fontsize=${subtitleSize}:fontcolor=white:box=1:boxcolor=black@0.65:boxborderw=${Math.max(6, Math.round(10 * baseScale))}:enable='between(t,${startSec},${endSec})'`;
     });
     await execFileAsync('ffmpeg', [
       '-y',
@@ -947,6 +987,11 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   }
 
   // 4. Mux final MP4 (prefer NVENC if requested and available, fallback libx264)
+  const outputAudioCodec = deliveryProfile.preset.audioCodec;
+  const audioBitrate = outputAudioCodec === 'aac' ? (renderTarget === 'preview' ? '128k' : '192k') : undefined;
+  const pixels = targetWidth * targetHeight;
+  const targetVideoBitrate = renderTarget === 'preview' ? '2M' : pixels >= 8_000_000 ? '18M' : pixels >= 3_500_000 ? '10M' : '5M';
+  const outputVideoFilter = `scale=${targetWidth}:${targetHeight},fps=${targetFps}`;
   let encoderUsed = 'libx264';
   if (input.useNvenc) {
     try {
@@ -958,14 +1003,17 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
         audioMixPath,
         '-c:v',
         'h264_nvenc',
+        '-vf',
+        outputVideoFilter,
         '-preset',
         input.previewQuality === 'fast_preview' ? 'p1' : 'p4',
         '-b:v',
-        input.previewQuality === 'fast_preview' ? '2M' : '5M',
+        targetVideoBitrate,
         '-c:a',
-        'aac',
-        '-b:a',
-        input.previewQuality === 'fast_preview' ? '128k' : '192k',
+        outputAudioCodec,
+        ...(audioBitrate ? ['-b:a', audioBitrate] : []),
+        '-r',
+        String(targetFps),
         '-shortest',
         mp4Path,
       ]);
@@ -984,6 +1032,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       audioMixPath,
       '-c:v',
       'libx264',
+      '-vf',
+      outputVideoFilter,
       '-preset',
       input.previewQuality === 'fast_preview' ? 'ultrafast' : 'veryfast',
       '-crf',
@@ -991,9 +1041,10 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       '-pix_fmt',
       'yuv420p',
       '-c:a',
-      'aac',
-      '-b:a',
-      input.previewQuality === 'fast_preview' ? '128k' : '192k',
+      outputAudioCodec,
+      ...(audioBitrate ? ['-b:a', audioBitrate] : []),
+      '-r',
+      String(targetFps),
       '-shortest',
       mp4Path,
     ]);
@@ -1001,7 +1052,23 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
 
   const probe = await probeRealMp4(mp4Path);
   const anomalies = await detectMediaAnomalies(mp4Path);
-  const realQcFindings = runRealMediaQc(probe, -14.0, anomalies);
+  const targetLufsForQc = deliveryProfile.audio.integratedLufs;
+  const realQcFindings = runRealMediaQc(probe, targetLufsForQc, anomalies);
+  const expectedVideoCodec = deliveryProfile.preset.videoCodec === 'h264_nvenc' ? 'h264' : deliveryProfile.preset.videoCodec;
+  const validationErrors: string[] = [];
+  if (probe.width !== targetWidth || probe.height !== targetHeight) validationErrors.push(`Dimensões FFprobe ${probe.width}x${probe.height} divergem do alvo ${targetWidth}x${targetHeight}.`);
+  if (Math.abs(probe.fps - targetFps) > 0.1) validationErrors.push(`FPS FFprobe ${probe.fps} diverge do alvo ${targetFps}.`);
+  if (Math.abs(probe.durationSec - totalDur) > Math.max(1.5, totalDur * 0.08)) validationErrors.push(`Duração FFprobe ${probe.durationSec}s diverge do planejamento ${totalDur}s.`);
+  if (probe.videoCodec !== expectedVideoCodec) validationErrors.push(`Codec de vídeo FFprobe ${probe.videoCodec} diverge do codec esperado ${expectedVideoCodec}.`);
+  if (probe.audioCodec !== deliveryProfile.preset.audioCodec) validationErrors.push(`Codec de áudio FFprobe ${probe.audioCodec ?? 'ausente'} diverge do codec esperado ${deliveryProfile.preset.audioCodec}.`);
+  if (probe.audioSampleRate !== deliveryProfile.audio.sampleRate) validationErrors.push(`Sample rate FFprobe ${probe.audioSampleRate ?? 'ausente'} diverge do alvo ${deliveryProfile.audio.sampleRate}.`);
+  const deliveryValidation = {
+    valid: validationErrors.length === 0,
+    target: renderTarget,
+    expected: { width: targetWidth, height: targetHeight, fps: targetFps, durationSec: totalDur, audioCodec: deliveryProfile.preset.audioCodec, videoCodec: expectedVideoCodec },
+    actual: { width: probe.width, height: probe.height, fps: probe.fps, durationSec: probe.durationSec, audioCodec: probe.audioCodec, videoCodec: probe.videoCodec, audioSampleRate: probe.audioSampleRate },
+    errors: validationErrors,
+  } as const;
   const waveformPeaks = await extractWaveformPeaks(audioMixPath, 80);
 
   return {
@@ -1018,7 +1085,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       'Tipografia drawtext legível em safe zone',
       'VFX vignette=PI/6',
       'Color grading Rec.709 (colorspace=bt709, eq, limiter 16..235)',
-      `Narração (${narrationMode}) + música + SFX sincronizados + sidechain ducking + loudnorm -14 LUFS`,
+      `Narração (${narrationMode}) + música + SFX sincronizados + sidechain ducking + loudnorm ${targetLufsForQc} LUFS`,
     ],
     probe,
     anomalies,
@@ -1056,5 +1123,6 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     narrationTextSent: narrationTextToSpeak,
     editorialConsistency,
     audioQuality,
+    deliveryValidation,
   };
 }

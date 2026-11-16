@@ -50,7 +50,7 @@ test('Aethera Studio Redesign — E2E Navigation, Cinema AI IPC & Visual Screens
 
     const navText = await win.locator('aside nav').innerText();
     expect(navText).toContain('Home');
-    expect(navText).toContain('Projetos');
+    expect(navText).toContain('Projeto Manual');
     expect(navText).toContain('Produção com IA');
     expect(navText).toContain('Editor');
     expect(navText).toContain('Biblioteca');
@@ -65,15 +65,23 @@ test('Aethera Studio Redesign — E2E Navigation, Cinema AI IPC & Visual Screens
     await win.screenshot({ path: join(screenshotsDir, '01-home.png') });
 
     // 2. Projetos
-    await win.locator('aside nav').getByRole('link', { name: 'Projetos' }).click();
-    await expect(win.getByRole('heading', { name: 'Projetos' })).toBeVisible();
+    await win.locator('aside nav').getByRole('link', { name: 'Projeto Manual' }).click();
+    await expect(win.getByRole('heading', { name: 'Projeto Manual' })).toBeVisible();
     await win.screenshot({ path: join(screenshotsDir, '02-projetos.png') });
 
     // 3. Produção com IA + Real IPC execution + Duration Sync + Plan Approval
     await win.locator('aside nav').getByRole('link', { name: 'Produção com IA' }).click();
     await expect(win.getByRole('heading', { name: 'Produção com IA' })).toBeVisible();
     await expect(win.getByText(/720s \(12 min\)/i)).toBeVisible();
+    const briefing = win.locator('#cinema-prompt');
+    await briefing.fill('Crie um vídeo de 10 minutos sobre os 10 chefes mais difíceis de Elden Ring, com pesquisa verificável.');
+    await win.locator('#cinema-duration').fill('12');
+    await win.locator('#cinema-duration').press('Tab');
+    await briefing.fill('Crie um vídeo de 10 minutos sobre os 10 chefes mais difíceis de Elden Ring, com pesquisa verificável.');
+    await expect(win.getByText(/entrou em conflito com controles alterados manualmente/i)).toBeVisible();
+    await win.getByRole('button', { name: 'Manter controle' }).click();
     await win.getByRole('button', { name: /Gerar Direção & Storyboard/i }).click();
+    await expect(win.getByRole('region', { name: 'Conformidade do contrato de produção' })).toBeVisible();
     await expect(win.getByText(/Planejamento Narrativo & Storyboard/i)).toBeVisible({ timeout: 10_000 });
     await win.getByRole('button', { name: /Aprovar Plano/i }).click();
     await expect(win.getByRole('button', { name: /Plano Aprovado/i })).toBeVisible();

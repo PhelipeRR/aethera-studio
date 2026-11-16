@@ -34,6 +34,10 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
     projectId: string;
     injectRealBlackFrameDefect?: boolean;
     useNvenc?: boolean;
+    deliveryPresetId?: string;
+    exportPresetIds?: string[];
+    renderTarget?: 'preview' | 'master';
+    previewProfile?: 'draft_540p' | 'review_720p' | 'master_1080p' | 'master_4k';
   }) => ipcRenderer.invoke('cinema:render-real-mp4', input),
   cinemaProbeRealMp4: (input: { filePath: string; targetLufs?: number }) =>
     ipcRenderer.invoke('cinema:probe-real-mp4', input),
@@ -136,6 +140,8 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   }) => ipcRenderer.invoke('cinema:update-script', input),
   cinemaStartStagedProduction: (input: Record<string, unknown>) =>
     ipcRenderer.invoke('cinema:start-staged-production', input),
+  cinemaReviseStagedProduction: (input: { projectId: string; instruction: string }) =>
+    ipcRenderer.invoke('cinema:revise-staged-production', input),
   cinemaListVoices: () => ipcRenderer.invoke('cinema:list-voices'),
   cinemaCancelProduction: (projectId: string) => ipcRenderer.invoke('cinema:cancel-production', projectId),
   cinemaResumeProduction: (projectId: string) => ipcRenderer.invoke('cinema:resume-production', projectId),

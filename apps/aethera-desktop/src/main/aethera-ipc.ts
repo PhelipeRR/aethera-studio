@@ -93,6 +93,7 @@ import {
   upsertClipTransition,
   upsertSubtitleClip,
   type AcademyLearningMode,
+  type AetheraCreativeSelection,
   type AcademyMaterialKind,
   type AcademyRightsScope,
   type AudioStemRole,
@@ -2390,6 +2391,13 @@ export function registerAetheraDomainIpc(options: {
  const researchPrompt = [
         `Gere agora o seguinte JSON estruturado sobre a obra "${interpretation.workTitle}".`,
         `Tema: ${interpretation.theme}.`,
+        ...(context?.contractContext
+          ? [
+              `Contrato de produção ativo: ${context.contractContext.contractId}, revisão ${context.contractContext.revision}.`,
+              `Requisitos de pesquisa e conteúdo que devem permanecer rastreáveis:`,
+              ...context.contractContext.requirements.map((requirement) => `- [${requirement.priority}] ${requirement.id} (${requirement.category}): ${requirement.label}${requirement.value !== undefined ? ` = ${JSON.stringify(requirement.value)}` : ''}`),
+            ]
+          : []),
         interpretation.requestedCount
           ? `Critérios de ranking: ${interpretation.rankingCriteria.join('; ')}. Inclua exatamente ${interpretation.requestedCount} entidades distintas.`
           : `Inclua as entidades principais relevantes ao tema.`,
@@ -2858,6 +2866,16 @@ export function registerAetheraDomainIpc(options: {
             `Escreva ${blockRole} de um roteiro REAL e natural em ${targetLanguageLabel}, pronto para ser lido em voz alta.`,
             `Briefing/Tema: "${input.prompt}"`,
             `Gênero: ${input.genre ?? 'gameplay_essay'} | Humor contextual: ${input.humorIntensity}% | Tópicos: ${input.queries.join(', ')}`,
+            ...(input.contractContext
+              ? [
+                  `Contrato de produção ativo: ${input.contractContext.contractId}, revisão ${input.contractContext.revision}.`,
+                  `Requisitos relevantes do contrato (não descarte nenhum):`,
+                  ...input.contractContext.requirements.map((requirement) => `- [${requirement.priority}] ${requirement.id} (${requirement.category}): ${requirement.label}${requirement.value !== undefined ? ` = ${JSON.stringify(requirement.value)}` : ''}`),
+                  ...(input.contractContext.conflicts.length > 0
+                    ? [`Conflitos pendentes — preserve o valor manual e não resolva silenciosamente: ${input.contractContext.conflicts.map((conflict) => `${conflict.field}: manual=${JSON.stringify(conflict.manualValue)} vs briefing=${JSON.stringify(conflict.promptValue)}`).join(' | ')}`]
+                    : []),
+                ]
+              : []),
             ...researchContext,
             `Gere exatamente ${countInBlock} cenas/beats com ~${blockWordsTarget} palavras faladas no total.`,
             ...(prevTail ? [`Continuação direta após: "${prevTail}"`] : []),
@@ -3222,6 +3240,10 @@ export function registerAetheraDomainIpc(options: {
         injectRealBlackFrameDefect?: boolean;
         useNvenc?: boolean;
         voiceStudioVoiceId?: string;
+        deliveryPresetId?: string;
+        exportPresetIds?: string[];
+        renderTarget?: 'preview' | 'master';
+        previewProfile?: 'draft_540p' | 'review_720p' | 'master_1080p' | 'master_4k';
       },
     ) => {
       ensureTrusted(event.senderFrame);
@@ -3230,26 +3252,37 @@ export function registerAetheraDomainIpc(options: {
       const outputDir = join(app.getPath('userData'), 'cinema-renders');
       const prompt = cinemaPrompts.get(input.projectId) ?? input.projectId;
       const jobVoiceId = stagedPipeline.loadJob(input.projectId)?.voiceStudioVoiceId;
-      const res = await renderRealCinemaMp4({
-        pkg,
-        outputDir,
-        fileName: `${input.projectId}.mp4`,
-        useNvenc: input.useNvenc ?? true,
-        injectRealBlackFrameDefect: input.injectRealBlackFrameDefect ?? false,
-        voiceStudioVoiceId: input.voiceStudioVoiceId || jobVoiceId || '9190edfa',
-        evolution: evolutionCore,
-        prompt,
-        segmentCacheDir: join(app.getPath('userData'), 'cinema-projects', input.projectId, 'cache', 'segments'),
-      });
-      const enriched = { ...res, mediaUrl: toMediaUrl(res.mp4Path) };
+      const exportPresetIds = Array.from(new Set(input.exportPresetIds?.filter(Boolean) ?? []));
+      if (exportPresetIds.length === 0 && input.deliveryPresetId) exportPresetIds.push(input.deliveryPresetId);
+      const renderedExports: Array<RealRenderResult & { mediaUrl: string; deliveryPresetId?: string }> = [];
+      const presetsToRender = exportPresetIds.length > 0 ? exportPresetIds : [undefined];
+      for (const presetId of presetsToRender) {
+        const res = await renderRealCinemaMp4({
+          pkg,
+          outputDir,
+          fileName: `${input.projectId}${presetsToRender.length > 1 && presetId ? `.${presetId}` : ''}.mp4`,
+          useNvenc: input.useNvenc ?? true,
+          injectRealBlackFrameDefect: input.injectRealBlackFrameDefect ?? false,
+          voiceStudioVoiceId: input.voiceStudioVoiceId || jobVoiceId || '9190edfa',
+          evolution: evolutionCore,
+          prompt,
+          ...(presetId ? { deliveryPresetId: presetId } : {}),
+          ...(input.renderTarget ? { renderTarget: input.renderTarget } : {}),
+          ...(input.previewProfile ? { previewProfile: input.previewProfile } : {}),
+          segmentCacheDir: join(app.getPath('userData'), 'cinema-projects', input.projectId, 'cache', 'segments'),
+        });
+        renderedExports.push({ ...res, ...(presetId ? { deliveryPresetId: presetId } : {}), mediaUrl: toMediaUrl(res.mp4Path) });
+      }
+      const enriched = renderedExports[0];
+      if (!enriched) throw new Error('render_failed: nenhuma exportação foi produzida.');
       cinemaRenders.set(input.projectId, enriched);
       persistCinemaRender(input.projectId, enriched);
       let autoThumbnailProjectId: string | undefined;
-      if (creativeStudioService && res.mp4Path) {
+      if (creativeStudioService && enriched.mp4Path) {
         try {
           const thumb = await creativeStudioService.generateThumbnailForCinemaVideo({
             cinemaProjectId: input.projectId,
-            videoPath: res.mp4Path,
+            videoPath: enriched.mp4Path,
             prompt,
           });
           autoThumbnailProjectId = thumb.document.id;
@@ -3257,7 +3290,11 @@ export function registerAetheraDomainIpc(options: {
           // Non-fatal: video render succeeds even if auto-thumbnail fails.
         }
       }
-      return autoThumbnailProjectId ? { ...enriched, autoThumbnailProjectId } : enriched;
+      return autoThumbnailProjectId
+        ? { ...enriched, autoThumbnailProjectId, exports: renderedExports }
+        : renderedExports.length > 1
+          ? { ...enriched, exports: renderedExports }
+          : enriched;
     },
   );
   ipcMain.handle(
@@ -4204,6 +4241,10 @@ export function registerAetheraDomainIpc(options: {
         prompt: string;
         genre?: 'documentary' | 'gameplay_essay' | 'top_list' | 'trailer';
         format?: 'youtube_16_9' | 'shorts_9_16';
+        creativeSelection?: AetheraCreativeSelection;
+        deliveryPresetId?: string;
+        deliveryPresetIds?: string[];
+        previewProfile?: 'draft_540p' | 'review_720p' | 'master_1080p' | 'master_4k';
         targetDurationSec?: number;
         humorIntensity?: number;
         renderProfile?: 'draft_540p' | 'review_720p' | 'master_1080p';
@@ -4212,6 +4253,7 @@ export function registerAetheraDomainIpc(options: {
         ttsProviderId?: string;
         ttsVoiceId?: string;
         language?: string;
+        manuallyChangedFields?: Array<'genre' | 'format' | 'creativeSelection' | 'deliveryPresetId' | 'previewProfile' | 'targetDurationSec' | 'humorIntensity' | 'renderProfile' | 'language' | 'voiceId'>;
         seedMediaFiles?: string[];
       },
     ) => {
@@ -4220,6 +4262,14 @@ export function registerAetheraDomainIpc(options: {
         throw new Error('invalid_input: jobId inválido.');
       }
       return stagedPipeline.start(input);
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:revise-staged-production',
+    async (event, input: { projectId: string; instruction: string }) => {
+      ensureTrusted(event.senderFrame);
+      return stagedPipeline.revise(input.projectId, input.instruction);
     },
   );
 

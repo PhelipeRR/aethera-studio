@@ -5,10 +5,12 @@ export * from './analysis/anime-source-adapters.js';
 export * from './analysis/resilient-media-sources.js';
 export * from './analysis/media-providers/index.js';
 export * from './director/cinematography-director.js';
+export * from './director/aethera-format-catalog.js';
 export * from './editorial/editorial-integrity.js';
 export * from './editorial/research-and-decupagem.js';
 export * from './editorial/contextual-media-queries.js';
 export * from './editorial/editorial-audit.js';
+export * from './production-contract.js';
 export * from './comedy/comedy-director.js';
 export * from './edit/editorial-engine.js';
 export * from './edit/prompt-revision.js';
@@ -89,12 +91,25 @@ import {
   type SyntheticMediaSignals,
   type TargetedRepairResult,
 } from './qc/qc-engine.js';
+import type { ProductionContract } from './production-contract.js';
+import {
+  resolveDeliveryProfile,
+  planDeliveryExports,
+  type AetheraCreativeSelection,
+  type DeliveryQualityProfile,
+  type DeliveryExportJob,
+  type ResolvedDeliveryProfile,
+} from './director/aethera-format-catalog.js';
 
 export interface ProduceCinemaPackageInput {
   projectId: string;
   prompt: string;
   genre?: CinemaGenre;
   format?: DeliveryFormat;
+  creativeSelection?: AetheraCreativeSelection;
+  deliveryPresetId?: string;
+  deliveryPresetIds?: string[];
+  previewProfile?: DeliveryQualityProfile;
   platform?: LoudnessPlatform;
   targetDurationSec?: number;
   humorIntensity?: number;
@@ -110,12 +125,18 @@ export interface ProduceCinemaPackageInput {
     beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
   };
   editorialScript?: EditorialScript;
+  productionContract?: ProductionContract;
 }
 
 export interface CinemaProductionPackage {
   capabilities: CapabilityMatrix;
+  productionContract?: ProductionContract;
   editorialScript?: EditorialScript;
   direction: CreativeDirectionPackage;
+  creativeSelection?: AetheraCreativeSelection;
+  deliveryProfile?: ResolvedDeliveryProfile;
+  exportPresetIds?: string[];
+  exportPlan?: DeliveryExportJob[];
   scriptValidation: ScriptValidationReport;
   timeline: CanonicalTimeline;
   colorPlan: ColorPipelinePlan;
@@ -131,11 +152,16 @@ export interface CinemaProductionPackage {
 
 export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaProductionPackage {
   const capabilities = probeCapabilities();
-  const fps = { value: 30, rate: 1 };
-  const format: DeliveryFormat =
-    input.format ?? (input.platform === 'tiktok_shorts' ? 'shorts_9_16' : 'youtube_16_9');
+  const requestedDeliveryPresetId = input.deliveryPresetId ?? (input.format === 'shorts_9_16' || input.platform === 'tiktok_shorts' ? 'shorts' : input.format === 'youtube_16_9' ? 'youtube-1080p' : undefined);
+  const deliveryProfile = resolveDeliveryProfile({
+    ...(requestedDeliveryPresetId ? { presetId: requestedDeliveryPresetId } : {}),
+    prompt: input.prompt,
+    ...(input.previewProfile ? { previewProfile: input.previewProfile } : input.renderProfile ? { previewProfile: input.renderProfile } : {}),
+  });
+  const format: DeliveryFormat = deliveryProfile.preset.aspectRatio === '9:16' ? 'shorts_9_16' : 'youtube_16_9';
   const platform: LoudnessPlatform =
-    input.platform ?? (format === 'shorts_9_16' ? 'tiktok_shorts' : 'youtube');
+    input.platform ?? (deliveryProfile.preset.platform === 'podcast' ? 'podcast_longform' : deliveryProfile.preset.platform === 'cinema' ? 'cinema_web' : format === 'shorts_9_16' ? 'tiktok_shorts' : 'youtube');
+  const fps = { value: deliveryProfile.master.fps, rate: 1 };
   const targetDur = input.targetDurationSec ?? 45;
 
   const catalog: SourceMediaRecord[] =
@@ -150,8 +176,8 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
             origin: 'local',
             license: 'user_owned',
             duration: fromFrames(Math.max(450, targetDur * 15), fps),
-            width: format === 'shorts_9_16' ? 1080 : 1920,
-            height: format === 'shorts_9_16' ? 1920 : 1080,
+            width: deliveryProfile.master.width,
+            height: deliveryProfile.master.height,
             fps,
             hasAudio: true,
           },
@@ -186,6 +212,9 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
   const brief = compileCreativeBrief({
     prompt: input.prompt,
     format,
+    ...(input.creativeSelection ? { creativeSelection: input.creativeSelection } : {}),
+    deliveryPresetId: deliveryProfile.preset.id,
+    previewProfile: deliveryProfile.preview.quality,
     targetDurationSec: targetDur,
     ...(input.genre ? { genre: input.genre } : {}),
     ...(input.humorIntensity !== undefined ? { humorIntensity: input.humorIntensity } : {}),
@@ -205,7 +234,7 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
     projectId: input.projectId,
     fps,
     resolution:
-      format === 'shorts_9_16' ? { width: 1080, height: 1920 } : { width: 1920, height: 1080 },
+      { width: deliveryProfile.master.width, height: deliveryProfile.master.height },
     humorProfile: brief.humorProfile,
   });
 
@@ -298,8 +327,17 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
 
   return {
     capabilities,
+    ...(input.productionContract ? { productionContract: input.productionContract } : {}),
     editorialScript,
     direction,
+    creativeSelection: brief.creativeSelection,
+    deliveryProfile,
+    exportPresetIds: Array.from(new Set([deliveryProfile.preset.id, ...(input.deliveryPresetIds ?? [])])),
+    exportPlan: planDeliveryExports({
+      presetIds: Array.from(new Set([deliveryProfile.preset.id, ...(input.deliveryPresetIds ?? [])])),
+      prompt: input.prompt,
+      previewProfile: deliveryProfile.preview.quality,
+    }),
     scriptValidation,
     timeline,
     colorPlan,

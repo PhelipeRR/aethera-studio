@@ -8,6 +8,15 @@ import {
   type TimeRange,
 } from '../ir/timeline-ir.js';
 import { sanitizeUntrustedMediaText, type MediaIntelligenceReport } from '../analysis/media-intelligence.js';
+import {
+  composeDirectionProfile,
+  detectCreativeSelection,
+  resolveDeliveryProfile,
+  type AetheraCreativeSelection,
+  type DeliveryQualityProfile,
+  type DirectionProfile,
+  type ResolvedDeliveryProfile,
+} from './aethera-format-catalog.js';
 
 export type CinemaGenre = 'trailer' | 'top_list' | 'documentary' | 'gameplay_essay';
 export type DeliveryFormat = 'youtube_16_9' | 'shorts_9_16';
@@ -41,6 +50,9 @@ export interface CreativeBrief {
   humorProfile: HumorProfile;
   restrictions: string[];
   safeZones: { topPct: number; bottomPct: number; leftPct: number; rightPct: number };
+  creativeSelection: AetheraCreativeSelection;
+  directionProfile: DirectionProfile;
+  deliveryProfile: ResolvedDeliveryProfile;
 }
 
 export interface StyleBible {
@@ -106,21 +118,46 @@ export function compileCreativeBrief(input: {
   prompt: string;
   genre?: CinemaGenre;
   format?: DeliveryFormat;
+  creativeSelection?: AetheraCreativeSelection;
+  deliveryPresetId?: string;
+  previewProfile?: DeliveryQualityProfile;
   targetDurationSec?: number;
   humorIntensity?: number;
   restrictions?: string[];
 }): CreativeBrief {
   const { sanitized } = sanitizeUntrustedMediaText(input.prompt);
-  const format = input.format ?? 'youtube_16_9';
-  const genre: CinemaGenre =
-    input.genre ??
-    (/trailer/i.test(sanitized)
+  const automaticSelection = detectCreativeSelection(sanitized);
+  const creativeSelection: AetheraCreativeSelection = {
+    schemaVersion: 1,
+    narrativeFormatId:
+      input.creativeSelection?.narrativeFormatId && input.creativeSelection.narrativeFormatId !== 'automatic'
+        ? input.creativeSelection.narrativeFormatId
+        : automaticSelection.narrativeFormatId,
+    contentCategoryId:
+      input.creativeSelection?.contentCategoryId && input.creativeSelection.contentCategoryId !== 'automatic'
+        ? input.creativeSelection.contentCategoryId
+        : automaticSelection.contentCategoryId,
+    aestheticDirectionId:
+      input.creativeSelection?.aestheticDirectionId && input.creativeSelection.aestheticDirectionId !== 'automatic'
+        ? input.creativeSelection.aestheticDirectionId
+        : automaticSelection.aestheticDirectionId,
+  };
+  const directionProfile = composeDirectionProfile(creativeSelection);
+  const deliveryPresetId = input.deliveryPresetId ?? (input.format === 'shorts_9_16' ? 'shorts' : input.format === 'youtube_16_9' ? 'youtube-1080p' : undefined);
+  const deliveryProfile = resolveDeliveryProfile({
+    ...(deliveryPresetId ? { presetId: deliveryPresetId } : {}),
+    prompt: sanitized,
+    ...(input.previewProfile ? { previewProfile: input.previewProfile } : {}),
+  });
+  const format: DeliveryFormat = deliveryProfile.preset.aspectRatio === '9:16' ? 'shorts_9_16' : 'youtube_16_9';
+  const selectionGenre: CinemaGenre = creativeSelection.narrativeFormatId === 'trailer'
       ? 'trailer'
-      : /top\s*\d+|ranking|melhores/i.test(sanitized)
+      : creativeSelection.narrativeFormatId === 'top-list'
         ? 'top_list'
-        : /gameplay|jogo|boss|fase/i.test(sanitized)
+        : creativeSelection.narrativeFormatId === 'gameplay-essay'
           ? 'gameplay_essay'
-          : 'documentary');
+          : 'documentary';
+  const genre: CinemaGenre = input.creativeSelection ? selectionGenre : input.genre ?? selectionGenre;
 
   const intensity =
     input.humorIntensity !== undefined
@@ -144,26 +181,31 @@ export function compileCreativeBrief(input: {
     briefId: `brief_${Date.now()}`,
     prompt: sanitized,
     genre,
-    platform: format === 'shorts_9_16' ? 'shorts' : 'youtube',
+    platform: deliveryProfile.preset.platform === 'shorts' || deliveryProfile.preset.platform === 'tiktok' || deliveryProfile.preset.platform === 'instagram' ? 'shorts' : 'youtube',
     format,
     targetDurationSec: Math.max(15, input.targetDurationSec ?? (genre === 'trailer' ? 45 : 90)),
-    tone: genre === 'documentary' ? 'analytical_cinematic' : 'high_impact_editorial',
+    tone: `${creativeSelection.aestheticDirectionId}_${genre === 'documentary' ? 'analytical' : 'editorial'}`,
     audience: 'youtube_general_ptbr',
-    pacing: genre === 'trailer' || genre === 'top_list' ? 'fast' : 'balanced',
-    maxEffectsPerMinute: 4,
+    pacing: directionProfile.editingPace.cutsPerMinute >= 20 ? 'fast' : directionProfile.editingPace.cutsPerMinute <= 10 ? 'deliberate' : 'balanced',
+    maxEffectsPerMinute: Math.max(2, Math.min(12, Math.round(directionProfile.editingPace.cutsPerMinute / 4))),
     syntheticTolerance: 'diagrams_only',
     humorProfile,
     restrictions: input.restrictions ?? [],
-    safeZones:
-      format === 'shorts_9_16'
-        ? { topPct: 12, bottomPct: 22, leftPct: 6, rightPct: 12 }
-        : { topPct: 6, bottomPct: 12, leftPct: 5, rightPct: 5 },
+    safeZones: {
+      topPct: deliveryProfile.preset.safeArea.top,
+      bottomPct: deliveryProfile.preset.safeArea.bottom,
+      leftPct: deliveryProfile.preset.safeArea.left,
+      rightPct: deliveryProfile.preset.safeArea.right,
+    },
+    creativeSelection,
+    directionProfile,
+    deliveryProfile,
   };
 }
 
 export function buildStyleBible(brief: CreativeBrief): StyleBible {
   return {
-    styleId: `style_${brief.genre}_${brief.format}`,
+    styleId: `style_${brief.creativeSelection.aestheticDirectionId}_${brief.creativeSelection.narrativeFormatId}_${brief.deliveryProfile.preset.id}`,
     palette: {
       background: '#071012',
       surface: '#0D1B1E',
@@ -177,13 +219,13 @@ export function buildStyleBible(brief: CreativeBrief): StyleBible {
       minContrastRatio: 4.5,
     },
     allowedTransitions:
-      brief.genre === 'trailer'
+      brief.creativeSelection.narrativeFormatId === 'trailer' || brief.genre === 'trailer'
         ? ['cut', 'match_cut', 'wipe', 'j_cut']
         : ['cut', 'dissolve', 'j_cut', 'l_cut', 'match_cut'],
-    maxVfxIntensity: brief.genre === 'trailer' ? 0.65 : 0.45,
+    maxVfxIntensity: brief.creativeSelection.aestheticDirectionId === 'anime' || brief.genre === 'trailer' ? 0.65 : 0.45,
     soundIdentity: {
-      targetLufs: brief.format === 'shorts_9_16' ? -13 : -14,
-      truePeakDbtp: -1.0,
+      targetLufs: brief.deliveryProfile.audio.integratedLufs,
+      truePeakDbtp: brief.deliveryProfile.audio.truePeakDbtp,
       duckingDb: -9,
     },
     cameraBehavior: {

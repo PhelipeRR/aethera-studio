@@ -32,6 +32,9 @@ import {
   type CinemaGenre,
   type CinemaProductionPackage,
   type DeliveryFormat,
+  migrateLegacyCreativeSelection,
+  type AetheraCreativeSelection,
+  type DeliveryQualityProfile,
   type DistributedFrameAnalysis,
   type MediaCoverageReport,
   type MediaRelevanceDecision,
@@ -57,7 +60,20 @@ import {
   type IncrementalInvalidationReport,
   type EditorialRecoveryStep,
   buildEditorialTraceabilityGraph,
+  contractContextForAgent,
   createEmptyEditorialAuditTrail,
+  evaluateProductionContract,
+  extractProductionContract,
+  reviseProductionContract,
+  recordContractEvidence,
+  recordContractRecovery,
+  type ContractControlField,
+  type ContractEvidence,
+  type ContractMeasurementSnapshot,
+  type ContractComplianceReport,
+  type ProductionContract,
+  type ProductionContractControls,
+  type ContractRequirementCategory,
   runEditorialIntegrityChecks,
   repairSemanticDecupagem,
   type EditorialAuditTrail,
@@ -122,6 +138,19 @@ export interface StagedProductionJob {
   /** 1 on the first run; +1 every time the job is resumed or retried. */
   attempt?: number;
   prompt: string;
+  contract?: ProductionContract;
+  /** Previous immutable contract snapshots; the current snapshot lives in `contract`. */
+  contractHistory?: ProductionContract[];
+  contractCompliance?: ContractComplianceReport;
+  /** Controls touched manually in the UI; prompt-derived values never overwrite these fields. */
+  manuallyChangedFields?: ContractControlField[];
+  /** Stages invalidated by the latest natural-language contract revision. */
+  contractRevisionAffectedStages?: ProductionStageState[];
+  /** Independent creative dimensions and delivery target; legacy genre/format remain persisted for compatibility. */
+  creativeSelection?: AetheraCreativeSelection;
+  deliveryPresetId?: string;
+  deliveryPresetIds?: string[];
+  previewProfile?: DeliveryQualityProfile;
   genre?: CinemaGenre;
   format?: DeliveryFormat;
   targetDurationSec: number;
@@ -146,6 +175,16 @@ export interface StagedProductionJob {
   message: string;
   completedStages: ProductionStageState[];
   acquiredMedia: SourceMediaRecord[];
+  renderExports?: Array<{
+    presetId: string;
+    mp4Path: string;
+    width: number;
+    height: number;
+    fps: number;
+    durationSec: number;
+    validationValid: boolean;
+    validationErrors: string[];
+  }>;
   pendingMedia: PendingMediaSlot[];
   workspaceDir?: string;
   scriptValidation?: ScriptValidationReport;
@@ -181,6 +220,16 @@ export interface SceneAssemblyRecord {
 export const MIN_REAL_FOOTAGE_RATIO_TO_ASSEMBLE = 0.35;
 
 type V1Clip = TimelineClip;
+
+/**
+ * Preview resolution for a job. An explicit previewProfile wins; legacy jobs that
+ * only carry a preview-tier renderProfile (draft_540p/review_720p) keep using it,
+ * so the review render never silently scales up. Master tiers fall back to 720p.
+ */
+export function previewProfileForJob(job: Pick<StagedProductionJob, 'previewProfile' | 'renderProfile'>): DeliveryQualityProfile {
+  if (job.previewProfile) return job.previewProfile;
+  return job.renderProfile === 'draft_540p' ? 'draft_540p' : 'review_720p';
+}
 
 function graphicRecoveryEffects(clipId: string, reason: string): TimelineClip['effects'] {
   return [
@@ -404,7 +453,7 @@ export interface StagedPipelineDeps {
   runEditorialResearch?: (
     interpretation: PromptInterpretation,
     signal: AbortSignal,
-    context?: { projectId: string },
+    context?: { projectId: string; contractContext?: ReturnType<typeof contractContextForAgent>; creativeSelection?: AetheraCreativeSelection; deliveryPresetId?: string },
   ) => Promise<EditorialResearchDossier | null>;
   generateAgentScript?: (input: {
     projectId: string;
@@ -416,6 +465,9 @@ export interface StagedPipelineDeps {
     queries: string[];
     interpretation?: PromptInterpretation;
     researchDossier?: EditorialResearchDossier;
+    contractContext?: ReturnType<typeof contractContextForAgent>;
+    creativeSelection?: AetheraCreativeSelection;
+    deliveryPresetId?: string;
     /** Production cancellation: ends the running agent's process tree. */
     signal?: AbortSignal;
   }) => Promise<{
@@ -427,6 +479,20 @@ export interface StagedPipelineDeps {
 }
 
 const LOCAL_MEDIA_EXT_RE = /\.(mp4|mov|webm|mkv|png|jpe?g|webp)$/i;
+
+function classifyContractRevisionStages(instruction: string): ProductionStageState[] {
+  const text = instruction.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const from = (start: ProductionStageState): ProductionStageState[] => {
+    const order: ProductionStageState[] = ['pesquisa', 'roteiro', 'decupagem', 'aquisicao', 'validacao_visual', 'planejamento', 'montagem', 'audio_sfx_vfx', 'qc', 'previa', 'editor'];
+    const index = order.indexOf(start);
+    return index >= 0 ? order.slice(index) : order;
+  };
+  if (/pesquis|fonte|fato|entidade|obra|anime\s*#|personagem/.test(text)) return from('pesquisa');
+  if (/midia|cena|b[- ]?roll|visual|clipe|imagem|filmagem/.test(text)) return from('decupagem');
+  if (/voz|narrac|idioma|loudness|lufs|dbtp|volume|musica|trilha|sfx|vfx|efeito sonoro/.test(text)) return from('audio_sfx_vfx');
+  if (/roteiro|narrativ|abertura|climax|humor|tom|estrutura|duracao|ritmo|corte|transicao/.test(text)) return from('roteiro');
+  return from('pesquisa');
+}
 
 export function extractSceneQueriesFromPrompt(prompt: string, sceneCount = 4): string[] {
   const cleaned = prompt.trim();
@@ -582,6 +648,109 @@ export class StagedCinemaPipeline {
     return paths;
   }
 
+  private recordStageEvidence(
+    contract: ProductionContract | undefined,
+    stage: string,
+    kind: ContractEvidence['kind'],
+    summary: string,
+    outcome: ContractEvidence['outcome'] = 'supports',
+    artifactIds?: string[],
+  ): ProductionContract | undefined {
+    if (!contract) return undefined;
+    const categoryByStage: Record<string, ContractRequirementCategory[]> = {
+      prompt: ['content', 'format', 'duration', 'language', 'tone'],
+      interpretacao: ['content', 'format', 'duration', 'language', 'narrative'],
+      pesquisa: ['research', 'content'],
+      roteiro: ['narrative', 'narration', 'humor'],
+      decupagem: ['narrative', 'media', 'editing'],
+      aquisicao: ['media', 'research'],
+      validacao_visual: ['media', 'quality'],
+      planejamento: ['editing', 'sfx', 'vfx', 'music'],
+      montagem: ['editing', 'narrative'],
+      audio_sfx_vfx: ['narration', 'sfx', 'vfx', 'music', 'mixing'],
+      qc: ['quality', 'mixing', 'format', 'duration'],
+      previa: ['quality', 'format', 'duration'],
+    };
+    const categories = categoryByStage[stage] ?? [];
+    const requirement = contract.requirements.find((item) => categories.includes(item.category)) ?? contract.requirements[0];
+    if (!requirement) return contract;
+    return recordContractEvidence(contract, {
+      requirementId: requirement.id,
+      stage,
+      kind,
+      outcome,
+      summary,
+      satisfiesRequirement: false,
+      ...(artifactIds ? { artifactIds } : {}),
+    });
+  }
+
+  private recordMediaRecoveryAttempt(
+    contract: ProductionContract | undefined,
+    pending: PendingMediaSlot[],
+    outcome: string,
+  ): ProductionContract | undefined {
+    if (!contract || pending.length === 0) return contract;
+    const requirement = contract.requirements.find((item) => item.category === 'media');
+    if (!requirement) return contract;
+    const signature = `media:${pending
+      .map((slot) => `${slot.slotIndex}:${slot.query}:${slot.attempts ?? 0}`)
+      .sort()
+      .join('|')}`;
+    return recordContractRecovery(contract, {
+      requirementId: requirement.id,
+      signature,
+      action: 'alternate_source_or_query',
+      outcome,
+    });
+  }
+
+  private ensureContractForJob(job: StagedProductionJob): { job: StagedProductionJob; upgraded: boolean } {
+    const migrated = migrateLegacyCreativeSelection({ ...(job.genre ? { genre: job.genre } : {}), ...(job.format ? { format: job.format } : {}) });
+    let upgraded = false;
+    if (!job.creativeSelection) {
+      job.creativeSelection = migrated.creativeSelection;
+      upgraded = true;
+    }
+    if (!job.deliveryPresetId) {
+      job.deliveryPresetId = migrated.deliveryPresetId;
+      upgraded = true;
+    }
+    if (job.contract?.schemaVersion === 1) {
+      if (!job.contract.creativeSelection) {
+        job.contract.creativeSelection = job.creativeSelection;
+        job.contract.controls.creativeSelection = job.creativeSelection;
+        upgraded = true;
+      }
+      if (!job.contract.deliveryPresetId) {
+        job.contract.deliveryPresetId = job.deliveryPresetId;
+        job.contract.controls.deliveryPresetId = job.deliveryPresetId;
+        upgraded = true;
+      }
+      return { job, upgraded };
+    }
+    const contract = extractProductionContract({
+      projectId: job.projectId,
+      prompt: job.prompt,
+      controls: {
+        ...(job.genre ? { genre: job.genre } : {}),
+        ...(job.format ? { format: job.format } : {}),
+        ...(job.creativeSelection ? { creativeSelection: job.creativeSelection } : {}),
+        ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
+        ...(job.previewProfile ? { previewProfile: job.previewProfile } : {}),
+        targetDurationSec: job.targetDurationSec,
+        humorIntensity: job.humorIntensity,
+        renderProfile: job.renderProfile,
+        ...(job.language ? { language: job.language } : {}),
+        ...(job.voiceStudioVoiceId ? { voiceId: job.voiceStudioVoiceId } : {}),
+      },
+      ...(job.manuallyChangedFields ? { manuallyChangedFields: job.manuallyChangedFields } : {}),
+    });
+    job.contract = this.recordStageEvidence(contract, 'prompt', 'extraction', 'Contrato criado por compatibilidade a partir de um job legado.') ?? contract;
+    job.contractHistory = job.contractHistory ?? [];
+    return { job, upgraded: true };
+  }
+
   private jobFile(projectId: string): string {
     return join(this.deps.jobsDir, `${projectId.replace(/[^a-zA-Z0-9_-]/g, '_')}.job.json`);
   }
@@ -590,7 +759,10 @@ export class StagedCinemaPipeline {
     const file = this.jobFile(projectId);
     if (!existsSync(file)) return null;
     try {
-      return JSON.parse(readFileSync(file, 'utf8')) as StagedProductionJob;
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as StagedProductionJob;
+      const ensured = this.ensureContractForJob(parsed);
+      if (ensured.upgraded) writeFileSync(file, JSON.stringify(ensured.job, null, 2), 'utf8');
+      return ensured.job;
     } catch {
       return null;
     }
@@ -603,7 +775,11 @@ export class StagedCinemaPipeline {
       if (!file.endsWith('.job.json')) continue;
       try {
         const parsed = JSON.parse(readFileSync(join(this.deps.jobsDir, file), 'utf8')) as StagedProductionJob;
-        if (parsed?.projectId) jobs.push(parsed);
+        if (parsed?.projectId) {
+          const ensured = this.ensureContractForJob(parsed);
+          if (ensured.upgraded) writeFileSync(join(this.deps.jobsDir, file), JSON.stringify(ensured.job, null, 2), 'utf8');
+          jobs.push(ensured.job);
+        }
       } catch {
         // ignore malformed job file
       }
@@ -693,6 +869,21 @@ export class StagedCinemaPipeline {
       ...(existing.researchDossier ? { dossier: existing.researchDossier } : {}),
       trail: existing.editorialAudit,
     });
+    const humanRequirement = existing.contract?.requirements.find((item) =>
+      item.category === 'media' || (item.category === 'quality' && item.criterionIds.some((criterionId) =>
+        existing.contract?.acceptanceCriteria.find((criterion) => criterion.id === criterionId)?.metric === 'human_review')),
+    );
+    if (existing.contract && humanRequirement) {
+      existing.contract = recordContractEvidence(existing.contract, {
+        requirementId: humanRequirement.id,
+        stage: 'human_review',
+        kind: 'human',
+        outcome: input.decision === 'approved' ? 'supports' : 'contradicts',
+        satisfiesRequirement: input.decision === 'approved',
+        summary: `Revisão humana ${input.decision} para ${input.candidateId}${input.note ? `: ${input.note}` : '.'}`,
+        artifactIds: [input.candidateId],
+      });
+    }
     return this.saveJob(existing);
   }
 
@@ -827,6 +1018,10 @@ export class StagedCinemaPipeline {
     prompt: string;
     genre?: CinemaGenre;
     format?: DeliveryFormat;
+    creativeSelection?: AetheraCreativeSelection;
+    deliveryPresetId?: string;
+    deliveryPresetIds?: string[];
+    previewProfile?: DeliveryQualityProfile;
     targetDurationSec?: number;
     humorIntensity?: number;
     renderProfile?: RenderQualityProfile;
@@ -835,16 +1030,42 @@ export class StagedCinemaPipeline {
     ttsProviderId?: string;
     ttsVoiceId?: string;
     language?: string;
+    manuallyChangedFields?: ContractControlField[];
     seedMediaFiles?: string[];
   }): Promise<StagedProductionJob> {
     const projectPaths = this.ensureProjectWorkspace(input.projectId, input.prompt);
+    const contractControls: Partial<ProductionContractControls> = {
+      ...(input.genre ? { genre: input.genre } : {}),
+      ...(input.format ? { format: input.format } : {}),
+      ...(input.creativeSelection ? { creativeSelection: input.creativeSelection } : {}),
+      ...(input.deliveryPresetId ? { deliveryPresetId: input.deliveryPresetId } : {}),
+      ...(input.previewProfile ? { previewProfile: input.previewProfile } : {}),
+      ...(input.targetDurationSec !== undefined ? { targetDurationSec: input.targetDurationSec } : {}),
+      ...(input.humorIntensity !== undefined ? { humorIntensity: input.humorIntensity } : {}),
+      ...(input.renderProfile ? { renderProfile: input.renderProfile } : {}),
+      ...(input.language ? { language: input.language } : {}),
+      ...(input.voiceStudioVoiceId ? { voiceId: input.voiceStudioVoiceId } : {}),
+    };
+    const contract = extractProductionContract({
+      projectId: input.projectId,
+      prompt: input.prompt,
+      controls: contractControls,
+      ...(input.manuallyChangedFields ? { manuallyChangedFields: input.manuallyChangedFields } : {}),
+    });
     const job: StagedProductionJob = {
       projectId: input.projectId,
       jobId: input.jobId ?? createProductionJobId('job'),
       attempt: 1,
       prompt: input.prompt,
+      contract,
+      contractHistory: [],
+      ...(input.manuallyChangedFields ? { manuallyChangedFields: input.manuallyChangedFields } : {}),
       ...(input.genre ? { genre: input.genre } : {}),
       ...(input.format ? { format: input.format } : {}),
+      ...(input.creativeSelection ? { creativeSelection: input.creativeSelection } : {}),
+      ...(input.deliveryPresetId ? { deliveryPresetId: input.deliveryPresetId } : {}),
+      ...(input.deliveryPresetIds?.length ? { deliveryPresetIds: input.deliveryPresetIds } : {}),
+      ...(input.previewProfile ? { previewProfile: input.previewProfile } : {}),
       targetDurationSec: input.targetDurationSec ?? 36,
       humorIntensity: input.humorIntensity ?? 35,
       renderProfile: input.renderProfile ?? 'review_720p',
@@ -863,6 +1084,8 @@ export class StagedCinemaPipeline {
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    const initialContractEvidence = this.recordStageEvidence(job.contract, 'prompt', 'extraction', 'Briefing original preservado e requisitos extraídos.');
+    if (initialContractEvidence) job.contract = initialContractEvidence;
     this.currentRun.set(input.projectId, { jobId: job.jobId ?? input.projectId, attempt: 1 });
 
     if (input.seedMediaFiles?.length) {
@@ -885,6 +1108,42 @@ export class StagedCinemaPipeline {
   async resume(projectId: string): Promise<StagedProductionJob> {
     const job = this.loadJob(projectId);
     if (!job) throw new Error(`not_found: Job ${projectId} não encontrado para retomada.`);
+    return this.runOrResume(job);
+  }
+
+  async revise(projectId: string, instruction: string): Promise<StagedProductionJob> {
+    const job = this.loadJob(projectId);
+    if (!job) throw new Error(`not_found: Job ${projectId} não encontrado para revisão.`);
+    const normalizedInstruction = instruction.trim();
+    if (!normalizedInstruction) throw new Error('invalid_input: A revisão não pode ficar vazia.');
+    if (!job.contract) {
+      const ensured = this.ensureContractForJob(job);
+      if (ensured.job.contract) job.contract = ensured.job.contract;
+      if (ensured.job.contractHistory) job.contractHistory = ensured.job.contractHistory;
+    }
+    if (!job.contract) throw new Error('contract_missing: Não foi possível carregar o contrato da produção.');
+
+    const revisedPrompt = `${job.prompt}\n\n[Revisão solicitada pelo usuário]\n${normalizedInstruction}`;
+    const revised = reviseProductionContract(job.contract, {
+      prompt: revisedPrompt,
+      controls: job.contract.controls,
+      ...(job.manuallyChangedFields ? { manuallyChangedFields: job.manuallyChangedFields } : {}),
+      reason: normalizedInstruction,
+    });
+    job.contractHistory = [...(job.contractHistory ?? []), structuredClone(revised.previous)];
+    job.contract = revised.current;
+    job.prompt = revisedPrompt;
+    job.contractRevisionAffectedStages = classifyContractRevisionStages(normalizedInstruction);
+    job.genre = revised.current.controls.genre;
+    job.format = revised.current.controls.format;
+    job.targetDurationSec = revised.current.controls.targetDurationSec;
+    job.humorIntensity = revised.current.controls.humorIntensity;
+    job.renderProfile = revised.current.controls.renderProfile;
+    job.language = revised.current.controls.language;
+    if (revised.current.controls.voiceId) job.voiceStudioVoiceId = revised.current.controls.voiceId;
+    delete job.contractCompliance;
+    job.message = `Revisão ${revised.current.revision} recebida; recalculando apenas dependências afetadas...`;
+    this.saveJob(job);
     return this.runOrResume(job);
   }
 
@@ -973,12 +1232,37 @@ export class StagedCinemaPipeline {
         humorIntensity: job.humorIntensity,
         ...(job.language ? { language: job.language } : {}),
       });
-      const invalidation = computeIncrementalInvalidation({
+      let invalidation = computeIncrementalInvalidation({
         ...(job.interpretation?.promptHash ? { previousPromptHash: job.interpretation.promptHash } : {}),
         nextInterpretation,
         ...(job.researchDossier ? { previousDossier: job.researchDossier, nextDossier: job.researchDossier } : {}),
         ...(job.sceneDecupagem ? { previousScenes: job.sceneDecupagem, nextScenes: job.sceneDecupagem } : {}),
       });
+      const revisionStages = new Set(job.contractRevisionAffectedStages ?? []);
+      if (revisionStages.size > 0) {
+        const researchAffected = revisionStages.has('pesquisa');
+        const scriptAffected = revisionStages.has('roteiro');
+        const decupagemAffected = revisionStages.has('decupagem');
+        invalidation = {
+          ...invalidation,
+          researchValid: invalidation.researchValid || !researchAffected,
+          scriptValid: invalidation.scriptValid || (!researchAffected && !scriptAffected),
+          decupagemValid: invalidation.decupagemValid || (!researchAffected && !scriptAffected && !decupagemAffected),
+          reasons: [...invalidation.reasons, `Revisão do contrato limitada às etapas: ${[...revisionStages].join(', ')}.`],
+        };
+        if (researchAffected) {
+          delete job.researchDossier;
+          delete job.editorialScript;
+          delete job.sceneDecupagem;
+        } else if (scriptAffected) {
+          delete job.editorialScript;
+          delete job.sceneDecupagem;
+        } else if (decupagemAffected) {
+          delete job.sceneDecupagem;
+        }
+        job.completedStages = job.completedStages.filter((stage) => !revisionStages.has(stage));
+        delete job.contractRevisionAffectedStages;
+      }
       job.invalidationReport = invalidation;
       const promptUnchanged = !job.interpretation?.promptHash || job.interpretation.promptHash === nextInterpretation.promptHash;
       const hasReusableSyntheticPlan = Boolean(job.editorialScript && job.sceneDecupagem && promptUnchanged);
@@ -992,6 +1276,13 @@ export class StagedCinemaPipeline {
         );
       }
       job.interpretation = nextInterpretation;
+      const interpretationEvidence = this.recordStageEvidence(
+        job.contract,
+        'interpretacao',
+        'extraction',
+        `Interpretação concluída na revisão ${job.contract?.revision ?? 0}: ${nextInterpretation.formatIntent}, ${nextInterpretation.language}, ${nextInterpretation.targetDurationSec}s.`,
+      );
+      if (interpretationEvidence) job.contract = interpretationEvidence;
       job.completedStages = [...new Set([...job.completedStages, 'prompt', 'interpretacao'])] as ProductionStageState[];
       this.saveJob(job);
 
@@ -1006,6 +1297,9 @@ export class StagedCinemaPipeline {
         if (this.deps.runEditorialResearch) {
           const dossier = await this.deps.runEditorialResearch(nextInterpretation, signal, {
             projectId: job.projectId,
+            ...(job.creativeSelection ? { creativeSelection: job.creativeSelection } : {}),
+            ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
+            ...(job.contract ? { contractContext: contractContextForAgent(job.contract, ['content', 'research', 'narrative', 'language', 'quality']) } : {}),
           });
           // An aborted research returns no dossier: that is a cancellation, not a research failure.
           checkCancelled();
@@ -1020,6 +1314,8 @@ export class StagedCinemaPipeline {
             return job;
           }
           job.researchDossier = dossier;
+          const researchEvidence = this.recordStageEvidence(job.contract, 'pesquisa', 'research', `Dossiê editorial ${dossier.dossierId} validado com ${dossier.entities.length} entidade(s).`, 'supports', [dossier.dossierId]);
+          if (researchEvidence) job.contract = researchEvidence;
         }
         job.completedStages = [...new Set([...job.completedStages, 'pesquisa'])] as ProductionStageState[];
         this.saveJob(job);
@@ -1062,12 +1358,15 @@ export class StagedCinemaPipeline {
             projectId: job.projectId,
             prompt: job.prompt,
             ...(job.genre ? { genre: job.genre } : {}),
+            ...(job.creativeSelection ? { creativeSelection: job.creativeSelection } : {}),
+            ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
             ...(job.language ? { language: job.language } : {}),
             targetDurationSec: job.targetDurationSec,
             humorIntensity: job.humorIntensity,
             queries: researchQueries,
             interpretation: nextInterpretation,
             ...(job.researchDossier ? { researchDossier: job.researchDossier } : {}),
+            ...(job.contract ? { contractContext: contractContextForAgent(job.contract, ['content', 'duration', 'language', 'humor', 'narrative', 'research', 'narration']) } : {}),
             signal,
           });
           if (generated && (generated.beats?.length || generated.treatment)) {
@@ -1158,6 +1457,8 @@ export class StagedCinemaPipeline {
         }
       }
       job.completedStages = [...new Set([...job.completedStages, 'roteiro'])] as ProductionStageState[];
+      const scriptEvidence = this.recordStageEvidence(job.contract, 'roteiro', 'script', `Roteiro editorial preparado${externalDirection?.providerUsed ? ` por ${externalDirection.providerUsed}` : ''}.`);
+      if (scriptEvidence) job.contract = scriptEvidence;
       this.saveJob(job);
 
       // 4. DECUPAGEM SEMÂNTICA (gera consultas específicas por cena antes da aquisição)
@@ -1165,9 +1466,9 @@ export class StagedCinemaPipeline {
       job.state = 'decupagem';
       job.progressPct = 44;
       job.message = 'Gerando decupagem semântica e consultas específicas por cena...';
-      if (job.editorialScript && job.researchDossier) {
+      if (!job.sceneDecupagem && job.editorialScript && job.researchDossier) {
         job.sceneDecupagem = buildSemanticDecupagem(job.editorialScript, job.researchDossier, nextInterpretation);
-      } else if (job.editorialScript) {
+      } else if (!job.sceneDecupagem && job.editorialScript) {
         const syntheticDossier: EditorialResearchDossier = {
           dossierId: `${job.projectId}_dossier`,
           dossierHash: nextInterpretation.promptHash,
@@ -1183,6 +1484,8 @@ export class StagedCinemaPipeline {
         job.sceneDecupagem = buildSemanticDecupagem(job.editorialScript, syntheticDossier, nextInterpretation);
       }
       job.completedStages = [...new Set([...job.completedStages, 'decupagem'])] as ProductionStageState[];
+      const storyboardEvidence = this.recordStageEvidence(job.contract, 'decupagem', 'storyboard', `Decupagem semântica preparada para ${job.sceneDecupagem?.length ?? 0} cena(s).`);
+      if (storyboardEvidence) job.contract = storyboardEvidence;
       if (job.researchDossier && job.editorialScript && job.sceneDecupagem) {
         const repaired = repairSemanticDecupagem({
           projectId: job.projectId,
@@ -1316,6 +1619,15 @@ export class StagedCinemaPipeline {
                       projectId: job.projectId,
                       prompt: job.prompt,
                       ...(job.genre ? { genre: job.genre } : {}),
+                      ...(job.creativeSelection ? { creativeSelection: job.creativeSelection } : {}),
+                      ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
+                      ...(job.contract
+                        ? {
+                            contractId: job.contract.contractId,
+                            contractRevision: job.contract.revision,
+                            contractRequirements: contractContextForAgent(job.contract, ['content', 'media', 'research', 'quality', 'narrative']),
+                          }
+                        : {}),
                     },
                   },
                 }
@@ -1726,6 +2038,8 @@ export class StagedCinemaPipeline {
         }
 
         job.mediaRelevanceDecisions = relevanceDecisions;
+        const visualValidationEvidence = this.recordStageEvidence(job.contract, 'validacao_visual', 'media', `Validação visual registrou ${relevanceDecisions.length} decisão(ões) de relevância.`, pending.length > 0 ? 'inconclusive' : 'supports');
+        if (visualValidationEvidence) job.contract = visualValidationEvidence;
         if (pending.length > 0) {
           const recoveryPlans = pending.map((p) => {
             const matchedScene = scenesForAcquisition.find((s) => s.sceneId === p.clipId) ?? scenesForAcquisition[p.slotIndex];
@@ -1736,6 +2050,8 @@ export class StagedCinemaPipeline {
           }).filter((r) => r.steps.length > 0);
           if (recoveryPlans.length > 0) job.editorialRecoveryPlans = recoveryPlans;
           job.pendingMedia = pending;
+          const mediaRecoveryContract = this.recordMediaRecoveryAttempt(job.contract, pending, 'mídia pendente; alternativas de pesquisa ou revisão solicitadas');
+          if (mediaRecoveryContract) job.contract = mediaRecoveryContract;
           job.state = 'paused_pending_media';
           job.progressPct = 64;
           job.message = `${pending.length} mídia(s) pendente(s) antes da montagem final (nenhum Motion Visual foi autorizado automaticamente).`;
@@ -1775,6 +2091,10 @@ export class StagedCinemaPipeline {
         prompt: job.prompt,
         ...(job.genre ? { genre: job.genre } : {}),
         ...(job.format ? { format: job.format } : {}),
+        ...(job.creativeSelection ? { creativeSelection: job.creativeSelection } : {}),
+        ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
+        ...(job.deliveryPresetIds?.length ? { deliveryPresetIds: job.deliveryPresetIds } : {}),
+        previewProfile: previewProfileForJob(job),
         targetDurationSec: job.targetDurationSec,
         humorIntensity: job.humorIntensity,
         renderProfile: job.renderProfile,
@@ -1782,6 +2102,7 @@ export class StagedCinemaPipeline {
         ...(activeMemories.length > 0 ? { appliedMemories: activeMemories } : {}),
         ...(externalDirection ? { externalDirection } : {}),
         ...(job.editorialScript ? { editorialScript: job.editorialScript } : {}),
+        ...(job.contract ? { productionContract: job.contract } : {}),
       });
       job.scriptValidation = pkg.scriptValidation;
 
@@ -2109,6 +2430,8 @@ export class StagedCinemaPipeline {
           query: q,
           reason: coverageReport.gateReasons[0] ?? 'Cobertura audiovisual insuficiente para evitar repetição.',
         }));
+        const coverageRecoveryContract = this.recordMediaRecoveryAttempt(job.contract, job.pendingMedia, 'cobertura insuficiente; novas consultas geradas');
+        if (coverageRecoveryContract) job.contract = coverageRecoveryContract;
         job.state = 'paused_pending_media';
         job.progressPct = 68;
         job.message = `Cobertura insuficiente (${Math.round(coverageReport.coverageRatio * 100)}%). Produção pausada para evitar repetição.`;
@@ -2135,6 +2458,8 @@ export class StagedCinemaPipeline {
         };
       }
       this.deps.onPackageReady(pkg, job.prompt);
+      const assemblyEvidence = this.recordStageEvidence(job.contract, 'montagem', 'storyboard', 'Pacote audiovisual montado com a revisão atual do contrato.');
+      if (assemblyEvidence) job.contract = assemblyEvidence;
       job.completedStages = [...new Set([...job.completedStages, 'montagem'])] as ProductionStageState[];
 
       // ÁUDIO / SFX / VFX
@@ -2165,10 +2490,31 @@ export class StagedCinemaPipeline {
         evolution: this.deps.evolutionCore,
         prompt: job.prompt,
         previewQuality: 'fast_preview',
+        renderTarget: 'preview',
+        ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
+        previewProfile: previewProfileForJob(job),
         segmentCacheDir,
         ...(job.genre ? { genre: job.genre } : {}),
         ...(job.language ? { language: job.language } : {}),
       });
+      const initialMeasurements: ContractMeasurementSnapshot = {
+        durationSec: render.probe.durationSec,
+        chapterCount: pkg.direction.narrativeBeats.length,
+        width: render.probe.width,
+        height: render.probe.height,
+        mediaIntegrity: render.probe.videoCodec.length > 0 && render.probe.durationSec > 0 && render.probe.blackFramesCount === 0 && render.probe.frozenSegmentsCount === 0,
+        synchronization: render.probe.avDurationDeltaSec <= 0.5,
+        exportParametersValid: render.probe.width > 0 && render.probe.height > 0 && render.probe.videoCodec.length > 0 && Boolean(render.probe.audioCodec),
+        ...(render.probe.integratedLufs !== null ? { integratedLufs: render.probe.integratedLufs } : {}),
+        ...(render.probe.truePeakDbtp !== null ? { truePeakDbtp: render.probe.truePeakDbtp } : {}),
+      };
+      if (job.contract) {
+        const evaluated = evaluateProductionContract(job.contract, initialMeasurements);
+        job.contract = evaluated.contract;
+        job.contractCompliance = evaluated.report;
+      }
+      const previewEvidence = this.recordStageEvidence(job.contract, 'previa', 'measurement', 'Prévia renderizada e medida por FFprobe.');
+      if (previewEvidence) job.contract = previewEvidence;
 
       const v1Clips = pkg.timeline.clips.filter((c) => c.trackId === 'v1');
       const sfxTrackClips = pkg.timeline.clips.filter((c) => c.trackId === 'a4_sfx' || c.trackId === 'sfx');
@@ -2213,7 +2559,6 @@ export class StagedCinemaPipeline {
         maxAttempts: 2,
         previousActionSignatures: [],
       });
-
       if (sup1.status === 'needs_repair' && sup1.rerenderSceneIds.length > 0) {
         const repairIds = new Set(sup1.rerenderSceneIds);
         const recoveredMediaByScene = new Map<string, string>();
@@ -2353,6 +2698,9 @@ export class StagedCinemaPipeline {
           evolution: this.deps.evolutionCore,
           prompt: job.prompt,
           previewQuality: 'fast_preview',
+          renderTarget: 'preview',
+          ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
+          previewProfile: previewProfileForJob(job),
           segmentCacheDir,
           ...(job.genre ? { genre: job.genre } : {}),
           ...(job.language ? { language: job.language } : {}),
@@ -2376,6 +2724,47 @@ export class StagedCinemaPipeline {
           maxAttempts: 2,
           previousActionSignatures: sup1.actions.map((a) => `${a.sceneId}:${a.action}`),
         });
+      }
+
+      // Extra delivery masters reuse the acquired media, editorial timeline and voice/audio caches. Only scene
+      // encoding is repeated when dimensions/FPS/codec make the cached segments incompatible.
+      const primaryPresetId = pkg.deliveryProfile?.preset.id;
+      const extraPresetIds = [...new Set((job.deliveryPresetIds ?? []).filter((id) => id && id !== primaryPresetId))];
+      if (extraPresetIds.length > 0) {
+        job.renderExports = [];
+        for (const presetId of extraPresetIds) {
+          checkCancelled();
+          const extra = await renderRealCinemaMp4({
+            pkg,
+            outputDir: projectPaths.rendersDir,
+            fileName: `${job.projectId}.${presetId}.mp4`,
+            useNvenc: job.useNvenc,
+            requireRealMedia: job.acquiredMedia.length > 0,
+            voiceStudioVoiceId: job.voiceStudioVoiceId || '9190edfa',
+            ...(job.ttsProviderId ? { ttsProviderId: job.ttsProviderId } : {}),
+            ...(job.ttsVoiceId ? { ttsVoiceId: job.ttsVoiceId } : {}),
+            evolution: this.deps.evolutionCore,
+            prompt: job.prompt,
+            deliveryPresetId: presetId,
+            renderTarget: 'master',
+            previewProfile: previewProfileForJob(job),
+            previewQuality: 'standard',
+            segmentCacheDir,
+            ...(job.genre ? { genre: job.genre } : {}),
+            ...(job.language ? { language: job.language } : {}),
+          });
+          job.renderExports.push({
+            presetId,
+            mp4Path: extra.mp4Path,
+            width: extra.probe.width,
+            height: extra.probe.height,
+            fps: extra.probe.fps,
+            durationSec: extra.probe.durationSec,
+            validationValid: extra.deliveryValidation?.valid ?? false,
+            validationErrors: extra.deliveryValidation?.errors ?? [],
+          });
+          this.saveJob(job);
+        }
       }
 
       job.isTechnicalSample = render.isTechnicalSample;

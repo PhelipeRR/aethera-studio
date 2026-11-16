@@ -1,5 +1,24 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  AESTHETIC_DIRECTIONS,
+  CONTENT_CATEGORIES,
+  DEFAULT_CREATIVE_SELECTION,
+  DELIVERY_PRESETS,
+  NARRATIVE_FORMATS,
+  detectCreativeSelection,
+  detectDeliveryPreset,
+  groupFormatsByCategory,
+  searchAudiovisualFormats,
+  type AetheraCreativeSelection,
+  type DeliveryQualityProfile,
+} from '@neuralbridge/cinema/browser';
+import type {
+  ContractComplianceReport,
+  ContractConflict,
+  ContractControlField,
+  ProductionContract,
+} from '@neuralbridge/cinema/browser';
+import {
   Activity,
   Bot,
   Camera,
@@ -30,6 +49,13 @@ import {
   type EditorialAuditTrailView,
   type EditorialDossierView,
 } from './EditorialAuditPanel';
+import { ProductionContractCompliancePanel } from './ProductionContractCompliancePanel';
+import {
+  resolveContractControlConflict,
+  syncPromptToControls,
+  type ProductionControlDraft,
+  type PromptControlSyncState,
+} from './production-contract-ui-model';
 
 interface CinemaBridgeApi {
   cinemaCapabilities?: () => Promise<{
@@ -54,6 +80,10 @@ interface CinemaBridgeApi {
     injectRealBlackFrameDefect?: boolean;
     useNvenc?: boolean;
     voiceStudioVoiceId?: string;
+    deliveryPresetId?: string;
+    exportPresetIds?: string[];
+    renderTarget?: 'preview' | 'master';
+    previewProfile?: DeliveryQualityProfile;
   }) => Promise<RealRenderView>;
   cinemaListVoices?: () => Promise<{
     available: boolean;
@@ -62,6 +92,7 @@ interface CinemaBridgeApi {
     error?: string | null;
   }>;
   cinemaStartStagedProduction?: (input: Record<string, unknown>) => Promise<StagedJobView>;
+  cinemaReviseStagedProduction?: (input: { projectId: string; instruction: string }) => Promise<StagedJobView>;
   cinemaCancelProduction?: (projectId: string) => Promise<StagedJobView | null>;
   cinemaResumeProduction?: (projectId: string) => Promise<StagedJobView>;
   cinemaResolvePendingMedia?: (input: Record<string, unknown>) => Promise<StagedJobView>;
@@ -105,6 +136,10 @@ interface StagedJobView {
   jobId?: string;
   attempt?: number;
   prompt: string;
+  creativeSelection?: AetheraCreativeSelection;
+  deliveryPresetId?: string;
+  previewProfile?: DeliveryQualityProfile;
+  renderExports?: Array<{ presetId: string; mp4Path: string; width: number; height: number; fps: number; durationSec: number; validationValid: boolean; validationErrors: string[] }>;
   state: string;
   progressPct: number;
   message: string;
@@ -113,6 +148,8 @@ interface StagedJobView {
   isTechnicalSample?: boolean;
   researchDossier?: EditorialDossierView | null;
   editorialAudit?: EditorialAuditTrailView | null;
+  contract?: ProductionContract;
+  contractCompliance?: ContractComplianceReport;
   error?: string;
   startedAt?: string;
   updatedAt?: string;
@@ -264,6 +301,13 @@ interface RealRenderView {
     evidence: string;
     fixSuggestion: string;
   }>;
+  deliveryValidation?: {
+    valid: boolean;
+    target: 'preview' | 'master';
+    expected: { width: number; height: number; fps: number; durationSec: number; audioCodec: string; videoCodec: string };
+    actual: { width: number; height: number; fps: number; durationSec: number; audioCodec: string | null; videoCodec: string; audioSampleRate: number | null };
+    errors: string[];
+  };
 }
 
 interface CinemaPackageView {
@@ -272,6 +316,8 @@ interface CinemaPackageView {
     brief: {
       genre: string;
       format: string;
+      creativeSelection?: AetheraCreativeSelection;
+      deliveryProfile?: { preset: { id: string; label: string; aspectRatio: string; width: number; height: number; fps: number }; preview: { width: number; height: number; fps: number; quality: DeliveryQualityProfile } };
       targetDurationSec: number;
       humorProfile: { label: string; humorIntensity: number };
     };
@@ -295,6 +341,7 @@ interface CinemaPackageView {
     projectId: string;
     version: number;
     renderFingerprint: string;
+    resolution?: { width: number; height: number };
     comedyBeats: Array<{
       beatId: string;
       humorMechanism: string;
@@ -392,14 +439,23 @@ export function CinemaDirectorPanel() {
   );
   const [genre, setGenre] = useState<'documentary' | 'gameplay_essay' | 'top_list' | 'trailer'>('gameplay_essay');
   const [format, setFormat] = useState<'youtube_16_9' | 'shorts_9_16'>('youtube_16_9');
+  const [creativeSelection, setCreativeSelection] = useState<AetheraCreativeSelection>(DEFAULT_CREATIVE_SELECTION);
+  const [deliveryPresetId, setDeliveryPresetId] = useState('automatic');
+  const [previewProfile, setPreviewProfile] = useState<DeliveryQualityProfile>('review_720p');
+  const [additionalExportPresetIds, setAdditionalExportPresetIds] = useState<string[]>([]);
+  const [manualCreativeFields, setManualCreativeFields] = useState<Array<'narrativeFormatId' | 'contentCategoryId' | 'aestheticDirectionId'>>([]);
+  const [manualDeliveryPreset, setManualDeliveryPreset] = useState(false);
+  const [catalogSearch, setCatalogSearch] = useState('');
   const [targetDurationSec, setTargetDurationSec] = useState(720);
   const [durationSyncedFromPrompt, setDurationSyncedFromPrompt] = useState(true);
   const [humorIntensity, setHumorIntensity] = useState(35);
-  const [renderProfile, setRenderProfile] = useState<'draft_540p' | 'review_720p' | 'master_1080p'>('review_720p');
+  const [renderProfile, setRenderProfile] = useState<DeliveryQualityProfile>('review_720p');
   const [videoLanguage, setVideoLanguage] = useState('pt-BR');
   const [voiceOptions, setVoiceOptions] = useState<Array<{ id: string; label: string; source?: string }>>([]);
   const [voiceStudioAvailable, setVoiceStudioAvailable] = useState(false);
   const [selectedVoiceId, setSelectedVoiceId] = useState('9190edfa');
+  const [manualControlFields, setManualControlFields] = useState<ContractControlField[]>([]);
+  const [promptConflicts, setPromptConflicts] = useState<ContractConflict[]>([]);
   const [revisionNote, setRevisionNote] = useState('');
   const [planApproved, setPlanApproved] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<StagedJobView | null>(null);
@@ -414,6 +470,46 @@ export function CinemaDirectorPanel() {
   function closeDeleteModal() {
     deleteTargetIdRef.current = null;
     setDeleteTarget(null);
+  }
+
+  const detectedCreativeSelection = detectCreativeSelection(prompt);
+  const detectedDeliveryPresetId = detectDeliveryPreset(prompt);
+  const creativeConflicts = [
+    ...manualCreativeFields.flatMap((field) => {
+      const manualValue = creativeSelection[field];
+      const automaticValue = detectedCreativeSelection[field];
+      return manualValue !== automaticValue ? [{ field, manualValue, automaticValue }] : [];
+    }),
+    ...(manualDeliveryPreset && deliveryPresetId !== detectedDeliveryPresetId
+      ? [{ field: 'deliveryPresetId' as const, manualValue: deliveryPresetId, automaticValue: detectedDeliveryPresetId }]
+      : []),
+  ];
+  const catalogResults = searchAudiovisualFormats(catalogSearch);
+  const groupedCatalog = groupFormatsByCategory(catalogResults);
+
+  function handleCreativeDimensionChange(
+    field: 'narrativeFormatId' | 'contentCategoryId' | 'aestheticDirectionId',
+    value: string,
+  ) {
+    const nextSelection = { ...creativeSelection, [field]: value } as AetheraCreativeSelection;
+    setCreativeSelection(nextSelection);
+    if (value === 'automatic') {
+      setManualCreativeFields((previous) => previous.filter((item) => item !== field));
+    } else {
+      setManualCreativeFields((previous) => (previous.includes(field) ? previous : [...previous, field]));
+    }
+    if (field === 'narrativeFormatId' && value !== 'automatic') {
+      const mappedGenre = value === 'trailer' ? 'trailer' : value === 'top-list' ? 'top_list' : value === 'gameplay-essay' ? 'gameplay_essay' : 'documentary';
+      setGenre(mappedGenre);
+    }
+  }
+
+  function handleDeliveryPresetChange(value: string) {
+    setDeliveryPresetId(value);
+    const manual = value !== 'automatic';
+    setManualDeliveryPreset(manual);
+    const preset = DELIVERY_PRESETS.find((candidate) => candidate.id === value);
+    if (preset) setFormat(preset.aspectRatio === '9:16' ? 'shorts_9_16' : 'youtube_16_9');
   }
 
   async function openDeleteModal(job: StagedJobView) {
@@ -472,29 +568,61 @@ export function CinemaDirectorPanel() {
     }
   }
 
-  function parsePromptDurationSec(text: string): number | null {
-    const minMatch = text.match(/(\d+(?:[.,]\d+)?)\s*(?:minuto|minutos|min)\b/i);
-    if (minMatch?.[1]) {
-      const mins = Number(minMatch[1].replace(',', '.'));
-      if (Number.isFinite(mins) && mins > 0) return Math.round(mins * 60);
-    }
-    const secMatch = text.match(/(\d+)\s*(?:segundo|segundos|seg|s)\b/i);
-    if (secMatch?.[1]) {
-      const secs = Number(secMatch[1]);
-      if (Number.isFinite(secs) && secs >= 5) return secs;
-    }
-    return null;
+  function currentControlDraft(): ProductionControlDraft {
+    return {
+      genre,
+      format,
+      targetDurationSec,
+      humorIntensity,
+      renderProfile,
+      language: videoLanguage,
+      voiceId: selectedVoiceId,
+    };
+  }
+
+  function applyPromptSync(sync: PromptControlSyncState) {
+    setGenre(sync.controls.genre);
+    setFormat(sync.controls.format);
+    setTargetDurationSec(sync.controls.targetDurationSec);
+    setHumorIntensity(sync.controls.humorIntensity);
+    setRenderProfile(sync.controls.renderProfile);
+    setVideoLanguage(sync.controls.language);
+    if (sync.controls.voiceId !== undefined) setSelectedVoiceId(sync.controls.voiceId);
+    setPromptConflicts(sync.conflicts);
+    setDurationSyncedFromPrompt(
+      !sync.manualFields.includes('targetDurationSec') && sync.inferredControls.targetDurationSec !== undefined,
+    );
   }
 
   function handlePromptChange(next: string) {
     setPrompt(next);
-    const parsed = parsePromptDurationSec(next);
-    if (parsed !== null) {
-      setTargetDurationSec(parsed);
-      setDurationSyncedFromPrompt(true);
-    } else {
-      setDurationSyncedFromPrompt(false);
-    }
+    applyPromptSync(syncPromptToControls(next, currentControlDraft(), manualControlFields));
+  }
+
+  function handleManualControlChange(
+    field: ContractControlField,
+    value: ProductionControlDraft[ContractControlField],
+  ) {
+    const nextManualFields = manualControlFields.includes(field)
+      ? manualControlFields
+      : [...manualControlFields, field];
+    const sync = syncPromptToControls(
+      prompt,
+      { ...currentControlDraft(), [field]: value } as ProductionControlDraft,
+      nextManualFields,
+    );
+    setManualControlFields(nextManualFields);
+    applyPromptSync(sync);
+  }
+
+  function handleConflictResolution(field: ContractControlField, resolution: 'use_prompt' | 'keep_manual') {
+    const next = resolveContractControlConflict(
+      syncPromptToControls(prompt, currentControlDraft(), manualControlFields),
+      field,
+      resolution,
+    );
+    setManualControlFields(next.manualFields);
+    applyPromptSync(next);
   }
 
   const [capabilities, setCapabilities] = useState<Awaited<ReturnType<NonNullable<CinemaBridgeApi['cinemaCapabilities']>>> | null>(null);
@@ -602,12 +730,21 @@ export function CinemaDirectorPanel() {
           prompt: effectivePrompt,
           genre,
           format,
+          creativeSelection,
+          deliveryPresetId,
+          deliveryPresetIds: additionalExportPresetIds,
+          previewProfile,
           targetDurationSec,
           humorIntensity,
           renderProfile,
           useNvenc: capabilities?.gpuNvenc ?? true,
           voiceStudioVoiceId: selectedVoiceId,
           language: videoLanguage,
+          manuallyChangedFields: [
+            ...manualControlFields,
+            ...(manualCreativeFields.length > 0 ? ['creativeSelection' as const] : []),
+            ...(manualDeliveryPreset ? ['deliveryPresetId' as const] : []),
+          ],
         });
         // Several productions can run at once: the form is free again as soon as this one is dispatched.
         setBusy(false);
@@ -652,6 +789,10 @@ export function CinemaDirectorPanel() {
         prompt: effectivePrompt,
         genre,
         format,
+        creativeSelection,
+        deliveryPresetId,
+        deliveryPresetIds: additionalExportPresetIds,
+        previewProfile,
         targetDurationSec,
         humorIntensity,
         renderProfile,
@@ -675,6 +816,10 @@ export function CinemaDirectorPanel() {
             const rendered = await api.cinemaRenderRealMp4({
               projectId: result.timeline.projectId,
               useNvenc: capabilities?.gpuNvenc ?? true,
+              ...(result.direction.brief.deliveryProfile?.preset.id ? { deliveryPresetId: result.direction.brief.deliveryProfile.preset.id } : {}),
+              ...(additionalExportPresetIds.length > 0 ? { exportPresetIds: [result.direction.brief.deliveryProfile?.preset.id, ...additionalExportPresetIds].filter((id): id is string => Boolean(id)) } : {}),
+              renderTarget: 'master',
+              previewProfile,
             });
             setRealRender(rendered);
           } finally {
@@ -771,9 +916,41 @@ export function CinemaDirectorPanel() {
   async function handleRevision(e: React.FormEvent) {
     e.preventDefault();
     if (!revisionNote.trim()) return;
-    const nextPrompt = `${prompt} | Revisão: ${revisionNote.trim()}`;
+    const instruction = revisionNote.trim();
     setRevisionNote('');
-    await runProduction(nextPrompt);
+    const api = bridge();
+    if (stagedJob?.projectId && api?.cinemaReviseStagedProduction) {
+      setBusy(true);
+      setError(null);
+      try {
+        const revised = await api.cinemaReviseStagedProduction({ projectId: stagedJob.projectId, instruction });
+        setStagedJob(revised);
+        setStagedJobs((prev) => [revised, ...prev.filter((job) => job.projectId !== revised.projectId)]);
+        setPrompt(revised.prompt);
+        if (revised.contract) {
+          setGenre(revised.contract.controls.genre);
+          setFormat(revised.contract.controls.format);
+          setTargetDurationSec(revised.contract.controls.targetDurationSec);
+          setHumorIntensity(revised.contract.controls.humorIntensity);
+          setRenderProfile(revised.contract.controls.renderProfile);
+          setVideoLanguage(revised.contract.controls.language);
+          if (revised.contract.creativeSelection) setCreativeSelection(revised.contract.creativeSelection);
+          if (revised.contract.deliveryPresetId) {
+            setDeliveryPresetId(revised.contract.deliveryPresetId);
+            setManualDeliveryPreset(true);
+          }
+          if (revised.contract.controls.previewProfile) setPreviewProfile(revised.contract.controls.previewProfile);
+          if (revised.contract.controls.voiceId) setSelectedVoiceId(revised.contract.controls.voiceId);
+          setPromptConflicts(revised.contract.conflicts);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    await runProduction(`${prompt} | Revisão: ${instruction}`);
   }
 
   async function handleRepair() {
@@ -833,6 +1010,10 @@ export function CinemaDirectorPanel() {
       const rendered = await api.cinemaRenderRealMp4({
         projectId: pkg.timeline.projectId,
         useNvenc: capabilities?.gpuNvenc ?? true,
+        ...(pkg.direction.brief.deliveryProfile?.preset.id ? { deliveryPresetId: pkg.direction.brief.deliveryProfile.preset.id } : {}),
+        ...(additionalExportPresetIds.length > 0 ? { exportPresetIds: [pkg.direction.brief.deliveryProfile?.preset.id, ...additionalExportPresetIds].filter((id): id is string => Boolean(id)) } : {}),
+        renderTarget: 'master',
+        previewProfile,
       });
       setRealRender(rendered);
     } catch (err) {
@@ -940,12 +1121,21 @@ export function CinemaDirectorPanel() {
       <TrendRadarPanel
         api={(bridge() ?? {}) as TrendRadarBridgeApi}
         onApplyIdea={(payload) => {
+          const nextManualFields: ContractControlField[] = [];
+          const sync = syncPromptToControls(
+            payload.promptText,
+            {
+              ...currentControlDraft(),
+              genre: payload.genre,
+              format: payload.format,
+              targetDurationSec: Math.max(30, payload.durationMin * 60),
+              humorIntensity: payload.humorIntensity,
+            },
+            nextManualFields,
+          );
           setPrompt(payload.promptText);
-          setGenre(payload.genre);
-          setFormat(payload.format);
-          setTargetDurationSec(Math.max(30, payload.durationMin * 60));
-          setDurationSyncedFromPrompt(true);
-          setHumorIntensity(payload.humorIntensity);
+          setManualControlFields(nextManualFields);
+          applyPromptSync(sync);
         }}
       />
 
@@ -967,34 +1157,142 @@ export function CinemaDirectorPanel() {
               Duração sincronizada automaticamente com o briefing: {targetDurationSec}s ({Math.round(targetDurationSec / 60)} min)
             </p>
           )}
+          {promptConflicts.length > 0 && (
+            <div className="space-y-2 rounded-lg border border-amber-500/35 bg-amber-500/10 p-3 text-[11px] text-amber-100">
+              <div className="font-semibold">O briefing entrou em conflito com controles alterados manualmente</div>
+              {promptConflicts.map((conflict) => (
+                <div key={conflict.id} className="flex flex-wrap items-center justify-between gap-2">
+                  <span>{conflict.message}</span>
+                  <span className="flex shrink-0 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleConflictResolution(conflict.field, 'use_prompt')}
+                      className="rounded-md border border-amber-300/50 px-2 py-1 text-[10px] hover:bg-amber-300/15"
+                    >
+                      Usar briefing
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleConflictResolution(conflict.field, 'keep_manual')}
+                      className="rounded-md border border-border px-2 py-1 text-[10px] hover:border-primary"
+                    >
+                      Manter controle
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {creativeConflicts.length > 0 && (
+            <div className="rounded-lg border border-amber-500/35 bg-amber-500/10 p-3 text-[11px] text-amber-100">
+              <div className="font-semibold">O prompt sugere uma combinação diferente dos controles manuais</div>
+              <div className="mt-1 space-y-1">
+                {creativeConflicts.map((conflict) => (
+                  <div key={conflict.field}>
+                    {conflict.field}: automático = <span className="font-mono">{conflict.automaticValue}</span>; manual = <span className="font-mono">{conflict.manualValue}</span>. O manual permanece prioritário.
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="space-y-1 lg:col-span-3">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-genre">Estilo / Gênero</label>
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-narrative-format">Formato narrativo</label>
           <select
-            id="cinema-genre"
-            value={genre}
-            onChange={(e) => setGenre(e.target.value as typeof genre)}
+            id="cinema-narrative-format"
+            value={creativeSelection.narrativeFormatId}
+            onChange={(e) => handleCreativeDimensionChange('narrativeFormatId', e.target.value)}
             className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
           >
-            <option value="gameplay_essay">Gameplay Essay</option>
-            <option value="documentary">Documentário</option>
-            <option value="top_list">Top List / Ranking</option>
-            <option value="trailer">Trailer</option>
+            <option value="automatic">Automático (Detectar pelo Prompt)</option>
+            {NARRATIVE_FORMATS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
           </select>
+          <p className="text-[10px] text-muted-foreground">{NARRATIVE_FORMATS.find((item) => item.id === creativeSelection.narrativeFormatId)?.description ?? 'O briefing escolhe a estrutura narrativa.'}</p>
         </div>
 
         <div className="space-y-1 lg:col-span-3">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-format">Formato</label>
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-content-category">Categoria do conteúdo</label>
           <select
-            id="cinema-format"
-            value={format}
-            onChange={(e) => setFormat(e.target.value as typeof format)}
+            id="cinema-content-category"
+            value={creativeSelection.contentCategoryId}
+            onChange={(e) => handleCreativeDimensionChange('contentCategoryId', e.target.value)}
             className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
           >
-            <option value="youtube_16_9">YouTube 16:9 (-14 LUFS)</option>
-            <option value="shorts_9_16">Shorts 9:16 (-12.5 LUFS)</option>
+            <option value="automatic">Automático (Detectar pelo Prompt)</option>
+            {CONTENT_CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
           </select>
+          <p className="text-[10px] text-muted-foreground">{CONTENT_CATEGORIES.find((item) => item.id === creativeSelection.contentCategoryId)?.description ?? 'A categoria define pesquisa e critérios de evidência.'}</p>
+        </div>
+
+        <div className="space-y-1 lg:col-span-3">
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-aesthetic-direction">Direção estética</label>
+          <select
+            id="cinema-aesthetic-direction"
+            value={creativeSelection.aestheticDirectionId}
+            onChange={(e) => handleCreativeDimensionChange('aestheticDirectionId', e.target.value)}
+            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+          >
+            <option value="automatic">Automático (Detectar pelo Prompt)</option>
+            {AESTHETIC_DIRECTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          </select>
+          <p className="text-[10px] text-muted-foreground">{AESTHETIC_DIRECTIONS.find((item) => item.id === creativeSelection.aestheticDirectionId)?.description ?? 'A direção estética controla motion, VFX e mix.'}</p>
+        </div>
+
+        <div className="space-y-1 lg:col-span-3">
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-delivery-preset">Entrega audiovisual</label>
+          <select
+            id="cinema-delivery-preset"
+            value={deliveryPresetId}
+            onChange={(e) => handleDeliveryPresetChange(e.target.value)}
+            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+          >
+            <option value="automatic">Automático (Detectar pelo Prompt)</option>
+            {DELIVERY_PRESETS.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.aspectRatio}</option>)}
+          </select>
+          <p className="text-[10px] text-muted-foreground">
+            {DELIVERY_PRESETS.find((item) => item.id === deliveryPresetId)?.description ?? `Detectado: ${DELIVERY_PRESETS.find((item) => item.id === detectedDeliveryPresetId)?.label ?? detectedDeliveryPresetId}`}
+          </p>
+        </div>
+
+        <div className="space-y-1 lg:col-span-12">
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-additional-exports">Exportações adicionais (opcional)</label>
+          <select
+            id="cinema-additional-exports"
+            multiple
+            value={additionalExportPresetIds}
+            onChange={(e) => setAdditionalExportPresetIds(Array.from(e.target.selectedOptions, (option) => option.value))}
+            className="min-h-20 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+          >
+            {DELIVERY_PRESETS.filter((item) => item.id !== deliveryPresetId).map((item) => <option key={item.id} value={item.id}>{item.label} · {item.aspectRatio} · reaproveita materiais</option>)}
+          </select>
+          <p className="text-[10px] text-muted-foreground">A timeline e os materiais são compartilhados; cenas só são re-renderizadas quando dimensões/FPS/codec exigem.</p>
+        </div>
+
+        <div className="space-y-1 lg:col-span-12">
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-format-search">Buscar formatos do catálogo</label>
+          <input
+            id="cinema-format-search"
+            value={catalogSearch}
+            onChange={(e) => setCatalogSearch(e.target.value)}
+            placeholder="Ex.: boss fight, apresentação executiva, podcast..."
+            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+          />
+          {catalogSearch.trim() && (
+            <div className="grid gap-2 rounded-xl border border-border/70 bg-background/60 p-3 md:grid-cols-2 lg:grid-cols-3">
+              {CONTENT_CATEGORIES.map((category) => {
+                const matches = groupedCatalog[category.id] ?? [];
+                if (matches.length === 0) return null;
+                return (
+                  <div key={category.id} className="space-y-1">
+                    <div className="text-[10px] font-semibold tracking-wide text-primary uppercase">{category.label}</div>
+                    {matches.slice(0, 4).map((item) => <div key={item.id} title={item.description} className="text-[11px] text-muted-foreground">{item.label}</div>)}
+                  </div>
+                );
+              })}
+              {catalogResults.length === 0 && <span className="text-[11px] text-muted-foreground">Nenhum formato encontrado.</span>}
+            </div>
+          )}
         </div>
 
         <div className="space-y-1 lg:col-span-2">
@@ -1006,7 +1304,7 @@ export function CinemaDirectorPanel() {
             max={60}
             step={0.5}
             value={Number((targetDurationSec / 60).toFixed(2))}
-            onChange={(e) => setTargetDurationSec(Math.max(15, Math.round((Number(e.target.value) || 1) * 60)))}
+            onChange={(e) => handleManualControlChange('targetDurationSec', Math.max(15, Math.round((Number(e.target.value) || 1) * 60)))}
             className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
           />
         </div>
@@ -1023,7 +1321,7 @@ export function CinemaDirectorPanel() {
             max={100}
             step={5}
             value={humorIntensity}
-            onChange={(e) => setHumorIntensity(Number(e.target.value))}
+            onChange={(e) => handleManualControlChange('humorIntensity', Number(e.target.value))}
             className="w-full accent-purple-500"
           />
         </div>
@@ -1033,19 +1331,36 @@ export function CinemaDirectorPanel() {
             <select
               aria-label="Perfil de render"
               value={renderProfile}
-              onChange={(e) => setRenderProfile(e.target.value as typeof renderProfile)}
+              onChange={(e) => handleManualControlChange('renderProfile', e.target.value as typeof renderProfile)}
               className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
             >
               <option value="draft_540p">Draft 540p (1.4 GB VRAM)</option>
               <option value="review_720p">Review 720p (2.4 GB VRAM)</option>
               <option value="master_1080p">Master 1080p (4.8 GB VRAM)</option>
+              <option value="master_4k">Master 4K (alto custo)</option>
+            </select>
+
+            <select
+              aria-label="Resolução de preview"
+              value={previewProfile}
+              onChange={(e) => {
+                const value = e.target.value as DeliveryQualityProfile;
+                setPreviewProfile(value);
+                handleManualControlChange('previewProfile', value);
+              }}
+              className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
+            >
+              <option value="draft_540p">Preview 540p</option>
+              <option value="review_720p">Preview 720p</option>
+              <option value="master_1080p">Preview Full HD</option>
+              <option value="master_4k">Preview 4K</option>
             </select>
 
             <select
               id="cinema-language"
               aria-label="Idioma do vídeo"
               value={videoLanguage}
-              onChange={(e) => setVideoLanguage(e.target.value)}
+              onChange={(e) => handleManualControlChange('language', e.target.value)}
               className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
             >
               <option value="pt-BR">Idioma: Português (BR)</option>
@@ -1061,7 +1376,7 @@ export function CinemaDirectorPanel() {
               <select
                 aria-label="Voz (VoiceStudio)"
                 value={selectedVoiceId}
-                onChange={(e) => setSelectedVoiceId(e.target.value)}
+                onChange={(e) => handleManualControlChange('voiceId', e.target.value)}
                 className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
               >
                 {voiceOptions.length > 0 ? (
@@ -1254,6 +1569,12 @@ export function CinemaDirectorPanel() {
         )}
       </form>
 
+      <ProductionContractCompliancePanel
+        contract={stagedJob?.contract ?? null}
+        compliance={stagedJob?.contractCompliance ?? null}
+        conflicts={stagedJob?.contract?.conflicts ?? promptConflicts}
+      />
+
       {stagedJobs.length > 0 && (
         <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
           <div className="flex items-center justify-between gap-2">
@@ -1292,6 +1613,11 @@ export function CinemaDirectorPanel() {
                     </p>
                     {job.message && (
                       <p className="truncate text-[10px] text-muted-foreground">{job.message}</p>
+                    )}
+                    {job.renderExports && job.renderExports.length > 0 && (
+                      <p className="text-[10px] text-emerald-300">
+                        {job.renderExports.length} exportação(ões) master · {job.renderExports.every((item) => item.validationValid) ? 'FFprobe OK' : 'revisão técnica necessária'}
+                      </p>
                     )}
                   </div>
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">

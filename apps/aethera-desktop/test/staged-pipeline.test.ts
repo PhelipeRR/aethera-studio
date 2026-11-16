@@ -66,7 +66,11 @@ describe('StagedCinemaPipeline — Research Gate, Cancel/Resume & Full Assembly'
     expect(savedPkg).toBeDefined();
     expect(savedRender?.probe.videoCodec).toBeTruthy();
     expect(savedRender?.probe.audioCodec).toBeTruthy();
-  }, 60_000);
+    expect(savedRender?.deliveryValidation?.valid).toBe(true);
+    expect(savedRender?.deliveryValidation?.target).toBe('preview');
+    expect(savedRender?.deliveryValidation?.actual.width).toBe(960);
+    expect(savedRender?.deliveryValidation?.actual.height).toBe(540);
+  }, 90_000);
 
   it('supports cancel and resume without losing acquired media checkpoint', async () => {
     const root = makeTempDir('aethera-cancel-');
@@ -96,5 +100,5 @@ describe('StagedCinemaPipeline — Research Gate, Cancel/Resume & Full Assembly'
     const resumed = await pipeline.resume('cancel_01');
     expect(resumed.state).toBe('paused_pending_media');
     expect(resumed.pendingMedia.length).toBeGreaterThan(0);
-  });
+  }, 90_000);
 });

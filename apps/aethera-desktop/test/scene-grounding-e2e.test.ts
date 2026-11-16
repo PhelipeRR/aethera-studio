@@ -316,13 +316,28 @@ describe('Scene Grounding Real E2E Integration Audit', () => {
       expect(existsSync(latestRender.mp4Path)).toBe(true);
 
       // 6. Preservação de cache incremental ao regenerar apenas 1 cena
+      const positiveFirstVideoClip = latestPkg.timeline.clips.find((clip: any) => clip.trackId === 'v1');
+      expect(positiveFirstVideoClip).toBeDefined();
+      expect(positiveFirstVideoClip.sourceRange).toBeDefined();
+      // Re-trim only the first scene in place (same slot, same duration) so exactly one segment key changes.
+      const retrimmedScene = {
+        ...positiveFirstVideoClip,
+        label: 'Cena 1 Editada',
+        sourceRange: {
+          ...positiveFirstVideoClip.sourceRange,
+          start: {
+            ...positiveFirstVideoClip.sourceRange.start,
+            value: positiveFirstVideoClip.sourceRange.start.value + 1,
+          },
+        },
+      };
       const secondRender = await renderRealCinemaMp4({
         pkg: {
           ...latestPkg,
           timeline: {
             ...latestPkg.timeline,
-            clips: latestPkg.timeline.clips.map((c: any, idx: number) =>
-              c.trackId === 'v1' && idx === 0 ? { ...c, label: 'Cena 1 Editada' } : c,
+            clips: latestPkg.timeline.clips.map((clip: any) =>
+              clip.clipId === positiveFirstVideoClip.clipId ? retrimmedScene : clip,
             ),
           },
         },
@@ -334,6 +349,7 @@ describe('Scene Grounding Real E2E Integration Audit', () => {
         prompt: positiveJob.prompt,
         genre: 'documentary',
         previewQuality: 'fast_preview',
+        renderTarget: 'preview',
         segmentCacheDir: join(positiveJob.workspaceDir!, 'temp', 'segment-cache'),
       });
       expect(secondRender.incrementalRenderStats?.cacheHits ?? 0).toBeGreaterThan(0);

@@ -534,6 +534,17 @@ describe('pipeline compatibility', () => {
       mediaDir: dir,
       segments: [{ segmentId: 's1', subject: 'server room', narrationText: 'Um data center moderno com servidores', entities: ['server room'], expectedDurationSec: 60 }],
       probeDurationFn: async () => 12,
+      // Scene Grounding v3: metadata alone is never scene footage, so both candidates carry
+      // distributed frame evidence; this test isolates the license gate.
+      analyzeFrames: async (_uri, timestampsSec) =>
+        timestampsSec.map((timestampSec) => ({
+          timestampSec,
+          visualCategory: 'interview_documentary' as const,
+          detectedEntities: ['server room'],
+          detectedActions: [],
+          description: 'Corredor de data center com racks de servidores iluminados (server room).',
+          confidence: 0.9,
+        })),
       requireVisualVerification: false,
       checkpointPath: false,
       limits: { maxRounds: 1, maxDurationMs: 20_000 },
