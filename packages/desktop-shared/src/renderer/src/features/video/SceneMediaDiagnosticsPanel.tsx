@@ -95,7 +95,8 @@ export function SceneMediaDiagnosticsPanel({ diagnostics, assembly, rightsReview
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
                     <Stat label="Candidatos" value={row.candidatesFound} />
                     <Stat label="Adquiridas" value={row.acquired} />
-                    <Stat label="Aprovadas" value={row.approvedCount} />
+                    <Stat label="Aprovadas p/ cena" value={row.approvedCount} />
+                    <Stat label="Contextuais (não footage)" value={row.contextualCount} />
                     <Stat label="Rejeitadas" value={row.rejected.length} />
                     <Stat label="Composição gráfica" value={`${row.graphicRecoverySec}s`} />
                     <Stat label="Direitos pendentes" value={row.pendingRights} />

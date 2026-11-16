@@ -1,7 +1,9 @@
 import {
   extractNarrativeVisualExpectation,
   extractTopicEntities,
+  isAssemblyEligibleDecision,
   type MediaRelevanceDecision,
+  type MediaEditorialStatus,
 } from '../qc/media-relevance-gate.js';
 
 export type CoverageFormat =
@@ -34,6 +36,7 @@ export interface AcquiredMediaAsset {
   relevantToEntities?: string[];
   rejectedReason?: string;
   compatible?: boolean;
+  editorialStatus?: MediaEditorialStatus;
 }
 
 export interface PlannedClipUsage {
@@ -89,12 +92,19 @@ export interface RepetitionReport {
 export interface MediaCoverageReport {
   format: CoverageFormat;
   totalExpectedDurationSec: number;
+  /** Number of acquired/identified assets presented to the planner, before editorial approval. */
+  identifiedAssetCount: number;
+  /** Number of assets eligible for scene assembly after visual grounding. */
+  editorialApprovedAssetCount: number;
   uniqueAssetCount: number;
   usableMediaDurationSec: number;
+  /** Contextual material is reported separately and never included in usableMediaDurationSec. */
+  contextualMediaDurationSec: number;
   coverageRatio: number;
   repetitionIndex: number;
   uncoveredSubjects: string[];
   incompatibleMedia: Array<{ mediaId: string; reason: string }>;
+  contextualMedia: Array<{ mediaId: string; reason: string }>;
   segments: SegmentCoverageRecord[];
   repetition: RepetitionReport;
   gatePassed: boolean;
@@ -269,6 +279,8 @@ export function usableSourceIntervals(
   decision: MediaRelevanceDecision | undefined,
 ): Array<{ startSec: number; endSec: number }> {
   const full = [{ startSec: 0, endSec: Math.max(0, asset.durationSec) }];
+  if (decision && !isAssemblyEligibleDecision(decision)) return [];
+  if (decision?.editorialStatus && !decision.matchedIntervals?.length) return [];
   if (!decision || decision.visualVerificationStatus !== 'visually_verified' || !decision.matchedIntervals?.length) {
     return full;
   }
@@ -325,10 +337,23 @@ export function planMediaCoverage(input: {
   }
 
   const incompatibleMap = new Map<string, string>();
+  const contextualMap = new Map<string, string>();
   const validAssets: AcquiredMediaAsset[] = [];
 
   for (const a of input.assets) {
     const decision = decisionByMediaId.get(a.mediaId);
+    if (input.requireRelevanceApproval && !decision) {
+      incompatibleMap.set(a.mediaId, 'Sem decisão de Scene Grounding: não pode contar como footage comprovado.');
+      continue;
+    }
+    if (decision && !isAssemblyEligibleDecision(decision)) {
+      if (decision.editorialStatus === 'contextual' || decision.editorialStatus === 'visually_verified') {
+        contextualMap.set(a.mediaId, decision.reason || 'Apoio contextual sem prova de footage da cena.');
+      } else {
+        incompatibleMap.set(a.mediaId, decision.reason || a.rejectedReason || 'Rejeitada pelo Media Relevance Gate.');
+      }
+      continue;
+    }
     if (decision && !decision.accepted) {
       incompatibleMap.set(a.mediaId, decision.reason || a.rejectedReason || 'Rejeitada pelo Media Relevance Gate.');
       continue;
@@ -337,7 +362,7 @@ export function planMediaCoverage(input: {
       incompatibleMap.set(a.mediaId, a.rejectedReason ?? 'Mídia incompatível com o roteiro.');
       continue;
     }
-    if (input.requireRelevanceApproval && (!decision || !decision.accepted) && a.compatible !== true) {
+    if (input.requireRelevanceApproval && !decision.accepted && a.compatible !== true) {
       incompatibleMap.set(a.mediaId, 'Sem aprovação explícita do Media Relevance Gate.');
       continue;
     }
@@ -353,6 +378,7 @@ export function planMediaCoverage(input: {
   }
 
   const incompatibleMedia = [...incompatibleMap.entries()].map(([mediaId, reason]) => ({ mediaId, reason }));
+  const contextualMedia = [...contextualMap.entries()].map(([mediaId, reason]) => ({ mediaId, reason }));
   const validMediaIds = new Set(validAssets.map((a) => a.mediaId));
   const rawUsages = input.plannedUsages ?? [];
   const rejectedUsages = rawUsages.filter((u) => !validMediaIds.has(u.mediaId));
@@ -388,6 +414,12 @@ export function planMediaCoverage(input: {
 
     const candidates = validAssets.filter((asset) => {
       const decision = decisionByMediaId.get(asset.mediaId);
+      const assemblyEligible = decision
+        ? isAssemblyEligibleDecision(decision)
+        : asset.compatible !== false && !asset.rejectedReason;
+      if (!assemblyEligible) {
+        return false;
+      }
       if (
         decision?.correspondenceLevel === 'universe_only_coincidence' ||
         decision?.correspondenceLevel === 'unverified' ||
@@ -434,14 +466,44 @@ export function planMediaCoverage(input: {
       for (const u of segUsages) {
         const asset = validAssets.find((a) => a.mediaId === u.mediaId);
         if (!asset) continue;
-        usedSources.add(asset.mediaId);
-        const span = Math.max(0, Math.min(asset.durationSec, u.sourceEndSec) - Math.max(0, u.sourceStartSec));
-        const rem = remainingUsableByAsset.get(asset.mediaId) ?? 0;
-        const credited = Math.min(rem, span || u.timelineDurationSec);
-        remainingUsableByAsset.set(asset.mediaId, Math.max(0, rem - credited));
+        const pool = remainingIntervalsByAsset.get(asset.mediaId) ?? [];
+        const usageStart = Math.max(0, u.sourceStartSec);
+        const usageEnd = Math.min(asset.durationSec, Math.max(usageStart, u.sourceEndSec));
+        let credited = 0;
+        for (let index = 0; index < pool.length && usageEnd > usageStart; index += 1) {
+          const iv = pool[index]!;
+          const overlapStart = Math.max(iv.startSec, usageStart);
+          const overlapEnd = Math.min(iv.endSec, usageEnd);
+          if (overlapEnd <= overlapStart) continue;
+          const take = overlapEnd - overlapStart;
+          relevantIntervals.push({
+            mediaId: asset.mediaId,
+            startSec: Number(overlapStart.toFixed(2)),
+            endSec: Number(overlapEnd.toFixed(2)),
+          });
+          credited += take;
+          if (overlapStart <= iv.startSec + 0.01 && overlapEnd >= iv.endSec - 0.01) {
+            pool.splice(index, 1);
+            index -= 1;
+          } else if (overlapStart <= iv.startSec + 0.01) {
+            iv.startSec = overlapEnd;
+          } else if (overlapEnd >= iv.endSec - 0.01) {
+            iv.endSec = overlapStart;
+          } else {
+            const tail = { startSec: overlapEnd, endSec: iv.endSec };
+            iv.endSec = overlapStart;
+            pool.splice(index + 1, 0, tail);
+            index += 1;
+          }
+        }
+        if (credited > 0) usedSources.add(asset.mediaId);
+        remainingIntervalsByAsset.set(asset.mediaId, pool);
+        remainingUsableByAsset.set(
+          asset.mediaId,
+          Number(pool.reduce((acc, iv) => acc + (iv.endSec - iv.startSec), 0).toFixed(2)),
+        );
         if (credited < u.timelineDurationSec * 0.5) plannedReuses += 1;
         usableDurationSec += credited;
-        relevantIntervals.push({ mediaId: asset.mediaId, startSec: u.sourceStartSec, endSec: u.sourceEndSec });
       }
     } else {
       // Assets verified for THIS scene first, then compatible ones; a scene is a montage of several short
@@ -509,6 +571,12 @@ export function planMediaCoverage(input: {
   const coverageRatio = Number(
     Math.min(1, usableMediaDurationSec / Math.max(1, totalExpectedDurationSec)).toFixed(2),
   );
+  const contextualMediaDurationSec = Number(
+    input.assets
+      .filter((asset) => contextualMap.has(asset.mediaId))
+      .reduce((sum, asset) => sum + Math.max(0, asset.durationSec), 0)
+      .toFixed(2),
+  );
 
   const repetition = detectMediaRepetition(usages, policy, input.intentionalRepetition);
 
@@ -540,12 +608,16 @@ export function planMediaCoverage(input: {
   return {
     format,
     totalExpectedDurationSec,
+    identifiedAssetCount: input.assets.length,
+    editorialApprovedAssetCount: validAssets.length,
     uniqueAssetCount: validAssets.length,
     usableMediaDurationSec,
+    contextualMediaDurationSec,
     coverageRatio,
     repetitionIndex: repetition.repetitionIndex,
     uncoveredSubjects,
     incompatibleMedia,
+    contextualMedia,
     segments,
     repetition,
     gatePassed: gateReasons.length === 0,

@@ -19,6 +19,7 @@ import {
   recordSceneGroundingNegativeExample,
   undoSceneGroundingNegativeExample,
   findMatchingSceneGroundingNegativeExample,
+  isAssemblyEligibleDecision,
   runAutonomousMediaAcquisition,
   sampleDistributedFrameTimestamps,
   SCENE_GROUNDING_POLICY_VERSION,
@@ -29,6 +30,111 @@ import {
 } from '../src/index.js';
 
 describe('Media Relevance Gate & Visual Critic Blocking', () => {
+  it('does not treat a title card or its visible text as anime footage proof', async () => {
+    const decision = await evaluateMediaRelevance(
+      {
+        mediaId: 'auto_yt_dlp_5',
+        uri: 'C:/media/black-clover-title-card.mp4',
+        title: 'Black Clover Asta anime title card',
+        durationSec: 93,
+      },
+      {
+        segmentId: 'scene_01',
+        prompt: 'TOP 5 animes com sistemas de magia',
+        narrationText: 'Black Clover abre a lista com um sistema de magia baseado em grimórios.',
+        genre: 'anime_essay',
+        expectedEntities: ['Black Clover', 'Asta'],
+        expectsAnimeWork: true,
+      },
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async (_uri, timestampsSec) => timestampsSec.map((timestampSec) => ({
+          timestampSec,
+          visualCategory: 'motion_graphic' as const,
+          detectedEntities: ['black clover'],
+          detectedActions: [],
+          description: 'Cartão de título branco sobre fundo preto; nenhum personagem visível.',
+          visibleText: ['BLACK CLOVER'],
+          confidence: 0.95,
+        })),
+      },
+    );
+
+    expect(decision.matchedEntities).not.toContain('Black Clover');
+    expect(decision.accepted).toBe(false);
+    expect(isAssemblyEligibleDecision(decision)).toBe(false);
+  });
+
+  it('keeps same-universe context explicit without making it scene footage', async () => {
+    const decision = await evaluateMediaRelevance(
+      {
+        mediaId: 'auto_steam_1',
+        uri: 'C:/media/elden-ring-generic-combat.mp4',
+        title: 'Elden Ring gameplay combat showcase',
+        durationSec: 90,
+      },
+      {
+        segmentId: 'scene_02',
+        prompt: 'Análise dos chefes de Elden Ring',
+        narrationText: 'Malenia usa Waterfowl Dance na primeira fase.',
+        genre: 'gameplay_essay',
+        expectedEntities: ['Elden Ring', 'Malenia'],
+      },
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async (_uri, timestampsSec) => timestampsSec.map((timestampSec) => ({
+          timestampSec,
+          visualCategory: 'gameplay' as const,
+          detectedEntities: ['elden ring'],
+          detectedActions: ['batalha_confronto'],
+          description: 'Combate genérico em Elden Ring; Malenia e Waterfowl Dance não aparecem.',
+          confidence: 0.9,
+        })),
+      },
+    );
+
+    expect(decision.accepted).toBe(true);
+    expect(decision.editorialStatus).toBe('contextual');
+    expect(decision.correspondenceLevel).toBe('universe_only_coincidence');
+    expect(decision.eligibleSegmentIds).toEqual([]);
+    expect(isAssemblyEligibleDecision(decision)).toBe(false);
+  });
+
+  it('does not promote a single proving frame to approved_for_scene', async () => {
+    const decision = await evaluateMediaRelevance(
+      {
+        mediaId: 'auto_yt_dlp_4',
+        uri: 'C:/media/black-clover-clip.mp4',
+        title: 'Black Clover Asta gameplay anime clip',
+        durationSec: 30,
+      },
+      {
+        segmentId: 'scene_04',
+        prompt: 'Análise de Black Clover',
+        narrationText: 'Asta desperta uma nova forma durante a batalha.',
+        genre: 'anime_essay',
+        expectedEntities: ['Black Clover', 'Asta'],
+      },
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async (_uri, timestampsSec) => timestampsSec.map((timestampSec, index) => ({
+          timestampSec,
+          visualCategory: 'anime_animation' as const,
+          detectedEntities: index === 1 ? ['asta'] : ['black clover'],
+          detectedActions: index === 1 ? ['transformacao'] : [],
+          description: index === 1 ? 'Asta desperta uma forma nova.' : 'Plano de anime sem o acontecimento narrado.',
+          confidence: 0.9,
+        })),
+      },
+    );
+
+    expect(decision.editorialStatus).toBe('visually_verified');
+    expect(decision.accepted).toBe(true);
+    expect(decision.eligibleSegmentIds).toEqual([]);
+    expect(isAssemblyEligibleDecision(decision)).toBe(false);
+    expect((decision.matchedIntervals ?? []).reduce((sum, interval) => sum + interval.endSec - interval.startSec, 0)).toBeLessThan(8);
+  });
+
   it('samples distributed timestamps across a clip instead of only frame 0', () => {
     const stamps = sampleDistributedFrameTimestamps(90, 4);
     expect(stamps).toHaveLength(4);
@@ -235,6 +341,56 @@ describe('Media Coverage Planner & Anti-Repetition Engine', () => {
     });
     expect(queries.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('regression: a 2.6s proven interval cannot masquerade as a 44s scene', () => {
+    const report = planMediaCoverage({
+      format: 'analysis',
+      requireRelevanceApproval: true,
+      relevanceDecisions: [
+        {
+          mediaId: 'auto_yt_dlp_8',
+          accepted: true,
+          assemblyEligible: true,
+          editorialStatus: 'approved_for_scene',
+          correspondenceLevel: 'exact_match',
+          visualVerificationStatus: 'visually_verified',
+          score: 0.85,
+          reason: 'Somente o intervalo comprovado foi aprovado.',
+          sampledTimestampsSec: [1.1, 1.8],
+          matchedEntities: ['Black Clover'],
+          matchedIntervals: [{ startSec: 0, endSec: 2.6, segmentId: 'scene_08' }],
+          eligibleSegmentIds: ['scene_08'],
+          visualCategory: 'anime_animation',
+        },
+      ],
+      segments: [
+        {
+          segmentId: 'scene_08',
+          subject: 'Black Clover',
+          narrationText: 'A cena apresenta o acontecimento narrado.',
+          entities: ['Black Clover'],
+          expectedDurationSec: 44,
+        },
+      ],
+      assets: [{ mediaId: 'auto_yt_dlp_8', uri: 'auto_yt_dlp_8.mp4', durationSec: 44, compatible: true }],
+      plannedUsages: [
+        {
+          clipId: 'clip_08',
+          segmentId: 'scene_08',
+          mediaId: 'auto_yt_dlp_8',
+          sourceStartSec: 0,
+          sourceEndSec: 44,
+          timelineDurationSec: 44,
+        },
+      ],
+    });
+
+    const scene = report.segments[0]!;
+    expect(scene.usableDurationSec).toBe(2.6);
+    expect(scene.relevantIntervals).toEqual([{ mediaId: 'auto_yt_dlp_8', startSec: 0, endSec: 2.6 }]);
+    expect(scene.covered).toBe(false);
+    expect(report.coverageRatio).toBeLessThan(0.1);
+  });
 });
 
 describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () => {
@@ -305,10 +461,12 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
       assets: [
         { mediaId: 'bad_gdc', uri: 'gdc.mp4', durationSec: 120 },
         { mediaId: 'ok_anime', uri: 'goku.mp4', durationSec: 10 },
+        { mediaId: 'unknown_compatible', uri: 'unknown.mp4', durationSec: 10, compatible: true },
       ],
       plannedUsages: [
         { clipId: 'c1', segmentId: 's1', mediaId: 'bad_gdc', sourceStartSec: 0, sourceEndSec: 10, timelineDurationSec: 10 },
         { clipId: 'c2', segmentId: 's2', mediaId: 'ok_anime', sourceStartSec: 0, sourceEndSec: 10, timelineDurationSec: 10 },
+        { clipId: 'c3', segmentId: 's1', mediaId: 'unknown_compatible', sourceStartSec: 0, sourceEndSec: 10, timelineDurationSec: 10 },
       ],
       relevanceDecisions: [
         {
@@ -338,6 +496,7 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(report.uniqueAssetCount).toBe(1);
     expect(report.coverageRatio).toBe(0.5);
     expect(report.incompatibleMedia.some((m) => m.mediaId === 'bad_gdc')).toBe(true);
+    expect(report.incompatibleMedia.some((m) => m.mediaId === 'unknown_compatible')).toBe(true);
     expect(report.gateReasons.some((r) => r.includes('mídia rejeitada/incompatível'))).toBe(true);
   });
 
@@ -390,6 +549,22 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
         { segmentId: 's3', subject: 'Piccolo', narrationText: 'Piccolo em Namek', entities: ['piccolo'], expectedDurationSec: 10 },
       ],
       probeDurationFn: async () => 12,
+      analyzeFrames: async (uri, timestampsSec) => {
+        const isPodcast = uri.includes('podcast');
+        const isVegeta = uri.includes('vegeta');
+        return timestampsSec.map((timestampSec) => ({
+          timestampSec,
+          visualCategory: isPodcast ? ('real_person_camera' as const) : ('anime_animation' as const),
+          detectedEntities: isPodcast ? [] : isVegeta ? ['vegeta'] : ['goku', 'freeza'],
+          detectedActions: isPodcast ? [] : isVegeta ? [] : ['batalha_confronto'],
+          description: isPodcast
+            ? 'Podcast com pessoa real; nenhum anime visível.'
+            : isVegeta
+              ? 'Vegeta em Namek.'
+              : 'Goku enfrenta Freeza em uma cena de anime.',
+          confidence: 0.92,
+        }));
+      },
       limits: { maxRounds: 2, maxDurationMs: 15_000, maxQueriesTotal: 10 },
       deps: {
         localMediaDirs: [],
@@ -485,6 +660,15 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
         { segmentId: 's2', subject: 'Freeza', narrationText: 'Freeza ataca', entities: ['freeza'], expectedDurationSec: 30 },
       ],
       limits: { maxRounds: 2, maxDurationMs: 1200, perOperationTimeoutMs: 400 },
+      analyzeFrames: async (_uri, timestampsSec, segment) =>
+        timestampsSec.map((timestampSec) => ({
+          timestampSec,
+          visualCategory: 'anime_animation' as const,
+          detectedEntities: segment.expectedEntities ?? [],
+          detectedActions: [],
+          description: `Frame de anime com ${(segment.expectedEntities ?? []).join(', ')}.`,
+          confidence: 0.9,
+        })),
       deps: {
         localMediaDirs: [],
         fetchImpl: (async () => new Response('{}', { status: 404 })) as unknown as typeof fetch,
@@ -676,7 +860,8 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     const segAmbientCov = coverage.segments.find((s) => s.segmentId === 'seg_ambientacao');
     expect(segKuririnCov?.covered).toBe(false);
     expect(segKuririnCov?.usableDurationSec).toBe(0);
-    expect(segAmbientCov?.covered).toBe(true);
+    expect(segAmbientCov?.covered).toBe(false);
+    expect(coverage.contextualMedia.some((m) => m.mediaId === 'dbz_namek_landscape')).toBe(true);
   });
 
   it('funnel audit: separates lifecycle states, classifies download failures, preserves pending_visual_verification on VisionRouter error, and resumes from checkpoint', async () => {
@@ -783,10 +968,11 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(searchCalls).toBe(searchBefore);
     expect(downloadCalls).toBe(downloadBefore);
     expect(run2.budgetBreakdown?.resumedFromCheckpoint).toBe(true);
-    expect(run2.approvedForAssemblyCount).toBe(1);
+    expect(run2.approvedForAssemblyCount).toBe(0);
     expect(run2.funnelMetrics.pendingVerificationCount).toBe(0);
-    expect(run2.funnelMetrics.counts.verified).toBe(1);
-    expect(run2.funnelMetrics.conversionRates.downloadedToVerifiedRate).toBe(1);
+    expect(run2.funnelMetrics.counts.contextual).toBe(1);
+    expect(run2.funnelMetrics.counts.verified).toBe(0);
+    expect(run2.funnelMetrics.conversionRates.downloadedToVerifiedRate).toBe(0);
   });
 
   it('selects only the specific timestamp interval where the narrated event visibly occurs and refines densely', async () => {
@@ -836,8 +1022,9 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
 
     expect(analyzeCalls.length).toBe(2);
     expect(decision.accepted).toBe(true);
-    expect(decision.correspondenceLevel).toBe('exact_match');
-    expect(decision.eligibleSegmentIds).toEqual(['slot_ssj']);
+    expect(decision.editorialStatus).toBe('visually_verified');
+    expect(decision.correspondenceLevel).toBe('contextual_support');
+    expect(decision.eligibleSegmentIds).toEqual([]);
     expect(decision.matchedIntervals).toBeDefined();
     expect(decision.matchedIntervals!.length).toBe(1);
     expect(decision.matchedIntervals![0]!.startSec).toBeGreaterThanOrEqual(36.0);

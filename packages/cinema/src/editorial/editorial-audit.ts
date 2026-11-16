@@ -21,6 +21,7 @@ export interface ResearchSource {
   kind: 'official' | 'community' | 'agent_synthesis';
   url?: string;
   versionHash: string;
+  scope?: 'ranked_entity' | 'contextual_reference' | 'overview_context';
 }
 
 export interface ResearchFact {
@@ -78,7 +79,16 @@ export interface MediaCandidateRecord {
   provider: string;
   durationSec?: number;
   metadata?: Record<string, unknown>;
-  status: 'approved' | 'rejected' | 'pending' | 'download_failed';
+  status:
+    | 'candidate'
+    | 'contextual'
+    | 'visually_verified'
+    | 'approved_for_scene'
+    | 'human_approved'
+    | 'approved'
+    | 'rejected'
+    | 'pending'
+    | 'download_failed';
   rejectionReason?: string;
 }
 
@@ -88,6 +98,7 @@ export interface GroundingFrameEvidence {
   summary: string;
   matchedEntities: string[];
   matchedActions: string[];
+  visibleText?: string[];
   isPositive: boolean;
 }
 
@@ -108,6 +119,7 @@ export interface GroundingEvidenceRecord {
   positiveEvidences: string[];
   negativeEvidences: string[];
   confidence: number;
+  editorialStatus?: 'candidate' | 'contextual' | 'visually_verified' | 'approved_for_scene' | 'human_approved';
   approvedIntervals: GroundingIntervalDecision[];
   rejectedIntervals: GroundingIntervalDecision[];
   decision: 'approved' | 'rejected' | 'needs_review';
@@ -144,13 +156,44 @@ export type EditorialIntegrityCheckCode =
   | 'approved_media_without_visual_evidence'
   | 'scene_insufficient_coverage';
 
+export type EditorialIntegrityIssueCategory = 'identity' | 'traceability' | 'narration' | 'coverage' | 'acquisition';
+
 export interface EditorialIntegrityIssue {
   code: EditorialIntegrityCheckCode;
+  category?: EditorialIntegrityIssueCategory;
   severity: 'error' | 'warning';
   sceneId?: string;
   queryId?: string;
   candidateId?: string;
   message: string;
+}
+
+function categoryForIntegrityCode(code: EditorialIntegrityCheckCode): EditorialIntegrityIssueCategory {
+  switch (code) {
+    case 'entity_missing_in_dossier':
+    case 'incompatible_visual_intent':
+    case 'approved_media_without_visual_evidence':
+      return 'identity';
+    case 'scene_without_script_link':
+    case 'ranking_count_mismatch':
+    case 'query_contains_full_prompt':
+      return 'traceability';
+    case 'entity_narration_divergence':
+    case 'narration_media_divergence':
+      return 'narration';
+    case 'scene_insufficient_coverage':
+    case 'boss_repetition_without_justification':
+      return 'coverage';
+    default:
+      return 'acquisition';
+  }
+}
+
+function normalizeAuditText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
 }
 
 export interface EditorialIntegrityReport {
@@ -228,6 +271,7 @@ export function buildEditorialTraceabilityGraph(input: {
           title: src.title,
           kind: src.kind,
           ...(src.url ? { url: src.url } : {}),
+          scope: 'ranked_entity',
           versionHash: sha12({ sourceId, title: src.title, kind: src.kind, url: src.url ?? '' }),
         });
       }
@@ -257,6 +301,26 @@ export function buildEditorialTraceabilityGraph(input: {
     for (const p of ent.attackPatternsOrPhases ?? []) addFact('attack_pattern', p);
 
     entityFactIds.set(ent.entityName, factIdsForEntity);
+  }
+
+  // A work cited as a recommendation/reference is not a ranked entity and therefore has no factual rows in this
+  // dossier. Keep an explicit contextual source edge so the trace never misleadingly reports Sources(0).
+  for (const cut of input.decupagem) {
+    if (cut.subjectResolution !== 'reference') continue;
+    for (const work of cut.works ?? cut.entities) {
+      const sourceId = `src_ctx_${sha12({ dossierId: input.dossier.dossierId, work })}`;
+      if (!sourceMap.has(sourceId)) {
+        sourceMap.set(sourceId, {
+          sourceId,
+          dossierId: input.dossier.dossierId,
+          title: `Referência contextual: ${work}`,
+          kind: 'agent_synthesis',
+          scope: 'contextual_reference',
+          versionHash: sha12({ sourceId, work, scope: 'contextual_reference' }),
+        });
+      }
+      entitySourceIds.set(work, [...new Set([...(entitySourceIds.get(work) ?? []), sourceId])]);
+    }
   }
 
   const scriptBlocks: ScriptBlock[] = input.script.segments.map((seg, idx) => {
@@ -310,6 +374,7 @@ export function runEditorialIntegrityChecks(input: {
   const rawPromptLower = input.interpretation?.originalPrompt.trim().toLowerCase() ?? '';
   const dossierEntities = new Set((input.dossier?.entities ?? []).map((e) => e.entityName.toLowerCase()));
   const blockIds = new Set(input.trail.scriptBlocks.map((b) => b.blockId));
+  const sourceById = new Map(input.trail.sources.map((source) => [source.sourceId, source]));
 
   // 1. Ranking count mismatch
   if (
@@ -386,6 +451,19 @@ export function runEditorialIntegrityChecks(input: {
     }
 
     for (const ent of scene.entities) {
+      const contextualSourceLinked = scene.sourceIds.some(
+        (sourceId) => sourceById.get(sourceId)?.scope === 'contextual_reference',
+      );
+      const referenceMentioned = (scene.works ?? []).some((work) => {
+        const normalizedWork = normalizeAuditText(work);
+        return normalizedWork.length >= 3 && normalizeAuditText(blockNarrationAndTitle).includes(normalizedWork);
+      });
+      const contextualReference =
+        scene.subjectResolution === 'reference' &&
+        (scene.works ?? []).some((work) => work.toLowerCase() === ent.toLowerCase()) &&
+        contextualSourceLinked &&
+        referenceMentioned;
+      if (contextualReference) continue;
       if (dossierEntities.size > 0 && !dossierEntities.has(ent.toLowerCase())) {
         issues.push({
           code: 'entity_missing_in_dossier',
@@ -438,9 +516,17 @@ export function runEditorialIntegrityChecks(input: {
     evidenceByCandidate.set(ev.candidateId, ev);
   }
   for (const cand of input.trail.candidates) {
-    if (cand.status !== 'approved') continue;
+    if (!['approved', 'approved_for_scene', 'human_approved'].includes(cand.status)) continue;
     const ev = evidenceByCandidate.get(cand.candidateId);
-    if (!ev || ev.framesAnalyzed.length === 0 || ev.positiveEvidences.length === 0) {
+    const evidenceApproved = ev?.editorialStatus
+      ? ['approved_for_scene', 'human_approved'].includes(ev.editorialStatus)
+      : ev?.decision === 'approved';
+    if (
+      !ev ||
+      ev.framesAnalyzed.length === 0 ||
+      ev.positiveEvidences.length === 0 ||
+      !evidenceApproved
+    ) {
       issues.push({
         code: 'approved_media_without_visual_evidence',
         severity: 'error',
@@ -466,7 +552,7 @@ export function runEditorialIntegrityChecks(input: {
     passed: errorCount === 0,
     errorCount,
     warningCount,
-    issues,
+    issues: issues.map((issue) => ({ ...issue, category: issue.category ?? categoryForIntegrityCode(issue.code) })),
   };
 }
 

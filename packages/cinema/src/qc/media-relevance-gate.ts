@@ -45,6 +45,8 @@ export interface DistributedFrameAnalysis {
   detectedEntities?: string[];
   detectedActions?: string[];
   description?: string;
+  /** OCR/transcription of text burned into the frame; never identity proof by itself. */
+  visibleText?: string[];
   confidence: number;
 }
 
@@ -56,6 +58,14 @@ export type MediaCorrespondenceLevel =
   | 'rejected';
 
 export type VisualVerificationStatus = 'visually_verified' | 'unverified_metadata_only';
+
+/** Editorial disposition is deliberately separate from raw provider acceptance. */
+export type MediaEditorialStatus =
+  | 'candidate'
+  | 'contextual'
+  | 'visually_verified'
+  | 'approved_for_scene'
+  | 'human_approved';
 
 export interface NarrativeVisualExpectation {
   segmentId: string;
@@ -69,6 +79,11 @@ export interface MediaRelevanceDecision {
   mediaId: string;
   accepted: boolean;
   score: number;
+  editorialStatus?: MediaEditorialStatus;
+  /** Version of the visual policy that produced this decision. */
+  policyVersion?: string;
+  /** True only when the decision can contribute verified footage to a scene. */
+  assemblyEligible?: boolean;
   relevanceTier?: 'exact_segment_match' | 'same_universe_context' | 'rejected';
   correspondenceLevel?: MediaCorrespondenceLevel;
   visualVerificationStatus?: VisualVerificationStatus;
@@ -79,6 +94,7 @@ export interface MediaRelevanceDecision {
     description: string;
     detectedEntities: string[];
     detectedActions: string[];
+    visibleText?: string[];
     confidence: number;
   }>;
   matchedActions?: string[];
@@ -122,7 +138,20 @@ export interface MediaRelevanceDecision {
   };
 }
 
-export const SCENE_GROUNDING_POLICY_VERSION = 'scene-grounding-v2';
+export const SCENE_GROUNDING_POLICY_VERSION = 'scene-grounding-v3';
+
+/**
+ * Context can be retained for editorial discovery, but only exact visual proof is footage.
+ * The legacy fallback keeps older callers that do not have the new status fields working.
+ */
+export function isAssemblyEligibleDecision(decision: MediaRelevanceDecision): boolean {
+  if (decision.editorialStatus !== undefined) return decision.assemblyEligible === true;
+  return (
+    decision.accepted &&
+    (decision.correspondenceLevel === undefined || decision.correspondenceLevel === 'exact_match') &&
+    (decision.visualVerificationStatus === undefined || decision.visualVerificationStatus === 'visually_verified')
+  );
+}
 
 export interface VisionDecisionCacheInput {
   sha256: string;
@@ -187,6 +216,29 @@ function expandNarrativeAliases(normalizedText: string): string {
   return out;
 }
 
+function hasNegatedVisualMention(text: string, entity: string): boolean {
+  const normalizedEntity = entity
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  if (!normalizedEntity) return false;
+  const index = text.indexOf(normalizedEntity);
+  if (index < 0) return false;
+  const context = text.slice(Math.max(0, index - 48), Math.min(text.length, index + normalizedEntity.length + 48));
+  return /\b(?:nao|não|sem|nenhum|nenhuma|nunca|not|without|no)\b[^.!?;]{0,42}(?:aparece|aparecem|visivel|visible|presente|shown|seen|there|surge|surging)/i.test(context)
+    || /\b(?:aparece|aparecem|visivel|visible|presente|shown|seen|there|surge|surging)\b[^.!?;]{0,42}\b(?:nao|não|sem|nenhum|nenhuma|nunca|not|without|no)\b/i.test(context);
+}
+
+function containsVisualEntityEvidence(text: string, entity: string): boolean {
+  const normalizedEntity = entity
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  return Boolean(normalizedEntity && text.includes(normalizedEntity) && !hasNegatedVisualMention(text, normalizedEntity));
+}
+
 export function extractTopicEntities(text: string): string[] {
   const cleaned = expandNarrativeAliases(
     text
@@ -212,6 +264,7 @@ const NARRATIVE_ACTION_PATTERNS: Array<{ key: string; regex: RegExp }> = [
   { key: 'chegada_desembarque', regex: /\b(chegada|chegam|chega\w*|arriv\w*|desembarc\w*|esconder|nave|capsula|pouso|aterriss\w*|land\w*)\b/i },
   { key: 'explosao', regex: /\b(explos\w*|explod\w*|destruic\w*|destruct\w*)\b/i },
   { key: 'treinamento', regex: /\b(trein\w*|train\w*|gravidade|gravity)\b/i },
+  { key: 'habilidade_especifica', regex: /\b(usa\w*|utiliza\w*|lanc[ao]\w*|executa\w*|invoca\w*|tecnica|technique|ability|waterfowl\s+dance|ultimate)\b/i },
 ];
 
 /**
@@ -331,6 +384,41 @@ function segmentExpectsAnime(segment: ScriptSegmentExpectation): boolean {
   return /\b(anime|mang[aá]|epis[oó]dio|personagem|shonen|seinen|isekai|arco|protagonista|otaku)\b/i.test(text);
 }
 
+function normalizedFrameObservedText(frame: DistributedFrameAnalysis): string {
+  return expandNarrativeAliases(
+    (frame.description ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase(),
+  );
+}
+
+/** A title card may have a confident OCR result, but it has no depicted subject to ground. */
+function isTextOnlyFrame(frame: DistributedFrameAnalysis): boolean {
+  const observed = normalizedFrameObservedText(frame);
+  const hasText = (frame.visibleText?.length ?? 0) > 0;
+  if (!hasText) return false;
+  const explicitCard =
+    frame.visualCategory === 'motion_graphic' ||
+    /\b(cart[aã]o|t[ií]tulo|title card|black screen|fundo preto|fundo branco|texto sobre|text card|quote card|logo)\b/i.test(observed);
+  const hasDepictedAction = (frame.detectedActions?.length ?? 0) > 0;
+  const hasDepictedEntity = (frame.detectedEntities?.length ?? 0) > 0;
+  return explicitCard || (!hasDepictedAction && !hasDepictedEntity);
+}
+
+function withDecisionStatus(
+  decision: Omit<MediaRelevanceDecision, 'editorialStatus' | 'policyVersion' | 'assemblyEligible'>,
+  status: MediaEditorialStatus,
+  assemblyEligible = false,
+): MediaRelevanceDecision {
+  return {
+    ...decision,
+    editorialStatus: status,
+    policyVersion: SCENE_GROUNDING_POLICY_VERSION,
+    assemblyEligible,
+  };
+}
+
 /**
  * Media Relevance Gate: validates distributed frames + metadata + transcript + provenance
  * before allowing a clip into the editorial assembly.
@@ -368,7 +456,7 @@ export async function evaluateMediaRelevance(
       ...(segment.genre ? { genre: segment.genre } : {}),
     });
     if (negativeMatch.matched) {
-      return {
+      return withDecisionStatus({
         mediaId: candidate.mediaId,
         accepted: false,
         score: 0.05,
@@ -379,13 +467,13 @@ export async function evaluateMediaRelevance(
         sampledTimestampsSec,
         matchedEntities: [],
         visualCategory: candidate.visualCategoryHint ?? 'unknown',
-      };
+      }, 'candidate');
     }
   }
 
   // 1. Cross-project isolation check
   if (candidate.projectId && segment.segmentId && candidate.origin?.startsWith('project:') && candidate.origin !== `project:${candidate.projectId}`) {
-    return {
+    return withDecisionStatus({
       mediaId: candidate.mediaId,
       accepted: false,
       score: 0,
@@ -394,7 +482,7 @@ export async function evaluateMediaRelevance(
       sampledTimestampsSec,
       matchedEntities: [],
       visualCategory: candidate.visualCategoryHint ?? 'unknown',
-    };
+    }, 'candidate');
   }
 
   // 2. Distributed frame analysis (VisionRouter / caller hook) + 2nd dense pass on promising intervals
@@ -468,13 +556,13 @@ export async function evaluateMediaRelevance(
   }
 
   const dominantVisualCategory: VisualCategory =
-    frameAnalyses.length > 0
-      ? frameAnalyses.reduce<Record<string, number>>((acc, f) => {
+    frameAnalyses.filter((f) => !isTextOnlyFrame(f)).length > 0
+      ? frameAnalyses.filter((f) => !isTextOnlyFrame(f)).reduce<Record<string, number>>((acc, f) => {
           acc[f.visualCategory] = (acc[f.visualCategory] ?? 0) + 1;
           return acc;
         }, {}) &&
         (Object.entries(
-          frameAnalyses.reduce<Record<string, number>>((acc, f) => {
+          frameAnalyses.filter((f) => !isTextOnlyFrame(f)).reduce<Record<string, number>>((acc, f) => {
             acc[f.visualCategory] = (acc[f.visualCategory] ?? 0) + 1;
             return acc;
           }, {}),
@@ -487,7 +575,7 @@ export async function evaluateMediaRelevance(
       candidate.description ?? '',
       (candidate.tags ?? []).join(' '),
       candidate.transcriptExcerpt ?? '',
-      ...frameAnalyses.map(
+      ...frameAnalyses.filter((f) => !isTextOnlyFrame(f)).map(
         (f) => `${f.description ?? ''} ${(f.detectedEntities ?? []).join(' ')} ${(f.detectedActions ?? []).join(' ')}`,
       ),
     ]
@@ -500,6 +588,7 @@ export async function evaluateMediaRelevance(
   const validVisualFrames = frameAnalyses.filter(
     (f) =>
       f.confidence > 0.15 &&
+      !isTextOnlyFrame(f) &&
       !/não foi possível inspecionar|nenhum conteúdo visual|nada visível|unable to inspect|cannot read|blockReadsOutsideWorkingDirectories/i.test(
         f.description ?? '',
       ),
@@ -509,6 +598,7 @@ export async function evaluateMediaRelevance(
     description: f.description ?? '',
     detectedEntities: f.detectedEntities ?? [],
     detectedActions: f.detectedActions ?? [],
+    ...(f.visibleText?.length ? { visibleText: f.visibleText } : {}),
     confidence: f.confidence,
   }));
   const visualVerificationStatus: VisualVerificationStatus =
@@ -522,7 +612,7 @@ export async function evaluateMediaRelevance(
 
   const normalizeFrameText = (f: DistributedFrameAnalysis): string =>
     expandNarrativeAliases(
-      `${f.description ?? ''} ${(f.detectedEntities ?? []).join(' ')} ${(f.detectedActions ?? []).join(' ')}`
+      `${normalizedFrameObservedText(f)} ${(f.detectedEntities ?? []).join(' ')} ${(f.detectedActions ?? []).join(' ')}`
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
         .toLowerCase(),
@@ -534,9 +624,11 @@ export async function evaluateMediaRelevance(
     const fEntities = expectedEntities.filter((entity) => {
       const shortEntity = entity.split(',')[0]?.replace(/\([^)]*\)/g, '').trim() ?? entity;
       return (
-        fText.includes(entity) ||
-        fTopicEntities.includes(entity) ||
-        (shortEntity.length >= 3 && (fText.includes(shortEntity) || fTopicEntities.includes(shortEntity)))
+        containsVisualEntityEvidence(fText, entity) ||
+        (fTopicEntities.includes(entity) && !hasNegatedVisualMention(fText, entity)) ||
+        (shortEntity.length >= 3 &&
+          (containsVisualEntityEvidence(fText, shortEntity) ||
+            (fTopicEntities.includes(shortEntity) && !hasNegatedVisualMention(fText, shortEntity))))
       );
     });
     const fActions = expectation.actionsAndEvents.filter((actionKey) => {
@@ -558,21 +650,26 @@ export async function evaluateMediaRelevance(
 
   const eventMatchingFrames = perFrameMatches.filter((m) => m.isEventMatch);
   const candidateEntities = extractTopicEntities(combinedText);
+  const metadataOnly = frameAnalyses.length === 0;
   const matchedEntities =
     validVisualFrames.length > 0
       ? Array.from(new Set(perFrameMatches.flatMap((m) => m.fEntities)))
-      : expectedEntities.filter((entity) => combinedText.includes(entity) || candidateEntities.includes(entity));
+      : metadataOnly
+        ? expectedEntities.filter((entity) => combinedText.includes(entity) || candidateEntities.includes(entity))
+        : [];
   const matchedActions =
     validVisualFrames.length > 0
       ? Array.from(new Set(perFrameMatches.flatMap((m) => m.fActions)))
-      : expectation.actionsAndEvents.filter((actionKey) => {
+      : metadataOnly
+        ? expectation.actionsAndEvents.filter((actionKey) => {
           const pattern = NARRATIVE_ACTION_PATTERNS.find((p) => p.key === actionKey);
           const inFrames = frameAnalyses.some((f) => f.detectedActions?.includes(actionKey));
           return inFrames || Boolean(pattern?.regex.test(combinedText));
-        });
+          })
+        : [];
   const universeEntities = extractTopicEntities(segment.prompt);
   const matchedUniverseEntities = universeEntities.filter(
-    (entity) => combinedText.includes(entity) || candidateEntities.includes(entity),
+    (entity) => (metadataOnly || validVisualFrames.length > 0) && (combinedText.includes(entity) || candidateEntities.includes(entity)),
   );
 
   const expectsAnime = segmentExpectsAnime(segment);
@@ -623,7 +720,7 @@ export async function evaluateMediaRelevance(
             provenanceOnly: true,
           };
           if (!matchesExpectedWork && !provRes.isAmbiguous && m.confidence >= 0.88) {
-            return {
+            return withDecisionStatus({
               mediaId: candidate.mediaId,
               accepted: false,
               score: 0.1,
@@ -638,7 +735,7 @@ export async function evaluateMediaRelevance(
               matchedEntities,
               visualCategory: dominantVisualCategory,
               animeProvenance: animeProvenanceMeta,
-            };
+            }, 'candidate');
           }
         }
       }
@@ -654,7 +751,7 @@ export async function evaluateMediaRelevance(
     (dominantVisualCategory === 'real_person_camera' ||
       frameAnalyses.some((f) => f.visualCategory === 'real_person_camera' && f.confidence >= 0.6))
   ) {
-    return {
+    return withDecisionStatus({
       mediaId: candidate.mediaId,
       accepted: false,
       score: 0.1,
@@ -669,13 +766,13 @@ export async function evaluateMediaRelevance(
       sampledTimestampsSec,
       matchedEntities,
       visualCategory: dominantVisualCategory,
-    };
+    }, 'candidate');
   }
 
   // 4. For anime content, validate specific work/character/context OR same narrative universe — never accept generic anime-style blindly
   if (expectsAnime && expectedEntities.length > 0 && matchedEntities.length === 0 && matchedUniverseEntities.length === 0) {
     const isGenericAnime = dominantVisualCategory === 'anime_animation';
-    return {
+    return withDecisionStatus({
       mediaId: candidate.mediaId,
       accepted: false,
       score: isGenericAnime ? 0.25 : 0.05,
@@ -691,7 +788,7 @@ export async function evaluateMediaRelevance(
       sampledTimestampsSec,
       matchedEntities: [],
       visualCategory: dominantVisualCategory,
-    };
+    }, 'candidate');
   }
 
   // 5. General entity overlap check for non-anime topics (e.g., different games)
@@ -702,7 +799,7 @@ export async function evaluateMediaRelevance(
     matchedUniverseEntities.length === 0 &&
     candidateEntities.length > 0
   ) {
-    return {
+    return withDecisionStatus({
       mediaId: candidate.mediaId,
       accepted: false,
       score: 0.15,
@@ -716,12 +813,12 @@ export async function evaluateMediaRelevance(
       sampledTimestampsSec,
       matchedEntities: [],
       visualCategory: dominantVisualCategory,
-    };
+    }, 'candidate');
   }
 
   // 6. Strict visual verification gate when required (metadata alone is never visual proof)
   if (options?.requireVisualVerification && visualVerificationStatus === 'unverified_metadata_only') {
-    return {
+    return withDecisionStatus({
       mediaId: candidate.mediaId,
       accepted: false,
       score: 0.3,
@@ -738,7 +835,7 @@ export async function evaluateMediaRelevance(
       sampledTimestampsSec,
       matchedEntities,
       visualCategory: dominantVisualCategory,
-    };
+    }, 'candidate');
   }
 
   const promptTokens = new Set(extractTopicEntities(segment.prompt));
@@ -761,7 +858,7 @@ export async function evaluateMediaRelevance(
   // Same universe (or generic combat/gameplay without proving the specific character/implant/event) -> cannot satisfy coverage!
   if (missingSpecificIdentity || ((isSameUniverseOnly || missingSpecificVisualEvent) && expectation.requiresSpecificEventVisual)) {
     const contextEntities = matchedEntities.length > 0 ? matchedEntities : matchedUniverseEntities;
-    return {
+    return withDecisionStatus({
       mediaId: candidate.mediaId,
       accepted: true,
       score: 0.38,
@@ -777,7 +874,7 @@ export async function evaluateMediaRelevance(
       matchedEntities: contextEntities,
       visualCategory: dominantVisualCategory,
       ...(animeProvenanceMeta ? { animeProvenance: animeProvenanceMeta } : {}),
-    };
+    }, 'contextual');
   }
 
   const effectiveMatched = matchedEntities.length > 0 ? matchedEntities : matchedUniverseEntities;
@@ -796,7 +893,7 @@ export async function evaluateMediaRelevance(
   const score = Number(Math.min(1, 0.2 + entityScore * 0.6 + visualBonus).toFixed(2));
 
   if (score < 0.35) {
-    return {
+    return withDecisionStatus({
       mediaId: candidate.mediaId,
       accepted: false,
       score,
@@ -810,7 +907,7 @@ export async function evaluateMediaRelevance(
       sampledTimestampsSec,
       matchedEntities: effectiveMatched,
       visualCategory: dominantVisualCategory,
-    };
+    }, 'candidate');
   }
 
   const sortedPerFrame = perFrameMatches
@@ -901,7 +998,7 @@ export async function evaluateMediaRelevance(
           provingDescriptions: [ev.description.slice(0, 140)],
         }));
       } else {
-        return {
+        return withDecisionStatus({
           mediaId: candidate.mediaId,
           accepted: false,
           score: Number(Math.min(score, 0.34).toFixed(2)),
@@ -916,7 +1013,7 @@ export async function evaluateMediaRelevance(
           sampledTimestampsSec,
           matchedEntities: effectiveMatched,
           visualCategory: dominantVisualCategory,
-        };
+        }, 'candidate');
       }
     } else {
       matchedIntervals = [
@@ -931,21 +1028,33 @@ export async function evaluateMediaRelevance(
     }
   }
 
-  // Strict exact_match gate: low scores or universe-only matches stay contextual_support
+  // Strict exact_match gate: low scores, sparse proof, or universe-only matches stay contextual_support.
   const hasProvingIntervals =
-    visualVerificationStatus !== 'visually_verified' || groupedIntervals.length > 0;
+    visualVerificationStatus === 'visually_verified' && groupedIntervals.length > 0;
+  const minimumProvingFrames = candidate.durationSec > 10 ? 2 : 1;
+  const hasEnoughProvingFrames =
+    visualVerificationStatus === 'visually_verified' &&
+    new Set(eventMatchingFrames.map((m) => m.frame.timestampSec.toFixed(2))).size >= minimumProvingFrames &&
+    eventMatchingFrames.length / Math.max(1, validVisualFrames.length) >= (candidate.durationSec > 10 ? 0.4 : 0.3);
   const correspondenceLevel: MediaCorrespondenceLevel =
     score >= 0.65 &&
     !isSameUniverseOnly &&
     matchedEntities.length > 0 &&
     hasProvingIntervals &&
+    hasEnoughProvingFrames &&
     (!expectation.requiresSpecificEventVisual || matchedActions.length > 0)
       ? 'exact_match'
       : 'contextual_support';
 
-  return {
+  const assemblyEligible = correspondenceLevel === 'exact_match';
+  const editorialStatus: MediaEditorialStatus = assemblyEligible
+    ? 'approved_for_scene'
+    : visualVerificationStatus === 'visually_verified'
+      ? 'visually_verified'
+      : 'candidate';
+  return withDecisionStatus({
     mediaId: candidate.mediaId,
-    accepted: true,
+    accepted: visualVerificationStatus === 'visually_verified',
     score,
     relevanceTier: correspondenceLevel === 'exact_match' ? 'exact_segment_match' : 'same_universe_context',
     correspondenceLevel,
@@ -954,7 +1063,7 @@ export async function evaluateMediaRelevance(
     visualEvidence,
     matchedActions,
     matchedIntervals,
-    eligibleSegmentIds: [segment.segmentId],
+    eligibleSegmentIds: assemblyEligible ? [segment.segmentId] : [],
     reason:
       correspondenceLevel === 'contextual_support'
         ? `Apoio contextual do mesmo universo (${effectiveMatched.slice(0, 4).join(', ')}); verificação visual: ${visualVerificationStatus}.`
@@ -963,5 +1072,5 @@ export async function evaluateMediaRelevance(
     matchedEntities: effectiveMatched,
     visualCategory: dominantVisualCategory,
     ...(animeProvenanceMeta ? { animeProvenance: animeProvenanceMeta } : {}),
-  };
+  }, editorialStatus, assemblyEligible);
 }

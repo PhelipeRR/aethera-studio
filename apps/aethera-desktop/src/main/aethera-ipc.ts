@@ -2104,6 +2104,7 @@ export function registerAetheraDomainIpc(options: {
         detectedEntities: string[];
         detectedActions: string[];
         description: string;
+        visibleText?: string[];
         confidence: number;
       }> = [];
       // TaskEngine VisionProviders suportam no máximo 3 imagens por chamada: processar em lotes de 3 para cobrir todos os timestamps
@@ -2127,12 +2128,12 @@ export function registerAetheraDomainIpc(options: {
         const segVal = analyzed.value;
         const descLower = segVal.description.toLowerCase();
         const natureToCat = (): VisualCategory => {
+          if (segVal.nature === 'text_card') return 'motion_graphic';
           if (/\b(anime|animad|animac|desenho|cel[- ]shading|ilustra)/i.test(descLower)) return 'anime_animation';
           if (segVal.nature === 'interface' || /\b(gameplay|hud)\b/i.test(descLower)) return 'gameplay';
           if (segVal.overlays?.webcam || segVal.nature === 'portrait' || segVal.nature === 'speech') {
             return 'real_person_camera';
           }
-          if (segVal.nature === 'document') return 'motion_graphic';
           return 'unknown';
         };
         const cat = natureToCat();
@@ -2148,15 +2149,21 @@ export function registerAetheraDomainIpc(options: {
               .find((sf) => Math.abs(sf.atMs - f.atMs) <= 2000) ??
             segVal.frames[idx];
 
-          const visibleTextStr = matchedFrame?.visibleText?.map((vt) => vt.text).filter(Boolean).join(' ') ?? '';
-          const frameDesc = matchedFrame
-            ? `${matchedFrame.observed}${visibleTextStr ? ` [Texto visível: ${visibleTextStr}]` : ''}`
-            : segVal.description;
+          const visibleText = matchedFrame?.visibleText?.map((vt) => vt.text).filter(Boolean) ?? [];
+          const observedDesc = matchedFrame?.observed ?? segVal.description;
+          const textOnlyFrame =
+            visibleText.length > 0 &&
+            (segVal.nature === 'text_card' ||
+              /\b(cart[aã]o|t[ií]tulo|title card|fundo preto|fundo branco|texto sobre|text card|logo)\b/i.test(observedDesc));
+          const frameDesc = observedDesc;
           const normFrameDesc = normalizeVisionText(frameDesc);
 
           const frameEntities = isSingleFrameCall
-            ? segVal.entities.map((e) => e.name.toLowerCase())
+            ? textOnlyFrame
+              ? []
+              : segVal.entities.filter((e) => e.basis === 'observed').map((e) => e.name.toLowerCase())
             : segVal.entities
+                .filter((e) => e.basis === 'observed')
                 .filter((e) => {
                   const eName = normalizeVisionText(e.name);
                   const nameTokens = eName.split(/\s+/).filter((t) => t.length >= 3);
@@ -2168,8 +2175,11 @@ export function registerAetheraDomainIpc(options: {
                 .map((e) => e.name.toLowerCase());
 
           const frameActions = isSingleFrameCall
-            ? segVal.actions.map((a) => a.description.toLowerCase())
+            ? textOnlyFrame
+              ? []
+              : segVal.actions.filter((a) => a.basis === 'observed').map((a) => a.description.toLowerCase())
             : segVal.actions
+                .filter((a) => a.basis === 'observed')
                 .filter((a) => {
                   const aTokens = normalizeVisionText(a.description)
                     .split(/[^a-z0-9]+/)
@@ -2180,10 +2190,11 @@ export function registerAetheraDomainIpc(options: {
 
           results.push({
             timestampSec: f.atMs / 1000,
-            visualCategory: cat,
+            visualCategory: textOnlyFrame ? 'motion_graphic' : cat,
             detectedEntities: frameEntities,
             detectedActions: frameActions,
             description: frameDesc,
+            ...(visibleText.length > 0 ? { visibleText } : {}),
             confidence: segVal.confidence,
           });
         }

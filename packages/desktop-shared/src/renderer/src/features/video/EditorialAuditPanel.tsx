@@ -22,6 +22,7 @@ export interface AuditSourceView {
   kind: 'official' | 'community' | 'agent_synthesis';
   url?: string;
   versionHash: string;
+  scope?: 'ranked_entity' | 'contextual_reference' | 'overview_context';
 }
 
 export interface AuditFactView {
@@ -72,6 +73,8 @@ export interface AuditSceneView {
   factIds: string[];
   sourceIds: string[];
   dependencyHash: string;
+  works?: string[];
+  subjectResolution?: 'entity' | 'inherited' | 'reference' | 'overview' | 'none';
 }
 
 export interface AuditMediaQueryView {
@@ -102,7 +105,7 @@ export interface AuditCandidateView {
   localUri?: string;
   provider: string;
   durationSec?: number;
-  status: 'approved' | 'rejected' | 'pending' | 'download_failed';
+  status: string;
   rejectionReason?: string;
 }
 
@@ -119,11 +122,13 @@ export interface AuditGroundingEvidenceView {
     summary: string;
     matchedEntities: string[];
     matchedActions: string[];
+    visibleText?: string[];
     isPositive: boolean;
   }>;
   positiveEvidences: string[];
   negativeEvidences: string[];
   confidence: number;
+  editorialStatus?: 'candidate' | 'contextual' | 'visually_verified' | 'approved_for_scene' | 'human_approved';
   approvedIntervals: Array<{ startSec: number; endSec: number; reason: string }>;
   rejectedIntervals: Array<{ startSec: number; endSec: number; reason: string }>;
   decision: 'approved' | 'rejected' | 'needs_review';
@@ -173,6 +178,7 @@ export interface EditorialAuditTrailView {
     warningCount: number;
     issues: Array<{
       code: string;
+      category?: 'identity' | 'traceability' | 'narration' | 'coverage' | 'acquisition';
       severity: 'error' | 'warning';
       sceneId?: string;
       message: string;
@@ -250,6 +256,20 @@ export function EditorialAuditPanel({
   }
 
   const integrity = trail?.integrityReport;
+  const issueCategoryLabels: Record<string, string> = {
+    identity: 'Identidade visual',
+    traceability: 'Rastreabilidade',
+    narration: 'Narração ↔ entidade/mídia',
+    coverage: 'Cobertura temporal',
+    acquisition: 'Aquisição',
+  };
+  const issuesByCategory = new Map<string, NonNullable<typeof integrity>['issues']>();
+  for (const issue of integrity?.issues ?? []) {
+    const category = issue.category ?? 'acquisition';
+    const group = issuesByCategory.get(category) ?? [];
+    group.push(issue);
+    issuesByCategory.set(category, group);
+  }
 
   return (
     <div className="space-y-4">
@@ -368,24 +388,31 @@ export function EditorialAuditPanel({
             <AlertTriangle className="size-4" />
             Verificações Automáticas de Integridade Editorial ({integrity.issues.length})
           </p>
-          <ul className="mt-2 space-y-1">
-            {integrity.issues.map((issue, idx) => (
-              <li key={`${issue.code}_${idx}`} className="flex items-start justify-between gap-2 text-[11px]">
-                <span className={issue.severity === 'error' ? 'text-rose-300' : 'text-amber-200/90'}>
-                  [{issue.code}] {issue.message}
-                </span>
-                {issue.sceneId && (
-                  <button
-                    type="button"
-                    onClick={() => selectSceneAndGo(issue.sceneId!, 'rastreabilidade')}
-                    className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-foreground hover:bg-background"
-                  >
-                    Ir para cena
-                  </button>
-                )}
-              </li>
+          <div className="mt-2 space-y-3">
+            {[...issuesByCategory.entries()].map(([category, categoryIssues]) => (
+              <div key={category}>
+                <p className="mb-1 text-[11px] font-semibold text-foreground">{issueCategoryLabels[category] ?? category}</p>
+                <ul className="space-y-1">
+                  {categoryIssues.map((issue, idx) => (
+                    <li key={`${issue.code}_${idx}`} className="flex items-start justify-between gap-2 text-[11px]">
+                      <span className={issue.severity === 'error' ? 'text-rose-300' : 'text-amber-200/90'}>
+                        [{issue.code}] {issue.message}
+                      </span>
+                      {issue.sceneId && (
+                        <button
+                          type="button"
+                          onClick={() => selectSceneAndGo(issue.sceneId!, 'rastreabilidade')}
+                          className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-foreground hover:bg-background"
+                        >
+                          Ir para cena
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ))}
-          </ul>
+          </div>
         </section>
       )}
 
@@ -463,7 +490,7 @@ export function EditorialAuditPanel({
               <ul className="mt-1 space-y-1 text-[11px] text-muted-foreground">
                 {trail.sources.map((src) => (
                   <li key={src.sourceId}>
-                    <span className="font-mono text-foreground">{src.sourceId}</span> · [{src.kind}] {src.title}
+                    <span className="font-mono text-foreground">{src.sourceId}</span> · [{src.scope === 'contextual_reference' ? 'contexto' : src.kind}] {src.title}
                     {src.url ? ` (${src.url})` : ''}
                   </li>
                 ))}
@@ -572,6 +599,11 @@ export function EditorialAuditPanel({
                 Fontes({activeScene.sourceIds.length}) → Fatos({activeScene.factIds.length}) → Bloco(
                 {activeScene.scriptBlockId}) → Cena({activeScene.sceneId})
               </p>
+              {activeScene.subjectResolution === 'reference' && (
+                <p className="mt-1 text-[11px] text-sky-300">
+                  Obra de contextualização: {activeScene.works?.join(', ') ?? activeScene.entities.join(', ')}. Não é entidade ranqueada nem prova de footage.
+                </p>
+              )}
               <p className="mt-1 text-[11px] text-foreground/90">Narração: "{activeScene.narrationText}"</p>
             </div>
           )}
@@ -636,7 +668,7 @@ export function EditorialAuditPanel({
                             : 'border-rose-500/40 bg-rose-500/10 text-rose-300'
                         }`}
                       >
-                        {ev.decision} · confiança {(ev.confidence * 100).toFixed(0)}%
+                        {ev.editorialStatus ?? ev.decision} · confiança {(ev.confidence * 100).toFixed(0)}%
                       </span>
                     </div>
 
@@ -670,6 +702,9 @@ export function EditorialAuditPanel({
                               )}
                               <p className="font-mono text-[10px] text-muted-foreground">{fr.timestampSec.toFixed(1)}s</p>
                               <p className="text-[10px] text-foreground/90">{fr.summary}</p>
+                              {fr.visibleText && fr.visibleText.length > 0 && (
+                                <p className="text-[10px] text-sky-300">Texto visível (não prova identidade): {fr.visibleText.join(' · ')}</p>
+                              )}
                             </div>
                           );
                         })}

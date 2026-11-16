@@ -67,6 +67,8 @@ import {
   type TimelinePlacementRecord,
   estimateNarrationSec,
   isMultiWorkProduction,
+  isAssemblyEligibleDecision,
+  SCENE_GROUNDING_POLICY_VERSION,
 } from '@neuralbridge/cinema';
 import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
 import { createProductionJobId } from './production-console.js';
@@ -140,6 +142,7 @@ export interface StagedProductionJob {
   workspaceDir?: string;
   scriptValidation?: ScriptValidationReport;
   mediaRelevanceDecisions?: MediaRelevanceDecision[];
+  sceneGroundingPolicyVersion?: string;
   coverageReport?: MediaCoverageReport;
   autonomousAudit?: AutonomousAcquisitionAuditReport;
   /**
@@ -650,10 +653,24 @@ export class StagedCinemaPipeline {
       reviewedAt: now,
     };
     ev.decision = input.decision;
+    ev.editorialStatus = input.decision === 'approved' ? 'human_approved' : 'candidate';
     ev.decisionReason = `Revisão humana: ${input.decision}${input.note ? ` — ${input.note}` : ''}`;
+    const relevanceDecision = existing.mediaRelevanceDecisions?.find((decision) => decision.mediaId === ev.candidateId);
+    if (relevanceDecision && input.decision === 'approved') {
+      relevanceDecision.accepted = true;
+      relevanceDecision.editorialStatus = 'human_approved';
+      relevanceDecision.assemblyEligible = true;
+      relevanceDecision.eligibleSegmentIds = [
+        ...new Set([...(relevanceDecision.eligibleSegmentIds ?? []), ev.sceneId]),
+      ];
+    } else if (relevanceDecision) {
+      relevanceDecision.accepted = false;
+      relevanceDecision.editorialStatus = 'candidate';
+      relevanceDecision.assemblyEligible = false;
+    }
     const cand = existing.editorialAudit.candidates.find((c) => c.candidateId === input.candidateId);
     if (cand) {
-      cand.status = input.decision;
+      cand.status = input.decision === 'approved' ? 'human_approved' : 'rejected';
       if (input.decision === 'rejected' && input.note) cand.rejectionReason = input.note;
     }
     existing.editorialAudit.events.push({
@@ -885,6 +902,52 @@ export class StagedCinemaPipeline {
     try {
       const projectPaths = this.ensureProjectWorkspace(job.projectId, job.prompt);
       job.workspaceDir = projectPaths.root;
+      const hasPreviousGroundingState = Boolean(
+        job.sceneGroundingPolicyVersion || job.mediaRelevanceDecisions?.length || job.autonomousAudit,
+      );
+      const groundingPolicyChanged = hasPreviousGroundingState && job.sceneGroundingPolicyVersion !== SCENE_GROUNDING_POLICY_VERSION;
+      if (groundingPolicyChanged) {
+        // Re-evaluate metadata without deleting the local files. The acquisition stage scans the project directory
+        // again, so the new policy can inspect every already-downloaded asset.
+        job.acquiredMedia = [];
+        job.mediaRelevanceDecisions = [];
+        delete job.autonomousAudit;
+        delete job.coverageReport;
+        delete job.sceneAssembly;
+        if (job.editorialAudit) {
+          for (const candidate of job.editorialAudit.candidates) {
+            if (['approved', 'approved_for_scene', 'human_approved'].includes(candidate.status)) {
+              candidate.status = 'candidate';
+              candidate.rejectionReason = `Aprovação invalidada para reavaliação pela política ${SCENE_GROUNDING_POLICY_VERSION}.`;
+            }
+          }
+          for (const evidence of job.editorialAudit.groundingEvidences) {
+            if (evidence.editorialStatus === 'approved_for_scene' || evidence.editorialStatus === 'human_approved' || evidence.decision === 'approved') {
+              evidence.editorialStatus = 'candidate';
+              evidence.decision = 'needs_review';
+              evidence.positiveEvidences = [];
+              evidence.approvedIntervals = [];
+              evidence.negativeEvidences = [
+                `Evidência antiga invalidada para reavaliação pela política ${SCENE_GROUNDING_POLICY_VERSION}.`,
+              ];
+              evidence.humanReview = { status: 'pending' };
+            }
+          }
+          job.editorialAudit.timelinePlacements = [];
+          delete job.editorialAudit.integrityReport;
+        }
+        job.pendingMedia = [];
+        job.completedStages = job.completedStages.filter(
+          (stage) => !['aquisicao', 'validacao_visual', 'planejamento', 'montagem', 'audio_sfx_vfx', 'qc', 'previa', 'editor'].includes(stage),
+        );
+        job.editorialAudit?.events.push({
+          eventId: `evt_grounding_policy_${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          stage: 'validacao_visual',
+          message: `Scene Grounding reavaliado com a política ${SCENE_GROUNDING_POLICY_VERSION}; arquivos baixados preservados.`,
+        });
+      }
+      job.sceneGroundingPolicyVersion = SCENE_GROUNDING_POLICY_VERSION;
       const relevanceDecisions: MediaRelevanceDecision[] = [...(job.mediaRelevanceDecisions ?? [])];
 
       // 1. INTERPRETAÇÃO DO PROMPT + INCREMENTALIDADE
@@ -905,7 +968,10 @@ export class StagedCinemaPipeline {
         ...(job.sceneDecupagem ? { previousScenes: job.sceneDecupagem, nextScenes: job.sceneDecupagem } : {}),
       });
       job.invalidationReport = invalidation;
-      if (!invalidation.researchValid) {
+      const promptUnchanged = !job.interpretation?.promptHash || job.interpretation.promptHash === nextInterpretation.promptHash;
+      const hasReusableSyntheticPlan = Boolean(job.editorialScript && job.sceneDecupagem && promptUnchanged);
+      const hasCompletedAcquisitionCheckpoint = promptUnchanged && job.completedStages.includes('aquisicao');
+      if (!invalidation.researchValid && !hasReusableSyntheticPlan && !hasCompletedAcquisitionCheckpoint) {
         delete job.researchDossier;
         delete job.editorialScript;
         delete job.sceneDecupagem;
@@ -1159,7 +1225,7 @@ export class StagedCinemaPipeline {
         }
 
         const pending: PendingMediaSlot[] = [];
-        if (this.deps.autonomousAcquisitionDeps && job.acquiredMedia.length < queries.length) {
+        if (this.deps.autonomousAcquisitionDeps && (job.acquiredMedia.length < queries.length || groundingPolicyChanged)) {
           const initialSegments =
             scenesForAcquisition.length > 0
               ? scenesForAcquisition.map((s) => ({
@@ -1362,6 +1428,8 @@ export class StagedCinemaPipeline {
           // Record Grounding Evidences & Placements into EditorialAuditTrail
           for (const dec of audit.relevanceDecisions) {
             const approvedAsset = audit.approvedAssets.find((a) => a.mediaId === dec.mediaId);
+            const assemblyEligible = isAssemblyEligibleDecision(dec);
+            const editorialStatus = dec.editorialStatus ?? (assemblyEligible ? 'approved_for_scene' : dec.accepted ? 'contextual' : 'candidate');
             const matchedScene =
               trail.scenes.find((s) =>
                 s.entities.some((e) => dec.matchedEntities?.some((me) => me.toLowerCase().includes(e.toLowerCase().split(/[\s,:-]+/)[0] ?? ''))),
@@ -1381,12 +1449,12 @@ export class StagedCinemaPipeline {
                 ...(approvedAsset?.uri ? { localUri: approvedAsset.uri } : {}),
                 provider: approvedAsset?.origin ?? 'local_library',
                 ...(approvedAsset?.durationSec !== undefined ? { durationSec: approvedAsset.durationSec } : {}),
-                status: dec.accepted ? 'approved' : 'rejected',
+                status: assemblyEligible ? 'approved_for_scene' : dec.accepted ? editorialStatus : 'rejected',
                 ...(!dec.accepted && dec.reason ? { rejectionReason: dec.reason } : {}),
               };
               trail.candidates.push(candRec);
             } else {
-              existingCand.status = dec.accepted ? 'approved' : 'rejected';
+              existingCand.status = assemblyEligible ? 'approved_for_scene' : dec.accepted ? editorialStatus : 'rejected';
               if (approvedAsset?.uri) existingCand.localUri = approvedAsset.uri;
               if (!dec.accepted && dec.reason) existingCand.rejectionReason = dec.reason;
             }
@@ -1396,7 +1464,8 @@ export class StagedCinemaPipeline {
               summary: ve.description ?? dec.reason ?? '',
               matchedEntities: ve.detectedEntities ?? [],
               matchedActions: ve.detectedActions ?? [],
-              isPositive: dec.accepted,
+              ...(ve.visibleText?.length ? { visibleText: ve.visibleText } : {}),
+              isPositive: assemblyEligible,
             }));
 
             const intervalsFromDec = (dec.matchedIntervals ?? []).map((iv) => ({
@@ -1413,26 +1482,21 @@ export class StagedCinemaPipeline {
               expectedWork: matchedScene?.workTitle ?? nextInterpretation.workTitle,
               expectedEvent: matchedScene?.expectedEvent ?? '',
               framesAnalyzed,
-              positiveEvidences: dec.accepted ? [dec.reason ?? 'Correspondência visual confirmada'] : [],
-              negativeEvidences: !dec.accepted ? [dec.reason ?? 'Rejeitado pelo Scene Grounding'] : [],
+              positiveEvidences: assemblyEligible ? [dec.reason ?? 'Correspondência visual confirmada'] : [],
+              negativeEvidences: !assemblyEligible ? [dec.reason ?? 'Sem prova suficiente para aprovar footage da cena'] : [],
               confidence: dec.score,
-              approvedIntervals: dec.accepted
-                ? intervalsFromDec.length > 0
-                  ? intervalsFromDec
-                  : [{ startSec: 0, endSec: Math.max(6, approvedAsset?.durationSec ?? 15), reason: dec.reason ?? 'Intervalo validado' }]
-                : [],
-              rejectedIntervals: !dec.accepted
-                ? [{ startSec: 0, endSec: Math.max(6, approvedAsset?.durationSec ?? 15), reason: dec.reason ?? 'Fora do contexto esperado' }]
-                : [],
-              decision: dec.accepted ? 'approved' : 'rejected',
+              editorialStatus,
+              approvedIntervals: assemblyEligible ? intervalsFromDec : [],
+              rejectedIntervals: !assemblyEligible ? intervalsFromDec : [],
+              decision: assemblyEligible ? 'approved' : dec.accepted ? 'needs_review' : 'rejected',
               decisionReason: dec.reason ?? (dec.accepted ? 'Aprovado' : 'Rejeitado'),
               narrationRelation: matchedScene?.narrationText ?? '',
               humanReview: { status: 'pending' },
             };
             trail.groundingEvidences.push(evRec);
 
-            if (dec.accepted && approvedAsset) {
-              const dur = Math.max(6, approvedAsset.durationSec ?? matchedScene?.durationSec ?? 12);
+            if (assemblyEligible && approvedAsset && intervalsFromDec.length > 0) {
+              const dur = intervalsFromDec.reduce((sum, interval) => sum + Math.max(0, interval.endSec - interval.startSec), 0);
               const plRec: TimelinePlacementRecord = {
                 placementId: `pl_${candidateId}`,
                 sceneId: evRec.sceneId,
@@ -1589,12 +1653,9 @@ export class StagedCinemaPipeline {
                 },
               );
               relevanceDecisions.push(relevance);
-              if (!relevance.accepted) {
-                try {
-                  if (existsSync(media.uri)) unlinkSync(media.uri);
-                } catch {
-                  // ignore cleanup failure
-                }
+              if (!isAssemblyEligibleDecision(relevance)) {
+                // Keep the downloaded file for re-evaluation and human inspection; only the editorial decision is
+                // rejected. A later run with a new grounding policy must not need to download it again.
                 pending.push({
                   slotIndex: i,
                   clipId: `clip_${i + 1}`,
@@ -1882,9 +1943,7 @@ export class StagedCinemaPipeline {
           const decision = decisionByMediaId.get(candidateMediaId);
           const isEligibleForSegment =
             !decision ||
-            (decision.accepted &&
-              decision.correspondenceLevel !== 'universe_only_coincidence' &&
-              decision.correspondenceLevel !== 'unverified' &&
+            (isAssemblyEligibleDecision(decision) &&
               (!decision.eligibleSegmentIds ||
                 decision.eligibleSegmentIds.length === 0 ||
                 decision.eligibleSegmentIds.includes(expectedSegId) ||
@@ -1970,7 +2029,7 @@ export class StagedCinemaPipeline {
           title: basename(m.uri),
           origin: m.origin,
           durationSec: m.duration.value / Math.max(1, m.duration.rate),
-          compatible: decision ? decision.accepted : false,
+          compatible: decision ? isAssemblyEligibleDecision(decision) : false,
           ...(decision?.matchedEntities ? { relevantToEntities: decision.matchedEntities } : {}),
           ...(decision && !decision.accepted ? { rejectedReason: decision.reason } : {}),
         };

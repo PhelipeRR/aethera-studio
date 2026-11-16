@@ -14,6 +14,7 @@ export interface SceneMediaDiagnosticView {
   candidatesFound: number;
   acquired: number;
   approved: Array<{ mediaId: string; title: string; origin: string; sourceUrl: string; rightsStatus: RightsStatusView }>;
+  contextual?: Array<{ mediaId: string; title: string; origin: string; sourceUrl: string; status: 'contextual' | 'visually_verified'; reason: string }>;
   rejected: Array<{
     mediaId: string;
     title: string;
@@ -56,6 +57,7 @@ export interface SceneDiagnosticRow {
   candidatesFound: number;
   acquired: number;
   approvedCount: number;
+  contextualCount: number;
   rejected: SceneMediaDiagnosticView['rejected'];
   failedDownloads: SceneMediaDiagnosticView['failedDownloads'];
   sourcesConsulted: string[];
@@ -108,6 +110,7 @@ export function buildSceneDiagnosticRows(
       candidatesFound: d.candidatesFound,
       acquired: d.acquired,
       approvedCount: d.approved.length,
+      contextualCount: d.contextual?.length ?? 0,
       rejected: d.rejected,
       failedDownloads: d.failedDownloads,
       sourcesConsulted: d.sourcesConsulted,

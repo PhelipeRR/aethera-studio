@@ -6,6 +6,7 @@ import {
   computeVisionDecisionCacheKey,
   evaluateMediaRelevance,
   extractTopicEntities,
+  isAssemblyEligibleDecision,
   SCENE_GROUNDING_POLICY_VERSION,
   type DistributedFrameAnalysis,
   type MediaCorrespondenceLevel,
@@ -619,6 +620,8 @@ export interface SceneMediaDiagnostic {
   candidatesFound: number;
   acquired: number;
   approved: Array<{ mediaId: string; title: string; origin: string; sourceUrl: string; rightsStatus: MediaRightsStatus }>;
+  /** Identified/contextual media retained for editorial reference, never counted as scene footage. */
+  contextual: Array<{ mediaId: string; title: string; origin: string; sourceUrl: string; status: 'contextual' | 'visually_verified'; reason: string }>;
   rejected: Array<{
     mediaId: string;
     title: string;
@@ -724,6 +727,7 @@ export type CandidateLifecycleState =
   | 'downloading'
   | 'downloaded'
   | 'pending_visual_verification'
+  | 'contextual'
   | 'verified'
   | 'rejected'
   | 'failed';
@@ -1194,6 +1198,15 @@ export async function runAutonomousMediaAcquisition(input: {
     }
   >();
   const allStatuses: ProviderAttemptStatus[] = [];
+  const contextualCandidates: Array<{
+    mediaId: string;
+    segmentId: string;
+    title: string;
+    origin: string;
+    sourceUrl: string;
+    status: 'contextual' | 'visually_verified';
+    reason: string;
+  }> = [];
   const approvedSegmentByMediaId = new Map<string, string>();
   /** Local file of every downloaded candidate (for diagnostics thumbnails/inspection). */
   const localPathByMediaId = new Map<string, string>();
@@ -1273,6 +1286,7 @@ export async function runAutonomousMediaAcquisition(input: {
     try {
       const saved = JSON.parse(readFileSync(checkpointFile, 'utf8')) as {
         projectId?: string;
+        policyVersion?: string;
         completedQueryKeys?: string[];
         seenCandidateKeys?: string[];
         seenFileHashes?: string[];
@@ -1308,7 +1322,12 @@ export async function runAutonomousMediaAcquisition(input: {
         };
       };
       if (saved.projectId === input.projectId) {
-        resumedFromCheckpoint = true;
+        const checkpointPolicyMatches = saved.policyVersion === SCENE_GROUNDING_POLICY_VERSION;
+        resumedFromCheckpoint = checkpointPolicyMatches;
+        if (!checkpointPolicyMatches) {
+          // Physical downloads stay untouched; stale editorial decisions are intentionally not restored.
+        }
+        if (checkpointPolicyMatches) {
         for (const k of saved.completedQueryKeys ?? []) completedQueryKeys.add(k);
         for (const k of saved.seenCandidateKeys ?? []) seenCandidateKeys.add(k);
         for (const h of saved.seenFileHashes ?? []) seenFileHashes.add(h);
@@ -1350,6 +1369,7 @@ export async function runAutonomousMediaAcquisition(input: {
           stageTimingsMs.verificationMs += saved.stageTimingsMs.verificationMs ?? 0;
           stageTimingsMs.coverageMs += saved.stageTimingsMs.coverageMs ?? 0;
         }
+        }
         reusedFilesFromCheckpoint = approvedAssets.length + pendingVerificationAssets.size;
       }
     } catch {
@@ -1367,6 +1387,7 @@ export async function runAutonomousMediaAcquisition(input: {
         JSON.stringify(
           {
             projectId: input.projectId,
+            policyVersion: SCENE_GROUNDING_POLICY_VERSION,
             savedAt: new Date().toISOString(),
             completedQueryKeys: [...completedQueryKeys],
             seenCandidateKeys: [...seenCandidateKeys],
@@ -2032,7 +2053,20 @@ export async function runAutonomousMediaAcquisition(input: {
             });
           }
 
-          if (!decision.accepted) {
+          if (!isAssemblyEligibleDecision(decision)) {
+            if (decision.editorialStatus === 'contextual' || decision.editorialStatus === 'visually_verified') {
+              candidateStates.set(candKey, 'contextual');
+              contextualCandidates.push({
+                mediaId: item.mediaId,
+                segmentId: seg.segmentId,
+                title: item.cand.title ?? item.filePath,
+                origin: item.cand.origin,
+                sourceUrl: item.cand.url,
+                status: decision.editorialStatus,
+                reason: decision.reason,
+              });
+              return;
+            }
             candidateStates.set(candKey, 'rejected');
             sm.rejectedCount += 1;
             noteRejected(item.mediaId, seg.segmentId, item.cand.url);
@@ -2099,6 +2133,7 @@ export async function runAutonomousMediaAcquisition(input: {
             durationSec: item.durationSec,
             compatible: true,
             relevantToEntities: decision.matchedEntities,
+            ...(decision.editorialStatus ? { editorialStatus: decision.editorialStatus } : {}),
           });
           approvedMetaById.set(item.mediaId, {
             title: item.cand.title ?? item.filePath,
@@ -2241,6 +2276,7 @@ export async function runAutonomousMediaAcquisition(input: {
     downloading: 0,
     downloaded: 0,
     pending_visual_verification: 0,
+    contextual: 0,
     verified: 0,
     rejected: 0,
     failed: 0,
@@ -2287,6 +2323,9 @@ export async function runAutonomousMediaAcquisition(input: {
     const approved = approvedMediaDetails
       .filter((d) => d.coveredSegmentIds.includes(cov.segmentId) || approvedSegmentByMediaId.get(d.mediaId) === cov.segmentId)
       .map((d) => ({ mediaId: d.mediaId, title: d.title, origin: d.origin, sourceUrl: d.sourceUrl, rightsStatus: d.rightsStatus }));
+    const contextual = contextualCandidates
+      .filter((candidate) => candidate.segmentId === cov.segmentId)
+      .map(({ mediaId, title, origin, sourceUrl, status, reason }) => ({ mediaId, title, origin, sourceUrl, status, reason }));
     const rejected = rejectedCandidates
       .filter((r) => rejectedSegmentByMediaId.get(r.mediaId) === cov.segmentId)
       .map((r) => {
@@ -2333,6 +2372,7 @@ export async function runAutonomousMediaAcquisition(input: {
       candidatesFound: sm?.candidatesFound ?? 0,
       acquired: sm?.downloadsSucceeded ?? 0,
       approved,
+      contextual,
       rejected,
       failedDownloads: failed,
       coveredSec: cov.usableDurationSec,

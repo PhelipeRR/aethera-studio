@@ -6,12 +6,16 @@ import type { RightsStatusView, SceneAssemblyView, SceneMediaDiagnosticView } fr
 export interface MediaCoverageReportView {
   format: string;
   totalExpectedDurationSec: number;
+  identifiedAssetCount?: number;
+  editorialApprovedAssetCount?: number;
   uniqueAssetCount: number;
   usableMediaDurationSec: number;
+  contextualMediaDurationSec?: number;
   coverageRatio: number;
   repetitionIndex: number;
   uncoveredSubjects: string[];
   incompatibleMedia: Array<{ mediaId: string; reason: string }>;
+  contextualMedia?: Array<{ mediaId: string; reason: string }>;
   segments: Array<{
     segmentId: string;
     subject: string;
@@ -38,6 +42,8 @@ export interface MediaRelevanceDecisionView {
   mediaId: string;
   accepted: boolean;
   score: number;
+  editorialStatus?: 'candidate' | 'contextual' | 'visually_verified' | 'approved_for_scene' | 'human_approved';
+  assemblyEligible?: boolean;
   reason?: string;
   rejectionReason?: string;
 }
@@ -56,6 +62,7 @@ export interface AcquisitionFunnelAuditView {
       downloading?: number;
       downloaded?: number;
       pending_visual_verification?: number;
+      contextual?: number;
       verified?: number;
       rejected?: number;
       failed?: number;
@@ -151,30 +158,34 @@ export function MediaCoveragePanel({
       </div>
 
       {coverage && (
-        <div className="grid gap-3 sm:grid-cols-4">
-          <div className="rounded-xl border border-border bg-background/60 p-3">
-            <p className="text-[11px] text-muted-foreground">Ativos únicos</p>
-            <p className="mt-1 text-lg font-semibold">{coverage.uniqueAssetCount}</p>
+        <>
+          <div className="grid gap-3 sm:grid-cols-4">
+            <div className="rounded-xl border border-border bg-background/60 p-3">
+              <p className="text-[11px] text-muted-foreground">Mídias identificadas</p>
+              <p className="mt-1 text-lg font-semibold">{coverage.identifiedAssetCount ?? coverage.uniqueAssetCount}</p>
+            </div>
+            <div className="rounded-xl border border-border bg-background/60 p-3">
+              <p className="text-[11px] text-muted-foreground">Aprovadas para cena</p>
+              <p className="mt-1 text-lg font-semibold">{coverage.editorialApprovedAssetCount ?? coverage.uniqueAssetCount}</p>
+            </div>
+            <div className="rounded-xl border border-border bg-background/60 p-3">
+              <p className="text-[11px] text-muted-foreground">Segundos comprovados</p>
+              <p className="mt-1 text-lg font-semibold">
+                {Math.round(coverage.usableMediaDurationSec)}s / {Math.round(coverage.totalExpectedDurationSec)}s
+              </p>
+            </div>
+            <div className="rounded-xl border border-border bg-background/60 p-3">
+              <p className="text-[11px] text-muted-foreground">Contextuais (não contam)</p>
+              <p className="mt-1 text-lg font-semibold">
+                {coverage.contextualMedia?.length ?? 0} mídia(s)
+              </p>
+            </div>
           </div>
-          <div className="rounded-xl border border-border bg-background/60 p-3">
-            <p className="text-[11px] text-muted-foreground">Duração útil</p>
-            <p className="mt-1 text-lg font-semibold">
-              {Math.round(coverage.usableMediaDurationSec)}s / {Math.round(coverage.totalExpectedDurationSec)}s
-            </p>
-          </div>
-          <div className="rounded-xl border border-border bg-background/60 p-3">
-            <p className="text-[11px] text-muted-foreground">Cobertura</p>
-            <p className="mt-1 text-lg font-semibold">{Math.round(coverage.coverageRatio * 100)}%</p>
-          </div>
-          <div className="rounded-xl border border-border bg-background/60 p-3">
-            <p className="text-[11px] text-muted-foreground">Índice de repetição</p>
-            <p className="mt-1 text-lg font-semibold">
-              {coverage.uniqueAssetCount === 0
-                ? 'N/A (0 ativos)'
-                : `${Math.round(coverage.repetitionIndex * 100)}%`}
-            </p>
-          </div>
-        </div>
+          <p className="text-[11px] text-muted-foreground">
+            Cobertura comprovada: {Math.round(coverage.coverageRatio * 100)}% · Índice de repetição:{' '}
+            {coverage.uniqueAssetCount === 0 ? 'N/A (0 ativos)' : `${Math.round(coverage.repetitionIndex * 100)}%`}
+          </p>
+        </>
       )}
 
       {acquisitionAudit && (
@@ -190,7 +201,7 @@ export function MediaCoveragePanel({
               </span>
             )}
           </div>
-          <div className="grid grid-cols-3 gap-2 text-[11px] sm:grid-cols-6">
+          <div className="grid grid-cols-3 gap-2 text-[11px] sm:grid-cols-7">
             <div className="rounded-lg border border-border/70 p-2">
               <span className="text-muted-foreground">Planejadas</span>
               <p className="font-semibold">{plannedQueriesCount || coverage?.segments.length || 0}</p>
@@ -210,6 +221,10 @@ export function MediaCoveragePanel({
             <div className="rounded-lg border border-border/70 p-2">
               <span className="text-muted-foreground">Pendentes Visão</span>
               <p className="font-semibold">{acquisitionAudit.funnelMetrics?.counts?.pending_visual_verification ?? 0}</p>
+            </div>
+            <div className="rounded-lg border border-border/70 p-2">
+              <span className="text-muted-foreground">Contextuais</span>
+              <p className="font-semibold text-sky-300">{acquisitionAudit.funnelMetrics?.counts?.contextual ?? 0}</p>
             </div>
             <div className="rounded-lg border border-border/70 p-2">
               <span className="text-muted-foreground">Aprovados</span>
@@ -237,6 +252,19 @@ export function MediaCoveragePanel({
             {rejected.map((r) => (
               <li key={r.mediaId}>
                 • <code className="text-foreground">{r.mediaId}</code>: {r.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {coverage && coverage.contextualMedia && coverage.contextualMedia.length > 0 && (
+        <div className="rounded-xl border border-sky-500/40 bg-sky-500/10 p-3 text-xs">
+          <p className="font-medium text-sky-200">Mídias contextuais identificadas (não contam como footage)</p>
+          <ul className="mt-1 space-y-1 text-muted-foreground">
+            {coverage.contextualMedia.slice(0, 8).map((media) => (
+              <li key={media.mediaId}>
+                <code className="text-foreground">{media.mediaId}</code>: {media.reason}
               </li>
             ))}
           </ul>

@@ -227,6 +227,8 @@ describe('Editorial Audit & Traceability Chain', () => {
     expect(report.passed).toBe(false);
     expect(report.issues.some((i) => i.code === 'query_contains_full_prompt')).toBe(true);
     expect(report.issues.some((i) => i.code === 'approved_media_without_visual_evidence')).toBe(true);
+    expect(report.issues.find((i) => i.code === 'query_contains_full_prompt')?.category).toBe('traceability');
+    expect(report.issues.find((i) => i.code === 'approved_media_without_visual_evidence')?.category).toBe('identity');
     expect(report.issues.some((i) => i.code === 'boss_repetition_without_justification')).toBe(false);
   });
 
@@ -476,5 +478,64 @@ describe('Editorial Audit & Traceability Chain', () => {
     expect(repaired.decupagem[0]!.visualIntent).toBe('stealth_demonstration');
     expect(repaired.decupagem[0]!.mediaQueries.join(' ').toLowerCase()).not.toContain('boss fight');
     expect(repaired.report.issues.some((i) => i.code === 'incompatible_visual_intent')).toBe(false);
+  });
+
+  it('traces a contextual reference work separately from ranked entities', () => {
+    const prompt = 'TOP 5 animes com sistemas de magia incríveis para quem gostou de Black Clover';
+    const interpretation = interpretProductionPrompt(prompt);
+    const referenceDossier: EditorialResearchDossier = {
+      dossierId: 'd_reference_work',
+      dossierHash: 'h_reference_work',
+      promptHash: interpretation.promptHash,
+      workTitle: interpretation.workTitle,
+      theme: 'Sistemas de magia',
+      rankingCriteria: ['Criatividade'],
+      entities: [
+        {
+          entityName: 'Mashle',
+          workTitle: 'Mashle',
+          role: 'anime',
+          rankPosition: 1,
+          verifiedFacts: ['Uma obra de fantasia com magia.'],
+          mechanicsOrEvents: ['Conflito entre força física e magia.'],
+          uncertainties: [],
+          sources: [{ title: 'Mashle source', kind: 'community' }],
+        },
+      ],
+      uncertainties: [],
+      sourcesUsed: ['Mashle source'],
+      createdAt: '2026-11-16T00:00:00.000Z',
+    };
+    const script = buildEditorialScript({
+      scriptId: 'scr_reference_work',
+      source: 'agent',
+      treatment: prompt,
+      academyRulesApplied: [],
+      segments: [
+        {
+          segmentId: 'seg_reference',
+          beatId: 'beat_reference',
+          stage: 'hook',
+          title: 'Para quem gostou de Black Clover',
+          spokenText: 'Se você gostou de Black Clover, esta lista apresenta outros animes com magia criativa.',
+          estimatedDurationSec: 12,
+          approved: true,
+        },
+      ],
+    });
+    const scenes = buildSemanticDecupagem(script, referenceDossier, interpretation);
+    const trail = buildEditorialTraceabilityGraph({
+      projectId: 'project_reference_work',
+      dossier: referenceDossier,
+      script,
+      decupagem: scenes,
+    });
+    const report = runEditorialIntegrityChecks({ interpretation, dossier: referenceDossier, trail });
+
+    expect(trail.scenes[0]?.subjectResolution).toBe('reference');
+    expect(trail.scenes[0]?.sourceIds.length).toBeGreaterThan(0);
+    expect(trail.sources.some((source) => source.scope === 'contextual_reference' && source.title.includes('Black Clover'))).toBe(true);
+    expect(report.issues.some((issue) => issue.code === 'entity_missing_in_dossier')).toBe(false);
+    expect(report.issues.some((issue) => issue.code === 'entity_narration_divergence')).toBe(false);
   });
 });
