@@ -58,12 +58,18 @@ This is an environment blocker, not a workflow-quality result. No model was down
 
 ## Model decision
 
-No model is installed locally, so these are recommendations rather than validated assets:
+No model is installed locally, so these are recommendations rather than validated assets. The file-size figures below are repository weights, not a promise of peak VRAM usage; SDXL text encoders, VAE, attention workspace, ControlNet/IP-Adapter and upscale stages add runtime memory.
 
-- quality baseline: [Stable Diffusion XL base 1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0), standalone-capable and the common SDXL reference checkpoint;
-- fast preview candidate: [SDXL-Lightning](https://huggingface.co/ByteDance/SDXL-Lightning), whose model card provides 1/2/4/8-step variants; prefer the 4-step variant only after its ComfyUI graph and license are checked;
-- existing local fallback: [SDXL-Turbo](https://huggingface.co/stabilityai/sdxl-turbo), suitable for quick previews but its card points commercial users to Stability’s license, so it is not treated as the professional-quality baseline;
-- later identity-control candidate: [IP-Adapter for SDXL](https://huggingface.co/h94/IP-Adapter), especially the Plus/Face variants; its SDXL image encoder footprint is substantial for an 8 GB card, so it remains disabled until VRAM and node/model validation pass.
+- **general quality baseline:** [Stable Diffusion XL base 1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0), the broad SDXL reference checkpoint and a practical compatibility target for native ComfyUI graphs;
+- **anime premium candidate:** [Animagine XL 3.1](https://huggingface.co/cagliostrolab/animagine-xl-3.1), an SDXL anime fine-tune whose card reports improved anatomy/prompt interpretation, a 6.94 GB safetensors weight, and CreativeML Open RAIL++ terms;
+- **anime cinematic candidate:** [Illustrious XL v2.0](https://huggingface.co/OnomaAIResearch/Illustrious-XL-v2.0), a 6.94 GB SDXL illustration checkpoint under `creativeml-openrail-m`; it needs a real prompt/sampler comparison against Animagine before becoming the default;
+- **specialised character candidate:** [Pony Diffusion V6](https://huggingface.co/AstraliteHeart/pony-diffusion-v6), an approximately 6.94 GB SDXL weight under `creativeml-openrail-m`, but the model is specialised for pony/anthro/furry/cartoon subjects and is not the general NextWorth baseline;
+- **fast preview candidate:** [SDXL-Lightning](https://huggingface.co/ByteDance/SDXL-Lightning), whose card provides 1/2/4/8-step variants; prefer a compatible 4-step checkpoint only after the ComfyUI graph, model pairing and license are checked;
+- **existing local fallback:** [SDXL-Turbo](https://huggingface.co/stabilityai/sdxl-turbo), useful for quick previews at 1–4 steps, but its card points commercial users to Stability’s license, so it is not treated as the professional-quality baseline;
+- **not selected for a monetized channel:** [FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) is a 12B model under the FLUX.1-dev Non-Commercial License. Quantized community variants do not automatically remove that restriction, so it is not acceptable as the NextWorth default without a separate license decision;
+- **later identity-control candidate:** [IP-Adapter for SDXL](https://huggingface.co/h94/IP-Adapter), especially Plus/Face variants. The card lists a large SDXL image encoder and the runtime currently has no IP-Adapter node/model, so it remains disabled until VRAM and identity-fidelity validation pass.
+
+Recommended installation order for the 8 GB card: one SDXL anime checkpoint (Animagine or Illustrious, not both initially), native VAE path, then the six-case harness; only after that add one ControlNet or one IP-Adapter stack and measure peak VRAM again. The model names above are not yet installed or visually accepted on this machine.
 
 The application does not silently download or activate any of these. The selected checkpoint must be present in ComfyUI’s own inventory and the user must approve its license for the intended channel.
 
