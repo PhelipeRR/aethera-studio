@@ -1,0 +1,36 @@
+{
+  "totalRows": 600,
+  "openLatencyMs": 180,
+  "seededHistory": {
+    "entriesInFile": 2400,
+    "fileSizeBytes": 1281562
+  },
+  "progressWidth": "18%",
+  "progressLabel": "18% · Pesquisa",
+  "timeline": {
+    "doneStages": 2,
+    "failedStages": 0
+  },
+  "originFilterLatencyMs": 142,
+  "agentRows": 441,
+  "visibleAfterOrigin": 441,
+  "streamFilter": {
+    "rows": 178,
+    "channels": [
+      "stderr",
+      "stdout"
+    ]
+  },
+  "searchRows": 388,
+  "autoscrollToggledOff": true,
+  "detailsPreview": "EVENTO\nstage_completed · canal progress\nORIGEM\npipeline · pipeline\nJOB\nconsole-e2e-mwiga04e\nDURAÇÃO\n4 ms",
+  "errorsTab": {
+    "rows": 52,
+    "severities": [
+      "error"
+    ]
+  },
+  "exportEntries": 2400,
+  "largeHistoryFilterLatencyMs": 80,
+  "largeHistoryFilteredRows": 388
+}

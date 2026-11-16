@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ProductionConsoleAccordion } from './ProductionConsoleAccordion.js';
 import type {
   BrandKit,
   CreativeArtType,
@@ -565,6 +566,8 @@ export function CreativeStudioPanel() {
           </div>
         </div>
       )}
+
+      <ProductionConsoleAccordion scope="all" kind="thumbnail" title="Console de Thumbnails" />
     </div>
   );
 }

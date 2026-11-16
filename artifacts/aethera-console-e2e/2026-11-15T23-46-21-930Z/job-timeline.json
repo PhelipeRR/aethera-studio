@@ -1,0 +1,419 @@
+{
+  "projectId": "console-e2e-mwihh031",
+  "finalState": {
+    "state": "paused_pending_research",
+    "pct": 20,
+    "message": "Pesquisa editorial incompleta (Dossiê de pesquisa ausente.). Nenhum fato foi inventado — clique em Retomar Projeto para tentar novamente.",
+    "error": "research_failed: Dossiê de pesquisa ausente."
+  },
+  "timeline": [
+    {
+      "at": 2,
+      "state": "pesquisa",
+      "pct": 18,
+      "message": "Pesquisando fatos, entidades e critérios sobre Elden Ring..."
+    },
+    {
+      "at": 103,
+      "state": "paused_pending_research",
+      "pct": 20,
+      "message": "Pesquisa editorial incompleta (Dossiê de pesquisa ausente.). Nenhum fato foi inventado — clique em Retomar Projeto para tentar novamente.",
+      "error": "research_failed: Dossiê de pesquisa ausente."
+    }
+  ],
+  "progressEvents": [
+    {
+      "projectId": "console-e2e-mwihh031",
+      "prompt": "Os 3 chefes mais difíceis de Elden Ring e por que eles são tão punitivos",
+      "targetDurationSec": 10,
+      "humorIntensity": 20,
+      "renderProfile": "draft_540p",
+      "useNvenc": false,
+      "state": "prompt",
+      "progressPct": 5,
+      "message": "Analisando prompt e extraindo intenções de cena...",
+      "completedStages": [
+        "prompt"
+      ],
+      "acquiredMedia": [
+        {
+          "mediaId": "console-e2e-mwihh031_seed_1",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_1.mp4",
+          "sha256": "ce1e45511a5d59c5817aa20a7f09c7fef07cb751891ec15dbe0ed9dcd612f4e6",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwihh031_seed_2",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_2.mp4",
+          "sha256": "53e3af005527eb393661c99d3a1b3c4611ee60d578c92fddb0e76ebc38cb5110",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwihh031_seed_3",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_3.mp4",
+          "sha256": "ff493906955a9cba00967ef375158cb1557396185e72657eb1c8a29b53a4ee1e",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        }
+      ],
+      "pendingMedia": [],
+      "workspaceDir": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031",
+      "startedAt": "2026-11-15T23:46:23.084Z",
+      "updatedAt": "2026-11-15T23:46:23.501Z"
+    },
+    {
+      "projectId": "console-e2e-mwihh031",
+      "prompt": "Os 3 chefes mais difíceis de Elden Ring e por que eles são tão punitivos",
+      "targetDurationSec": 10,
+      "humorIntensity": 20,
+      "renderProfile": "draft_540p",
+      "useNvenc": false,
+      "state": "interpretacao",
+      "progressPct": 8,
+      "message": "Interpretando prompt, obra, entidades e critérios editoriais...",
+      "completedStages": [
+        "prompt",
+        "interpretacao"
+      ],
+      "acquiredMedia": [
+        {
+          "mediaId": "console-e2e-mwihh031_seed_1",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_1.mp4",
+          "sha256": "ce1e45511a5d59c5817aa20a7f09c7fef07cb751891ec15dbe0ed9dcd612f4e6",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwihh031_seed_2",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_2.mp4",
+          "sha256": "53e3af005527eb393661c99d3a1b3c4611ee60d578c92fddb0e76ebc38cb5110",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwihh031_seed_3",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_3.mp4",
+          "sha256": "ff493906955a9cba00967ef375158cb1557396185e72657eb1c8a29b53a4ee1e",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        }
+      ],
+      "pendingMedia": [],
+      "workspaceDir": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031",
+      "startedAt": "2026-11-15T23:46:23.084Z",
+      "updatedAt": "2026-11-15T23:46:23.506Z",
+      "invalidationReport": {
+        "researchValid": false,
+        "scriptValid": false,
+        "decupagemValid": false,
+        "validSceneIds": [],
+        "invalidatedSceneIds": [],
+        "reasons": []
+      },
+      "interpretation": {
+        "promptHash": "30dd7155eddd",
+        "originalPrompt": "Os 3 chefes mais difíceis de Elden Ring e por que eles são tão punitivos",
+        "workTitle": "Elden Ring",
+        "domain": "gaming",
+        "theme": "Os 3 chefes mais difíceis de Elden Ring e por que eles são tão punitivos",
+        "formatIntent": "top_ranking",
+        "requestedCount": 3,
+        "rankingCriteria": [
+          "Complexidade mecânica e leitura de padrões de ataque",
+          "Transições de fase e punição de erros",
+          "Agressividade, alcance e pressão sobre o jogador",
+          "Consenso histórico de dificuldade na comunidade"
+        ],
+        "targetDurationSec": 10,
+        "tone": "analítico e envolvente",
+        "humorIntensity": 20,
+        "language": "pt-BR"
+      }
+    },
+    {
+      "projectId": "console-e2e-mwihh031",
+      "prompt": "Os 3 chefes mais difíceis de Elden Ring e por que eles são tão punitivos",
+      "targetDurationSec": 10,
+      "humorIntensity": 20,
+      "renderProfile": "draft_540p",
+      "useNvenc": false,
+      "state": "pesquisa",
+      "progressPct": 18,
+      "message": "Pesquisando fatos, entidades e critérios sobre Elden Ring...",
+      "completedStages": [
+        "prompt",
+        "interpretacao"
+      ],
+      "acquiredMedia": [
+        {
+          "mediaId": "console-e2e-mwihh031_seed_1",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_1.mp4",
+          "sha256": "ce1e45511a5d59c5817aa20a7f09c7fef07cb751891ec15dbe0ed9dcd612f4e6",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwihh031_seed_2",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_2.mp4",
+          "sha256": "53e3af005527eb393661c99d3a1b3c4611ee60d578c92fddb0e76ebc38cb5110",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwihh031_seed_3",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_3.mp4",
+          "sha256": "ff493906955a9cba00967ef375158cb1557396185e72657eb1c8a29b53a4ee1e",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        }
+      ],
+      "pendingMedia": [],
+      "workspaceDir": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031",
+      "startedAt": "2026-11-15T23:46:23.084Z",
+      "updatedAt": "2026-11-15T23:46:23.510Z",
+      "invalidationReport": {
+        "researchValid": false,
+        "scriptValid": false,
+        "decupagemValid": false,
+        "validSceneIds": [],
+        "invalidatedSceneIds": [],
+        "reasons": []
+      },
+      "interpretation": {
+        "promptHash": "30dd7155eddd",
+        "originalPrompt": "Os 3 chefes mais difíceis de Elden Ring e por que eles são tão punitivos",
+        "workTitle": "Elden Ring",
+        "domain": "gaming",
+        "theme": "Os 3 chefes mais difíceis de Elden Ring e por que eles são tão punitivos",
+        "formatIntent": "top_ranking",
+        "requestedCount": 3,
+        "rankingCriteria": [
+          "Complexidade mecânica e leitura de padrões de ataque",
+          "Transições de fase e punição de erros",
+          "Agressividade, alcance e pressão sobre o jogador",
+          "Consenso histórico de dificuldade na comunidade"
+        ],
+        "targetDurationSec": 10,
+        "tone": "analítico e envolvente",
+        "humorIntensity": 20,
+        "language": "pt-BR"
+      }
+    },
+    {
+      "projectId": "console-e2e-mwihh031",
+      "prompt": "Os 3 chefes mais difíceis de Elden Ring e por que eles são tão punitivos",
+      "targetDurationSec": 10,
+      "humorIntensity": 20,
+      "renderProfile": "draft_540p",
+      "useNvenc": false,
+      "state": "paused_pending_research",
+      "progressPct": 20,
+      "message": "Pesquisa editorial incompleta (Dossiê de pesquisa ausente.). Nenhum fato foi inventado — clique em Retomar Projeto para tentar novamente.",
+      "completedStages": [
+        "prompt",
+        "interpretacao"
+      ],
+      "acquiredMedia": [
+        {
+          "mediaId": "console-e2e-mwihh031_seed_1",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_1.mp4",
+          "sha256": "ce1e45511a5d59c5817aa20a7f09c7fef07cb751891ec15dbe0ed9dcd612f4e6",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwihh031_seed_2",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_2.mp4",
+          "sha256": "53e3af005527eb393661c99d3a1b3c4611ee60d578c92fddb0e76ebc38cb5110",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwihh031_seed_3",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031\\media\\seed_3.mp4",
+          "sha256": "ff493906955a9cba00967ef375158cb1557396185e72657eb1c8a29b53a4ee1e",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        }
+      ],
+      "pendingMedia": [],
+      "workspaceDir": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-tiT0tq\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwihh031",
+      "startedAt": "2026-11-15T23:46:23.084Z",
+      "updatedAt": "2026-11-15T23:48:04.704Z",
+      "invalidationReport": {
+        "researchValid": false,
+        "scriptValid": false,
+        "decupagemValid": false,
+        "validSceneIds": [],
+        "invalidatedSceneIds": [],
+        "reasons": []
+      },
+      "interpretation": {
+        "promptHash": "30dd7155eddd",
+        "originalPrompt": "Os 3 chefes mais difíceis de Elden Ring e por que eles são tão punitivos",
+        "workTitle": "Elden Ring",
+        "domain": "gaming",
+        "theme": "Os 3 chefes mais difíceis de Elden Ring e por que eles são tão punitivos",
+        "formatIntent": "top_ranking",
+        "requestedCount": 3,
+        "rankingCriteria": [
+          "Complexidade mecânica e leitura de padrões de ataque",
+          "Transições de fase e punição de erros",
+          "Agressividade, alcance e pressão sobre o jogador",
+          "Consenso histórico de dificuldade na comunidade"
+        ],
+        "targetDurationSec": 10,
+        "tone": "analítico e envolvente",
+        "humorIntensity": 20,
+        "language": "pt-BR"
+      },
+      "error": "research_failed: Dossiê de pesquisa ausente."
+    }
+  ]
+}

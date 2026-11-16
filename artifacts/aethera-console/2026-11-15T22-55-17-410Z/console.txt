@@ -1,0 +1,35 @@
+[22:55:17.418] [INFO] [pesquisa] [agent/antigravity-cli] Validação real do console (Antigravity CLI (agy)): antigravity-cli iniciado
+[22:55:21.050] [DEBUG] [pesquisa] [agent/antigravity-cli] <stderr> error: Your AI credits balance is too low to continue.
+[22:55:21.051] [DEBUG] [pesquisa] [agent/antigravity-cli] <stdout> {"conversation_id":"0fb59e82-57ba-4d0b-9f94-b14618463fd8","status":"ERROR","response":"","error":"Your AI credits balance is too low to continue.","duration_seconds":0,"num_turns":1,"usage":{"input_tokens":0,"output_tokens":0,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":0},"finished_reason":"error"}
+[22:55:21.052] [DEBUG] [pesquisa] [agent/antigravity-cli] <stderr> AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED","error_code":429,"code_kind":"http","retryable":true,"error_id":"64e8211a-3014-4b40-9310-a2c066faf2fc-1-2008"}
+[22:55:22.705] [ERROR] [pesquisa] [agent/antigravity-cli] Validação real do console (Antigravity CLI (agy)): antigravity-cli falhou (exit code 3) (5286ms) exit=3
+[22:55:22.709] [INFO] [pesquisa] [agent/claude-cli] Validação real do console (Claude Code (claude)): claude-cli iniciado
+[22:55:22.932] [DEBUG] [pesquisa] [agent/claude-cli] <stderr> ⚠ claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login · Unset it to load your organization's connectors
+[22:55:23.148] [DEBUG] [pesquisa] [agent/claude-cli] <stdout> sessão do agente (hook_started)
+[22:55:23.339] [DEBUG] [pesquisa] [agent/claude-cli] <stdout> sessão do agente (hook_response)
+[22:55:24.871] [DEBUG] [pesquisa] [agent/claude-cli] <stdout> sessão do agente (init) — modelo claude-opus-5-5
+[22:55:26.637] [DEBUG] [pesquisa] [agent/claude-cli] <stdout> texto: ok
+[22:55:26.794] [DEBUG] [pesquisa] [agent/claude-cli] <stdout> resultado do agente (success)
+[22:55:27.365] [INFO] [pesquisa] [agent/claude-cli] Validação real do console (Claude Code (claude)): claude-cli concluído com sucesso (4656ms) exit=0
+[22:55:27.372] [INFO] [pesquisa] [agent/codex-cli] Validação real do console (Codex CLI (codex)): codex-cli iniciado
+[22:55:27.638] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> Reading additional input from stdin...
+[22:55:27.892] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> OpenAI Codex v0.166.0
+[22:55:27.893] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> --------
+[22:55:27.893] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> workdir: C:\dev\neuralbridge-studio
+[22:55:27.894] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> model: gpt-5.6-luna
+[22:55:27.894] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> provider: openai
+[22:55:27.894] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> approval: never
+[22:55:27.895] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+[22:55:27.895] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> reasoning effort: xhigh
+[22:55:27.896] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> reasoning summaries: none
+[22:55:27.896] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> session id: 01a1e16c-35b9-73d3-82b7-b2ff61bf12ed
+[22:55:27.896] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> --------
+[22:55:27.897] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> user
+[22:55:27.897] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> Responda somente com a palavra: ok
+[22:55:29.591] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> hook: SessionStart
+[22:55:29.780] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> hook: SessionStart Completed
+[22:55:29.793] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> hook: UserPromptSubmit
+[22:55:29.976] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> hook: UserPromptSubmit Completed
+[22:55:30.444] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> ERROR: You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 16th, 2026 10:29 PM.
+[22:55:30.455] [DEBUG] [pesquisa] [agent/codex-cli] <stderr> ERROR: You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 16th, 2026 10:29 PM.
+[22:55:30.976] [ERROR] [pesquisa] [agent/codex-cli] Validação real do console (Codex CLI (codex)): codex-cli falhou (exit code 1) (3602ms) exit=1

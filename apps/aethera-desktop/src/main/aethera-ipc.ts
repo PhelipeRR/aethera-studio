@@ -1,11 +1,9 @@
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { promisify } from 'node:util';
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
@@ -20,7 +18,21 @@ import {
 } from './system-backup.js';
 import { ManagedMediaLibrary } from './managed-media-library.js';
 import { StagedCinemaPipeline, type StagedProductionJob } from './cinema-pipeline.js';
-import { createProductionConsoleService, type ProductionLogStage, type ProductionLogSeverity } from './production-console.js';
+import {
+  createProductionConsoleService,
+  type EmitProductionLogInput,
+  type ProductionConsoleAllFilters,
+  type ProductionConsoleFilters,
+  type ProductionJobKind,
+  type ProductionJobStatus,
+  type ProductionLogChannel,
+  type ProductionLogEvent,
+  type ProductionLogOrigin,
+  type ProductionLogSeverity,
+  type ProductionLogStage,
+} from './production-console.js';
+import { ProductionStageTracker, recordPipelineSnapshot } from './production-stage-tracker.js';
+import { buildProductionFallbackChain, runProductionAgentCommand, runProductionAgentWithFallback } from './production-agent-providers.js';
 import { TtsProviderRegistry, VoiceStudioProvider, ElevenLabsProvider, elevenLabsCredentialsSchema } from './tts-providers.js';
 import {
   TrendRadarEngine,
@@ -80,6 +92,7 @@ import {
   type ColorGradingControls,
   type DirectorId,
   type ProduceCinemaPackageInput,
+  type EditorialResearchDossier,
   type RealRenderResult,
   type VideoBlendMode,
 } from '@neuralbridge/cinema';
@@ -252,6 +265,7 @@ import { createProjectService } from '../../../../packages/desktop-shared/src/ma
 import { isAppUrl, type AppLocation } from '../../../../packages/desktop-shared/src/main/security/navigation.js';
 import { createSemanticService } from '../../../../packages/desktop-shared/src/main/semantic.js';
 import { clientIdHint, igdbCredentialsSchema, rawgKeySchema, StudioSecretStore } from '../../../../packages/desktop-shared/src/main/studio-secret-store.js';
+import { MEDIA_SOURCES_IPC, MediaSourcesService } from './media-sources-service.js';
 import { composeTaskEngine } from '../../../../packages/desktop-shared/src/main/task-composition.js';
 import { createTaskService } from '../../../../packages/desktop-shared/src/main/tasks.js';
 
@@ -309,11 +323,20 @@ export function registerAetheraDomainIpc(options: {
   const claude = new ClaudeCliAdapter({ resolveEnv: resolveClaudeGatewayEnv });
   const codex = new CodexCliAdapter();
   const agents = [claude, codex];
+  const productionConsole = createProductionConsoleService(join(app.getPath('userData'), 'cinema-console-logs'));
+  // Every entry — from the pipeline, an agent command or the creative studio — reaches the console through this
+  // single subscription, so the renderer sees the same stream the JSONL file records.
+  productionConsole.subscribe((entry) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('cinema:console-log', entry);
+    }
+  });
   const creativeStudioService = database.handle
     ? new AetheraCreativeStudioService({
         db: database.handle.db,
         userDataDir,
         resolveClaudeGatewayEnv,
+        productionConsole,
       })
     : null;
   if (creativeStudioService) {
@@ -1883,27 +1906,79 @@ export function registerAetheraDomainIpc(options: {
     ]);
 
   const visionProviderCooldowns = new Map<string, VisionCooldownEntry>();
-  const productionConsole = createProductionConsoleService(join(app.getPath('userData'), 'cinema-console-logs'));
   const ttsRegistry = new TtsProviderRegistry();
   ttsRegistry.register(new VoiceStudioProvider());
   ttsRegistry.register(new ElevenLabsProvider(safeStorage, userDataDir));
-  const emitProductionLog = (input: {
-    projectId: string;
-    stage: ProductionLogStage;
-    severity: ProductionLogSeverity;
-    source: string;
-    message: string;
-    durationMs?: number;
-    metadata?: Record<string, unknown>;
-  }) => {
-    const entry = productionConsole.emit(input);
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.isDestroyed()) {
-        win.webContents.send('cinema:console-log', entry);
-      }
-    }
-    return entry;
+  /** Without `jobId`, the console routes the entry to the job the project is running right now. */
+  const emitProductionLog = (input: EmitProductionLogInput) => productionConsole.emit(input);
+  /** Last snapshot the pipeline reported per job: lets a command line carry the percentage it ran at. */
+  const lastProgressByProject = new Map<string, { pct: number; stage: string; message: string }>();
+  const stageTracker = new ProductionStageTracker();
+  const currentPct = (projectId: string): number | undefined => lastProgressByProject.get(projectId)?.pct;
+  /** Spreadable percentage of the job, so a log line written by an agent carries the progress it ran at. */
+  const pctField = (projectId: string): { pct?: number } => {
+    const value = currentPct(projectId);
+    return value === undefined ? {} : { pct: value };
   };
+  /** Entries written outside a pipeline callback still belong to the job that owns the agent run. */
+  const productionLog = (
+    projectId: string,
+    input: Omit<Parameters<typeof emitProductionLog>[0], 'projectId'>,
+  ) => emitProductionLog({ projectId, ...input });
+  // Configurações → Fontes de mídia: provider registry, encrypted credentials and per-job console telemetry.
+  const mediaSourcesService = new MediaSourcesService({
+    userDataDir,
+    cipher: safeStorage,
+    igdb: {
+      configured: () => igdbSecretStore.load() !== null,
+      searchGames: (title, signal) => igdbClient.searchGames(title, signal),
+      gameVideos: (id, signal) => igdbClient.gameVideos(id, signal),
+    },
+    rawgApiKey: () => rawgSecretStore.load()?.apiKey ?? null,
+    saveIgdb: (credentials) => igdbSecretStore.save(credentials),
+    clearIgdb: () => igdbSecretStore.clear(),
+    saveRawg: (apiKey) => rawgSecretStore.save({ apiKey }),
+    clearRawg: () => rawgSecretStore.clear(),
+    emitLog: (input) => {
+      emitProductionLog(input);
+    },
+    acquireStream: async (input) => {
+      mkdirSync(join(input.root, input.relativeDir), { recursive: true });
+      const out = await acquireWithYtDlp({
+        ytDlp,
+        url: input.url,
+        root: input.root,
+        relativeDir: input.relativeDir,
+        fileStem: input.fileStem,
+        maxHeight: 720,
+        downloadSection: input.downloadSection ?? '*0:00-1:30',
+        maxFilesize: '90M',
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),
+      });
+      return out.relativePath ? join(input.root, out.relativePath) : null;
+    },
+  });
+  ipcMain.handle(MEDIA_SOURCES_IPC.list, (event) => {
+    ensureTrusted(event.senderFrame);
+    return mediaSourcesService.view();
+  });
+  ipcMain.handle(MEDIA_SOURCES_IPC.saveSettings, (event, input: unknown) => {
+    ensureTrusted(event.senderFrame);
+    return mediaSourcesService.saveSettings(input);
+  });
+  ipcMain.handle(MEDIA_SOURCES_IPC.saveCredential, (event, input: unknown) => {
+    ensureTrusted(event.senderFrame);
+    return mediaSourcesService.saveCredential(input);
+  });
+  ipcMain.handle(MEDIA_SOURCES_IPC.clearCredential, (event, input: unknown) => {
+    ensureTrusted(event.senderFrame);
+    return mediaSourcesService.clearCredential(input);
+  });
+  ipcMain.handle(MEDIA_SOURCES_IPC.test, async (event, input: unknown) => {
+    ensureTrusted(event.senderFrame);
+    return mediaSourcesService.test(input);
+  });
   const stagedPipeline = new StagedCinemaPipeline({
     jobsDir: join(app.getPath('userData'), 'cinema-jobs'),
     mediaDir: join(app.getPath('userData'), 'cinema-media'),
@@ -1915,6 +1990,7 @@ export function registerAetheraDomainIpc(options: {
     evolutionCore,
     requireVisualVerification: true,
     autonomousAcquisitionDeps: {
+      mediaProviders: { registry: mediaSourcesService.registry },
       localMediaDirs: (() => {
         const dirs = [join(app.getPath('userData'), 'cinema-media')];
         try { dirs.push(videoRoot()); } catch { /* no video project configured yet */ }
@@ -2074,24 +2150,18 @@ export function registerAetheraDomainIpc(options: {
       return results;
     },
     onProgress: (job: StagedProductionJob) => {
+      // Identity of this execution: jobId + attempt. projectId only says which workspace the job writes to.
+      const { jobId, attempt } = recordPipelineSnapshot(productionConsole, stageTracker, job, 'video');
+      lastProgressByProject.set(job.projectId, {
+        pct: job.progressPct,
+        stage: job.state,
+        message: job.message,
+      });
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) {
-          win.webContents.send('cinema:production-progress', job);
+          win.webContents.send('cinema:production-progress', { ...job, jobId, attempt });
         }
       }
-      emitProductionLog({
-        projectId: job.projectId,
-        stage: (job.state as ProductionLogStage) || 'system',
-        severity: job.state === 'error' ? 'error' : job.state === 'cancelled' ? 'warn' : 'info',
-        source: 'pipeline',
-        message: job.message || `Estado: ${job.state}`,
-        metadata: {
-          progressPct: job.progressPct,
-          state: job.state,
-          completedStages: job.completedStages,
-          ...(job.error ? { error: job.error } : {}),
-        },
-      });
     },
     onPackageReady: (pkg, prompt) => {
       cinemaPackages.set(pkg.timeline.projectId, pkg);
@@ -2103,7 +2173,22 @@ export function registerAetheraDomainIpc(options: {
       cinemaRenders.set(projectId, enriched);
       persistCinemaRender(projectId, enriched);
     },
-    searchExternalMedia: async (query, _slotIndex, signal) => {
+    searchExternalMedia: async (query, slotIndex, signal, context) => {
+      const projectId = context?.projectId;
+      const runId = `search_${slotIndex}_${Date.now().toString(36)}`;
+      if (projectId) {
+        productionLog(projectId, {
+          runId,
+          stage: 'pesquisa',
+          origin: 'pesquisa',
+          channel: 'progress',
+          event: 'log',
+          severity: 'info',
+          source: 'media-search',
+          message: `Pesquisando mídia para o slot ${slotIndex + 1}: "${query}"`,
+          ...pctField(projectId),
+        });
+      }
       try {
         const res = await searchResilientMediaSources(
           query,
@@ -2119,11 +2204,41 @@ export function registerAetheraDomainIpc(options: {
           origin: c.origin,
           license: c.license,
         }));
-      } catch {
+      } catch (error) {
+        if (projectId) {
+          productionLog(projectId, {
+            runId,
+            stage: 'pesquisa',
+            origin: 'pesquisa',
+            channel: 'result',
+            event: 'command_failed',
+            severity: 'warn',
+            source: 'media-search',
+            message: `Pesquisa de mídia do slot ${slotIndex + 1} falhou: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
         return [];
       }
     },
-    acquireExternalMedia: async (query, slotIndex, mediaDir, signal, preferredUrl) => {
+    acquireExternalMedia: async (query, slotIndex, mediaDir, signal, preferredUrl, context) => {
+      const projectId = context?.projectId;
+      const runId = `acquire_${slotIndex}_${Date.now().toString(36)}`;
+      if (projectId) {
+        productionLog(projectId, {
+          runId,
+          stage: 'aquisicao',
+          origin: 'aquisicao',
+          channel: 'progress',
+          event: 'log',
+          severity: 'info',
+          source: 'yt-dlp',
+          message: `Baixando mídia do slot ${slotIndex + 1}: "${query}"`,
+          details: { ...(preferredUrl ? { url: preferredUrl } : {}) },
+          ...pctField(projectId),
+        });
+      }
+      let lastEmittedAt = 0;
+      let lastEmittedPct = -1;
       try {
         const acq = await acquireResilientMediaFile(
           query,
@@ -2143,6 +2258,34 @@ export function registerAetheraDomainIpc(options: {
                 fileStem: `slot_${idx + 1}`,
                 ...(sig ? { signal: sig } : {}),
                 ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),
+                ...(projectId
+                  ? {
+                      onProgress: (progress: { bytesDone: number; bytesTotal: number | null }) => {
+                        if (!progress.bytesTotal) return;
+                        const pct = Math.min(100, Math.round((progress.bytesDone / progress.bytesTotal) * 100));
+                        const now = Date.now();
+                        // Real bytes from yt-dlp, throttled: a line per 5% or per 3s, never a flood of them.
+                        if (pct === lastEmittedPct || (pct - lastEmittedPct < 5 && now - lastEmittedAt < 3000)) return;
+                        lastEmittedPct = pct;
+                        lastEmittedAt = now;
+                        productionLog(projectId, {
+                          runId,
+                          stage: 'aquisicao',
+                          origin: 'aquisicao',
+                          channel: 'progress',
+                          event: 'log',
+                          severity: 'info',
+                          source: 'yt-dlp',
+                          message: `Download do slot ${slotIndex + 1}: ${pct}% (${Math.round(progress.bytesDone / 1048576)} MB de ${Math.round(progress.bytesTotal / 1048576)} MB)`,
+                          details: {
+                            bytesDone: progress.bytesDone,
+                            bytesTotal: progress.bytesTotal,
+                            url: targetUrl,
+                          },
+                        });
+                      },
+                    }
+                  : {}),
               });
               return out.relativePath ? join(dir, out.relativePath) : null;
             },
@@ -2150,56 +2293,165 @@ export function registerAetheraDomainIpc(options: {
           signal,
           preferredUrl,
         );
+        if (projectId) {
+          productionLog(projectId, {
+            runId,
+            stage: 'aquisicao',
+            origin: 'aquisicao',
+            channel: 'result',
+            event: acq.filePath ? 'command_completed' : 'command_failed',
+            severity: acq.filePath ? 'info' : 'warn',
+            source: 'yt-dlp',
+            message: acq.filePath
+              ? `Slot ${slotIndex + 1} adquirido via ${acq.provider ?? 'fonte local'}`
+              : `Slot ${slotIndex + 1} não encontrou mídia utilizável`,
+            details: {
+              provider: acq.provider,
+              attempts: acq.statuses.map((status) => `${status.provider}:${status.status}(${status.count})`),
+              ...(acq.filePath ? { file: basename(acq.filePath) } : {}),
+            },
+          });
+        }
         return acq.filePath;
-      } catch {
+      } catch (error) {
+        if (projectId) {
+          productionLog(projectId, {
+            runId,
+            stage: 'aquisicao',
+            origin: 'aquisicao',
+            channel: 'result',
+            event: 'command_failed',
+            severity: 'error',
+            source: 'yt-dlp',
+            message: `Aquisição do slot ${slotIndex + 1} falhou: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
         return null;
       }
     },
-    runEditorialResearch: async (interpretation, signal) => {
-      const researchPrompt = [
-        `Você é o Pesquisador Editorial Factual do Aethera Studio.`,
-        `Produza um dossiê estruturado sobre a obra "${interpretation.workTitle}" para o tema "${interpretation.theme}".`,
+    runEditorialResearch: async (interpretation, signal, context) => {
+      // FIXED prompt: direct generation imperative without verbs that suggest future action ("produza", "busque",
+ // "compile"). The original wording triggered planning behavior in the gateway proxy, causing the model to emit
+ // an introductory sentence and stop (stop_reason: end_turn, ~30 tokens) instead of generating the full JSON.
+ // Diagnostic evidence: test-gateway-editorial-fixed.ts produced 18,452 chars / 4,613 output tokens / 10 entities
+ // with this wording, vs 118 chars / 30 tokens with the original.
+ const researchPrompt = [
+        `Gere agora o seguinte JSON estruturado sobre a obra "${interpretation.workTitle}".`,
+        `Tema: ${interpretation.theme}.`,
         interpretation.requestedCount
-          ? `Identifique exatamente ${interpretation.requestedCount} entidades distintas ranqueadas pelos critérios: ${interpretation.rankingCriteria.join('; ')}.`
-          : `Identifique as entidades principais relevantes ao tema.`,
-        `Para cada entidade, liste fatos verificáveis, mecânicas/acontecimentos principais, padrões de ataque ou fases, consenso da comunidade e incertezas explícitas (diferencie fatos de opiniões; nunca invente fatos).`,
-        `Responda SOMENTE com JSON válido no formato:`,
-        `{"workTitle":"...","theme":"...","rankingCriteria":["..."],"entities":[{"entityName":"...","workTitle":"...","role":"...","rankPosition":1,"verifiedFacts":["..."],"mechanicsOrEvents":["..."],"attackPatternsOrPhases":["..."],"communityConsensus":"...","uncertainties":["..."],"sources":[{"title":"...","kind":"community"}]}],"uncertainties":["..."],"sourcesUsed":["..."]}`,
+          ? `Critérios de ranking: ${interpretation.rankingCriteria.join('; ')}. Inclua exatamente ${interpretation.requestedCount} entidades distintas.`
+          : `Inclua as entidades principais relevantes ao tema.`,
+        `Para cada entidade: entityName, workTitle, role, rankPosition, verifiedFacts, mechanicsOrEvents, attackPatternsOrPhases, communityConsensus, uncertainties, sources.`,
+        `Diferencie fatos verificáveis de opiniões. Não invente fatos.`,
+        `Não escreva introdução, explicação, saudação ou texto adicional. Não use ferramentas.`,
+        `Saída obrigatória: apenas o JSON válido abaixo, nada mais.`,
+        `{"workTitle":"${interpretation.workTitle}","theme":"${interpretation.theme}","rankingCriteria":[${interpretation.rankingCriteria.map((c) => `"${c}"`).join(',')}],"entities":[{"entityName":"...","workTitle":"${interpretation.workTitle}","role":"...","rankPosition":1,"verifiedFacts":["..."],"mechanicsOrEvents":["..."],"attackPatternsOrPhases":["..."],"communityConsensus":"...","uncertainties":["..."],"sources":[{"title":"...","kind":"community"}]}],"uncertainties":[],"sourcesUsed":["..."]}`,
       ].join('\n');
 
-      const parseDossier = (raw: string, providerUsed: string) => {
-        const match = raw.match(/\{[\s\S]*\}/);
-        if (!match) return null;
-        const parsed = JSON.parse(match[0]) as {
+      /** Structured rejection reason so the console can log why a response was discarded and the fallback chain
+       *  can distinguish content validation failure from transport/execution failure. */
+      type DossierRejection =
+        | { kind: 'no_json'; detail: string }
+        | { kind: 'invalid_json'; detail: string }
+        | { kind: 'missing_fields'; detail: string; fields: string[] }
+        | { kind: 'insufficient_entities'; detail: string; received: number; expected: number }
+        | { kind: 'introductory_only'; detail: string; textLength: number };
+
+      type DossierParseResult =
+        | { ok: true; dossier: EditorialResearchDossier }
+        | { ok: false; rejection: DossierRejection };
+
+      const parseDossier = (raw: string, providerUsed: string): DossierParseResult => {
+        // Detect introductory-only responses: short text without any JSON structure is almost always a preamble
+        // the gateway emitted before stopping. Flag it explicitly so the console shows the real problem.
+        const trimmed = raw.trim();
+        if (!trimmed.includes('{') && trimmed.length < 500) {
+          return {
+            ok: false,
+            rejection: {
+              kind: 'introductory_only',
+              detail: `Resposta introdutória sem JSON (${trimmed.length} chars). O gateway pode ter encerrado antes de gerar o dossiê completo.`,
+              textLength: trimmed.length,
+            },
+          };
+        }
+
+        // The gateway wraps JSON in ```json ... ``` fences; strip them before extraction so the regex finds
+        // the actual object. Without this, the outer braces of the fence block can confuse the parser.
+        const stripped = raw.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/g, '');
+        const match = stripped.match(/\{[\s\S]*\}/);
+        if (!match) {
+          return { ok: false, rejection: { kind: 'no_json', detail: 'Nenhum objeto JSON encontrado na resposta.' } };
+        }
+
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(match[0]) as Record<string, unknown>;
+        } catch (error) {
+          return {
+            ok: false,
+            rejection: {
+              kind: 'invalid_json',
+              detail: `JSON inválido: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          };
+        }
+
+        const workTitle = typeof parsed['workTitle'] === 'string' ? parsed['workTitle'] : '';
+        const entities = Array.isArray(parsed['entities']) ? parsed['entities'] : [];
+        const missingFields: string[] = [];
+        if (!workTitle) missingFields.push('workTitle');
+        if (!Array.isArray(parsed['entities'])) missingFields.push('entities');
+
+        if (missingFields.length > 0) {
+          return {
+            ok: false,
+            rejection: { kind: 'missing_fields', detail: `Campos obrigatórios ausentes: ${missingFields.join(', ')}`, fields: missingFields },
+          };
+        }
+
+        const expectedCount = interpretation.requestedCount ?? 0;
+        if (entities.length === 0) {
+          return {
+            ok: false,
+            rejection: { kind: 'insufficient_entities', detail: 'Lista de entidades vazia.', received: 0, expected: expectedCount },
+          };
+        }
+        if (expectedCount > 0 && entities.length < expectedCount) {
+          return {
+            ok: false,
+            rejection: {
+              kind: 'insufficient_entities',
+              detail: `Entidades insuficientes: ${entities.length} de ${expectedCount} esperadas.`,
+              received: entities.length,
+              expected: expectedCount,
+            },
+          };
+        }
+
+        const typedEntities = entities as Array<{
+          entityName?: string;
           workTitle?: string;
-          theme?: string;
-          rankingCriteria?: string[];
-          entities?: Array<{
-            entityName: string;
-            workTitle?: string;
-            role?: string;
-            rankPosition?: number;
-            verifiedFacts?: string[];
-            mechanicsOrEvents?: string[];
-            attackPatternsOrPhases?: string[];
-            communityConsensus?: string;
-            uncertainties?: string[];
-            sources?: Array<{ title: string; kind: 'official' | 'community' | 'agent_synthesis'; url?: string }>;
-          }>;
+          role?: string;
+          rankPosition?: number;
+          verifiedFacts?: string[];
+          mechanicsOrEvents?: string[];
+          attackPatternsOrPhases?: string[];
+          communityConsensus?: string;
           uncertainties?: string[];
-          sourcesUsed?: string[];
-        };
-        if (!parsed.workTitle || !Array.isArray(parsed.entities) || parsed.entities.length === 0) return null;
-        return {
+          sources?: Array<{ title: string; kind: 'official' | 'community' | 'agent_synthesis'; url?: string }>;
+        }>;
+
+        const dossier = {
           dossierId: `dossier_${interpretation.promptHash}`,
           dossierHash: createHash('sha256').update(match[0]).digest('hex').slice(0, 12),
           promptHash: interpretation.promptHash,
-          workTitle: parsed.workTitle,
-          theme: parsed.theme ?? interpretation.theme,
-          rankingCriteria: parsed.rankingCriteria ?? interpretation.rankingCriteria,
-          entities: parsed.entities.map((e) => ({
-            entityName: e.entityName,
-            workTitle: e.workTitle ?? parsed.workTitle!,
+          workTitle,
+          theme: typeof parsed['theme'] === 'string' ? parsed['theme'] : interpretation.theme,
+          rankingCriteria: Array.isArray(parsed['rankingCriteria']) ? (parsed['rankingCriteria'] as string[]) : interpretation.rankingCriteria,
+          entities: typedEntities.map((e) => ({
+            entityName: e.entityName ?? 'Desconhecido',
+            workTitle: e.workTitle ?? workTitle,
             role: e.role ?? 'boss',
             ...(e.rankPosition !== undefined ? { rankPosition: e.rankPosition } : {}),
             verifiedFacts: e.verifiedFacts ?? [],
@@ -2209,45 +2461,164 @@ export function registerAetheraDomainIpc(options: {
             uncertainties: e.uncertainties ?? [],
             sources: e.sources ?? [{ title: 'Síntese editorial', kind: 'agent_synthesis' as const }],
           })),
-          uncertainties: parsed.uncertainties ?? [],
-          sourcesUsed: parsed.sourcesUsed ?? [providerUsed],
+          uncertainties: Array.isArray(parsed['uncertainties']) ? (parsed['uncertainties'] as string[]) : [],
+          sourcesUsed: Array.isArray(parsed['sourcesUsed']) ? (parsed['sourcesUsed'] as string[]) : [providerUsed],
           providerUsed,
           createdAt: new Date().toISOString(),
         };
+
+        return { ok: true, dossier };
       };
 
-      const agy = await detectAntigravityCli();
-      if (agy.installed && agy.authenticated !== false) {
-        try {
-          const res = await runAntigravityPrompt({
-            prompt: researchPrompt,
-            cwd: app.getPath('userData'),
-            timeoutMs: 90_000,
-            signal,
+      const projectId = context?.projectId ?? `research_${interpretation.promptHash.slice(0, 8)}`;
+      const runId = `research_${interpretation.promptHash.slice(0, 8)}_${Date.now().toString(36)}`;
+      const fallbackChain = buildProductionFallbackChain({ resolveGatewayEnv: resolveClaudeGatewayEnv });
+      if (fallbackChain.length === 0) {
+        if (projectId) {
+          productionLog(projectId, {
+            runId,
+            stage: 'pesquisa',
+            origin: 'pesquisa',
+            channel: 'progress',
+            event: 'log',
+            severity: 'warn',
+            source: 'agent-router',
+            message: 'Nenhum CLI de agente disponível (Antigravity, Claude Code, Claude Gateway, Codex): pesquisa editorial não executada.',
+            ...pctField(projectId),
           });
-          const dossier = parseDossier(res.output ?? '', 'antigravity-cli');
-          if (dossier) return dossier;
-        } catch {
-          // fallback to claude / codex
         }
+        return null;
       }
-      const execFileAsync = promisify(execFile);
-      for (const [provider, cmd, args] of [
-        ['claude-cli', 'claude', ['-p', '--output-format', 'text', researchPrompt]],
-        ['codex-cli', 'codex', ['exec', researchPrompt]],
-      ] as Array<[string, string, string[]]>) {
-        try {
-          const { stdout } = await execFileAsync(cmd, args, {
-            cwd: app.getPath('userData'),
-            timeout: 90_000,
-            maxBuffer: 4 * 1024 * 1024,
-            signal,
+      // Content validation failure is distinct from transport/execution failure: when a provider returns exit=0 but
+      // the response lacks valid JSON or enough entities, the fallback chain must try the next provider instead of
+      // declaring the stage complete with empty data. We iterate manually here because runProductionAgentWithFallback
+      // only retries on ok=false, not on content rejection.
+      const exhaustedBackends = new Set<string>();
+      let lastRejection: DossierRejection | null = null;
+      let lastProvider: (typeof fallbackChain)[number] | null = null;
+
+      for (let i = 0; i < fallbackChain.length; i++) {
+        const provider = fallbackChain[i];
+        if (!provider) continue;
+        const backendKey = provider.backendKey?.() ?? null;
+
+        if (backendKey && exhaustedBackends.has(backendKey)) {
+          productionLog(projectId ?? `research_${interpretation.promptHash.slice(0, 8)}`, {
+            runId,
+            stage: 'pesquisa',
+            origin: 'agent',
+            channel: 'progress',
+            event: 'log',
+            severity: 'warn',
+            source: 'fallback-chain',
+            message: `[Fallback] ${provider.label} ignorado: mesmo backend já esgotado por tentativa anterior.`,
+            details: { backendKey, skippedProvider: provider.id },
+            ...pctField(projectId),
           });
-          const dossier = parseDossier(stdout, provider);
-          if (dossier) return dossier;
-        } catch {
-          // try next available provider
+          continue;
         }
+
+        const outcome = await runProductionAgentCommand(provider, {
+          console: productionConsole,
+          projectId: projectId ?? `research_${interpretation.promptHash.slice(0, 8)}`,
+          runId,
+          stage: 'pesquisa',
+          label: 'Pesquisa editorial',
+          prompt: researchPrompt,
+          timeoutMs: 90_000,
+          signal,
+        });
+        lastProvider = provider;
+
+        if (!outcome.ok) {
+          if (backendKey && (outcome.failureKind === 'quota_exhausted' || outcome.failureKind === 'auth_failed')) {
+            exhaustedBackends.add(backendKey);
+          }
+          const nextProvider = fallbackChain[i + 1];
+          if (nextProvider) {
+            const reasonLabel = outcome.failureKind === 'quota_exhausted'
+              ? 'quota esgotada'
+              : outcome.failureKind === 'rate_limited'
+                ? 'rate limit temporário'
+                : outcome.failureKind === 'auth_failed'
+                  ? 'falha de autenticação'
+                  : outcome.failureReason ?? 'falha desconhecida';
+            productionLog(projectId ?? `research_${interpretation.promptHash.slice(0, 8)}`, {
+              runId,
+              stage: 'pesquisa',
+              origin: 'agent',
+              channel: 'progress',
+              event: 'stage_retry',
+              severity: 'warn',
+              source: 'fallback-chain',
+              message: `[Fallback] ${provider.label} indisponível (${reasonLabel}). Tentando ${nextProvider.label}...`,
+              details: { failedProvider: provider.id, failureKind: outcome.failureKind, failureReason: outcome.failureReason, nextProvider: nextProvider.id, durationMs: outcome.durationMs, ...(backendKey ? { backendKey } : {}) },
+              ...pctField(projectId),
+            });
+          }
+          continue;
+        }
+
+        const parseResult = parseDossier(outcome.text, provider.id);
+        if (parseResult.ok) {
+          if (projectId) {
+            productionLog(projectId, {
+              runId,
+              stage: 'pesquisa',
+              origin: 'pesquisa',
+              channel: 'result',
+              event: 'log',
+              severity: 'info',
+              source: provider.id,
+              message: `Dossiê editorial validado: ${parseResult.dossier.entities.length} entidade(s) via ${provider.label}`,
+              durationMs: outcome.durationMs,
+              ...pctField(projectId),
+            });
+          }
+          return parseResult.dossier;
+        }
+
+        // Content rejected — log the structured reason and try the next provider.
+        lastRejection = parseResult.rejection;
+        const nextProvider = fallbackChain[i + 1];
+        const rejectionDetail = parseResult.rejection.kind === 'introductory_only'
+          ? `resposta introdutória (${parseResult.rejection.textLength} chars, sem JSON)`
+          : parseResult.rejection.kind === 'insufficient_entities'
+            ? `entidades insuficientes (${parseResult.rejection.received} de ${parseResult.rejection.expected})`
+            : parseResult.rejection.detail;
+        productionLog(projectId ?? `research_${interpretation.promptHash.slice(0, 8)}`, {
+          runId,
+          stage: 'pesquisa',
+          origin: 'pesquisa',
+          channel: 'progress',
+          event: 'stage_retry',
+          severity: 'warn',
+          source: provider.id,
+          message: `[Conteúdo] ${provider.label}: ${rejectionDetail}${nextProvider ? `. Tentando ${nextProvider.label}...` : ''}`,
+          details: { rejectionKind: parseResult.rejection.kind, rejectionDetail: parseResult.rejection.detail, providerUsed: provider.id, textLength: outcome.text.length, ...(nextProvider ? { nextProvider: nextProvider.id } : {}) },
+          ...pctField(projectId),
+        });
+      }
+
+      // All providers exhausted without valid content.
+      if (projectId) {
+        const finalDetail = lastRejection
+          ? lastRejection.kind === 'introductory_only'
+            ? `resposta introdutória (${lastRejection.textLength} chars)`
+            : lastRejection.detail
+          : 'todos os provedores falharam na execução';
+        productionLog(projectId, {
+          runId,
+          stage: 'pesquisa',
+          origin: 'pesquisa',
+          channel: 'progress',
+          event: 'log',
+          severity: 'error',
+          source: lastProvider?.id ?? 'agent-router',
+          message: `Pesquisa editorial incompleta: ${finalDetail}. Nenhum fato foi inventado — clique em Retomar Projeto para tentar novamente.`,
+          details: { ...(lastRejection ? { rejectionKind: lastRejection.kind, rejectionDetail: lastRejection.detail } : {}) },
+          ...pctField(projectId),
+        });
       }
       return null;
     },
@@ -2317,39 +2688,32 @@ export function registerAetheraDomainIpc(options: {
           };
         };
 
-        const execFileAsync = promisify(execFile);
-        const agy = await detectAntigravityCli();
-
-        const runWithCascade = async (promptText: string, timeoutMs: number) => {
-          if (agy.installed && agy.authenticated !== false) {
-            try {
-              const res = await runAntigravityPrompt({
-                prompt: promptText,
-                cwd: app.getPath('userData'),
-                timeoutMs,
-              });
-              const parsed = parseScriptOutput(res.output ?? '');
-              if (parsed) return { ...parsed, providerUsed: 'antigravity-cli' };
-            } catch {
-              // fallback to claude/codex
-            }
-          }
-          for (const [provider, cmd, args] of [
-            ['claude-cli', 'claude', ['-p', '--output-format', 'text', promptText]],
-            ['codex-cli', 'codex', ['exec', promptText]],
-          ] as Array<[string, string, string[]]>) {
-            try {
-              const { stdout } = await execFileAsync(cmd, args, {
-                cwd: app.getPath('userData'),
-                timeout: timeoutMs,
-                maxBuffer: 4 * 1024 * 1024,
-              });
-              const parsed = parseScriptOutput(stdout);
-              if (parsed) return { ...parsed, providerUsed: provider };
-            } catch {
-              // try next provider
-            }
-          }
+        const scriptFallbackChain = buildProductionFallbackChain({ resolveGatewayEnv: resolveClaudeGatewayEnv });
+        const runWithCascade = async (promptText: string, timeoutMs: number, blockIdx: number) => {
+          const runId = `script_b${blockIdx + 1}_${Date.now().toString(36)}`;
+          const result = await runProductionAgentWithFallback(scriptFallbackChain, {
+            console: productionConsole,
+            projectId: input.projectId,
+            runId,
+            stage: 'roteiro',
+            label: `Roteiro bloco ${blockIdx + 1}`,
+            prompt: promptText,
+            timeoutMs,
+          });
+          if (!result) return null;
+          const parsed = parseScriptOutput(result.outcome.text);
+          if (parsed) return { ...parsed, providerUsed: result.provider.id };
+          productionLog(input.projectId, {
+            runId,
+            stage: 'roteiro',
+            origin: 'agent',
+            channel: 'progress',
+            event: 'stage_retry',
+            severity: 'warn',
+            source: result.provider.id,
+            message: `Resposta de ${result.provider.label} não trouxe beats válidos para o bloco ${blockIdx + 1}; todos os provedores da cadeia foram tentados.`,
+            ...pctField(input.projectId),
+          });
           return null;
         };
 
@@ -2419,8 +2783,17 @@ export function registerAetheraDomainIpc(options: {
             `Responda SOMENTE com JSON válido: {"treatment":"resumo editorial","beats":[{"stage":"hook|promise|progression|tension|climax|resolution|cta","summary":"fala exata narrada em voz alta"}]}`,
           ].join('\n');
 
-          const res = await runWithCascade(blockPrompt, adaptiveTimeoutMs);
+          const res = await runWithCascade(blockPrompt, adaptiveTimeoutMs, blockIdx);
           if (!res) {
+            productionLog(input.projectId, {
+              stage: 'roteiro',
+              origin: 'agent',
+              channel: 'result',
+              event: 'command_failed',
+              severity: 'error',
+              source: 'agent-router',
+              message: `Nenhum agente produziu o bloco ${blockIdx + 1}/${totalBlocks} do roteiro.`,
+            });
             return null;
           }
           if (!checkpoint.treatment && res.treatment) {
@@ -2430,6 +2803,15 @@ export function registerAetheraDomainIpc(options: {
           checkpoint.providerUsed = res.providerUsed;
           checkpoint.blocks[blockIdx] = res.beats;
           writeFileSync(checkpointFile, JSON.stringify(checkpoint, null, 2), 'utf8');
+          productionLog(input.projectId, {
+            stage: 'roteiro',
+            origin: 'agent',
+            channel: 'result',
+            event: 'log',
+            severity: 'info',
+            source: res.providerUsed ?? 'agent-router',
+            message: `Bloco ${blockIdx + 1}/${totalBlocks} do roteiro concluído com ${res.beats.length} beat(s)`,
+          });
         }
 
         const allBeats = checkpoint.blocks.flat();
@@ -3729,6 +4111,8 @@ export function registerAetheraDomainIpc(options: {
       event,
       input: {
         projectId: string;
+        /** Execution id chosen by the renderer so it can open this production's console before the first event. */
+        jobId?: string;
         prompt: string;
         genre?: 'documentary' | 'gameplay_essay' | 'top_list' | 'trailer';
         format?: 'youtube_16_9' | 'shorts_9_16';
@@ -3744,6 +4128,9 @@ export function registerAetheraDomainIpc(options: {
       },
     ) => {
       ensureTrusted(event.senderFrame);
+      if (input.jobId !== undefined && !/^[A-Za-z0-9_-]{6,80}$/.test(input.jobId)) {
+        throw new Error('invalid_input: jobId inválido.');
+      }
       return stagedPipeline.start(input);
     },
   );
@@ -3801,48 +4188,88 @@ export function registerAetheraDomainIpc(options: {
     return stagedPipeline.listJobs();
   });
 
-  ipcMain.handle(
-    'cinema:console-list',
-    async (
-      event,
-      input: {
-        projectId: string;
-        limit?: number;
-        offset?: number;
-        severity?: 'info' | 'warn' | 'error' | 'debug';
-        stage?: string;
-        search?: string;
-      },
-    ) => {
-      ensureTrusted(event.senderFrame);
-      const opts: {
-        limit?: number;
-        offset?: number;
-        severity?: 'info' | 'warn' | 'error' | 'debug';
-        stage?: ProductionLogStage;
-        search?: string;
-      } = {};
-      if (input.limit !== undefined) opts.limit = input.limit;
-      if (input.offset !== undefined) opts.offset = input.offset;
-      if (input.severity !== undefined) opts.severity = input.severity;
-      if (input.stage !== undefined) opts.stage = input.stage as ProductionLogStage;
-      if (input.search !== undefined) opts.search = input.search;
-      return productionConsole.list(input.projectId, opts);
-    },
-  );
+  /** Console filters from the renderer, validated field by field (the payload is untrusted input). */
+  const parseConsoleFilters = (input: Record<string, unknown>): ProductionConsoleFilters => {
+    const opts: ProductionConsoleFilters = {};
+    const str = (key: string) => (typeof input[key] === 'string' && input[key] ? (input[key] as string) : undefined);
+    if (typeof input.limit === 'number') opts.limit = Math.max(1, Math.min(5000, Math.floor(input.limit)));
+    if (typeof input.offset === 'number') opts.offset = Math.max(0, Math.floor(input.offset));
+    if (input.tail === true) opts.tail = true;
+    if (typeof input.attempt === 'number') opts.attempt = input.attempt;
+    const severity = str('severity');
+    if (severity) opts.severity = severity as ProductionLogSeverity;
+    const stage = str('stage');
+    if (stage) opts.stage = stage as ProductionLogStage;
+    const origin = str('origin');
+    if (origin) opts.origin = origin as ProductionLogOrigin;
+    const channel = str('channel');
+    if (channel) opts.channel = channel as ProductionLogChannel;
+    const ev = str('event');
+    if (ev) opts.event = ev as ProductionLogEvent;
+    const source = str('source');
+    if (source) opts.source = source;
+    const search = str('search');
+    if (search) opts.search = search;
+    const since = str('since');
+    if (since) opts.since = since;
+    const until = str('until');
+    if (until) opts.until = until;
+    return opts;
+  };
+  /** One console = one job. `projectId` is accepted only from older renderers (legacy logs were keyed by it). */
+  const consoleJobKey = (input: unknown): string => {
+    if (typeof input === 'string' && input) return input;
+    const record = (input ?? {}) as { jobId?: unknown; projectId?: unknown };
+    if (typeof record.jobId === 'string' && record.jobId) return record.jobId;
+    if (typeof record.projectId === 'string' && record.projectId) return record.projectId;
+    throw new Error('invalid_input: jobId obrigatório para o console de produção.');
+  };
+
+  ipcMain.handle('cinema:console-list', async (event, input: Record<string, unknown>) => {
+    ensureTrusted(event.senderFrame);
+    return productionConsole.list(consoleJobKey(input), parseConsoleFilters(input ?? {}));
+  });
+
+  ipcMain.handle('cinema:console-list-all', async (event, input: Record<string, unknown> = {}) => {
+    ensureTrusted(event.senderFrame);
+    const opts: ProductionConsoleAllFilters = parseConsoleFilters(input);
+    if (Array.isArray(input.jobIds)) opts.jobIds = input.jobIds.filter((id): id is string => typeof id === 'string');
+    if (typeof input.kind === 'string' && input.kind) opts.kind = input.kind as ProductionJobKind;
+    if (typeof input.status === 'string' && input.status) opts.status = input.status as ProductionJobStatus;
+    return productionConsole.listAll(opts);
+  });
+
+  ipcMain.handle('cinema:console-jobs', async (event) => {
+    ensureTrusted(event.senderFrame);
+    return productionConsole.jobs();
+  });
+
+  ipcMain.handle('cinema:console-facets', async (event, input: unknown) => {
+    ensureTrusted(event.senderFrame);
+    return productionConsole.facets(consoleJobKey(input));
+  });
 
   ipcMain.handle(
     'cinema:console-export',
-    async (event, input: { projectId: string; format: 'json' | 'txt' }) => {
+    async (event, input: { jobId?: string; projectId?: string; format: 'json' | 'txt' }) => {
       ensureTrusted(event.senderFrame);
-      return productionConsole.export(input.projectId, input.format);
+      const format = input?.format === 'json' ? 'json' : 'txt';
+      return productionConsole.export(consoleJobKey(input), format);
     },
   );
 
-  ipcMain.handle('cinema:console-clear', async (event, projectId: string) => {
+  ipcMain.handle('cinema:console-export-all', async (event, input: { format?: 'json' | 'txt'; jobIds?: string[] } = {}) => {
     ensureTrusted(event.senderFrame);
-    productionConsole.clear(projectId);
-    return { cleared: true, projectId };
+    const jobIds = Array.isArray(input.jobIds) ? input.jobIds.filter((id): id is string => typeof id === 'string') : undefined;
+    return productionConsole.exportAll(input.format === 'json' ? 'json' : 'txt', jobIds);
+  });
+
+  /** Clears ONE job's log; other jobs (even of the same project) are never touched. */
+  ipcMain.handle('cinema:console-clear', async (event, input: unknown) => {
+    ensureTrusted(event.senderFrame);
+    const jobId = consoleJobKey(input);
+    productionConsole.clear(jobId);
+    return { cleared: true, jobId };
   });
 
   // ─── TTS Provider Registry IPC ──────────────────────────────────────────────

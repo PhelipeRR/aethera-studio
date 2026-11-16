@@ -4,6 +4,7 @@ import { ProductionConsoleAccordion } from './ProductionConsoleAccordion.js';
 import { TtsProviderSelector } from './TtsProviderSelector.js';
 
 interface StagedJobSummary {
+  jobId?: string;
   projectId: string;
   prompt: string;
   state: string;
@@ -336,53 +337,56 @@ function ProductionJobsPanel() {
         <p style={{ fontSize: 13, color: '#94a3b8' }}>Nenhuma produção em andamento.</p>
       )}
 
-      {jobs.map((job) => (
-        <div
-          key={job.projectId}
-          style={{
-            marginBottom: 12,
-            padding: 14,
-            borderRadius: 8,
-            background: '#042f2e',
-            border: '1px solid #0f766e',
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: '#ecfdf5', wordBreak: 'break-word' }}>
-                {job.prompt.slice(0, 120)}{job.prompt.length > 120 ? '…' : ''}
-              </div>
-              <div style={{ fontSize: 11, color: '#99f6e4', marginTop: 4 }}>
-                <span style={{ color: stateColor(job.state), fontWeight: 700 }}>{job.state.toUpperCase()}</span>
-                {' • '}
-                {job.progressPct}% concluído
-                {job.genre ? ` • ${job.genre}` : ''}
-                {job.startedAt ? ` • Início: ${new Date(job.startedAt).toLocaleTimeString()}` : ''}
-              </div>
-              {job.message && (
-                <div style={{ fontSize: 12, color: '#ccfbf1', marginTop: 4 }}>{job.message}</div>
-              )}
-              {job.error && (
-                <div style={{ fontSize: 11, color: '#f87171', marginTop: 4 }}>⚠ {job.error}</div>
-              )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'stretch' }}>
+        {jobs.map((job) => (
+          <div
+            key={job.projectId}
+            style={{
+              padding: 14,
+              borderRadius: 8,
+              background: '#042f2e',
+              border: '1px solid #0f766e',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              alignSelf: 'stretch',
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#ecfdf5', wordBreak: 'break-word' }}>
+              {job.prompt.slice(0, 120)}{job.prompt.length > 120 ? '…' : ''}
             </div>
-          </div>
+            <div style={{ fontSize: 11, color: '#99f6e4' }}>
+              <span style={{ color: stateColor(job.state), fontWeight: 700 }}>{job.state.toUpperCase()}</span>
+              {' • '}
+              {job.progressPct}% concluído
+              {job.genre ? ` • ${job.genre}` : ''}
+              {job.startedAt ? ` • Início: ${new Date(job.startedAt).toLocaleTimeString()}` : ''}
+              {job.updatedAt ? ` • Atualizado: ${new Date(job.updatedAt).toLocaleTimeString()}` : ''}
+              {job.jobId ? ` • Job: ${job.jobId.slice(-8)}` : ''}
+            </div>
+            {job.message && (
+              <div style={{ fontSize: 12, color: '#ccfbf1' }}>{job.message}</div>
+            )}
+            {job.error && (
+              <div style={{ fontSize: 11, color: '#f87171' }}>⚠ {job.error}</div>
+            )}
 
-          {/* Progress bar */}
-          <div style={{ height: 4, borderRadius: 2, background: '#134e4a', marginTop: 10, overflow: 'hidden' }}>
-            <div
-              style={{
-                height: '100%',
-                width: `${Math.min(100, Math.max(0, job.progressPct))}%`,
-                background: stateColor(job.state),
-                transition: 'width 0.3s ease',
-              }}
-            />
-          </div>
+            {/* Progress bar */}
+            <div style={{ height: 4, borderRadius: 2, background: '#134e4a', overflow: 'hidden' }}>
+              <div
+                style={{
+                  height: '100%',
+                  width: `${Math.min(100, Math.max(0, job.progressPct))}%`,
+                  background: stateColor(job.state),
+                  transition: 'width 0.3s ease',
+                }}
+              />
+            </div>
 
-          <ProductionConsoleAccordion projectId={job.projectId} />
-        </div>
-      ))}
+            <ProductionConsoleAccordion jobId={job.jobId ?? job.projectId} />
+          </div>
+        ))}
+      </div>
     </section>
   );
 }

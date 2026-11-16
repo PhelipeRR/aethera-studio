@@ -1,0 +1,855 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Aethera Studio — arquitetura completa",
+    "locale": "pt-BR",
+    "output": ".archify/architecture-aethera-studio-20261115-153146/aethera-studio.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/PhelipeRR/aethera-studio.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "2a988abe82808ee2b77eac6b4a09b7a378c9c08a"
+    }
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Criador",
+      "sublabel": "operador do estúdio",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "renderer",
+      "type": "frontend",
+      "label": "Renderer React 19",
+      "sublabel": "rotas /aethera/* · /video",
+      "pos": [
+        290,
+        40
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/renderer/src/main.tsx",
+          "line": 46,
+          "end_line": 56,
+          "label": "menu de rotas"
+        },
+        {
+          "path": "apps/aethera-desktop/src/renderer/src/main.tsx",
+          "line": 93,
+          "end_line": 107,
+          "label": "router"
+        },
+        {
+          "path": "apps/aethera-desktop/electron.vite.config.ts",
+          "line": 52,
+          "end_line": 53,
+          "label": "UI de desktop-shared"
+        }
+      ]
+    },
+    {
+      "id": "preload",
+      "type": "security",
+      "label": "Preload aetheraBridge",
+      "sublabel": "contextBridge · isolado",
+      "pos": [
+        540,
+        40
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/preload/index.ts",
+          "line": 4,
+          "end_line": 14
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/index.ts",
+          "line": 50,
+          "end_line": 59,
+          "label": "contextIsolation"
+        }
+      ]
+    },
+    {
+      "id": "brain_db",
+      "type": "database",
+      "label": "SQLite db/brain.db",
+      "sublabel": "tarefas · Creative Studio",
+      "pos": [
+        790,
+        40
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "packages/desktop-shared/src/main/database.ts",
+          "line": 11
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 267
+        }
+      ]
+    },
+    {
+      "id": "runtime",
+      "type": "backend",
+      "label": "Aethera Runtime",
+      "sublabel": "brief → DAG · loopback",
+      "tag": "DAG sem execução",
+      "pos": [
+        1040,
+        40
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/runtime.ts",
+          "line": 128,
+          "end_line": 163
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/runtime.ts",
+          "line": 189,
+          "end_line": 211,
+          "label": "produceFromPrompt"
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/index.ts",
+          "line": 166,
+          "end_line": 181,
+          "label": "aethera:status/produce"
+        }
+      ]
+    },
+    {
+      "id": "runtime_db",
+      "type": "database",
+      "label": "aethera-studio.db",
+      "sublabel": "production_runs privado",
+      "pos": [
+        1290,
+        40
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/runtime.ts",
+          "line": 129,
+          "end_line": 131
+        },
+        {
+          "path": "packages/integration-contracts/src/index.ts",
+          "line": 41,
+          "end_line": 44
+        }
+      ]
+    },
+    {
+      "id": "youtube",
+      "type": "cloud",
+      "label": "YouTube Data API",
+      "sublabel": "OAuth PKCE loopback",
+      "tag": "OAuth real pendente",
+      "pos": [
+        40,
+        190
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 801,
+          "end_line": 822,
+          "label": "connect OAuth"
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 863,
+          "end_line": 904,
+          "label": "publish start"
+        }
+      ]
+    },
+    {
+      "id": "main_ipc",
+      "type": "backend",
+      "label": "Electron Main · Domain IPC",
+      "sublabel": "index.ts + aethera-ipc.ts · cinema:* · tts:* · creative:* · trend-radar:* · tasks · ensureTrusted",
+      "pos": [
+        290,
+        190
+      ],
+      "size": [
+        870,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/index.ts",
+          "line": 111,
+          "end_line": 148
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 258,
+          "end_line": 267
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 2692,
+          "end_line": 2713,
+          "label": "cinema:produce"
+        }
+      ]
+    },
+    {
+      "id": "trend_sources",
+      "type": "external",
+      "label": "Fontes de tendência",
+      "sublabel": "yt-dlp · News RSS · Reddit",
+      "tag": "Trends: PLANEJADO",
+      "pos": [
+        40,
+        340
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 2541,
+          "end_line": 2562
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 2605,
+          "end_line": 2610
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/trend-radar.ts",
+          "line": 104,
+          "end_line": 108,
+          "label": "searchTrends sem conector"
+        }
+      ]
+    },
+    {
+      "id": "trend_radar",
+      "type": "backend",
+      "label": "Trend Radar",
+      "sublabel": "ideias + briefing RF-07",
+      "pos": [
+        290,
+        340
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 2537,
+          "end_line": 2540
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/trend-radar.ts",
+          "line": 177,
+          "end_line": 182
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 2636,
+          "end_line": 2655,
+          "label": "síntese via agy"
+        }
+      ]
+    },
+    {
+      "id": "creative",
+      "type": "backend",
+      "label": "Creative Studio",
+      "sublabel": "thumbs · banners · QC",
+      "pos": [
+        540,
+        340
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/creative-studio-service.ts",
+          "line": 96,
+          "end_line": 125
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/creative-studio-service.ts",
+          "line": 155,
+          "end_line": 180,
+          "label": "4 motores"
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 312,
+          "end_line": 321
+        }
+      ]
+    },
+    {
+      "id": "python_ai",
+      "type": "external",
+      "label": "Python IA local",
+      "sublabel": "SDXL-Turbo · rembg · CLIP",
+      "pos": [
+        790,
+        340
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "packages/creative-studio/src/local-ai-adapter.ts",
+          "line": 42,
+          "end_line": 60
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/creative-studio-service.ts",
+          "line": 104
+        }
+      ]
+    },
+    {
+      "id": "pipeline",
+      "type": "backend",
+      "label": "Pipeline cinematográfico",
+      "sublabel": "StagedCinemaPipeline",
+      "pos": [
+        1040,
+        340
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/cinema-pipeline.ts",
+          "line": 70,
+          "end_line": 89,
+          "label": "estados"
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/cinema-pipeline.ts",
+          "line": 645,
+          "end_line": 720
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 1907,
+          "end_line": 1917
+        }
+      ]
+    },
+    {
+      "id": "ytdlp",
+      "type": "external",
+      "label": "yt-dlp",
+      "sublabel": "busca + download mídia",
+      "pos": [
+        1290,
+        340
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 1917,
+          "end_line": 1932
+        }
+      ]
+    },
+    {
+      "id": "agents",
+      "type": "messagebus",
+      "label": "Orquestração de agentes",
+      "sublabel": "fallback RF-07 (agy → claude → codex) · VisionRouter · TaskEngine",
+      "pos": [
+        40,
+        490
+      ],
+      "size": [
+        920,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 2219,
+          "end_line": 2240,
+          "label": "pesquisa: fallback"
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 1811,
+          "end_line": 1814,
+          "label": "cadeia de visão"
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 440,
+          "end_line": 453,
+          "label": "TaskEngine"
+        }
+      ]
+    },
+    {
+      "id": "cinema",
+      "type": "backend",
+      "label": "Motor @neuralbridge/cinema",
+      "sublabel": "direção·edição·cor·QC",
+      "pos": [
+        1290,
+        490
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "packages/cinema/src/index.ts",
+          "line": 1,
+          "end_line": 30
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/cinema-pipeline.ts",
+          "line": 1585,
+          "end_line": 1610,
+          "label": "gate de cobertura"
+        }
+      ]
+    },
+    {
+      "id": "ollama",
+      "type": "external",
+      "label": "Ollama VLM local",
+      "sublabel": "127.0.0.1:11434",
+      "pos": [
+        40,
+        640
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "packages/orchestrator/src/aethera/vision-providers.ts",
+          "line": 99,
+          "end_line": 103
+        }
+      ]
+    },
+    {
+      "id": "antigravity",
+      "type": "external",
+      "label": "Antigravity CLI",
+      "sublabel": "agy · 1º na cadeia RF-07",
+      "pos": [
+        290,
+        640
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/antigravity-cli.ts",
+          "line": 26,
+          "end_line": 52
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/runtime.ts",
+          "line": 97,
+          "end_line": 105
+        }
+      ]
+    },
+    {
+      "id": "claude",
+      "type": "external",
+      "label": "Claude Code CLI",
+      "sublabel": "claude -p · Gateway opcional",
+      "pos": [
+        540,
+        640
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 295,
+          "end_line": 309,
+          "label": "Claude Gateway env"
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 2236
+        }
+      ]
+    },
+    {
+      "id": "codex",
+      "type": "external",
+      "label": "Codex CLI",
+      "sublabel": "codex exec · fallback",
+      "pos": [
+        790,
+        640
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 2237
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/runtime.ts",
+          "line": 94,
+          "end_line": 96
+        }
+      ]
+    },
+    {
+      "id": "files",
+      "type": "database",
+      "label": "Workspaces cinema-*",
+      "sublabel": "jobs JSON · mídia · MP4",
+      "pos": [
+        1040,
+        640
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/cinema-pipeline.ts",
+          "line": 336,
+          "end_line": 353
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/aethera-ipc.ts",
+          "line": 1907,
+          "end_line": 1914
+        }
+      ]
+    },
+    {
+      "id": "render",
+      "type": "backend",
+      "label": "Render MP4 real",
+      "sublabel": "FFmpeg · NVENC opcional",
+      "pos": [
+        1290,
+        640
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "packages/cinema/src/render/real-renderer.ts",
+          "line": 272
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/cinema-pipeline.ts",
+          "line": 1703,
+          "end_line": 1720
+        }
+      ]
+    },
+    {
+      "id": "tts",
+      "type": "external",
+      "label": "Provedores TTS",
+      "sublabel": "VoiceStudio · ElevenLabs",
+      "pos": [
+        1290,
+        790
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "apps/aethera-desktop/src/main/tts-providers.ts",
+          "line": 92,
+          "end_line": 96
+        },
+        {
+          "path": "apps/aethera-desktop/src/main/tts-providers.ts",
+          "line": 167,
+          "end_line": 169
+        },
+        {
+          "path": "packages/cinema/src/render/real-renderer.ts",
+          "line": 170,
+          "end_line": 200,
+          "label": "fallback SAPI"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "use-ui",
+      "from": "user",
+      "to": "renderer",
+      "label": "usa",
+      "variant": "emphasis"
+    },
+    {
+      "id": "invoke",
+      "from": "renderer",
+      "to": "preload",
+      "label": "invoke",
+      "variant": "emphasis"
+    },
+    {
+      "id": "ipc",
+      "from": "preload",
+      "to": "main_ipc",
+      "label": "IPC",
+      "variant": "security"
+    },
+    {
+      "id": "open-db",
+      "from": "main_ipc",
+      "to": "brain_db",
+      "label": "SQL"
+    },
+    {
+      "id": "start-runtime",
+      "from": "main_ipc",
+      "to": "runtime",
+      "label": "aethera:*"
+    },
+    {
+      "id": "runs",
+      "from": "runtime",
+      "to": "runtime_db",
+      "label": "runs"
+    },
+    {
+      "id": "publish",
+      "from": "main_ipc",
+      "to": "youtube",
+      "label": "upload"
+    },
+    {
+      "id": "trend-ipc",
+      "from": "main_ipc",
+      "to": "trend_radar",
+      "label": "trend"
+    },
+    {
+      "id": "creative-ipc",
+      "from": "main_ipc",
+      "to": "creative",
+      "label": "creative"
+    },
+    {
+      "id": "cinema-ipc",
+      "from": "main_ipc",
+      "to": "pipeline",
+      "label": "cinema",
+      "variant": "emphasis"
+    },
+    {
+      "id": "trend-search",
+      "from": "trend_radar",
+      "to": "trend_sources",
+      "label": "busca"
+    },
+    {
+      "id": "spawn-python",
+      "from": "creative",
+      "to": "python_ai",
+      "label": "spawn"
+    },
+    {
+      "id": "acquire",
+      "from": "pipeline",
+      "to": "ytdlp",
+      "label": "baixa"
+    },
+    {
+      "id": "trend-agents",
+      "from": "trend_radar",
+      "to": "agents",
+      "label": "RF-07"
+    },
+    {
+      "id": "creative-agents",
+      "from": "creative",
+      "to": "agents",
+      "label": "engines"
+    },
+    {
+      "id": "pipeline-agents",
+      "from": "pipeline",
+      "to": "agents",
+      "label": "pesquisa · roteiro · visão"
+    },
+    {
+      "id": "pipeline-cinema",
+      "from": "pipeline",
+      "to": "cinema",
+      "label": "pacote",
+      "variant": "emphasis"
+    },
+    {
+      "id": "save-job",
+      "from": "pipeline",
+      "to": "files",
+      "label": "saveJob"
+    },
+    {
+      "id": "to-render",
+      "from": "cinema",
+      "to": "render",
+      "label": "render",
+      "variant": "emphasis"
+    },
+    {
+      "id": "write-mp4",
+      "from": "render",
+      "to": "files",
+      "label": "MP4"
+    },
+    {
+      "id": "narration",
+      "from": "render",
+      "to": "tts",
+      "label": "narração"
+    },
+    {
+      "id": "vision-local",
+      "from": "agents",
+      "to": "ollama",
+      "label": "HTTP"
+    },
+    {
+      "id": "run-agy",
+      "from": "agents",
+      "to": "antigravity",
+      "label": "exec"
+    },
+    {
+      "id": "run-claude",
+      "from": "agents",
+      "to": "claude",
+      "label": "exec"
+    },
+    {
+      "id": "run-codex",
+      "from": "agents",
+      "to": "codex",
+      "label": "exec"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Pipeline cinematográfico (implementado)",
+      "items": [
+        "Etapas: interpretação → pesquisa → roteiro → decupagem → aquisição → validação visual → planejamento → montagem → áudio/SFX/VFX → prévia MP4 → editor",
+        "Retomável: pausa em paused_pending_research / _script / _media em vez de inventar fatos ou mídia",
+        "Prévia: renderRealCinemaMp4 + supervisor visual com no máximo um ciclo de rerender por cena",
+        "Memórias do Evolution Core e da Academy entram no roteiro e no cinema:produce"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Orquestração de IA",
+      "items": [
+        "Pesquisa e roteiro: Antigravity primeiro, depois claude -p e codex exec (execFile, sem TaskEngine)",
+        "Visão: local-vlm → claude-gateway → antigravity → claude → codex → SigLIP → heurística FFmpeg",
+        "Creative Studio: 4 motores (claude-code, codex-cli, antigravity-cli, claude-gateway) com fallback",
+        "TaskEngine (claude + codex) atende tarefas e visão; adaptadores rodam em modo read-only no runtime"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Planejado / parcial",
+      "items": [
+        "Google Trends: conector searchTrends declarado no Trend Radar, sem implementação no IPC",
+        "Runtime produceFromPrompt cria run, DAG e metadados, mas não executa os agentes",
+        "OAuth real do Google/YouTube: código pronto, homologação com credenciais externas pendente",
+        "Instalador NSIS dist:win:aethera: configurado, execução pendente"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Ecossistema e dados",
+      "items": [
+        "Servidor loopback + discovery em SingularityEcosystem/discovery; pareamento opcional com Orchestrator e Void",
+        "Dois SQLite: aethera-studio.db (runtime) e db/brain.db (tarefas, Creative Studio, repositórios)",
+        "Protocolo aethera-media:// serve mídia local com extensões permitidas",
+        "Production Console grava logs por etapa em cinema-console-logs"
+      ]
+    }
+  ]
+}

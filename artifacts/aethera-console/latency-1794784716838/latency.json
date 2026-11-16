@@ -1,0 +1,25 @@
+[
+  {
+    "provider": "antigravity-cli",
+    "ok": false,
+    "durationMs": 5686,
+    "failureReason": "exit code 3",
+    "textChars": 313,
+    "jsonParsed": true
+  },
+  {
+    "provider": "claude-cli",
+    "ok": true,
+    "durationMs": 39747,
+    "textChars": 9972,
+    "jsonParsed": true
+  },
+  {
+    "provider": "codex-cli",
+    "ok": false,
+    "durationMs": 3599,
+    "failureReason": "exit code 1",
+    "textChars": 0,
+    "jsonParsed": false
+  }
+]

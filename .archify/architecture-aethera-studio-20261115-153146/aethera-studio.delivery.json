@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "bd0b345f-9d47-4356-9d5c-6b7658e92aaf",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\dev\\neuralbridge-studio\\.archify\\architecture-aethera-studio-20261115-153146\\candidate.json",
+  "output": "C:\\dev\\neuralbridge-studio\\.archify\\architecture-aethera-studio-20261115-153146\\aethera-studio.html",
+  "specification": {
+    "sha256": "84913bf031a4ce712fce8ef2c175cd7d349085789414d395536536b8781fe973",
+    "bytes": 20343
+  },
+  "artifact": {
+    "sha256": "57c476643beb0ad5fdd7fb9fe0e9dc32834a50e78dafe8dcb698136c23bf37e9",
+    "bytes": 895791
+  }
+}

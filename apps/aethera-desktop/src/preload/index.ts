@@ -8,6 +8,18 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   planRevisionCommand: (instruction: string) => ipcRenderer.invoke('aethera:revise-command', instruction),
   pairPeer: (targetApp: 'orchestrator' | 'void') => ipcRenderer.invoke('aethera:pair-peer', targetApp),
   cinemaCapabilities: () => ipcRenderer.invoke('cinema:capabilities'),
+  // Configurações → Fontes de mídia. Secrets go main-ward only; responses carry masked hints.
+  mediaSourcesList: () => ipcRenderer.invoke('media-sources:list'),
+  mediaSourcesSaveSettings: (input: {
+    providers?: Record<string, { enabled?: boolean; priority?: number }>;
+    allowEditorialPromotionalUse?: boolean;
+    commercialUse?: boolean;
+  }) => ipcRenderer.invoke('media-sources:save-settings', input),
+  mediaSourcesSaveCredential: (input: { provider: string; values: Record<string, string> }) =>
+    ipcRenderer.invoke('media-sources:save-credential', input),
+  mediaSourcesClearCredential: (input: { provider: string }) =>
+    ipcRenderer.invoke('media-sources:clear-credential', input),
+  mediaSourcesTest: (input: { provider: string }) => ipcRenderer.invoke('media-sources:test', input),
   cinemaProduce: (input: Record<string, unknown>) => ipcRenderer.invoke('cinema:produce', input),
   cinemaExportOtio: (projectId: string) => ipcRenderer.invoke('cinema:export-otio', projectId),
   cinemaRepair: (projectId: string) => ipcRenderer.invoke('cinema:repair', projectId),
@@ -139,17 +151,33 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
     ipcRenderer.on('cinema:production-progress', wrapped);
     return () => ipcRenderer.removeListener('cinema:production-progress', wrapped);
   },
+  /** Console of ONE production job (jobId). `projectId` is still accepted for logs written before jobs existed. */
   cinemaConsoleList: (input: {
-    projectId: string;
+    jobId?: string;
+    projectId?: string;
     limit?: number;
     offset?: number;
+    tail?: boolean;
+    attempt?: number;
     severity?: 'info' | 'warn' | 'error' | 'debug';
     stage?: string;
+    origin?: string;
+    channel?: string;
+    event?: string;
+    source?: string;
     search?: string;
+    since?: string;
+    until?: string;
   }) => ipcRenderer.invoke('cinema:console-list', input),
-  cinemaConsoleExport: (input: { projectId: string; format: 'json' | 'txt' }) =>
+  /** General console: every job merged in emission order. */
+  cinemaConsoleListAll: (input: Record<string, unknown> = {}) => ipcRenderer.invoke('cinema:console-list-all', input),
+  cinemaConsoleJobs: () => ipcRenderer.invoke('cinema:console-jobs'),
+  cinemaConsoleFacets: (jobId: string) => ipcRenderer.invoke('cinema:console-facets', jobId),
+  cinemaConsoleExport: (input: { jobId?: string; projectId?: string; format: 'json' | 'txt' }) =>
     ipcRenderer.invoke('cinema:console-export', input),
-  cinemaConsoleClear: (projectId: string) => ipcRenderer.invoke('cinema:console-clear', projectId),
+  cinemaConsoleExportAll: (input: { format: 'json' | 'txt'; jobIds?: string[] }) =>
+    ipcRenderer.invoke('cinema:console-export-all', input),
+  cinemaConsoleClear: (jobId: string) => ipcRenderer.invoke('cinema:console-clear', jobId),
   ttsListProviders: () => ipcRenderer.invoke('tts:list-providers'),
   ttsListVoices: (providerId: string) => ipcRenderer.invoke('tts:list-voices', providerId),
   ttsHealthCheck: (providerId: string) => ipcRenderer.invoke('tts:health-check', providerId),

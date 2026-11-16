@@ -66,6 +66,7 @@ import {
   type TimelinePlacementRecord,
 } from '@neuralbridge/cinema';
 import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
+import { createProductionJobId } from './production-console.js';
 
 export type ProductionStageState =
   | 'idle'
@@ -99,6 +100,14 @@ export interface PendingMediaSlot {
 
 export interface StagedProductionJob {
   projectId: string;
+  /**
+   * Unique id of this production execution. A project can run several productions over time, so the console, the
+   * stage tracker and the UI key on `jobId`, never on `projectId`. Jobs saved before this field existed use their
+   * project id (so their console history stays readable).
+   */
+  jobId?: string;
+  /** 1 on the first run; +1 every time the job is resumed or retried. */
+  attempt?: number;
   prompt: string;
   genre?: CinemaGenre;
   format?: DeliveryFormat;
@@ -192,6 +201,7 @@ export interface StagedPipelineDeps {
     query: string,
     slotIndex: number,
     signal: AbortSignal,
+    context?: { projectId: string },
   ) => Promise<SearchCandidate[]>;
   acquireExternalMedia?: (
     query: string,
@@ -199,10 +209,12 @@ export interface StagedPipelineDeps {
     mediaDir: string,
     signal: AbortSignal,
     preferredUrl?: string,
+    context?: { projectId: string },
   ) => Promise<string | null>;
   runEditorialResearch?: (
     interpretation: PromptInterpretation,
     signal: AbortSignal,
+    context?: { projectId: string },
   ) => Promise<EditorialResearchDossier | null>;
   generateAgentScript?: (input: {
     projectId: string;
@@ -316,6 +328,14 @@ export async function buildSourceMediaFromFile(
 
 export class StagedCinemaPipeline {
   private readonly controllers = new Map<string, AbortController>();
+  /**
+   * Execution that currently owns each project workspace (job + attempt). A run that was superseded — the job was
+   * resumed (new attempt) or a new production of the same project started — keeps unwinding after its abort; its late
+   * writes must not overwrite the job file or the console of the run that replaced it.
+   */
+  private readonly currentRun = new Map<string, { jobId: string; attempt: number }>();
+  /** Runs (`jobId#attempt`) the user cancelled: until they unwind, the only state they may still write is `cancelled`. */
+  private readonly cancelledRuns = new Set<string>();
   readonly workspacesDir: string;
   readonly cacheDir: string;
   readonly cache: CinemaSmartCache;
@@ -399,7 +419,19 @@ export class StagedCinemaPipeline {
     return jobs.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
   }
 
+  private isSuperseded(job: StagedProductionJob): boolean {
+    const current = this.currentRun.get(job.projectId);
+    if (!current) return false;
+    return current.jobId !== (job.jobId ?? job.projectId) || (job.attempt ?? 1) < current.attempt;
+  }
+
+  private runKey(job: StagedProductionJob): string {
+    return `${job.jobId ?? job.projectId}#${job.attempt ?? 1}`;
+  }
+
   private saveJob(job: StagedProductionJob): StagedProductionJob {
+    if (this.isSuperseded(job)) return job;
+    if (job.state !== 'cancelled' && this.cancelledRuns.has(this.runKey(job))) return job;
     job.updatedAt = new Date().toISOString();
     writeFileSync(this.jobFile(job.projectId), JSON.stringify(job, null, 2), 'utf8');
     this.deps.onProgress?.(job);
@@ -414,6 +446,7 @@ export class StagedCinemaPipeline {
     }
     const existing = this.loadJob(projectId);
     if (!existing) return null;
+    this.cancelledRuns.add(this.runKey(existing));
     existing.state = 'cancelled';
     existing.message = 'Produção cancelada pelo usuário. Progresso preservado para retomada.';
     return this.saveJob(existing);
@@ -498,6 +531,8 @@ export class StagedCinemaPipeline {
       ctrl.abort();
       this.controllers.delete(projectId);
     }
+    // tombstone: a run still unwinding after the abort must not recreate the deleted job file
+    this.currentRun.set(projectId, { jobId: '__deleted__', attempt: Number.MAX_SAFE_INTEGER });
 
     const removedPaths: string[] = [];
     const safeId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -581,6 +616,8 @@ export class StagedCinemaPipeline {
 
   async start(input: {
     projectId: string;
+    /** Optional caller-provided execution id; a new unique id is generated otherwise. */
+    jobId?: string;
     prompt: string;
     genre?: CinemaGenre;
     format?: DeliveryFormat;
@@ -597,6 +634,8 @@ export class StagedCinemaPipeline {
     const projectPaths = this.ensureProjectWorkspace(input.projectId, input.prompt);
     const job: StagedProductionJob = {
       projectId: input.projectId,
+      jobId: input.jobId ?? createProductionJobId('job'),
+      attempt: 1,
       prompt: input.prompt,
       ...(input.genre ? { genre: input.genre } : {}),
       ...(input.format ? { format: input.format } : {}),
@@ -618,6 +657,7 @@ export class StagedCinemaPipeline {
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    this.currentRun.set(input.projectId, { jobId: job.jobId ?? input.projectId, attempt: 1 });
 
     if (input.seedMediaFiles?.length) {
       for (let i = 0; i < input.seedMediaFiles.length; i += 1) {
@@ -633,7 +673,7 @@ export class StagedCinemaPipeline {
     }
 
     this.saveJob(job);
-    return this.runOrResume(job);
+    return this.runOrResume(job, true);
   }
 
   async resume(projectId: string): Promise<StagedProductionJob> {
@@ -642,7 +682,11 @@ export class StagedCinemaPipeline {
     return this.runOrResume(job);
   }
 
-  private async runOrResume(job: StagedProductionJob): Promise<StagedProductionJob> {
+  private async runOrResume(job: StagedProductionJob, fresh = false): Promise<StagedProductionJob> {
+    // Same job, new attempt: the console keeps one history per job and tags each entry with the attempt.
+    job.jobId ??= job.projectId;
+    job.attempt = fresh ? (job.attempt ?? 1) : (job.attempt ?? 1) + 1;
+    this.currentRun.set(job.projectId, { jobId: job.jobId, attempt: job.attempt });
     const existingCtrl = this.controllers.get(job.projectId);
     if (existingCtrl) existingCtrl.abort();
     const ctrl = new AbortController();
@@ -701,7 +745,11 @@ export class StagedCinemaPipeline {
         this.saveJob(job);
 
         if (this.deps.runEditorialResearch) {
-          const dossier = await this.deps.runEditorialResearch(nextInterpretation, signal);
+          const dossier = await this.deps.runEditorialResearch(nextInterpretation, signal, {
+            projectId: job.projectId,
+          });
+          // An aborted research returns no dossier: that is a cancellation, not a research failure.
+          checkCancelled();
           const check = validateEditorialResearchDossier(dossier, nextInterpretation);
           if (!dossier || !check.valid) {
             job.state = 'paused_pending_research';
@@ -766,6 +814,7 @@ export class StagedCinemaPipeline {
         } catch {
           externalDirection = undefined;
         }
+        checkCancelled();
         if (!externalDirection && !job.allowDeterministicScriptFallback) {
           job.state = 'paused_pending_script';
           job.progressPct = 34;
@@ -979,6 +1028,21 @@ export class StagedCinemaPipeline {
 
           const auditedDeps: ResilientAcquisitionDeps = {
             ...baseDeps,
+            // Scope provider telemetry and downloads to this job so console lines land in the right production.
+            ...(baseDeps.mediaProviders
+              ? {
+                  mediaProviders: {
+                    ...baseDeps.mediaProviders,
+                    context: {
+                      ...(baseDeps.mediaProviders.context ?? {}),
+                      jobId: job.projectId,
+                      projectId: job.projectId,
+                      prompt: job.prompt,
+                      ...(job.genre ? { genre: job.genre } : {}),
+                    },
+                  },
+                }
+              : {}),
             localMediaDirs: [...new Set([projectPaths.mediaDir, ...(baseDeps.localMediaDirs ?? [])])],
             ...(baseDeps.ytDlpSearchFn
               ? {
@@ -1234,7 +1298,9 @@ export class StagedCinemaPipeline {
 
           if (this.deps.searchExternalMedia) {
             try {
-              const candidates = await this.deps.searchExternalMedia(query, i, signal);
+              const candidates = await this.deps.searchExternalMedia(query, i, signal, {
+                projectId: job.projectId,
+              });
               matchedCandidate = candidates[i % Math.max(1, candidates.length)] ?? candidates[0];
               if (matchedCandidate?.url) {
                 const cacheHit = this.cache.findVerifiedMatch({
@@ -1281,6 +1347,7 @@ export class StagedCinemaPipeline {
                 projectPaths.mediaDir,
                 signal,
                 matchedCandidate?.url,
+                { projectId: job.projectId },
               );
             } catch {
               acquiredUri = null;
@@ -1789,6 +1856,7 @@ export class StagedCinemaPipeline {
                 `${recoveryQuery} gameplay trailer`,
                 10 + rIdx,
                 signal,
+                { projectId: job.projectId },
               );
               const pickedUrl = candidates[0]?.url;
               const downloadedPath = await this.deps.acquireExternalMedia(
@@ -1797,6 +1865,7 @@ export class StagedCinemaPipeline {
                 projectPaths.mediaDir,
                 signal,
                 pickedUrl,
+                { projectId: job.projectId },
               );
               if (downloadedPath) {
                 const recoveredRecord = await buildSourceMediaFromFile(
@@ -1951,7 +2020,9 @@ export class StagedCinemaPipeline {
       job.message = `Falha na etapa "${job.state}": ${job.error}`;
       return this.saveJob(job);
     } finally {
-      this.controllers.delete(job.projectId);
+      // Only the run that still owns the project releases its controller; a superseded run must not drop the
+      // controller of the run that replaced it (cancel would stop working).
+      if (this.controllers.get(job.projectId) === ctrl) this.controllers.delete(job.projectId);
     }
   }
 }

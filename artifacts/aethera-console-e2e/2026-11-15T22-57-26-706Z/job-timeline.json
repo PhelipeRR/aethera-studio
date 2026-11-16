@@ -1,0 +1,410 @@
+{
+  "projectId": "console-e2e-mwifq3a7",
+  "finalState": {
+    "state": "paused_pending_research",
+    "pct": 20,
+    "message": "Pesquisa editorial incompleta (Dossiê de pesquisa ausente.). Nenhum fato foi inventado — clique em Retomar Projeto para tentar novamente.",
+    "error": "research_failed: Dossiê de pesquisa ausente."
+  },
+  "timeline": [
+    {
+      "at": 2,
+      "state": "pesquisa",
+      "pct": 18,
+      "message": "Pesquisando fatos, entidades e critérios sobre Cena 1 montanha ao amanhecer, Cena 2 oceano com ..."
+    },
+    {
+      "at": 18,
+      "state": "paused_pending_research",
+      "pct": 20,
+      "message": "Pesquisa editorial incompleta (Dossiê de pesquisa ausente.). Nenhum fato foi inventado — clique em Retomar Projeto para tentar novamente.",
+      "error": "research_failed: Dossiê de pesquisa ausente."
+    }
+  ],
+  "progressEvents": [
+    {
+      "projectId": "console-e2e-mwifq3a7",
+      "prompt": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ondas, Cena 3 cidade à noite",
+      "targetDurationSec": 10,
+      "humorIntensity": 20,
+      "renderProfile": "draft_540p",
+      "useNvenc": false,
+      "state": "prompt",
+      "progressPct": 5,
+      "message": "Analisando prompt e extraindo intenções de cena...",
+      "completedStages": [
+        "prompt"
+      ],
+      "acquiredMedia": [
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_1",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_1.mp4",
+          "sha256": "a2382a8e23b5155693ca634bf97ea859d3857bb248fa541d23abdf0bddef7d75",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_2",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_2.mp4",
+          "sha256": "ed5ce1877e6e051ac2278f93dd0aa442e2fb8e3f0eaac56334775b0caa789b11",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_3",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_3.mp4",
+          "sha256": "c900540a24e26261b9c359d2aca0b306bfec8ae34eaf05085a0fe0ee91b0e11b",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        }
+      ],
+      "pendingMedia": [],
+      "workspaceDir": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7",
+      "startedAt": "2026-11-15T22:57:27.905Z",
+      "updatedAt": "2026-11-15T22:57:28.322Z"
+    },
+    {
+      "projectId": "console-e2e-mwifq3a7",
+      "prompt": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ondas, Cena 3 cidade à noite",
+      "targetDurationSec": 10,
+      "humorIntensity": 20,
+      "renderProfile": "draft_540p",
+      "useNvenc": false,
+      "state": "interpretacao",
+      "progressPct": 8,
+      "message": "Interpretando prompt, obra, entidades e critérios editoriais...",
+      "completedStages": [
+        "prompt",
+        "interpretacao"
+      ],
+      "acquiredMedia": [
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_1",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_1.mp4",
+          "sha256": "a2382a8e23b5155693ca634bf97ea859d3857bb248fa541d23abdf0bddef7d75",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_2",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_2.mp4",
+          "sha256": "ed5ce1877e6e051ac2278f93dd0aa442e2fb8e3f0eaac56334775b0caa789b11",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_3",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_3.mp4",
+          "sha256": "c900540a24e26261b9c359d2aca0b306bfec8ae34eaf05085a0fe0ee91b0e11b",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        }
+      ],
+      "pendingMedia": [],
+      "workspaceDir": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7",
+      "startedAt": "2026-11-15T22:57:27.905Z",
+      "updatedAt": "2026-11-15T22:57:28.327Z",
+      "invalidationReport": {
+        "researchValid": false,
+        "scriptValid": false,
+        "decupagemValid": false,
+        "validSceneIds": [],
+        "invalidatedSceneIds": [],
+        "reasons": []
+      },
+      "interpretation": {
+        "promptHash": "1a0d0d9f6351",
+        "originalPrompt": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ondas, Cena 3 cidade à noite",
+        "workTitle": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ",
+        "domain": "general",
+        "theme": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ondas, Cena 3 cidade à noite",
+        "formatIntent": "narrative_essay",
+        "rankingCriteria": [
+          "Relevância factual para o tema",
+          "Impacto narrativo na obra"
+        ],
+        "targetDurationSec": 10,
+        "tone": "analítico e envolvente",
+        "humorIntensity": 20,
+        "language": "pt-BR"
+      }
+    },
+    {
+      "projectId": "console-e2e-mwifq3a7",
+      "prompt": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ondas, Cena 3 cidade à noite",
+      "targetDurationSec": 10,
+      "humorIntensity": 20,
+      "renderProfile": "draft_540p",
+      "useNvenc": false,
+      "state": "pesquisa",
+      "progressPct": 18,
+      "message": "Pesquisando fatos, entidades e critérios sobre Cena 1 montanha ao amanhecer, Cena 2 oceano com ...",
+      "completedStages": [
+        "prompt",
+        "interpretacao"
+      ],
+      "acquiredMedia": [
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_1",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_1.mp4",
+          "sha256": "a2382a8e23b5155693ca634bf97ea859d3857bb248fa541d23abdf0bddef7d75",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_2",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_2.mp4",
+          "sha256": "ed5ce1877e6e051ac2278f93dd0aa442e2fb8e3f0eaac56334775b0caa789b11",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_3",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_3.mp4",
+          "sha256": "c900540a24e26261b9c359d2aca0b306bfec8ae34eaf05085a0fe0ee91b0e11b",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        }
+      ],
+      "pendingMedia": [],
+      "workspaceDir": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7",
+      "startedAt": "2026-11-15T22:57:27.905Z",
+      "updatedAt": "2026-11-15T22:57:28.329Z",
+      "invalidationReport": {
+        "researchValid": false,
+        "scriptValid": false,
+        "decupagemValid": false,
+        "validSceneIds": [],
+        "invalidatedSceneIds": [],
+        "reasons": []
+      },
+      "interpretation": {
+        "promptHash": "1a0d0d9f6351",
+        "originalPrompt": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ondas, Cena 3 cidade à noite",
+        "workTitle": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ",
+        "domain": "general",
+        "theme": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ondas, Cena 3 cidade à noite",
+        "formatIntent": "narrative_essay",
+        "rankingCriteria": [
+          "Relevância factual para o tema",
+          "Impacto narrativo na obra"
+        ],
+        "targetDurationSec": 10,
+        "tone": "analítico e envolvente",
+        "humorIntensity": 20,
+        "language": "pt-BR"
+      }
+    },
+    {
+      "projectId": "console-e2e-mwifq3a7",
+      "prompt": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ondas, Cena 3 cidade à noite",
+      "targetDurationSec": 10,
+      "humorIntensity": 20,
+      "renderProfile": "draft_540p",
+      "useNvenc": false,
+      "state": "paused_pending_research",
+      "progressPct": 20,
+      "message": "Pesquisa editorial incompleta (Dossiê de pesquisa ausente.). Nenhum fato foi inventado — clique em Retomar Projeto para tentar novamente.",
+      "completedStages": [
+        "prompt",
+        "interpretacao"
+      ],
+      "acquiredMedia": [
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_1",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_1.mp4",
+          "sha256": "a2382a8e23b5155693ca634bf97ea859d3857bb248fa541d23abdf0bddef7d75",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_2",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_2.mp4",
+          "sha256": "ed5ce1877e6e051ac2278f93dd0aa442e2fb8e3f0eaac56334775b0caa789b11",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        },
+        {
+          "mediaId": "console-e2e-mwifq3a7_seed_3",
+          "uri": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7\\media\\seed_3.mp4",
+          "sha256": "c900540a24e26261b9c359d2aca0b306bfec8ae34eaf05085a0fe0ee91b0e11b",
+          "kind": "video",
+          "origin": "local",
+          "license": "user_owned",
+          "duration": {
+            "value": 120,
+            "rate": 30
+          },
+          "width": 960,
+          "height": 540,
+          "fps": {
+            "value": 30,
+            "rate": 1
+          },
+          "hasAudio": true
+        }
+      ],
+      "pendingMedia": [],
+      "workspaceDir": "C:\\Users\\Pheli\\AppData\\Local\\Temp\\aethera-console-e2e-EAeGWM\\AppData\\Roaming\\AetheraStudio\\cinema-workspaces\\console-e2e-mwifq3a7",
+      "startedAt": "2026-11-15T22:57:27.905Z",
+      "updatedAt": "2026-11-15T22:57:45.123Z",
+      "invalidationReport": {
+        "researchValid": false,
+        "scriptValid": false,
+        "decupagemValid": false,
+        "validSceneIds": [],
+        "invalidatedSceneIds": [],
+        "reasons": []
+      },
+      "interpretation": {
+        "promptHash": "1a0d0d9f6351",
+        "originalPrompt": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ondas, Cena 3 cidade à noite",
+        "workTitle": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ",
+        "domain": "general",
+        "theme": "Cena 1 montanha ao amanhecer, Cena 2 oceano com ondas, Cena 3 cidade à noite",
+        "formatIntent": "narrative_essay",
+        "rankingCriteria": [
+          "Relevância factual para o tema",
+          "Impacto narrativo na obra"
+        ],
+        "targetDurationSec": 10,
+        "tone": "analítico e envolvente",
+        "humorIntensity": 20,
+        "language": "pt-BR"
+      },
+      "error": "research_failed: Dossiê de pesquisa ausente."
+    }
+  ]
+}

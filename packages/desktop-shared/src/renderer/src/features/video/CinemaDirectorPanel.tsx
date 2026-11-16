@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   Bot,
@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router';
+import { ProductionConsoleAccordion } from './ProductionConsoleAccordion';
 import { healthOf, useAgents } from '@/app/useAgents';
 import { notify } from '@/components/NotificationsOverlay';
 import { TrendRadarPanel, type TrendRadarBridgeApi } from './TrendRadarPanel';
@@ -95,6 +96,9 @@ interface PendingMediaSlotView {
 
 interface StagedJobView {
   projectId: string;
+  /** Unique id of this production execution (the console key). Older jobs fall back to their project id. */
+  jobId?: string;
+  attempt?: number;
   prompt: string;
   state: string;
   progressPct: number;
@@ -107,6 +111,21 @@ interface StagedJobView {
   error?: string;
   startedAt?: string;
   updatedAt?: string;
+}
+
+/** Identity of a production execution: never the project alone, since a project can run several productions. */
+function jobKeyOf(job: Pick<StagedJobView, 'jobId' | 'projectId'>): string {
+  return job.jobId ?? job.projectId;
+}
+
+function newProductionJobId(): string {
+  return `job_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+const TERMINAL_JOB_STATES = new Set(['editor', 'cancelled', 'error']);
+
+function isJobRunning(job: Pick<StagedJobView, 'state'> | null | undefined): boolean {
+  return Boolean(job && !TERMINAL_JOB_STATES.has(job.state) && !job.state.startsWith('paused_pending_'));
 }
 
 function formatDurationClock(ms: number): string {
@@ -473,6 +492,14 @@ export function CinemaDirectorPanel() {
   const [progressPct, setProgressPct] = useState<number | null>(null);
   const [progressStage, setProgressStage] = useState('');
   const [stagedJob, setStagedJob] = useState<StagedJobView | null>(null);
+  /**
+   * Production shown in the focus area (progress bar, cancel/resume). Events of other productions update only their
+   * own card: percentages and states of simultaneous productions never overwrite each other.
+   */
+  const focusedJobKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (stagedJob) focusedJobKeyRef.current = jobKeyOf(stagedJob);
+  }, [stagedJob]);
   const [stagedJobs, setStagedJobs] = useState<StagedJobView[]>([]);
   const [activeStartMs, setActiveStartMs] = useState<number | undefined>(undefined);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
@@ -518,8 +545,12 @@ export function CinemaDirectorPanel() {
       })
       .catch(() => {});
     const off = api?.onCinemaProductionProgress?.((job) => {
+      // Every production keeps its own card; the pipeline runs one job per project workspace.
+      setStagedJobs((prev) => [job, ...prev.filter((j) => j.projectId !== job.projectId && jobKeyOf(j) !== jobKeyOf(job))]);
+      const focused = focusedJobKeyRef.current;
+      if (focused !== null && focused !== jobKeyOf(job)) return;
+      focusedJobKeyRef.current = jobKeyOf(job);
       setStagedJob(job);
-      setStagedJobs((prev) => [job, ...prev.filter((j) => j.projectId !== job.projectId)]);
       setProgressPct(job.progressPct);
       setProgressStage(job.message);
     });
@@ -542,11 +573,16 @@ export function CinemaDirectorPanel() {
     const newProjectId = `cinema_${Date.now()}`;
 
     if (api.cinemaStartStagedProduction) {
+      // The renderer names the execution up front, so its console exists before the first pipeline event.
+      const newJobId = newProductionJobId();
+      focusedJobKeyRef.current = newJobId;
+      setStagedJob(null);
       setProgressPct(5);
       setProgressStage('Iniciando fluxo em etapas (Prompt → Pesquisa → Aquisição → Montagem → Prévia)...');
       try {
-        const finalJob = await api.cinemaStartStagedProduction({
+        const pending = api.cinemaStartStagedProduction({
           projectId: newProjectId,
+          jobId: newJobId,
           prompt: effectivePrompt,
           genre,
           format,
@@ -557,9 +593,16 @@ export function CinemaDirectorPanel() {
           voiceStudioVoiceId: selectedVoiceId,
           language: videoLanguage,
         });
-        setStagedJob(finalJob);
-        setProgressPct(finalJob.progressPct);
-        setProgressStage(finalJob.message);
+        // Several productions can run at once: the form is free again as soon as this one is dispatched.
+        setBusy(false);
+        const finalJob = await pending;
+        const stillFocused = focusedJobKeyRef.current === jobKeyOf(finalJob);
+        setStagedJobs((prev) => [finalJob, ...prev.filter((j) => jobKeyOf(j) !== jobKeyOf(finalJob))]);
+        if (stillFocused) {
+          setStagedJob(finalJob);
+          setProgressPct(finalJob.progressPct);
+          setProgressStage(finalJob.message);
+        }
 
         if (finalJob.state === 'error') {
           setError(finalJob.error ?? finalJob.message);
@@ -571,7 +614,7 @@ export function CinemaDirectorPanel() {
         }
         if (finalJob.state === 'editor') {
           notify({ title: 'Vídeo finalizado', message: 'Todas as etapas foram concluídas. Pronto para revisão no Editor!', type: 'success', native: true });
-          if (options?.autoOpenEditor !== false) {
+          if (options?.autoOpenEditor !== false && stillFocused) {
             navigate(`/video?projectId=${encodeURIComponent(finalJob.projectId)}`);
           }
         }
@@ -1059,7 +1102,7 @@ export function CinemaDirectorPanel() {
                 <span className="font-mono text-[10px] text-muted-foreground">
                   Decorrido: <span className="text-foreground">{activeTiming.elapsedLabel}</span> · Restante aprox.: <span className="text-foreground">{activeTiming.etaLabel}</span>
                 </span>
-                {busy && stagedJob && (
+                {stagedJob && isJobRunning(stagedJob) && (
                   <button
                     type="button"
                     onClick={handleCancelStaged}
@@ -1196,12 +1239,14 @@ export function CinemaDirectorPanel() {
           <div className="grid gap-3 md:grid-cols-2">
             {stagedJobs.map((job) => {
               const ready = isJobReadyForEditor(job);
+              const jobKey = jobKeyOf(job);
               const stageLabel = STAGE_DISPLAY_LABELS[job.state] ?? job.state;
               const completedCount = Math.min(8, job.completedStages?.length ?? 0);
               return (
                 <article
-                  key={job.projectId}
-                  className="flex flex-col justify-between gap-3 rounded-xl border border-border/80 bg-[#0d0d17] p-4"
+                  key={jobKey}
+                  data-production-job={jobKey}
+                  className="flex flex-col gap-3 rounded-xl border border-border/80 bg-[#0d0d17] p-4"
                 >
                   <div className="space-y-1">
                     <div className="flex items-start justify-between gap-2">
@@ -1219,8 +1264,6 @@ export function CinemaDirectorPanel() {
                       <p className="truncate text-[10px] text-muted-foreground">{job.message}</p>
                     )}
                   </div>
-
-                  <div className="space-y-2">
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                       <div
                         className="h-full rounded-full bg-gradient-to-r from-purple-500 to-amber-400 transition-all duration-300"
@@ -1237,7 +1280,10 @@ export function CinemaDirectorPanel() {
                       );
                     })()}
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-[10px] text-muted-foreground">{job.projectId}</span>
+                      <span className="font-mono text-[10px] text-muted-foreground" title={`Projeto ${job.projectId}`}>
+                        {jobKey}
+                        {job.attempt && job.attempt > 1 ? ` · tentativa ${job.attempt}` : ''}
+                      </span>
                       <div className="flex items-center gap-1.5">
                         <button
                           type="button"
@@ -1290,11 +1336,24 @@ export function CinemaDirectorPanel() {
                         )}
                       </div>
                     </div>
-                  </div>
+                  <ProductionConsoleAccordion jobId={jobKey} title="Console desta produção" />
                 </article>
               );
             })}
           </div>
+        </section>
+      )}
+
+      {stagedJobs.length > 0 && (
+        <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
+          <div>
+            <h2 className="text-sm font-semibold text-foreground">Console Geral</h2>
+            <p className="text-[11px] text-muted-foreground">
+              Monitoramento de todas as produções (vídeos e thumbnails) ao mesmo tempo, com filtros por job, status,
+              agente e etapa. Cada produção tem também o seu próprio console, isolado, no card dela.
+            </p>
+          </div>
+          <ProductionConsoleAccordion scope="all" />
         </section>
       )}
 

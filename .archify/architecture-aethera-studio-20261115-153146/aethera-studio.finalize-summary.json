@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\dev\\neuralbridge-studio\\.archify\\architecture-aethera-studio-20261115-153146\\candidate.json",
+    "sha256": "84913bf031a4ce712fce8ef2c175cd7d349085789414d395536536b8781fe973",
+    "bytes": 20343
+  },
+  "artifact": {
+    "path": "C:\\dev\\neuralbridge-studio\\.archify\\architecture-aethera-studio-20261115-153146\\aethera-studio.html",
+    "sha256": "57c476643beb0ad5fdd7fb9fe0e9dc32834a50e78dafe8dcb698136c23bf37e9",
+    "bytes": 895791
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [
+    {
+      "code": "i18n/locale-fallback",
+      "severity": "warning",
+      "message": "meta.locale \"pt-BR\" has no bundled catalog and no usable meta.translations; the Viewer chrome and <html lang> fall back to English.",
+      "subject": {
+        "diagramType": "architecture",
+        "path": "/meta/locale"
+      },
+      "evidence": {
+        "locale": "pt-BR",
+        "bundledLocales": [
+          "en",
+          "zh-CN",
+          "zh-TW",
+          "es",
+          "ko",
+          "ar"
+        ]
+      },
+      "supportedFixes": [
+        "Supply meta.translations for this locale.",
+        "Use a bundled locale: en, zh-CN, zh-TW, es, ko, ar."
+      ]
+    }
+  ],
+  "diagnosticSummary": {
+    "total": 1,
+    "shown": 1,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\dev\\neuralbridge-studio\\.archify\\architecture-aethera-studio-20261115-153146\\aethera-studio.finalize.json",
+    "summaryReceipt": "C:\\dev\\neuralbridge-studio\\.archify\\architecture-aethera-studio-20261115-153146\\aethera-studio.finalize-summary.json",
+    "browserCheckReceipt": "C:\\dev\\neuralbridge-studio\\.archify\\architecture-aethera-studio-20261115-153146\\aethera-studio.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-15T18:34:20.307Z",
+    "source": "network",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 2896,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

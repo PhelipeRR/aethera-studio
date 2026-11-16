@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { join } from 'node:path';
 import type { IpcMain } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
@@ -39,6 +40,7 @@ import {
 } from '@neuralbridge/creative-studio';
 import { AetheraCreativeStudioRepository, type Db } from '@neuralbridge/database';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
+import { createProductionJobId, type ProductionConsoleService } from './production-console.js';
 
 class SqliteBrandKitStore implements BrandKitStore {
   constructor(private readonly repo: AetheraCreativeStudioRepository) {}
@@ -76,6 +78,20 @@ export interface CreativeStudioServiceOptions {
   ffmpegPath?: string;
   ffprobePath?: string;
   resolveClaudeGatewayEnv?: () => Record<string, string | undefined>;
+  /** When present, thumbnail generation reports each reasoning-engine run to the production console. */
+  productionConsole?: ProductionConsoleService;
+}
+
+/**
+ * Job id the creative studio writes its console entries under. Thumbnails are not part of a cinema production job,
+ * so they get their own console scope instead of polluting the video job's log.
+ */
+/** Project id of creative jobs not tied to a cinema project. Each execution still gets its own `jobId`. */
+export const CREATIVE_STUDIO_CONSOLE_JOB_ID = 'creative-studio';
+
+interface CreativeConsoleJob {
+  jobId: string;
+  projectId: string;
 }
 
 export class AetheraCreativeStudioService {
@@ -92,8 +108,12 @@ export class AetheraCreativeStudioService {
   readonly orchestrator: CreativeOrchestrator;
   readonly conceptEngine: ConceptDrivenEngine;
   private readonly editors = new Map<string, LayeredDocumentEditor>();
+  private readonly productionConsole: ProductionConsoleService | undefined;
+  /** Console job of the creative execution in progress; concurrent thumbnails each carry their own. */
+  private readonly consoleJob = new AsyncLocalStorage<CreativeConsoleJob>();
 
   constructor(options: CreativeStudioServiceOptions) {
+    this.productionConsole = options.productionConsole;
     this.repo = new AetheraCreativeStudioRepository(options.db);
     this.storageRoot = join(options.userDataDir, 'creative-studio');
     this.ingestion = new AssetIngestionService({
@@ -128,6 +148,131 @@ export class AetheraCreativeStudioService {
     });
   }
 
+  /**
+   * Runs one creative execution as its own console job (kind `thumbnail`): `job_started`, every engine command it
+   * triggers, and `job_completed`/`job_failed`. A nested call (cinema thumbnail -> thumbnail lab) stays in the
+   * caller's job.
+   */
+  private async withConsoleJob<T>(title: string, projectId: string | undefined, run: () => Promise<T>): Promise<T> {
+    const consoleService = this.productionConsole;
+    if (!consoleService || this.consoleJob.getStore()) return run();
+    const job: CreativeConsoleJob = {
+      jobId: createProductionJobId('thumb'),
+      projectId: projectId || CREATIVE_STUDIO_CONSOLE_JOB_ID,
+    };
+    consoleService.registerJob({ ...job, attempt: 1, kind: 'thumbnail', title: title.slice(0, 140) });
+    const base = {
+      ...job,
+      attempt: 1,
+      stage: 'prompt' as const,
+      origin: 'pipeline' as const,
+      source: 'creative-studio',
+      channel: 'progress' as const,
+    };
+    const startedAt = Date.now();
+    consoleService.emit({ ...base, event: 'job_started', severity: 'info', message: `Thumbnail iniciada: ${title}`, pct: 0 });
+    try {
+      const result = await this.consoleJob.run(job, run);
+      consoleService.emit({
+        ...base,
+        stage: 'qc',
+        event: 'job_completed',
+        severity: 'info',
+        message: 'Thumbnail concluída',
+        pct: 100,
+        durationMs: Date.now() - startedAt,
+      });
+      return result;
+    } catch (error) {
+      consoleService.emit({
+        ...base,
+        event: 'job_failed',
+        severity: 'error',
+        message: `Thumbnail falhou: ${error instanceof Error ? error.message : String(error)}`,
+        durationMs: Date.now() - startedAt,
+      });
+      throw error;
+    } finally {
+      consoleService.releaseJob(job.jobId);
+    }
+  }
+
+  createFromPrompt(input: Parameters<AetheraCreativeStudioService['createFromPromptImpl']>[0]) {
+    return this.withConsoleJob(input.title || input.prompt, input.sourceCinemaProjectId, () => this.createFromPromptImpl(input));
+  }
+
+  runThumbnailLabFromVideo(input: Parameters<AetheraCreativeStudioService['runThumbnailLabFromVideoImpl']>[0]) {
+    return this.withConsoleJob(input.title || input.prompt, input.sourceCinemaProjectId, () =>
+      this.runThumbnailLabFromVideoImpl(input),
+    );
+  }
+
+  runTypographyConceptLab(input: Parameters<AetheraCreativeStudioService['runTypographyConceptLabImpl']>[0]) {
+    return this.withConsoleJob(input.headline || input.prompt || 'Typography Concept Lab', input.projectId, () =>
+      this.runTypographyConceptLabImpl(input),
+    );
+  }
+
+  generateThumbnailForCinemaVideo(
+    input: Parameters<AetheraCreativeStudioService['generateThumbnailForCinemaVideoImpl']>[0],
+  ) {
+    return this.withConsoleJob(input.headline || input.prompt, input.cinemaProjectId, () =>
+      this.generateThumbnailForCinemaVideoImpl(input),
+    );
+  }
+
+  /**
+   * Records one reasoning-engine execution (thumbnail / banner direction) in the production console: which engine
+   * ran, how long it took, the size of the answer and its first characters. These adapters return text, not a raw
+   * stdout, so nothing beyond what they really produced is shown.
+   */
+  private async trackReasoningRun(providerId: string, prompt: string, run: () => Promise<string>): Promise<string> {
+    const consoleService = this.productionConsole;
+    if (!consoleService) return run();
+    const runId = `${providerId}_${Date.now().toString(36)}`;
+    const job = this.consoleJob.getStore();
+    const base = {
+      projectId: job?.projectId ?? CREATIVE_STUDIO_CONSOLE_JOB_ID,
+      jobId: job?.jobId ?? CREATIVE_STUDIO_CONSOLE_JOB_ID,
+      runId,
+      stage: 'agent' as const,
+      origin: 'agent' as const,
+      source: providerId,
+    };
+    const startedAt = Date.now();
+    consoleService.emit({
+      ...base,
+      channel: 'command',
+      event: 'command_started',
+      severity: 'info',
+      message: `Direção criativa: ${providerId} iniciado`,
+      details: { promptChars: prompt.length, promptPreview: prompt.slice(0, 240) },
+    });
+    try {
+      const text = await run();
+      consoleService.emit({
+        ...base,
+        channel: 'result',
+        event: 'command_completed',
+        severity: 'info',
+        message: `Direção criativa: ${providerId} concluído`,
+        durationMs: Date.now() - startedAt,
+        details: { outputChars: text.length, outputPreview: text.slice(0, 600) },
+      });
+      return text;
+    } catch (error) {
+      consoleService.emit({
+        ...base,
+        channel: 'result',
+        event: 'command_failed',
+        severity: 'error',
+        message: `Direção criativa: ${providerId} falhou — ${error instanceof Error ? error.message : String(error)}`,
+        durationMs: Date.now() - startedAt,
+      });
+      throw error;
+    }
+  }
+
   private buildEngineProviders(
     resolveGatewayEnv?: () => Record<string, string | undefined>,
   ): ReasoningEngineProvider[] {
@@ -138,38 +283,44 @@ export class AetheraCreativeStudioService {
     const collectAdapterText = async (
       adapter: ClaudeCliAdapter | CodexCliAdapter,
       prompt: string,
+      providerId: string,
     ): Promise<string> => {
-      let output = '';
-      for await (const ev of adapter.run({
-        prompt,
-        cwd: this.storageRoot,
-        mode: 'read-only',
-        timeoutMs: 30_000,
-      })) {
-        if (ev.kind === 'text' && 'text' in ev && typeof ev.text === 'string') {
-          output += ev.text;
+      return this.trackReasoningRun(providerId, prompt, async () => {
+        let output = '';
+        for await (const ev of adapter.run({
+          prompt,
+          cwd: this.storageRoot,
+          mode: 'read-only',
+          timeoutMs: 30_000,
+        })) {
+          if (ev.kind === 'text' && 'text' in ev && typeof ev.text === 'string') {
+            output += ev.text;
+          }
         }
-      }
-      return output;
+        return output;
+      });
     };
 
     return [
       {
         id: 'claude-code',
         isAvailable: async () => (await claude.detect()).installed,
-        runPrompt: async (prompt) => ({ text: await collectAdapterText(claude, prompt) }),
+        runPrompt: async (prompt) => ({ text: await collectAdapterText(claude, prompt, 'claude-code') }),
       },
       {
         id: 'codex-cli',
         isAvailable: async () => (await codex.detect()).installed,
-        runPrompt: async (prompt) => ({ text: await collectAdapterText(codex, prompt) }),
+        runPrompt: async (prompt) => ({ text: await collectAdapterText(codex, prompt, 'codex-cli') }),
       },
       {
         id: 'antigravity-cli',
         isAvailable: async () => (await detectAntigravityCli()).installed,
         runPrompt: async (prompt) => {
-          const res = await runAntigravityPrompt({ prompt, timeoutMs: 30_000 });
-          return { text: res.output };
+          const text = await this.trackReasoningRun('antigravity-cli', prompt, async () => {
+            const res = await runAntigravityPrompt({ prompt, timeoutMs: 30_000 });
+            return res.output;
+          });
+          return { text };
         },
       },
       {
@@ -179,7 +330,7 @@ export class AetheraCreativeStudioService {
           if (!env['ANTHROPIC_AUTH_TOKEN'] && !env['ANTHROPIC_API_KEY']) return false;
           return (await claudeGateway.detect()).installed;
         },
-        runPrompt: async (prompt) => ({ text: await collectAdapterText(claudeGateway, prompt) }),
+        runPrompt: async (prompt) => ({ text: await collectAdapterText(claudeGateway, prompt, 'claude-gateway') }),
       },
     ];
   }
@@ -228,7 +379,7 @@ export class AetheraCreativeStudioService {
     return `data:image/png;base64,${png.toString('base64')}`;
   }
 
-  async createFromPrompt(input: {
+  private async createFromPromptImpl(input: {
     artType: CreativeArtType;
     prompt: string;
     title?: string;
@@ -319,7 +470,7 @@ export class AetheraCreativeStudioService {
     };
   }
 
-  async runThumbnailLabFromVideo(input: {
+  private async runThumbnailLabFromVideoImpl(input: {
     videoPath?: string;
     prompt: string;
     scriptText?: string;
@@ -430,7 +581,7 @@ export class AetheraCreativeStudioService {
     return { document: combined, previewDataUrl, audit };
   }
 
-  async runTypographyConceptLab(input: {
+  private async runTypographyConceptLabImpl(input: {
     projectId: string;
     prompt?: string;
     headline?: string;
@@ -457,7 +608,7 @@ export class AetheraCreativeStudioService {
         ...(input.headline ? { headline: input.headline } : {}),
         brandKit,
       },
-      compositionEngine: this.compositionEngine,
+      compositionEngine: this.engine,
     });
     const variants: Array<{
       label: 'A' | 'B' | 'C';
@@ -489,7 +640,7 @@ export class AetheraCreativeStudioService {
   /**
    * Automatically creates a thumbnail proposal when a Cinema Pipeline video finishes rendering.
    */
-  async generateThumbnailForCinemaVideo(input: {
+  private async generateThumbnailForCinemaVideoImpl(input: {
     cinemaProjectId: string;
     videoPath: string;
     prompt: string;
