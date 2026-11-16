@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aethera · Redesign da Criação de Vídeo com IA</title>
+<style>
+  :root {
+    --background:#041417; --sidebar:#061a1d; --card:#0a2023; --popover:#0d2528; --muted:#11292c; --accent:#173337;
+    --foreground:#e4e1d6; --muted-foreground:#9aa9a5; --primary:#d9b875; --primary-foreground:#1c1608;
+    --destructive:#ef8f80; --warning:#e6b863; --success:#86c5a4; --info:#8fb8d6; --border:#1d383b; --input:#587879;
+    --signal:#19e6c0;
+    --font-sans:'Inter Variable','Inter','Segoe UI',system-ui,sans-serif;
+    --font-mono:'IBM Plex Mono','Cascadia Mono',Consolas,monospace;
+  }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior:auto; } * { animation:none !important; transition:none !important; } }
+  body { margin:0; background:var(--background); color:var(--foreground); font-family:var(--font-sans); font-size:15px; line-height:1.6; }
+  a { color:var(--primary); }
+  .page { max-width:1180px; margin:0 auto; padding:48px 28px 96px; }
+  header.doc { border-bottom:1px solid var(--border); padding-bottom:28px; margin-bottom:36px; }
+  .eyebrow { font-family:var(--font-mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--signal); margin:0 0 8px; }
+  h1 { font-size:34px; line-height:1.15; margin:0 0 12px; font-weight:650; letter-spacing:-.01em; }
+  h2 { font-size:24px; margin:64px 0 8px; font-weight:620; }
+  h3 { font-size:17px; margin:28px 0 8px; font-weight:600; }
+  p.lead { color:var(--muted-foreground); max-width:72ch; font-size:16px; margin:0; }
+  p, li { max-width:75ch; }
+  .meta { display:flex; flex-wrap:wrap; gap:8px; margin-top:18px; }
+  .pill { font-family:var(--font-mono); font-size:12px; border:1px solid var(--border); border-radius:999px; padding:3px 10px; color:var(--muted-foreground); }
+  nav.toc { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:14px; margin-top:20px; }
+  nav.toc a { color:var(--foreground); text-decoration:none; border-bottom:1px solid var(--border); }
+  nav.toc a:hover, nav.toc a:focus-visible { border-color:var(--primary); outline:none; }
+  .callout { border:1px solid var(--border); background:rgba(217,184,117,.06); border-radius:10px; padding:16px 18px; margin:20px 0; }
+  .callout strong { color:var(--primary); }
+  table.findings { width:100%; border-collapse:collapse; font-size:14px; margin-top:16px; }
+  table.findings th, table.findings td { text-align:left; vertical-align:top; padding:10px 12px; border-bottom:1px solid var(--border); }
+  table.findings th { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-foreground); font-weight:600; }
+  table.findings td:first-child { font-family:var(--font-mono); color:var(--muted-foreground); white-space:nowrap; }
+  .sev { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; padding:2px 8px; border-radius:6px; white-space:nowrap; }
+  .sev::before { content:""; width:7px; height:7px; border-radius:50%; background:currentColor; }
+  .sev.crit { color:var(--destructive); background:rgba(239,143,128,.1); }
+  .sev.high { color:var(--warning); background:rgba(230,184,99,.1); }
+  .sev.med  { color:var(--info); background:rgba(143,184,214,.1); }
+  .sev.low  { color:var(--muted-foreground); background:var(--muted); }
+  .bug { font-size:11px; font-weight:700; color:var(--primary-foreground); background:var(--destructive); border-radius:4px; padding:1px 6px; margin-left:6px; }
+
+  /* ---------- mock window ---------- */
+  figure.mock { margin:24px 0 8px; }
+  figure.mock figcaption { font-size:13px; color:var(--muted-foreground); margin-top:10px; }
+  .win { border:1px solid var(--border); border-radius:14px; overflow:hidden; background:var(--background); box-shadow:0 24px 60px -24px rgba(0,0,0,.7); font-size:13px; line-height:1.45; }
+  .win-bar { display:flex; align-items:center; gap:10px; padding:9px 14px; background:var(--sidebar); border-bottom:1px solid var(--border); }
+  .dots { display:flex; gap:6px; } .dots i { width:10px; height:10px; border-radius:50%; background:var(--accent); display:block; }
+  .win-bar .title { font-family:var(--font-mono); font-size:12px; color:var(--muted-foreground); }
+  .app-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 18px; border-bottom:1px solid var(--border); background:var(--card); }
+  .app-head .brand { display:flex; align-items:center; gap:10px; font-weight:600; }
+  .app-head .brand small { font-family:var(--font-mono); font-size:11px; letter-spacing:.14em; color:var(--signal); text-transform:uppercase; font-weight:500; }
+  .chips { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .chip { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border); border-radius:999px; padding:3px 10px; font-size:12px; color:var(--muted-foreground); background:var(--background); }
+  .chip.run { color:var(--signal); border-color:rgba(25,230,192,.35); }
+  .chip.warn { color:var(--warning); border-color:rgba(230,184,99,.4); }
+  .icon-btn { width:32px; height:32px; display:inline-grid; place-items:center; border:1px solid var(--border); border-radius:8px; color:var(--muted-foreground); background:transparent; }
+  svg.i { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+  svg.i.sm { width:14px; height:14px; }
+
+  .shell { display:grid; grid-template-columns:232px 1fr; min-height:520px; }
+  .rail { border-right:1px solid var(--border); background:var(--sidebar); padding:14px 10px; display:flex; flex-direction:column; gap:6px; }
+  .rail .hd { margin:0 6px 6px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted-foreground); font-weight:600; }
+  .job { border:1px solid transparent; border-radius:10px; padding:9px 10px; display:grid; gap:4px; }
+  .job.sel { border-color:var(--border); background:var(--card); box-shadow:inset 3px 0 0 var(--primary); }
+  .job .t { display:flex; align-items:center; gap:7px; font-weight:550; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .job .s { font-size:12px; color:var(--muted-foreground); display:flex; justify-content:space-between; gap:6px; }
+  .job .bar { height:4px; border-radius:4px; background:var(--muted); overflow:hidden; } .job .bar > b { display:block; height:100%; background:var(--signal); }
+  .st-run { color:var(--signal); } .st-pause { color:var(--warning); } .st-done { color:var(--success); } .st-fail { color:var(--destructive); }
+  .rail .new { margin-top:auto; display:flex; align-items:center; justify-content:center; gap:6px; border:1px dashed var(--input); border-radius:10px; padding:8px; color:var(--muted-foreground); font-size:13px; }
+
+  .main { display:flex; flex-direction:column; min-width:0; }
+  .tabs { display:flex; gap:4px; padding:10px 18px 0; border-bottom:1px solid var(--border); }
+  .tab { padding:8px 14px; font-size:13px; color:var(--muted-foreground); border-bottom:2px solid transparent; display:flex; align-items:center; gap:7px; }
+  .tab.on { color:var(--foreground); border-color:var(--primary); font-weight:600; }
+  .tab .n { font-family:var(--font-mono); font-size:11px; background:var(--muted); border-radius:5px; padding:0 6px; }
+  .tab .n.warn { background:rgba(230,184,99,.15); color:var(--warning); }
+  .content { padding:18px; display:grid; gap:14px; flex:1; }
+  .card { border:1px solid var(--border); background:var(--card); border-radius:12px; padding:14px 16px; }
+  .card .hd5 { margin:0 0 10px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:8px; justify-content:space-between; }
+  .card .hd5 .sub { font-weight:400; font-size:12px; color:var(--muted-foreground); }
+  .label { font-size:12px; font-weight:550; color:var(--muted-foreground); margin-bottom:6px; display:block; }
+  .textarea { border:1px solid var(--input); border-radius:10px; background:var(--background); padding:10px 12px; min-height:84px; color:var(--foreground); font-size:14px; }
+  .ent { background:rgba(217,184,117,.14); color:var(--primary); border-radius:4px; padding:0 4px; }
+  .detected { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px; font-size:12px; color:var(--success); }
+  .detected .tag { border:1px solid rgba(134,197,164,.35); border-radius:6px; padding:1px 8px; color:var(--foreground); }
+  .detected a { margin-left:auto; font-size:12px; }
+  .row { display:grid; grid-template-columns:96px 1fr; gap:12px; align-items:center; padding:9px 0; border-top:1px solid var(--border); }
+  .row:first-of-type { border-top:0; }
+  .row > span { font-size:12px; color:var(--muted-foreground); font-weight:550; }
+  .seg { display:inline-flex; border:1px solid var(--border); border-radius:9px; padding:3px; gap:3px; background:var(--background); flex-wrap:wrap; }
+  .seg b { font-weight:500; padding:5px 12px; border-radius:7px; font-size:13px; color:var(--muted-foreground); display:inline-flex; gap:6px; align-items:center; }
+  .seg b.on { background:var(--accent); color:var(--foreground); box-shadow:inset 0 0 0 1px var(--primary); }
+  .num { display:inline-flex; align-items:center; gap:10px; }
+  .num .box { border:1px solid var(--input); border-radius:8px; padding:4px 12px; font-family:var(--font-mono); min-width:56px; text-align:center; }
+  .hint { font-size:12px; color:var(--muted-foreground); display:inline-flex; align-items:center; gap:5px; }
+  .slider { display:flex; align-items:center; gap:12px; }
+  .track { position:relative; height:6px; flex:1; max-width:320px; border-radius:6px; background:var(--muted); }
+  .track > b { position:absolute; inset:0 65% 0 0; background:var(--primary); border-radius:6px; }
+  .track > i { position:absolute; left:35%; top:50%; width:16px; height:16px; margin:-8px 0 0 -8px; border-radius:50%; background:var(--foreground); box-shadow:0 0 0 3px var(--background); }
+  .disclosure { display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid var(--border); border-radius:10px; background:var(--background); font-size:13px; }
+  .disclosure .k { color:var(--muted-foreground); width:128px; }
+  .disclosure .v { flex:1; }
+  .foot { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding-top:4px; }
+  .btn { display:inline-flex; align-items:center; gap:8px; border-radius:10px; padding:9px 18px; font-weight:600; font-size:13px; border:1px solid var(--border); color:var(--foreground); background:transparent; min-height:36px; }
+  .btn.primary { background:var(--primary); color:var(--primary-foreground); border-color:var(--primary); }
+  .btn.ghost { color:var(--muted-foreground); }
+  .btn.danger { color:var(--destructive); border-color:rgba(239,143,128,.4); }
+  .btn.sm { padding:6px 12px; font-size:12px; min-height:32px; }
+  .two { display:grid; grid-template-columns:1fr 268px; gap:14px; align-items:start; }
+  .idea { border:1px solid var(--border); border-radius:10px; padding:10px; display:grid; gap:6px; background:var(--background); }
+  .idea .h { font-weight:550; font-size:13px; }
+  .idea .m { font-size:12px; color:var(--muted-foreground); display:flex; gap:8px; flex-wrap:wrap; }
+  .heat { font-family:var(--font-mono); color:var(--signal); }
+
+  /* active production */
+  .prod-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+  .prod-head .hd6 { margin:0; font-size:16px; font-weight:600; }
+  .mono { font-family:var(--font-mono); font-size:12px; color:var(--muted-foreground); }
+  .statusline { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:10px 0 8px; font-size:13px; }
+  .statusline .pct { font-family:var(--font-mono); font-size:20px; font-weight:600; color:var(--signal); margin-left:auto; }
+  .bigbar { height:8px; border-radius:8px; background:var(--muted); overflow:hidden; } .bigbar > b { display:block; height:100%; width:34%; background:var(--signal); }
+  .phases { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:14px; }
+  .phase { border:1px solid var(--border); border-radius:10px; padding:10px; background:var(--background); }
+  .phase.cur { border-color:rgba(25,230,192,.45); }
+  .phase .ph { font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted-foreground); font-weight:600; margin-bottom:6px; display:flex; justify-content:space-between; }
+  .step { display:flex; align-items:center; gap:7px; font-size:12.5px; padding:2px 0; }
+  .step.done { color:var(--muted-foreground); } .step.done svg { color:var(--success); }
+  .step.cur { color:var(--foreground); font-weight:600; } .step.cur svg { color:var(--signal); }
+  .step.todo { color:var(--muted-foreground); opacity:.75; }
+  .now { display:grid; gap:6px; }
+  .log { font-family:var(--font-mono); font-size:12px; background:var(--background); border:1px solid var(--border); border-radius:8px; padding:8px 10px; color:var(--muted-foreground); }
+  .log .ok { color:var(--success); } .log .t { color:var(--input); margin-right:8px; }
+  .needs { border-color:rgba(230,184,99,.45); background:linear-gradient(0deg, rgba(230,184,99,.06), rgba(230,184,99,.06)), var(--card); }
+  .needs .hd5 { color:var(--warning); }
+  .slot { display:flex; align-items:center; gap:12px; padding:9px 0; border-top:1px solid var(--border); flex-wrap:wrap; }
+  .slot .q { flex:1; min-width:200px; } .slot .q b { display:block; font-size:13px; } .slot .q span { font-size:12px; color:var(--muted-foreground); }
+  .fail { border-color:rgba(239,143,128,.45); }
+  .fail .hd5 { color:var(--destructive); }
+
+  /* review */
+  .rev { display:grid; grid-template-columns:200px 1fr; gap:14px; }
+  .subnav { display:grid; gap:4px; align-content:start; }
+  .subnav a { display:flex; justify-content:space-between; align-items:center; padding:8px 10px; border-radius:8px; color:var(--muted-foreground); text-decoration:none; font-size:13px; }
+  .subnav a.on { background:var(--accent); color:var(--foreground); }
+  .subnav .b { font-family:var(--font-mono); font-size:11px; }
+  table.matrix { width:100%; border-collapse:collapse; font-size:12.5px; }
+  table.matrix th { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted-foreground); text-align:left; font-weight:600; padding:6px 8px; border-bottom:1px solid var(--border); }
+  table.matrix td { padding:7px 8px; border-bottom:1px solid var(--border); }
+  table.matrix td.scene { color:var(--foreground); }
+  table.matrix td.scene small { display:block; color:var(--muted-foreground); font-size:11.5px; }
+  .cell { display:inline-flex; align-items:center; gap:5px; border-radius:6px; padding:2px 8px; font-size:12px; }
+  .cell.ok { color:var(--success); background:rgba(134,197,164,.1); }
+  .cell.warn { color:var(--warning); background:rgba(230,184,99,.12); }
+  .cell.bad { color:var(--destructive); background:rgba(239,143,128,.12); }
+  .cell.na { color:var(--muted-foreground); background:var(--muted); }
+  tr.hl td { background:rgba(217,184,117,.05); }
+  .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:12px; }
+  .kpi { border:1px solid var(--border); border-radius:10px; padding:10px 12px; background:var(--background); }
+  .kpi small { font-size:11.5px; color:var(--muted-foreground); display:block; }
+  .kpi b { font-family:var(--font-mono); font-size:19px; font-weight:600; }
+
+  /* console dock */
+  .dock { border-top:1px solid var(--border); background:var(--sidebar); }
+  .dock-head { display:flex; align-items:center; gap:10px; padding:8px 14px; flex-wrap:wrap; }
+  .dock-head .ttl { font-weight:600; display:flex; align-items:center; gap:7px; }
+  .count { font-family:var(--font-mono); font-size:11.5px; border-radius:6px; padding:1px 7px; }
+  .count.err { color:var(--destructive); background:rgba(239,143,128,.12); }
+  .count.retry { color:var(--warning); background:rgba(230,184,99,.12); }
+  .dock-tabs { display:flex; gap:2px; margin-left:12px; }
+  .dock-tabs b { font-weight:500; font-size:12px; padding:4px 10px; border-radius:6px; color:var(--muted-foreground); }
+  .dock-tabs b.on { background:var(--accent); color:var(--foreground); }
+  .fchip { display:inline-flex; align-items:center; gap:5px; font-size:12px; border:1px solid var(--input); border-radius:999px; padding:2px 6px 2px 10px; }
+  .fchip i { font-style:normal; color:var(--muted-foreground); }
+  .search { flex:1; min-width:160px; max-width:260px; border:1px solid var(--border); border-radius:8px; padding:5px 10px; color:var(--muted-foreground); font-size:12px; display:flex; gap:6px; align-items:center; background:var(--background); }
+  .lines { font-family:var(--font-mono); font-size:12px; padding:4px 14px 12px; display:grid; gap:2px; }
+  .ln { display:grid; grid-template-columns:70px 64px 110px 1fr; gap:10px; padding:3px 6px; border-radius:5px; }
+  .ln .tm { color:var(--input); } .ln .lv { font-weight:600; } .ln .src { color:var(--info); }
+  .ln.e { background:rgba(239,143,128,.07); } .ln.e .lv { color:var(--destructive); }
+  .ln.w .lv { color:var(--warning); } .ln.i .lv { color:var(--muted-foreground); }
+
+  /* before diagram */
+  .compare { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:20px; }
+  .stack { border:1px solid var(--border); border-radius:12px; padding:14px; background:var(--card); }
+  .stack .hd { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted-foreground); }
+  .blk { border:1px solid var(--border); border-radius:6px; padding:5px 10px; margin-bottom:5px; font-size:12.5px; display:flex; justify-content:space-between; background:var(--background); }
+  .blk::before { content:""; width:8px; height:8px; border-radius:2px; margin:6px 8px 0 0; flex:none; background:var(--input); } .blk { justify-content:flex-start; } .blk > span { margin-left:auto; color:var(--muted-foreground); } .blk.c::before { background:var(--primary); } .blk.a::before { background:var(--signal); } .blk.r::before { background:var(--info); } .blk.x { color:var(--muted-foreground); }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted-foreground); margin-top:10px; }
+  .legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px; }
+  .legend .c::before { background:var(--primary); } .legend .a::before { background:var(--signal); } .legend .r::before { background:var(--info); } .legend .x::before { background:var(--input); }
+  .newmap { display:grid; grid-template-columns:70px 1fr; gap:6px; }
+  .newmap .rl { border:1px solid var(--border); border-radius:6px; background:var(--background); font-size:11px; color:var(--muted-foreground); padding:6px; writing-mode:vertical-rl; text-align:center; }
+
+  /* tokens + plan */
+  .swatches { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; margin-top:14px; }
+  .sw { border:1px solid var(--border); border-radius:10px; overflow:hidden; font-size:12px; }
+  .sw i { display:block; height:44px; }
+  .sw div { padding:8px 10px; } .sw code { font-family:var(--font-mono); color:var(--muted-foreground); font-size:11.5px; }
+  ol.plan { list-style:none; padding:0; margin:16px 0 0; display:grid; gap:10px; counter-reset:p; }
+  ol.plan li { counter-increment:p; display:grid; grid-template-columns:44px 1fr auto; gap:14px; align-items:start; border:1px solid var(--border); border-radius:12px; padding:14px 16px; background:var(--card); max-width:none; }
+  ol.plan li::before { content:counter(p); font-family:var(--font-mono); font-size:20px; color:var(--primary); font-weight:600; }
+  ol.plan b { display:block; } ol.plan span { color:var(--muted-foreground); font-size:14px; }
+  .risk { font-size:12px; font-weight:600; padding:2px 8px; border-radius:6px; white-space:nowrap; }
+  .risk.l { color:var(--success); background:rgba(134,197,164,.1); } .risk.m { color:var(--warning); background:rgba(230,184,99,.1); } .risk.h { color:var(--destructive); background:rgba(239,143,128,.1); }
+  code { font-family:var(--font-mono); font-size:.9em; background:var(--muted); padding:1px 5px; border-radius:4px; }
+  footer { margin-top:64px; padding-top:20px; border-top:1px solid var(--border); font-size:13px; color:var(--muted-foreground); }
+
+  @media (max-width: 900px) {
+    .shell { grid-template-columns:1fr; } .rail { display:none; }
+    .two, .rev, .compare { grid-template-columns:1fr; }
+    .phases, .kpis { grid-template-columns:repeat(2,1fr); }
+    .ln { grid-template-columns:60px 50px 1fr; } .ln .src { display:none; }
+    table.findings td:nth-child(4) { display:none; } table.findings th:nth-child(4) { display:none; }
+  }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></symbol>
+  <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></symbol>
+  <symbol id="i-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="currentColor"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2Z"/><path d="M19 3v4M17 5h4"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-chev-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6M12 19h8"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+  <symbol id="i-wand" viewBox="0 0 24 24"><path d="m15 4-11 11 5 5 11-11zM14 5l5 5"/></symbol>
+  <symbol id="i-trend" viewBox="0 0 24 24"><path d="m22 7-8.5 8.5-5-5L2 17M16 7h6v6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></symbol>
+</svg>
+
+<div class="page">
+  <header class="doc">
+    <p class="eyebrow">Aethera · Proposta de UX</p>
+    <h1>Redesign da Criação de Vídeo com IA</h1>
+    <p class="lead">Hoje uma única tela longa mistura três tarefas: criar o vídeo, acompanhar produções em andamento e revisar o resultado. A proposta separa essas tarefas, deixa o progresso confiável e legível e esconde o jargão técnico até que ele seja necessário.</p>
+    <div class="meta">
+      <span class="pill">16 nov 2026</span>
+      <span class="pill">Método: UI/UX Pro Max</span>
+      <span class="pill">Base: CinemaDirectorPanel.tsx</span>
+      <span class="pill">Status: proposta</span>
+    </div>
+    <nav class="toc" aria-label="Seções">
+      <a href="#diagnostico">1. Diagnóstico</a>
+      <a href="#arquitetura">2. Nova arquitetura</a>
+      <a href="#criar">3. Criar</a>
+      <a href="#producao">4. Produção ativa</a>
+      <a href="#revisao">5. Revisão</a>
+      <a href="#console">6. Console</a>
+      <a href="#visual">7. Sistema visual</a>
+      <a href="#plano">8. Plano</a>
+    </nav>
+  </header>
+
+  <!-- 1 -->
+  <section id="diagnostico">
+    <p class="eyebrow">01</p>
+    <h2>Diagnóstico</h2>
+    <p>A tela atual empilha 12 blocos numa única rolagem. Quem só quer saber se a produção travou precisa passar pelo Radar de Tendências e pelo formulário. Quem quer criar vê consoles e um benchmark que não ajudam a decidir nada.</p>
+
+    <div class="compare">
+      <div class="stack">
+        <div class="hd">Hoje: uma rolagem</div>
+        <div class="blk x">Hero + status de provedores</div>
+        <div class="blk x">Abas Produção | Auditoria</div>
+        <div class="blk c">Radar de Tendências <span>861 linhas</span></div>
+        <div class="blk c">Briefing + 7 controles + Benchmark</div>
+        <div class="blk a">Progresso + pendências (dentro do form)</div>
+        <div class="blk a">Projetos em produção (1 console por card)</div>
+        <div class="blk x">Console Geral</div>
+        <div class="blk x">Benchmark Corpus</div>
+        <div class="blk r">Narrativa & Storyboard</div>
+        <div class="blk r">Comedy Beats & Release Gates</div>
+        <div class="blk r">Cobertura de Mídia</div>
+        <div class="blk r">AI Voice Director</div>
+      </div>
+      <div class="stack">
+        <div class="hd">Proposta: separado por tarefa</div>
+        <div class="newmap">
+          <div class="rl">Lista de produções</div>
+          <div>
+            <div class="blk c">Aba Criar <span>briefing + ideias</span></div>
+            <div class="blk a">Aba Produção ativa <span>etapas · agora · pendências</span></div>
+            <div class="blk r">Aba Revisão <span>tabela cena × qualidade</span></div>
+            <div class="blk r">Aba Auditoria <span>+ Quality Gate</span></div>
+            <div class="blk x">Console único no rodapé <span>recolhível</span></div>
+            <div class="blk x">⚙ Diagnóstico <span>benchmark, FFmpeg</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="legend"><span class="c">Criar</span><span class="a">Acompanhar</span><span class="r">Revisar</span><span class="x">Técnico / suporte</span></div>
+
+    <h3>Achados priorizados</h3>
+    <table class="findings">
+      <thead><tr><th>#</th><th>Prioridade</th><th>Achado</th><th>Impacto</th></tr></thead>
+      <tbody>
+        <tr><td>A1</td><td><span class="sev crit">Crítica</span></td><td>Status, tempo restante, chips de etapa e botões usam texto de 10–11px em tom apagado.</td><td>A informação mais operacional é a menos legível.</td></tr>
+        <tr><td>A2</td><td><span class="sev crit">Crítica</span></td><td>Cancelar/Retomar têm cerca de 20px de altura. O botão de atualizar vozes é o caractere <code>↻</code>, sem <code>aria-label</code>.</td><td>Alvo pequeno numa ação destrutiva; ícone inacessível.</td></tr>
+        <tr><td>A3</td><td><span class="sev high">Alta</span></td><td>A lista mostra <b>"Etapa (x/8)"</b>, mas a pipeline tem <b>11</b> etapas.<span class="bug">BUG</span></td><td>O progresso diverge entre a lista e o painel ativo.</td></tr>
+        <tr><td>A4</td><td><span class="sev high">Alta</span></td><td>"Rodar Benchmark" fica ao lado do botão principal, com o mesmo peso visual.</td><td>Dilui o botão principal e convida ao clique errado.</td></tr>
+        <tr><td>A5</td><td><span class="sev high">Alta</span></td><td>Render, Idioma e Voz não têm <code>&lt;label&gt;</code>; o nome do campo está dentro da opção.</td><td>Leitor de tela lê o valor, não o campo.</td></tr>
+        <tr><td>A6</td><td><span class="sev high">Alta</span></td><td>LUFS, VRAM, o ID da voz e "RF-07" aparecem no primeiro nível.</td><td>Ruído para o caso comum.</td></tr>
+        <tr><td>A7</td><td><span class="sev med">Média</span></td><td>Progresso e pendências aparecem e somem dentro do form; "Resolver Mídias" rola a página para o topo.</td><td>A página pula e o usuário perde o contexto.</td></tr>
+        <tr><td>A8</td><td><span class="sev med">Média</span></td><td>Dois consoles (um por card e o Geral) usam o mesmo componente de 956 linhas.</td><td>Peso visual e de renderização.</td></tr>
+        <tr><td>A9</td><td><span class="sev med">Média</span></td><td>Os estados se diferenciam só pela cor.</td><td>Falha a regra "cor não é o único indicador".</td></tr>
+        <tr><td>A10</td><td><span class="sev med">Média</span></td><td>Abaixo de 1024px vira uma coluna longa, com o Radar no topo.</td><td>Janela dividida degrada.</td></tr>
+        <tr><td>A11</td><td><span class="sev low">Baixa</span></td><td><code>animate-spin</code> e <code>transition-all</code> sem <code>prefers-reduced-motion</code>.</td><td>Ajuste simples.</td></tr>
+        <tr><td>A12</td><td><span class="sev low">Baixa</span></td><td>Gradiente roxo→âmbar e cores hex fixas (<code>#121220</code>, <code>#0d0d17</code>) fora do tema petróleo/dourado.</td><td>Destoa do app e impede tema claro.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 2 -->
+  <section id="arquitetura">
+    <p class="eyebrow">02</p>
+    <h2>Nova arquitetura</h2>
+    <p>Uma lista de produções fixa à esquerda, abas organizadas por tarefa e um console único no rodapé. Selecionar uma produção na lista troca o conteúdo das abas; a página não rola mais para o topo.</p>
+    <div class="callout"><strong>Princípio:</strong> cada aba responde a uma pergunta. Criar: "o que vou produzir?". Produção ativa: "está andando? precisa de mim?". Revisão: "está bom?". Auditoria: "posso publicar?".</div>
+  </section>
+
+  <!-- 3 CRIAR -->
+  <section id="criar">
+    <p class="eyebrow">03</p>
+    <h2>Aba Criar</h2>
+    <p>O briefing vem primeiro. Antes de gerar, a interface mostra o que a IA entendeu do texto. As decisões que mais mudam o resultado (formato e estilo) ficam visíveis como botões; idioma, voz e qualidade ficam resumidos numa linha e abrem sob demanda.</p>
+
+    <figure class="mock">
+      <div class="win" role="img" aria-label="Mockup da aba Criar">
+        <div class="win-bar"><div class="dots"><i></i><i></i><i></i></div><span class="title">NeuralBridge Studio — Aethera</span></div>
+        <div class="app-head">
+          <div class="brand"><small>Aethera</small> Produção com IA</div>
+          <div class="chips">
+            <span class="chip run"><svg class="i sm"><use href="#i-dot"/></svg>2 rodando</span>
+            <span class="chip warn"><svg class="i sm"><use href="#i-alert"/></svg>1 aguarda você</span>
+            <span class="icon-btn" aria-label="Diagnóstico"><svg class="i"><use href="#i-settings"/></svg></span>
+          </div>
+        </div>
+        <div class="shell">
+          <aside class="rail">
+            <div class="hd">Produções</div>
+            <div class="job"><div class="t"><svg class="i sm st-run"><use href="#i-dot"/></svg>Elden Ring — a história…</div><div class="s"><span>Roteiro · 4/11</span><span>34%</span></div><div class="bar"><b style="width:34%"></b></div></div>
+            <div class="job"><div class="t"><svg class="i sm st-pause"><use href="#i-pause"/></svg>Top 10 RPGs de 2026</div><div class="s"><span>Aguarda mídia (3)</span><span>58%</span></div></div>
+            <div class="job"><div class="t"><svg class="i sm st-done"><use href="#i-check-circle"/></svg>Trailer GTA VI</div><div class="s"><span>Pronto · abrir no editor</span></div></div>
+            <div class="job"><div class="t"><svg class="i sm st-fail"><use href="#i-x-circle"/></svg>Doc Zelda TotK</div><div class="s"><span>Falhou em Montagem · t2</span></div></div>
+            <div class="new"><svg class="i sm"><use href="#i-plus"/></svg>Nova produção</div>
+          </aside>
+          <div class="main">
+            <div class="tabs">
+              <span class="tab on">Criar</span>
+              <span class="tab">Produção ativa</span>
+              <span class="tab">Revisão</span>
+              <span class="tab">Auditoria</span>
+            </div>
+            <div class="content">
+              <div class="two">
+                <div class="card">
+                  <label class="label">Descreva o vídeo</label>
+                  <div class="textarea">Um documentário de <span class="ent">12 minutos</span> sobre como <span class="ent">Hollow Knight: Silksong</span> reinventou o metroidvania, com tom sério e um pouco de humor nas transições, para o <span class="ent">YouTube</span>.</div>
+                  <div class="detected"><svg class="i sm"><use href="#i-check"/></svg>Entendi:
+                    <span class="tag">Documentário</span><span class="tag">~12 min</span><span class="tag">16:9</span><span class="tag">pt-BR</span>
+                    <a href="#criar">ajustar</a>
+                  </div>
+                  <div style="margin-top:14px">
+                    <div class="row"><span>Formato</span><div class="seg"><b class="on">YouTube 16:9</b><b>Shorts 9:16</b></div></div>
+                    <div class="row"><span>Estilo</span><div class="seg"><b>Gameplay Essay</b><b class="on">Documentário</b><b>Top List</b><b>Trailer</b></div></div>
+                    <div class="row"><span>Duração</span><div class="num"><span class="box">12</span> min <span class="hint"><svg class="i sm"><use href="#i-refresh"/></svg>sincronizada com o briefing</span></div></div>
+                    <div class="row"><span>Humor</span><div class="slider"><div class="track"><b></b><i></i></div><span class="mono" style="color:var(--foreground)">35%</span><span class="hint">Pontual</span></div></div>
+                  </div>
+                  <div style="display:grid; gap:8px; margin-top:12px">
+                    <div class="disclosure"><svg class="i sm"><use href="#i-chev-r"/></svg><span class="k">Narração e idioma</span><span class="v">Português (BR) · Narrador Grave</span></div>
+                    <div class="disclosure"><svg class="i sm"><use href="#i-chev-r"/></svg><span class="k">Qualidade</span><span class="v">Review 720p</span></div>
+                  </div>
+                  <div class="foot" style="margin-top:14px">
+                    <span class="hint"><svg class="i sm"><use href="#i-clock"/></svg>Estimativa: ~25 min de produção · 2,4 GB de VRAM</span>
+                    <span class="btn primary"><svg class="i"><use href="#i-sparkles"/></svg>Gerar direção e storyboard</span>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="hd5"><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-trend"/></svg>Ideias em alta</span><span class="sub">Games</span></div>
+                  <div style="display:grid; gap:8px">
+                    <div class="idea"><span class="h">Por que Silksong demorou 6 anos</span><span class="m"><span class="heat">↑ 92</span>Documentário · 14 min</span><span class="btn sm">Usar ideia</span></div>
+                    <div class="idea"><span class="h">Os 7 chefes mais injustos de 2026</span><span class="m"><span class="heat">↑ 81</span>Top List · 9 min</span><span class="btn sm">Usar ideia</span></div>
+                    <div class="idea"><span class="h">GTA VI: o que o trailer 3 escondeu</span><span class="m"><span class="heat">↑ 77</span>Shorts · 1 min</span><span class="btn sm">Usar ideia</span></div>
+                  </div>
+                  <p style="margin:10px 0 0"><a href="#criar" style="font-size:12.5px">Abrir radar completo →</a></p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <figcaption>Aba Criar: o briefing é destacado (entidades sublinhadas), com a interpretação da IA logo abaixo, botões para Formato e Estilo, configurações avançadas recolhidas e um único botão principal. O Benchmark saiu para o menu ⚙ e o Radar ficou numa coluna lateral.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 4 PRODUÇÃO -->
+  <section id="producao">
+    <p class="eyebrow">04</p>
+    <h2>Aba Produção ativa</h2>
+    <p>As 11 etapas ficam agrupadas em 4 fases. Cada estado usa ícone e texto, não só cor. O bloco "Agora" responde se a produção travou sem abrir o console. As pendências que dependem do usuário ganham um bloco próprio, fora do formulário.</p>
+
+    <figure class="mock">
+      <div class="win" role="img" aria-label="Mockup da aba Produção ativa">
+        <div class="win-bar"><div class="dots"><i></i><i></i><i></i></div><span class="title">NeuralBridge Studio — Aethera</span></div>
+        <div class="shell" style="min-height:0">
+          <aside class="rail">
+            <div class="hd">Produções</div>
+            <div class="job sel"><div class="t"><svg class="i sm st-run"><use href="#i-dot"/></svg>Elden Ring — a história…</div><div class="s"><span>Roteiro · 4/11</span><span>34%</span></div><div class="bar"><b style="width:34%"></b></div></div>
+            <div class="job"><div class="t"><svg class="i sm st-pause"><use href="#i-pause"/></svg>Top 10 RPGs de 2026</div><div class="s"><span>Aguarda mídia (3)</span><span>58%</span></div></div>
+            <div class="job"><div class="t"><svg class="i sm st-done"><use href="#i-check-circle"/></svg>Trailer GTA VI</div><div class="s"><span>Pronto · abrir no editor</span></div></div>
+            <div class="job"><div class="t"><svg class="i sm st-fail"><use href="#i-x-circle"/></svg>Doc Zelda TotK</div><div class="s"><span>Falhou em Montagem · t2</span></div></div>
+          </aside>
+          <div class="main">
+            <div class="tabs">
+              <span class="tab">Criar</span>
+              <span class="tab on">Produção ativa</span>
+              <span class="tab">Revisão</span>
+              <span class="tab">Auditoria</span>
+            </div>
+            <div class="content">
+              <div class="card">
+                <div class="prod-head">
+                  <div><div class="hd6">Elden Ring — a história que ninguém contou</div><span class="mono">prod_8f2a · tentativa 2 · Documentário · 16:9 · 12 min</span></div>
+                  <div class="chips"><span class="btn sm"><svg class="i sm"><use href="#i-pause"/></svg>Pausar</span><span class="btn sm danger"><svg class="i sm"><use href="#i-x"/></svg>Cancelar</span></div>
+                </div>
+                <div class="statusline">
+                  <span class="chip run"><svg class="i sm"><use href="#i-dot"/></svg>Rodando</span>
+                  <span><b>Etapa 4 de 11:</b> Roteiro</span>
+                  <span class="mono">Decorrido 14:02 · Restante ~8 min</span>
+                  <span class="pct">34%</span>
+                </div>
+                <div class="bigbar"><b></b></div>
+                <div class="phases">
+                  <div class="phase cur"><div class="ph"><span>Planejamento</span><span>3/5</span></div>
+                    <div class="step done"><svg class="i sm"><use href="#i-check"/></svg>Prompt</div>
+                    <div class="step done"><svg class="i sm"><use href="#i-check"/></svg>Interpretação</div>
+                    <div class="step done"><svg class="i sm"><use href="#i-check"/></svg>Pesquisa</div>
+                    <div class="step cur"><svg class="i sm"><use href="#i-dot"/></svg>Roteiro</div>
+                    <div class="step todo"><svg class="i sm"><use href="#i-circle"/></svg>Decupagem</div>
+                  </div>
+                  <div class="phase"><div class="ph"><span>Mídia</span><span>0/2</span></div>
+                    <div class="step todo"><svg class="i sm"><use href="#i-circle"/></svg>Aquisição</div>
+                    <div class="step todo"><svg class="i sm"><use href="#i-circle"/></svg>Validação visual</div>
+                  </div>
+                  <div class="phase"><div class="ph"><span>Montagem</span><span>0/3</span></div>
+                    <div class="step todo"><svg class="i sm"><use href="#i-circle"/></svg>Planejamento</div>
+                    <div class="step todo"><svg class="i sm"><use href="#i-circle"/></svg>Montagem</div>
+                    <div class="step todo"><svg class="i sm"><use href="#i-circle"/></svg>Prévia</div>
+                  </div>
+                  <div class="phase"><div class="ph"><span>Entrega</span><span>0/1</span></div>
+                    <div class="step todo"><svg class="i sm"><use href="#i-circle"/></svg>Editor</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card now">
+                <div class="hd5"><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-terminal"/></svg>Agora</span><span class="sub">última atividade há 4 s</span></div>
+                <div>Escrevendo o bloco 3 de 7 do roteiro</div>
+                <div class="log">
+                  <div><span class="t">14:01:52</span><span class="ok">✓</span> bloco 2/7 aprovado pelo revisor de fatos (3 fontes)</div>
+                  <div><span class="t">14:01:58</span>bloco 3/7: "O mapa que não queria ser lido"</div>
+                  <div><span class="t">14:02:01</span>pesquisando citações do diretor (2 de 4)</div>
+                </div>
+                <a href="#console" style="font-size:12.5px">Abrir no console, filtrado nesta etapa →</a>
+              </div>
+
+              <div class="card needs">
+                <div class="hd5"><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-alert"/></svg>Precisa de você · Top 10 RPGs de 2026</span><span class="btn sm ghost">Usar motion visual em todas…</span></div>
+                <div class="slot"><div class="q"><b>Cena 4 · "boss fight Malenia fase 2"</b><span>Nenhuma mídia passou na validação visual (relevância 0,31 &lt; 0,6)</span></div><span class="btn sm"><svg class="i sm"><use href="#i-upload"/></svg>Importar mídia</span><span class="btn sm ghost"><svg class="i sm"><use href="#i-wand"/></svg>Usar motion visual</span></div>
+                <div class="slot"><div class="q"><b>Cena 7 · "mapa das Lands Between"</b><span>Fonte bloqueada por licença</span></div><span class="btn sm"><svg class="i sm"><use href="#i-upload"/></svg>Importar mídia</span><span class="btn sm ghost"><svg class="i sm"><use href="#i-wand"/></svg>Usar motion visual</span></div>
+              </div>
+
+              <div class="card fail">
+                <div class="hd5"><span style="display:flex;gap:8px;align-items:center"><svg class="i"><use href="#i-x-circle"/></svg>Falhou em Montagem · Doc Zelda TotK</span><span class="sub">tentativa 2 · há 6 min</span></div>
+                <div style="font-size:13px">FFmpeg encerrou com código 1 ao concatenar a cena 12 (codec de áudio incompatível).</div>
+                <div class="foot" style="margin-top:10px; justify-content:flex-start; gap:8px">
+                  <span class="btn sm primary"><svg class="i sm"><use href="#i-rotate"/></svg>Tentar de novo a partir de Montagem</span>
+                  <span class="btn sm ghost">Ver erro no console</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <figcaption>Aba Produção ativa: o contador "Etapa 4 de 11" vem de <code>PIPELINE_STAGES.length</code>, corrigindo o "x/8". As pendências de mídia e as falhas têm blocos próprios, com ações claras e retomada a partir da etapa que falhou. Os botões têm no mínimo 32px de altura.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 5 REVISÃO -->
+  <section id="revisao">
+    <p class="eyebrow">05</p>
+    <h2>Aba Revisão</h2>
+    <p>Cobertura de Mídia, Scene Grounding, Voz e SFX/VFX hoje são painéis separados que o usuário precisa cruzar de cabeça. A tabela de cenas por critério mostra tudo junto; clicar numa célula abre o detalhe no painel correspondente, que é reaproveitado.</p>
+
+    <figure class="mock">
+      <div class="win" role="img" aria-label="Mockup da aba Revisão">
+        <div class="win-bar"><div class="dots"><i></i><i></i><i></i></div><span class="title">NeuralBridge Studio — Aethera</span></div>
+        <div class="main">
+          <div class="tabs">
+            <span class="tab">Criar</span>
+            <span class="tab">Produção ativa</span>
+            <span class="tab on">Revisão <span class="n warn">4</span></span>
+            <span class="tab">Auditoria <span class="n">0</span></span>
+          </div>
+          <div class="content">
+            <div class="rev">
+              <nav class="subnav" aria-label="Revisão">
+                <a class="on" href="#revisao">Visão por cena <span class="b">18</span></a>
+                <a href="#revisao">Roteiro & Storyboard <span class="b">18 cenas</span></a>
+                <a href="#revisao">Mídia & Grounding <span class="b" style="color:var(--warning)">2 baixas</span></a>
+                <a href="#revisao">Voz & Pronúncia <span class="b" style="color:var(--warning)">2 termos</span></a>
+                <a href="#revisao">SFX / VFX <span class="b">ok</span></a>
+              </nav>
+              <div>
+                <div class="kpis">
+                  <div class="kpi"><small>Cobertura de mídia</small><b>94%</b></div>
+                  <div class="kpi"><small>Relevância média</small><b>0,82</b></div>
+                  <div class="kpi"><small>Termos sem pronúncia</small><b style="color:var(--warning)">2</b></div>
+                  <div class="kpi"><small>Quality Gate</small><b style="color:var(--success)">8/9</b></div>
+                </div>
+                <div class="card" style="padding:4px 8px">
+                  <table class="matrix">
+                    <thead><tr><th>Cena</th><th>Mídia</th><th>Grounding</th><th>Narração</th><th>SFX</th></tr></thead>
+                    <tbody>
+                      <tr><td class="scene">01 · Abertura<small>0:00–0:38</small></td><td><span class="cell ok">✓ real</span></td><td><span class="cell ok">0,91</span></td><td><span class="cell ok">✓</span></td><td><span class="cell ok">✓</span></td></tr>
+                      <tr><td class="scene">02 · O silêncio de 2019<small>0:38–1:20</small></td><td><span class="cell ok">✓ real</span></td><td><span class="cell ok">0,86</span></td><td><span class="cell warn">"Pharloom"?</span></td><td><span class="cell ok">✓</span></td></tr>
+                      <tr class="hl"><td class="scene">03 · Hornet como protagonista<small>1:20–2:05</small></td><td><span class="cell warn">motion</span></td><td><span class="cell bad">0,41</span></td><td><span class="cell ok">✓</span></td><td><span class="cell ok">✓</span></td></tr>
+                      <tr><td class="scene">04 · Design de combate<small>2:05–3:10</small></td><td><span class="cell ok">✓ real</span></td><td><span class="cell ok">0,88</span></td><td><span class="cell ok">✓</span></td><td><span class="cell na">—</span></td></tr>
+                      <tr><td class="scene">05 · A comunidade esperou<small>3:10–3:52</small></td><td><span class="cell ok">✓ real</span></td><td><span class="cell warn">0,58</span></td><td><span class="cell warn">"Team Cherry"?</span></td><td><span class="cell ok">✓</span></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <figcaption>Aba Revisão: no topo, indicadores agregados; abaixo, a tabela de cenas por critério com valor e texto em cada célula, não só cor. A cena 03 aparece destacada por ter baixa correspondência entre imagem e narração.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 6 CONSOLE -->
+  <section id="console">
+    <p class="eyebrow">06</p>
+    <h2>Console no rodapé</h2>
+    <p>O console mantém todos os recursos atuais: abas Terminal/Eventos/Erros, busca, 6 filtros, rolagem automática, exportação TXT/JSON, importação, detalhes expansíveis e histórico de tentativas. A diferença é que passa a ser um único componente, com escopo "Esta produção" ou "Todas". Os filtros ativos aparecem como chips removíveis, e os contadores de erros e retries continuam visíveis mesmo com o console recolhido.</p>
+
+    <figure class="mock">
+      <div class="win" role="img" aria-label="Mockup do console no rodapé">
+        <div class="win-bar"><div class="dots"><i></i><i></i><i></i></div><span class="title">NeuralBridge Studio — Aethera</span></div>
+        <div style="height:56px; background:var(--background); border-bottom:1px dashed var(--border); display:grid; place-items:center; color:var(--muted-foreground); font-size:12px">… conteúdo da aba …</div>
+        <div class="dock">
+          <div class="dock-head">
+            <span class="ttl"><svg class="i"><use href="#i-terminal"/></svg>Console</span>
+            <span class="count err">3 erros</span><span class="count retry">1 retry</span>
+            <div class="dock-tabs"><b>Terminal</b><b>Eventos</b><b class="on">Erros</b></div>
+            <div class="seg" style="margin-left:6px"><b class="on">Esta produção</b><b>Todas</b></div>
+            <span class="search"><svg class="i sm"><use href="#i-search"/></svg>Buscar nos logs…</span>
+            <span style="margin-left:auto" class="icon-btn" aria-label="Recolher console"><svg class="i"><use href="#i-chev-up"/></svg></span>
+          </div>
+          <div style="display:flex; gap:6px; padding:0 14px 8px; flex-wrap:wrap; align-items:center">
+            <span class="fchip">Etapa: Montagem <i>✕</i></span>
+            <span class="fchip">Nível: erro <i>✕</i></span>
+            <span class="btn sm ghost" style="padding:2px 10px; min-height:26px">+ Filtro</span>
+            <span class="btn sm ghost" style="padding:2px 10px; min-height:26px; margin-left:auto">Exportar ▾</span>
+          </div>
+          <div class="lines">
+            <div class="ln e"><span class="tm">13:55:08</span><span class="lv">ERRO</span><span class="src">ffmpeg</span><span>concat falhou na cena 12: codec de áudio incompatível (pcm_s24le)</span></div>
+            <div class="ln w"><span class="tm">13:55:09</span><span class="lv">RETRY</span><span class="src">montagem</span><span>tentativa 2/3 com reencode do áudio para AAC</span></div>
+            <div class="ln e"><span class="tm">13:55:41</span><span class="lv">ERRO</span><span class="src">ffmpeg</span><span>concat falhou novamente na cena 12 · ▸ detalhes técnicos</span></div>
+            <div class="ln i"><span class="tm">13:55:42</span><span class="lv">INFO</span><span class="src">pipeline</span><span>produção pausada em Montagem; aguardando decisão</span></div>
+          </div>
+        </div>
+      </div>
+      <figcaption>Console no rodapé: aberto a partir do link "Ver erro no console" de uma falha, já filtrado pela etapa e pelo nível. Fonte monoespaçada com no mínimo 12px; <code>aria-live</code> só para erros novos.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 7 VISUAL -->
+  <section id="visual">
+    <p class="eyebrow">07</p>
+    <h2>Sistema visual</h2>
+    <p>Os mockups acima já usam os tokens reais do app (<code>styles.css</code>). As mudanças são: tirar o gradiente roxo→âmbar e as cores hex fixas e usar uma cor semântica por estado, sempre acompanhada de ícone e texto.</p>
+    <div class="swatches">
+      <div class="sw"><i style="background:var(--background)"></i><div>Fundo<br><code>--background</code></div></div>
+      <div class="sw"><i style="background:var(--card)"></i><div>Superfície<br><code>--card</code></div></div>
+      <div class="sw"><i style="background:var(--primary)"></i><div>Ação principal<br><code>--primary</code></div></div>
+      <div class="sw"><i style="background:var(--signal)"></i><div>Rodando<br><code>--aethera-signal</code></div></div>
+      <div class="sw"><i style="background:var(--warning)"></i><div>Pausado / aguarda<br><code>--warning</code></div></div>
+      <div class="sw"><i style="background:var(--destructive)"></i><div>Falha<br><code>--destructive</code></div></div>
+      <div class="sw"><i style="background:var(--success)"></i><div>Concluído<br><code>--success</code></div></div>
+      <div class="sw"><i style="background:var(--input)"></i><div>Pendente<br><code>--input</code></div></div>
+    </div>
+    <ul style="margin-top:20px">
+      <li><b>Tipografia:</b> 12px para metadados, 13–14px para corpo, 16px para títulos de seção. Sem <code>text-[10px]</code>. IBM Plex Mono (já no tema) para logs, IDs e métricas.</li>
+      <li><b>Ícones:</b> só Lucide, que já é usado no app. Nenhum caractere ou emoji como ícone.</li>
+      <li><b>Movimento:</b> transições de estado de 150–250ms; <code>motion-safe:</code> em <code>animate-spin</code> e na barra de progresso.</li>
+      <li><b>Alvos de clique:</b> no mínimo 32px de altura no desktop e foco visível com <code>--ring</code>.</li>
+    </ul>
+  </section>
+
+  <!-- 8 PLANO -->
+  <section id="plano">
+    <p class="eyebrow">08</p>
+    <h2>Plano de implementação</h2>
+    <p>São seis lotes incrementais, cada um validado com typecheck, os testes da feature e um teste E2E com Playwright do fluxo briefing → produção → resolver mídia → editor.</p>
+    <ol class="plan">
+      <li><div><b>Correções rápidas</b><span>Corrige "x/8" para <code>PIPELINE_STAGES.length</code>; labels reais em Render, Idioma e Voz; <code>↻</code> vira <code>RefreshCw</code> com <code>aria-label</code>; tamanhos mínimos; ícone e texto nos estados; <code>motion-safe</code>.</span></div><span class="risk l">Baixo</span></li>
+      <li><div><b>Extração de componentes</b><span>Divide o <code>CinemaDirectorPanel</code> (1.670 linhas) em CreateTab, ActiveProductionTab, ReviewTab e ProductionRail, com o hook <code>useCinemaProduction</code>.</span></div><span class="risk m">Médio</span></li>
+      <li><div><b>Lista de produções e abas</b><span>Lista lateral, abas por tarefa e seleção sem rolar para o topo.</span></div><span class="risk m">Médio</span></li>
+      <li><div><b>Aba Criar</b><span>Interpretação visível, botões de Formato e Estilo, configurações recolhidas, Radar lateral, Benchmark no menu ⚙ e PromptEditor.</span></div><span class="risk m">Médio</span></li>
+      <li><div><b>Aba Produção ativa</b><span>Etapas agrupadas, bloco Agora, Precisa de você e card de falha com retomada por etapa.</span></div><span class="risk m">Médio</span></li>
+      <li><div><b>Revisão e console</b><span>Tabela de cenas por critério, navegação da revisão e console único com escopo.</span></div><span class="risk h">Alto</span></li>
+    </ol>
+    <div class="callout"><strong>A confirmar:</strong> <code>PromptEditor.tsx</code> e <code>prompt-editor-model.ts</code> estão fora do git e vieram de outra sessão. É preciso confirmar a origem antes de integrá-los no lote 4. A skill sugeriu fonte Fira e um botão vermelho; a recomendação é manter os tokens petróleo/dourado do NeuralBridge.</div>
+  </section>
+
+  <footer>Os mockups são ilustrativos, feitos em HTML/CSS com os tokens do tema; os dados são fictícios. A versão em texto está em <code>docs/aethera/video-ai-ux-redesign-proposal.md</code>.</footer>
+</div>
+</body>
+</html>
