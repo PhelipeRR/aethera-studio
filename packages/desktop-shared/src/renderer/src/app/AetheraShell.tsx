@@ -16,30 +16,12 @@ import { share } from '@/features/monitoring/format';
 import { useMonitoring } from '@/features/monitoring/monitoring-store';
 import { usePersistentFlag } from '@/lib/use-persistent-flag';
 import { cn } from '@/lib/utils';
+import { SingularityMark } from './BrandMark';
 import { CommandPalette } from './CommandPalette';
 import { DatabaseBanner } from './DatabaseBanner';
 import type { AppRoute } from './routes';
 
 export const AETHERA_SIDEBAR_COLLAPSED_KEY = 'aethera.sidebar.collapsed';
-
-function AetheraPrismLogo({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 36 36" fill="none" className={className} aria-hidden="true">
-      <defs>
-        <linearGradient id="aetheraPrism" x1="4" y1="4" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#b8a4f4" />
-          <stop offset="55%" stopColor="#8b6cf0" />
-          <stop offset="100%" stopColor="#f9a8d4" />
-        </linearGradient>
-      </defs>
-      <path
-        d="M18 3L32 30H24.5L18 17.5L11.5 30H4L18 3Z"
-        fill="url(#aetheraPrism)"
-      />
-      <path d="M18 19L23 28H13L18 19Z" fill="#ffffff" />
-    </svg>
-  );
-}
 
 export interface AetheraShellProps {
   routes: readonly AppRoute[];
@@ -104,7 +86,7 @@ export function AetheraShell({ routes }: AetheraShellProps) {
           <header className="app-drag col-span-2 flex min-w-0 items-center justify-between gap-4 bg-background px-4 pr-36">
             <div className="app-no-drag flex items-center gap-3 min-w-0">
               <div className="flex items-center gap-2.5 pr-2">
-                <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-card shadow-[var(--elevation-1)]"><AetheraPrismLogo className="size-6" /></span>
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-card shadow-[var(--elevation-1)]"><SingularityMark className="size-8" /></span>
                 <div className="flex flex-col leading-none">
                   <span className="text-sm font-semibold tracking-[0.18em] text-foreground">AETHERA</span>
                   <span className="mt-0.5 text-[9px] tracking-[0.28em] text-muted-foreground uppercase">Studio</span>
