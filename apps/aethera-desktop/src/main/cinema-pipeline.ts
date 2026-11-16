@@ -403,6 +403,8 @@ export interface StagedPipelineDeps {
   onProgress?: (job: StagedProductionJob) => void;
   onPackageReady: (pkg: CinemaProductionPackage, prompt: string) => void;
   onRenderReady: (projectId: string, render: RealRenderResult) => void;
+  /** Resolves TTS credentials from the main-process secret store at render time; never persisted in the job. */
+  resolveTtsCredentials?: (providerId: string) => { apiKey: string; modelId?: string } | null;
   analyzeFrames?: (
     uri: string,
     timestampsSec: number[],
@@ -749,6 +751,13 @@ export class StagedCinemaPipeline {
     job.contract = this.recordStageEvidence(contract, 'prompt', 'extraction', 'Contrato criado por compatibilidade a partir de um job legado.') ?? contract;
     job.contractHistory = job.contractHistory ?? [];
     return { job, upgraded: true };
+  }
+
+  private ttsCredentialsFor(providerId: string | undefined): { ttsApiKey?: string; ttsModelId?: string } {
+    if (!providerId || providerId === 'voicestudio') return {};
+    const creds = this.deps.resolveTtsCredentials?.(providerId);
+    if (!creds) return {};
+    return { ttsApiKey: creds.apiKey, ...(creds.modelId ? { ttsModelId: creds.modelId } : {}) };
   }
 
   private jobFile(projectId: string): string {
@@ -2487,6 +2496,7 @@ export class StagedCinemaPipeline {
         voiceStudioVoiceId: job.voiceStudioVoiceId || '9190edfa',
         ...(job.ttsProviderId ? { ttsProviderId: job.ttsProviderId } : {}),
         ...(job.ttsVoiceId ? { ttsVoiceId: job.ttsVoiceId } : {}),
+        ...this.ttsCredentialsFor(job.ttsProviderId),
         evolution: this.deps.evolutionCore,
         prompt: job.prompt,
         previewQuality: 'fast_preview',
@@ -2695,6 +2705,7 @@ export class StagedCinemaPipeline {
           voiceStudioVoiceId: job.voiceStudioVoiceId || '9190edfa',
           ...(job.ttsProviderId ? { ttsProviderId: job.ttsProviderId } : {}),
           ...(job.ttsVoiceId ? { ttsVoiceId: job.ttsVoiceId } : {}),
+          ...this.ttsCredentialsFor(job.ttsProviderId),
           evolution: this.deps.evolutionCore,
           prompt: job.prompt,
           previewQuality: 'fast_preview',

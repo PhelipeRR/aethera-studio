@@ -77,6 +77,7 @@ import {
 import { MediaCoveragePanel } from './MediaCoveragePanel';
 import { VoiceDirectorPanel } from './VoiceDirectorPanel';
 import { DeletePromptDialog, promptDeleteLabel } from './DeletePromptDialog';
+import { TtsProviderSelector } from '@/features/aethera/TtsProviderSelector';
 import {
   EditorialAuditPanel,
   type EditorialAuditTrailView,
@@ -455,6 +456,8 @@ export function CinemaDirectorPanel() {
   const [voiceOptions, setVoiceOptions] = useState<Array<{ id: string; label: string; source?: string }>>([]);
   const [voiceStudioAvailable, setVoiceStudioAvailable] = useState(false);
   const [selectedVoiceId, setSelectedVoiceId] = useState('9190edfa');
+  const [ttsProviderId, setTtsProviderId] = useState<'voicestudio' | 'elevenlabs'>('voicestudio');
+  const [ttsVoiceId, setTtsVoiceId] = useState('');
   const [manualControlFields, setManualControlFields] = useState<ContractControlField[]>([]);
   const [promptConflicts, setPromptConflicts] = useState<ContractConflict[]>([]);
   const [revisionNote, setRevisionNote] = useState('');
@@ -710,6 +713,10 @@ export function CinemaDirectorPanel() {
       setError('Cinema IPC bridge indisponível neste contexto.');
       return;
     }
+    if (ttsProviderId === 'elevenlabs' && !ttsVoiceId) {
+      setError('Selecione uma voz do ElevenLabs (configure a API Key se a lista estiver vazia) ou volte para o VoiceStudio.');
+      return;
+    }
     setBusy(true);
     setActiveStartMs(Date.now());
     setNowMs(Date.now());
@@ -740,6 +747,7 @@ export function CinemaDirectorPanel() {
           renderProfile,
           useNvenc: capabilities?.gpuNvenc ?? true,
           voiceStudioVoiceId: selectedVoiceId,
+          ...(ttsProviderId === 'elevenlabs' ? { ttsProviderId, ttsVoiceId } : {}),
           language: videoLanguage,
           manuallyChangedFields: [
             ...manualControlFields,
@@ -1039,7 +1047,10 @@ export function CinemaDirectorPanel() {
   const effectiveDeliveryId = deliveryPresetId === 'automatic' ? detectedDeliveryPresetId : deliveryPresetId;
   const effectiveDelivery = DELIVERY_PRESETS.find((item) => item.id === effectiveDeliveryId);
   const languageLabel = LANGUAGE_OPTIONS.find((item) => item.id === videoLanguage)?.label ?? videoLanguage;
-  const voiceLabel = voiceOptions.find((item) => item.id === selectedVoiceId)?.label ?? (voiceStudioAvailable ? 'Voz padrão' : 'Voz padrão (VoiceStudio offline)');
+  const voiceLabel =
+    ttsProviderId === 'elevenlabs'
+      ? `ElevenLabs${ttsVoiceId ? '' : ' (escolha uma voz)'}`
+      : (voiceOptions.find((item) => item.id === selectedVoiceId)?.label ?? (voiceStudioAvailable ? 'Voz padrão' : 'Voz padrão (VoiceStudio offline)'));
   const renderOption = RENDER_PROFILE_OPTIONS.find((item) => item.id === renderProfile);
   const advancedSummary = [
     summaryOf(CONTENT_CATEGORIES, creativeSelection.contentCategoryId),
@@ -1372,36 +1383,60 @@ export function CinemaDirectorPanel() {
                           ))}
                         </Select>
                       </Field>
-                      <Field label="Voz (VoiceStudio)" htmlFor="cinema-voice">
-                        <div className="flex gap-1.5">
-                          <Select
-                            id="cinema-voice"
-                            value={selectedVoiceId}
-                            onChange={(e) => handleManualControlChange('voiceId', e.target.value)}
-                            className="min-w-0 flex-1"
-                          >
-                            {voiceOptions.length > 0 ? (
-                              voiceOptions.map((v) => (
-                                <option key={v.id} value={v.id} title={v.id}>
-                                  {v.label}
-                                </option>
-                              ))
-                            ) : (
-                              <option value="9190edfa">{voiceStudioAvailable ? 'Voz padrão' : 'Voz padrão (VoiceStudio offline)'}</option>
-                            )}
-                          </Select>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="icon"
-                            onClick={() => void loadVoices()}
-                            title="Atualizar lista de vozes do VoiceStudio"
-                            aria-label="Atualizar lista de vozes do VoiceStudio"
-                          >
-                            <RefreshCw aria-hidden />
-                          </Button>
-                        </div>
+                      <Field label="Motor de voz" htmlFor="cinema-tts-provider">
+                        <Select
+                          id="cinema-tts-provider"
+                          value={ttsProviderId}
+                          onChange={(e) => setTtsProviderId(e.target.value === 'elevenlabs' ? 'elevenlabs' : 'voicestudio')}
+                        >
+                          <option value="voicestudio">VoiceStudio (local)</option>
+                          <option value="elevenlabs">ElevenLabs (nuvem)</option>
+                        </Select>
                       </Field>
+                      {ttsProviderId === 'voicestudio' ? (
+                        <>
+                        <Field label="Voz (VoiceStudio)" htmlFor="cinema-voice">
+                          <div className="flex gap-1.5">
+                            <Select
+                              id="cinema-voice"
+                              value={selectedVoiceId}
+                              onChange={(e) => handleManualControlChange('voiceId', e.target.value)}
+                              className="min-w-0 flex-1"
+                            >
+                              {voiceOptions.length > 0 ? (
+                                voiceOptions.map((v) => (
+                                  <option key={v.id} value={v.id} title={v.id}>
+                                    {v.label}
+                                  </option>
+                                ))
+                              ) : (
+                                <option value="9190edfa">{voiceStudioAvailable ? 'Voz padrão' : 'Voz padrão (VoiceStudio offline)'}</option>
+                              )}
+                            </Select>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="icon"
+                              onClick={() => void loadVoices()}
+                              title="Atualizar lista de vozes do VoiceStudio"
+                              aria-label="Atualizar lista de vozes do VoiceStudio"
+                            >
+                              <RefreshCw aria-hidden />
+                            </Button>
+                          </div>
+                        </Field>
+                        </>
+                      ) : (
+                        <div className="sm:col-span-2">
+                          <TtsProviderSelector
+                            selectedProviderId="elevenlabs"
+                            selectedVoiceId={ttsVoiceId}
+                            onVoiceChange={setTtsVoiceId}
+                            disabled={busy}
+                            hideProviderSelect
+                          />
+                        </div>
+                      )}
                     </div>
                   </Disclosure>
 

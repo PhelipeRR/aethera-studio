@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync,
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CinemaProductionPackage } from '../index.js';
+import { synthesizeElevenLabsWav } from './elevenlabs-tts.js';
 import {
   verifyEditorialConsistency,
   type EditorialConsistencyReport,
@@ -48,6 +49,9 @@ export interface RealRenderInput {
   voiceStudioVoiceId?: string;
   ttsProviderId?: string;
   ttsVoiceId?: string;
+  /** ElevenLabs credentials resolved by the host from its secret store; never persisted in the job. */
+  ttsApiKey?: string;
+  ttsModelId?: string;
   evolution?: AetheraEvolutionCore;
   genre?: string;
   prompt?: string;
@@ -177,37 +181,31 @@ async function synthesizeNarrationWav(
     voiceStudioVoiceId?: string;
     ttsProviderId?: string;
     ttsVoiceId?: string;
+    ttsApiKey?: string;
+    ttsModelId?: string;
+    language?: string;
   },
 ): Promise<'voicestudio_tts' | 'elevenlabs_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback'> {
   // When ElevenLabs is explicitly selected and configured, use it instead of VoiceStudio
-  if (options?.ttsProviderId === 'elevenlabs' && options?.ttsVoiceId) {
-    const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (options?.ttsProviderId === 'elevenlabs' && options.ttsVoiceId) {
+    const apiKey = options.ttsApiKey || process.env.ELEVENLABS_API_KEY;
     if (apiKey) {
       try {
-        const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${options.ttsVoiceId}`, {
-          method: 'POST',
-          headers: {
-            'xi-api-key': apiKey,
-            'content-type': 'application/json',
-            accept: 'audio/wav',
-          },
-          body: JSON.stringify({
-            text,
-            model_id: 'eleven_multilingual_v2',
-            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-          }),
-          signal: AbortSignal.timeout(60_000),
+        await synthesizeElevenLabsWav({
+          apiKey,
+          voiceId: options.ttsVoiceId,
+          text,
+          outWavPath,
+          ...(options.ttsModelId ? { modelId: options.ttsModelId } : {}),
+          ...(options.language ? { languageCode: options.language.slice(0, 2).toLowerCase() } : {}),
         });
-        if (res.ok) {
-          const buf = Buffer.from(await res.arrayBuffer());
-          if (buf.byteLength >= 1024) {
-            writeFileSync(outWavPath, buf);
-            return 'elevenlabs_tts';
-          }
-        }
-      } catch {
-        // Fall through to VoiceStudio/SAPI fallback on network or auth errors
+        return 'elevenlabs_tts';
+      } catch (err) {
+        // Fall through to VoiceStudio/SAPI; the result's narrationMode reports the fallback.
+        console.warn(`[aethera] ElevenLabs indisponível, usando fallback: ${err instanceof Error ? err.message : String(err)}`);
       }
+    } else {
+      console.warn('[aethera] ElevenLabs selecionado sem API Key configurada; usando fallback.');
     }
   }
 
@@ -722,9 +720,13 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
           [],
         );
 
+  // ElevenLabs voices get their own cache namespace so switching provider never reuses VoiceStudio audio.
+  const useElevenLabs = input.ttsProviderId === 'elevenlabs' && Boolean(input.ttsVoiceId);
   const voicePlan = directNarrationSegments({
     segments: rawSegments,
-    voiceId: input.voiceStudioVoiceId || '9190edfa',
+    voiceId: useElevenLabs
+      ? `elevenlabs:${input.ttsVoiceId}:${input.ttsModelId || 'default'}`
+      : input.voiceStudioVoiceId || '9190edfa',
     ...(input.voiceExpressiveness !== undefined ? { expressiveness: input.voiceExpressiveness } : {}),
     ...(input.voiceBaseWpm !== undefined ? { baseWpm: input.voiceBaseWpm } : {}),
     ...(input.pronunciationDictionary ? { dictionary: input.pronunciationDictionary } : {}),
@@ -757,9 +759,14 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
         ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
         ...(input.ttsProviderId ? { ttsProviderId: input.ttsProviderId } : {}),
         ...(input.ttsVoiceId ? { ttsVoiceId: input.ttsVoiceId } : {}),
+        ...(input.ttsApiKey ? { ttsApiKey: input.ttsApiKey } : {}),
+        ...(input.ttsModelId ? { ttsModelId: input.ttsModelId } : {}),
+        ...(input.language ? { language: input.language } : {}),
       });
       if (mode !== 'voicestudio_tts') narrationMode = mode;
-      if (existsSync(segWorkPath) && statSync(segWorkPath).size > 1024) {
+      // Never cache a fallback voice under the ElevenLabs key.
+      const cacheable = useElevenLabs ? mode === 'elevenlabs_tts' : true;
+      if (cacheable && existsSync(segWorkPath) && statSync(segWorkPath).size > 1024) {
         copyFileSync(segWorkPath, cachedSegPath);
       }
     }
@@ -803,6 +810,9 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
       ...(input.ttsProviderId ? { ttsProviderId: input.ttsProviderId } : {}),
       ...(input.ttsVoiceId ? { ttsVoiceId: input.ttsVoiceId } : {}),
+      ...(input.ttsApiKey ? { ttsApiKey: input.ttsApiKey } : {}),
+      ...(input.ttsModelId ? { ttsModelId: input.ttsModelId } : {}),
+      ...(input.language ? { language: input.language } : {}),
     });
   }
 

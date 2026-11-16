@@ -1919,7 +1919,8 @@ export function registerAetheraDomainIpc(options: {
   const visionProviderCooldowns = new Map<string, VisionCooldownEntry>();
   const ttsRegistry = new TtsProviderRegistry();
   ttsRegistry.register(new VoiceStudioProvider());
-  ttsRegistry.register(new ElevenLabsProvider(safeStorage, userDataDir));
+  const elevenLabsProvider = new ElevenLabsProvider(safeStorage, userDataDir);
+  ttsRegistry.register(elevenLabsProvider);
   /** Without `jobId`, the console routes the entry to the job the project is running right now. */
   const emitProductionLog = (input: EmitProductionLogInput) => productionConsole.emit(input);
   /** Last snapshot the pipeline reported per job: lets a command line carry the percentage it ran at. */
@@ -2024,6 +2025,8 @@ export function registerAetheraDomainIpc(options: {
     libraryDir: join(app.getPath('userData'), 'cinema-library'),
     cinemaProjectsDir,
     evolutionCore,
+    resolveTtsCredentials: (providerId) =>
+      providerId === 'elevenlabs' ? elevenLabsProvider.getSynthesisCredentials() : null,
     requireVisualVerification: true,
     autonomousAcquisitionDeps: {
       mediaProviders: { registry: mediaSourcesService.registry },

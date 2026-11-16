@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, vi, beforeEach } from 'vitest';
@@ -218,5 +218,47 @@ describe('Provider Switching — No Silent Voice Swap', () => {
     await expect(
       provider.synthesize({ text: 'Should fail', voiceId: 'v1', outWavPath: join(root, 'out.wav') }),
     ).rejects.toThrow('unconfigured');
+  });
+});
+describe('ElevenLabs synthesis — real WAV output and render credentials', () => {
+  it('requests raw PCM via output_format and writes a valid RIFF/WAVE file', async () => {
+    const root = makeTempDir('tts-wav-');
+    const provider = new ElevenLabsProvider(mockCipher, root);
+    provider.saveCredentials({ apiKey: 'sk-test-elevenlabs-key-12345' });
+
+    const pcm = new Uint8Array(4800); // 0.1s of 16-bit mono at 24 kHz
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, arrayBuffer: async () => pcm.buffer });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const out = join(root, 'out.wav');
+      await provider.synthesize({ text: 'Olá', voiceId: 'voice/1', outWavPath: out });
+
+      const url = String(fetchMock.mock.calls[0]?.[0]);
+      expect(url).toContain('/v1/text-to-speech/voice%2F1');
+      expect(url).toContain('output_format=pcm_24000');
+
+      const wav = readFileSync(out);
+      expect(wav.subarray(0, 4).toString('ascii')).toBe('RIFF');
+      expect(wav.subarray(8, 12).toString('ascii')).toBe('WAVE');
+      expect(wav.readUInt32LE(24)).toBe(24_000);
+      expect(wav.readUInt16LE(22)).toBe(1);
+      expect(wav.readUInt32LE(40)).toBe(pcm.byteLength);
+      expect(wav.byteLength).toBe(44 + pcm.byteLength);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('exposes saved credentials to the render pipeline and nothing when cleared', () => {
+    const root = makeTempDir('tts-render-creds-');
+    const provider = new ElevenLabsProvider(mockCipher, root);
+    expect(provider.getSynthesisCredentials()).toBeNull();
+
+    provider.saveCredentials({ apiKey: 'sk-test-elevenlabs-key-12345', modelId: 'eleven_turbo_v2_5' });
+    expect(provider.getSynthesisCredentials()).toEqual({ apiKey: 'sk-test-elevenlabs-key-12345', modelId: 'eleven_turbo_v2_5' });
+
+    provider.clearCredentials();
+    expect(provider.getSynthesisCredentials()).toBeNull();
   });
 });
