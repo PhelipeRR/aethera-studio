@@ -75,6 +75,7 @@ export async function generateAiBackground(
       preset: recipe.professionalPreset,
       ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths } : {}),
       ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
+      ...(recipe.characterRegions.length > 1 ? { characterRegions: recipe.characterRegions } : {}),
     });
     const qualityAudit = await auditGeneratedImage(buffer, { expectedWidth: recipe.width, expectedHeight: recipe.height });
     if (!qualityAudit.passed) {

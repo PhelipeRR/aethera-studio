@@ -84,7 +84,7 @@ The Aethera path is now:
 5. the generated buffer receives a structural audit for dimensions and luminance variation;
 6. only a real output is composed; fallback reports remain visible in the panel and production console.
 
-Reference images use `/upload/image` and a native `LoadImage → VAEEncode → KSampler` graph. Localized repair uses a bounded mask with `VAEEncodeForInpaint` when that node is exposed. The adapter also has a checkpoint-independent `LoadImage → UpscaleModelLoader → ImageUpscaleWithModel` graph; the desktop UI does not yet expose a user-facing upscale action. Jobs are serialized by a process-local GPU lease; memory can be released explicitly or after each generation.
+Reference images use `/upload/image` and a native `LoadImage → VAEEncode → KSampler` graph. Localized repair uses a bounded mask with `VAEEncodeForInpaint` when that node is exposed. Multi-character requests with two to eight planned regions use one environment pass followed by one bounded inpaint pass per region; a reference image deliberately remains on the single img2img path. The adapter also has a checkpoint-independent `LoadImage → UpscaleModelLoader → ImageUpscaleWithModel` graph; the desktop UI does not yet expose a user-facing upscale action. Jobs are serialized by a process-local GPU lease; memory can be released explicitly or after each generation.
 
 ## What is still blocked
 

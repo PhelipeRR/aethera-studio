@@ -109,4 +109,32 @@ describe('ComfyUiImageAdapter', () => {
     expect(gateway.queued?.['1']).toMatchObject({ class_type: 'UpscaleModelLoader', inputs: { model_name: '4x-UltraSharp.pth' } });
     expect(gateway.queued?.['3']).toMatchObject({ class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['1', 0], image: ['2', 0] } });
   });
+
+  it('turns multiple character regions into a base pass plus bounded inpaint passes', async () => {
+    const gateway = fakeGateway();
+    const generated = await sharp({ create: { width: 128, height: 72, channels: 3, background: '#445566' } }).png().toBuffer();
+    let queueCount = 0;
+    gateway.queuePrompt = async (prompt) => {
+      queueCount += 1;
+      gateway.queued = prompt;
+      return { prompt_id: `prompt-${queueCount}` };
+    };
+    gateway.getImage = async () => generated;
+    gateway.uploadImage = async (_buffer, filename) => ({ name: filename, subfolder: 'aethera', type: 'input' });
+    const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
+
+    await expect(adapter.generateImage({
+      prompt: 'two distinct anime warriors in an action exchange',
+      negativePrompt: 'fused bodies',
+      width: 128,
+      height: 72,
+      characterCount: 2,
+      characterRegions: [
+        { id: 'left', anchor: 'left', x: 0, y: 0, width: 56, height: 72 },
+        { id: 'right', anchor: 'right', x: 72, y: 0, width: 56, height: 72 },
+      ],
+    })).resolves.toEqual(generated);
+    expect(queueCount).toBe(3);
+    expect(gateway.queued?.['6']).toMatchObject({ class_type: 'VAEEncodeForInpaint' });
+  });
 });

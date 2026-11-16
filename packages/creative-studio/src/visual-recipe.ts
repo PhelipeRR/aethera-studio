@@ -264,7 +264,6 @@ function stripBrandTokens(value: string, banned: string[]): string {
 export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
   const spec = ART_SPECIFICATIONS[input.artType];
   const characterCount = input.characterCount ?? 1;
-  const characterPlan = planMultiCharacterComposition({ width: spec.width, height: spec.height, characterCount });
   const preset = detectVisualPreset(input.artType, input.prompt);
   const professionalPresetId = input.professionalPreset ?? resolveProfessionalPreset(input.artType, input.prompt);
   const professionalPreset = getProfessionalPreset(professionalPresetId);
@@ -317,6 +316,7 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
   const scale = Math.min(1, maxSide / Math.max(spec.width, spec.height));
   const width = Math.max(256, Math.round((spec.width * scale) / 8) * 8);
   const height = Math.max(256, Math.round((spec.height * scale) / 8) * 8);
+  const characterPlan = planMultiCharacterComposition({ width, height, characterCount });
   const seed = input.seed ?? deriveSeed(input.seedKey ?? `${input.artType}:${input.prompt}`);
 
   return {

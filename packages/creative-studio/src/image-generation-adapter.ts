@@ -32,6 +32,7 @@ export interface ImageGenerationRequest {
   batchSize?: number;
   preset?: string;
   characterCount?: number;
+  characterRegions?: Array<{ id: string; anchor: string; x: number; y: number; width: number; height: number }>;
 }
 
 export interface BackgroundRemovalRequest {

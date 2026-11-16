@@ -130,13 +130,35 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     const objectInfo = await this.gateway.getObjectInfo();
     const referencePath = request.referenceImagePaths?.[0];
     const uploadedReference = referencePath ? await this.uploadReference(referencePath) : null;
-    const workflow = uploadedReference ? this.img2imgWorkflowFor(request, uploadedReference) : this.workflowFor(request);
+    const regions = request.characterRegions?.slice(0, 8) ?? [];
+    const regionalComposition = regions.length > 1 && !uploadedReference;
+    const workflowRequest = regionalComposition
+      ? {
+          ...request,
+          prompt: `${request.prompt}, background environment only, no visible characters, calm separated regions for later compositing`,
+          negativePrompt: `${request.negativePrompt ?? ''}, people, characters, bodies, faces`,
+        }
+      : request;
+    const workflow = uploadedReference ? this.img2imgWorkflowFor(request, uploadedReference) : this.workflowFor(workflowRequest);
     const validation = validateComfyUiWorkflow(workflow, objectInfo);
     if (!validation.ok) {
       this.availabilityError = validation.errors.join(' ');
       throw new Error(`ComfyUI is not configured for image generation: ${this.availabilityError}`);
     }
-    return this.runWorkflow(workflow);
+    let image = await this.runWorkflow(workflow);
+    if (!regionalComposition) return image;
+
+    // Native ComfyUI has no regional-conditioning node in the clean install. A bounded inpaint pass per region
+    // gives multi-character requests a real composition path while keeping each character isolated and auditable.
+    for (const region of regions) {
+      image = await this.inpaintRegionInternal({
+        imageBuffer: image,
+        bbox: region,
+        prompt: `one distinct full-body character in the ${region.anchor} region; ${request.prompt}; preserve the rest of the image exactly, no fused bodies, no duplicate faces`,
+        strength: 0.92,
+      });
+    }
+    return image;
   }
 
   private async inpaintRegionInternal(request: LocalizedInpaintRequest): Promise<Buffer> {
