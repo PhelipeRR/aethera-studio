@@ -3,10 +3,11 @@ import { getProfessionalPreset, listProfessionalPresets, resolveProfessionalPres
 import { buildVisualRecipe } from '../src/visual-recipe.js';
 
 describe('professional creative presets', () => {
-  it('ships the five requested production profiles with explicit engine controls', () => {
+  it('ships the requested production profiles with explicit engine controls', () => {
     const presets = listProfessionalPresets();
     expect(presets.map((preset) => preset.id)).toEqual([
       'anime_premium_cinematic',
+      'anime_cinematic',
       'gaming_cinematic',
       'cyberpunk_neon',
       'youtube_thumbnail_1280x720',
@@ -23,7 +24,7 @@ describe('professional creative presets', () => {
 
   it('resolves a stable default from art type and brief without guessing a model', () => {
     expect(resolveProfessionalPreset('banner', 'NextWorth gaming channel')).toBe('banner_2560x1440');
-    expect(resolveProfessionalPreset('thumbnail', 'anime cinematic battle')).toBe('anime_premium_cinematic');
+    expect(resolveProfessionalPreset('thumbnail', 'anime cinematic battle')).toBe('anime_cinematic');
     expect(resolveProfessionalPreset('thumbnail', 'cyberpunk neon city')).toBe('cyberpunk_neon');
     expect(resolveProfessionalPreset('avatar', 'mascot')).toBe('youtube_thumbnail_1280x720');
   });

@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import sharp from 'sharp';
 import { ComfyUiImageAdapter, type ComfyUiGateway } from '../src/comfyui-image-adapter.js';
 import type { ComfyUiHistoryEntry } from '../src/comfyui-client.js';
 
 function readyObjectInfo(): Record<string, unknown> {
   return {
     CheckpointLoaderSimple: { input: { required: { ckpt_name: [['sdxl.safetensors']] } } },
-    CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {},
+    CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {}, VAEEncodeForInpaint: {},
   };
 }
 
@@ -17,7 +18,8 @@ function fakeGateway(): ComfyUiGateway & { queued?: Record<string, unknown> } {
     async getSystemStats() { return { devices: [{ name: 'RTX 4060 Ti', vram_total: 8_188_000_000 }] }; },
     async getObjectInfo() { return readyObjectInfo(); },
     async queuePrompt(prompt) { gateway.queued = prompt; return { prompt_id: 'prompt-1' }; },
-    async waitForCompletion(_promptId): Promise<ComfyUiHistoryEntry> {
+    async waitForCompletion(promptId): Promise<ComfyUiHistoryEntry> {
+      void promptId;
       return { outputs: { '7': { images: [{ filename: 'aethera.png', subfolder: '', type: 'output' }] } }, status: { completed: true } };
     },
     async getImage() { return Buffer.from('PNG bytes'); },
@@ -69,5 +71,32 @@ describe('ComfyUiImageAdapter', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('uploads a bounded mask and switches to the native localized inpaint graph', async () => {
+    const gateway = fakeGateway();
+    const uploads: Array<{ filename: string; bytes: Buffer }> = [];
+    gateway.uploadImage = async (bytes, filename) => {
+      uploads.push({ filename, bytes });
+      return { name: filename, subfolder: 'aethera', type: 'input' };
+    };
+    const image = await sharp({ create: { width: 96, height: 64, channels: 3, background: '#334455' } }).png().toBuffer();
+    const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
+
+    await expect(adapter.inpaintRegion({
+      imageBuffer: image,
+      prompt: 'repair the hand with coherent anatomy',
+      bbox: { x: 12, y: 10, width: 24, height: 20 },
+      strength: 0.48,
+    })).resolves.toEqual(Buffer.from('PNG bytes'));
+
+    expect(uploads.map((upload) => upload.filename)).toEqual(['aethera-inpaint-base.png', 'aethera-inpaint-mask.png']);
+    expect(gateway.queued?.['4']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/aethera-inpaint-base.png' } });
+    expect(gateway.queued?.['5']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/aethera-inpaint-mask.png' } });
+    expect(gateway.queued?.['6']).toMatchObject({ class_type: 'VAEEncodeForInpaint', inputs: { pixels: ['4', 0], mask: ['5', 0], grow_mask_by: 8 } });
+    expect(gateway.queued?.['7']).toMatchObject({ class_type: 'KSampler', inputs: { denoise: 0.48, latent_image: ['6', 0] } });
+    const maskUpload = uploads.at(1);
+    expect(maskUpload).toBeDefined();
+    await expect(sharp(maskUpload?.bytes ?? Buffer.alloc(0)).metadata()).resolves.toMatchObject({ width: 96, height: 64, format: 'png' });
   });
 });

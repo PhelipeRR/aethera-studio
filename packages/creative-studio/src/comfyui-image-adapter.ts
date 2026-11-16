@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
+import sharp from 'sharp';
 import { ComfyUiClient, type ComfyUiHistoryEntry, type ComfyUiImageRef, type ComfyUiSystemStats } from './comfyui-client.js';
 import {
+  buildComfyUiInpaintWorkflow,
   extractComfyUiImages,
   buildComfyUiImg2ImgWorkflow,
   buildComfyUiTxt2ImgWorkflow,
@@ -11,6 +13,7 @@ import {
 import type {
   ExternalImageAdapter,
   ImageGenerationRequest,
+  LocalizedInpaintRequest,
 } from './image-generation-adapter.js';
 import { GpuGenerationLease } from './gpu-generation-lease.js';
 
@@ -113,6 +116,10 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     return true;
   }
 
+  async inpaintRegion(request: LocalizedInpaintRequest): Promise<Buffer> {
+    return this.gpuLease.run(() => this.inpaintRegionInternal(request));
+  }
+
   private async generateImageInternal(request: ImageGenerationRequest): Promise<Buffer> {
     const objectInfo = await this.gateway.getObjectInfo();
     const referencePath = request.referenceImagePaths?.[0];
@@ -123,6 +130,55 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       this.availabilityError = validation.errors.join(' ');
       throw new Error(`ComfyUI is not configured for image generation: ${this.availabilityError}`);
     }
+    return this.runWorkflow(workflow);
+  }
+
+  private async inpaintRegionInternal(request: LocalizedInpaintRequest): Promise<Buffer> {
+    if (!this.gateway.uploadImage) throw new Error('ComfyUI gateway does not support inpaint image upload.');
+
+    const metadata = await sharp(request.imageBuffer).metadata();
+    const width = metadata.width;
+    const height = metadata.height;
+    if (!width || !height) throw new Error('ComfyUI inpaint requires a decodable raster image with dimensions.');
+
+    const x = Math.max(0, Math.min(width - 1, Math.round(request.bbox.x)));
+    const y = Math.max(0, Math.min(height - 1, Math.round(request.bbox.y)));
+    const right = Math.max(x + 1, Math.min(width, Math.round(request.bbox.x + request.bbox.width)));
+    const bottom = Math.max(y + 1, Math.min(height, Math.round(request.bbox.y + request.bbox.height)));
+    if (right <= x || bottom <= y) throw new Error('ComfyUI inpaint bounding box does not intersect the source image.');
+
+    // White means editable for ComfyUI's VAEEncodeForInpaint mask; all other pixels remain black and protected.
+    const maskSvg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="black"/><rect x="${x}" y="${y}" width="${right - x}" height="${bottom - y}" fill="white"/></svg>`;
+    const maskBuffer = await sharp(Buffer.from(maskSvg)).png().toBuffer();
+    const baseUpload = await this.gateway.uploadImage(request.imageBuffer, 'aethera-inpaint-base.png', 'aethera', true);
+    const maskUpload = await this.gateway.uploadImage(maskBuffer, 'aethera-inpaint-mask.png', 'aethera', true);
+    const workflow = buildComfyUiInpaintWorkflow({
+      checkpoint: this.checkpoint,
+      positivePrompt: request.prompt,
+      negativePrompt: 'text, letters, watermark, low quality, deformed anatomy, extra limbs',
+      width,
+      height,
+      seed: 0,
+      steps: this.steps,
+      cfg: this.cfg,
+      samplerName: this.samplerName,
+      scheduler: this.scheduler,
+      denoise: request.strength ?? 0.54,
+      growMaskBy: 8,
+      image: { filename: baseUpload.name, ...(baseUpload.subfolder ? { subfolder: baseUpload.subfolder } : {}), type: baseUpload.type },
+      mask: { filename: maskUpload.name, ...(maskUpload.subfolder ? { subfolder: maskUpload.subfolder } : {}), type: maskUpload.type },
+      filenamePrefix: `${this.filenamePrefix}/inpaint`,
+    });
+    const objectInfo = await this.gateway.getObjectInfo();
+    const validation = validateComfyUiWorkflow(workflow, objectInfo);
+    if (!validation.ok) {
+      this.availabilityError = validation.errors.join(' ');
+      throw new Error(`ComfyUI is not configured for localized repair: ${this.availabilityError}`);
+    }
+    return this.runWorkflow(workflow);
+  }
+
+  private async runWorkflow(workflow: ComfyUiWorkflow): Promise<Buffer> {
     const queued = await this.gateway.queuePrompt(workflow);
     this.activePromptId = queued.prompt_id;
     try {

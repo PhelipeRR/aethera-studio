@@ -31,6 +31,7 @@ export interface ImageGenerationRequest {
   scheduler?: string;
   batchSize?: number;
   preset?: string;
+  characterCount?: number;
 }
 
 export interface BackgroundRemovalRequest {

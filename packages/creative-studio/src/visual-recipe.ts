@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ART_SPECIFICATIONS, type BrandKit, type CreativeArtType } from './schemas.js';
 import { getProfessionalPreset, resolveProfessionalPreset, type ProfessionalPresetId } from './creative-presets.js';
+import { planMultiCharacterComposition, type CharacterRegion } from './multi-character-composition.js';
 
 /**
  * CF-1 — Visual recipe: turns the user's brief (any language), the creative direction from the reasoning engines and
@@ -56,6 +57,8 @@ export interface VisualRecipe {
   cfg: number;
   samplerName: string;
   scheduler: string;
+  characterCount: number;
+  characterRegions: CharacterRegion[];
 }
 
 export interface VisualRecipeInput {
@@ -70,6 +73,7 @@ export interface VisualRecipeInput {
   /** Max side of the generation size (default 1024). */
   maxSide?: number;
   professionalPreset?: ProfessionalPresetId;
+  characterCount?: number;
 }
 
 /** Ordered pt-BR/EN visual vocabulary → English phrase. Longer, more specific patterns first. */
@@ -258,6 +262,9 @@ function stripBrandTokens(value: string, banned: string[]): string {
 }
 
 export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
+  const spec = ART_SPECIFICATIONS[input.artType];
+  const characterCount = input.characterCount ?? 1;
+  const characterPlan = planMultiCharacterComposition({ width: spec.width, height: spec.height, characterCount });
   const preset = detectVisualPreset(input.artType, input.prompt);
   const professionalPresetId = input.professionalPreset ?? resolveProfessionalPreset(input.artType, input.prompt);
   const professionalPreset = getProfessionalPreset(professionalPresetId);
@@ -292,6 +299,7 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
     subjectTerms.join(', '),
     direction?.lighting ?? (preset === 'logo_element' ? undefined : 'dramatic rim lighting, volumetric light'),
     direction?.camera,
+    characterCount > 1 ? `${characterCount} distinct isolated character regions, no fused bodies, no duplicate faces` : undefined,
     paletteText,
     preset === 'logo_element' || preset === 'avatar' ? undefined : 'highly detailed, depth of field',
   ]
@@ -305,7 +313,6 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
     if (phrase && !phrases.some((p) => p.toLowerCase() === key)) phrases.push(phrase);
   }
   const positivePrompt = capWords(phrases.join(', '), MAX_PROMPT_WORDS);
-  const spec = ART_SPECIFICATIONS[input.artType];
   const maxSide = input.maxSide ?? 1024;
   const scale = Math.min(1, maxSide / Math.max(spec.width, spec.height));
   const width = Math.max(256, Math.round((spec.width * scale) / 8) * 8);
@@ -327,6 +334,8 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
     cfg: professionalPreset.cfg,
     samplerName: professionalPreset.samplerName,
     scheduler: professionalPreset.scheduler,
+    characterCount,
+    characterRegions: characterPlan.regions,
   };
 }
 

@@ -127,7 +127,7 @@ function emptyInventory(): ComfyUiModelInventory {
 }
 
 function emptyCapabilities(): ComfyUiCapabilities {
-  return { nativeTxt2Img: false, nativeImg2Img: false, controlNet: false, ipAdapter: false, faceDetailer: false, upscale: false, lora: false };
+  return { nativeTxt2Img: false, nativeImg2Img: false, inpaint: false, controlNet: false, ipAdapter: false, faceDetailer: false, upscale: false, lora: false };
 }
 
 function inventoryFor(resourceRoot: string, fileSystem: ComfyUiFileSystem): ComfyUiModelInventory {

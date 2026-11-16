@@ -84,7 +84,7 @@ interface CreativeBridge {
       version?: string;
       reason?: string;
       models: { checkpoints: string[]; loras: string[]; controlnet: string[] };
-      capabilities: { nativeTxt2Img: boolean; nativeImg2Img: boolean; controlNet: boolean; ipAdapter: boolean; faceDetailer: boolean; upscale: boolean; lora: boolean };
+      capabilities: { nativeTxt2Img: boolean; nativeImg2Img: boolean; inpaint: boolean; controlNet: boolean; ipAdapter: boolean; faceDetailer: boolean; upscale: boolean; lora: boolean };
     };
     localAvailable: boolean;
     activeProvider: string;
@@ -113,6 +113,7 @@ export function CreativeStudioPanel() {
   const [prompt, setPrompt] = useState('');
   const [headline, setHeadline] = useState('');
   const [referencePath, setReferencePath] = useState('');
+  const [characterCount, setCharacterCount] = useState(1);
   const [videoPath, setVideoPath] = useState('');
   const [engines, setEngines] = useState<string[]>([]);
   const [brandKits, setBrandKits] = useState<BrandKit[]>([]);
@@ -215,6 +216,7 @@ export function CreativeStudioPanel() {
         useAiGeneration,
         professionalPreset,
         ...(referencePath.trim() ? { referenceImagePaths: [referencePath.trim()] } : {}),
+        characterCount,
       });
       setActiveDoc(res.document);
       setPreviewUrl(res.previewDataUrl);
@@ -355,6 +357,7 @@ export function CreativeStudioPanel() {
         {engineStatus && (
           <span style={{ color: 'var(--muted-foreground)' }}>
             recursos: {[
+              engineStatus.comfyUi.capabilities.inpaint && 'inpaint',
               engineStatus.comfyUi.capabilities.controlNet && 'ControlNet',
               engineStatus.comfyUi.capabilities.ipAdapter && 'IP-Adapter',
               engineStatus.comfyUi.capabilities.faceDetailer && 'FaceDetailer',
@@ -450,10 +453,19 @@ export function CreativeStudioPanel() {
               style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
             >
               <option value="youtube_thumbnail_1280x720">YouTube Thumbnail 1280×720</option>
-              <option value="anime_premium_cinematic">Anime Premium / Cinematic</option>
+              <option value="anime_premium_cinematic">Anime Premium</option>
+              <option value="anime_cinematic">Anime Cinematic</option>
               <option value="gaming_cinematic">Gaming Cinematic</option>
               <option value="cyberpunk_neon">Cyberpunk Neon</option>
               <option value="banner_2560x1440">Banner 2560×1440</option>
+            </select>
+            <select
+              aria-label="Quantidade de personagens"
+              value={characterCount}
+              onChange={(e) => setCharacterCount(Number(e.target.value))}
+              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+            >
+              {[1, 2, 3, 4, 5, 6, 7, 8].map((count) => <option key={count} value={count}>{count} personagem{count === 1 ? '' : 'ns'}</option>)}
             </select>
             <button disabled={generationBusy} onClick={handleCreate} style={{ padding: '8px 14px', background: generationBusy ? 'var(--muted)' : 'var(--brand-lime)', color: 'var(--brand-ink)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: generationBusy ? 'wait' : 'pointer' }}>
               {generationBusy ? 'Gerando…' : 'Gerar Arte Editável'}

@@ -2,6 +2,7 @@ import type { CreativeArtType } from './schemas.js';
 
 export type ProfessionalPresetId =
   | 'anime_premium_cinematic'
+  | 'anime_cinematic'
   | 'gaming_cinematic'
   | 'cyberpunk_neon'
   | 'youtube_thumbnail_1280x720'
@@ -26,7 +27,7 @@ export interface ProfessionalPreset {
 const PRESETS: Record<ProfessionalPresetId, ProfessionalPreset> = {
   anime_premium_cinematic: {
     id: 'anime_premium_cinematic',
-    label: 'Anime Premium / Cinematic',
+    label: 'Anime Premium',
     artType: 'thumbnail',
     width: 1280,
     height: 720,
@@ -34,6 +35,21 @@ const PRESETS: Record<ProfessionalPresetId, ProfessionalPreset> = {
     negativePrompt: 'flat generic anime, chibi proportions, muddy colors, duplicate character, malformed hands',
     steps: 12,
     cfg: 5.5,
+    samplerName: 'dpmpp_2m',
+    scheduler: 'karras',
+    recommendedModelFamily: 'sdxl',
+    textSafeZone: { x: 0, y: 0, width: 704, height: 720 },
+  },
+  anime_cinematic: {
+    id: 'anime_cinematic',
+    label: 'Anime Cinematic',
+    artType: 'thumbnail',
+    width: 1280,
+    height: 720,
+    promptPrefix: 'anime cinematic film still, polished cel shading, expressive face, dynamic perspective, controlled atmosphere, clean line art',
+    negativePrompt: 'flat generic anime, chibi proportions, muddy colors, duplicate character, malformed hands, busy composition',
+    steps: 14,
+    cfg: 5.2,
     samplerName: 'dpmpp_2m',
     scheduler: 'karras',
     recommendedModelFamily: 'sdxl',
@@ -113,7 +129,7 @@ export function resolveProfessionalPreset(artType: CreativeArtType, prompt: stri
   const lower = prompt.toLowerCase();
   if (artType === 'banner') return 'banner_2560x1440';
   if (/cyberpunk|neon|cyberpunk/i.test(lower)) return 'cyberpunk_neon';
-  if (/anime|mang[aá]|otaku/i.test(lower)) return 'anime_premium_cinematic';
+  if (/anime|mang[aá]|otaku/i.test(lower)) return /cinematic|cinem[aá]tico|filmic/i.test(lower) ? 'anime_cinematic' : 'anime_premium_cinematic';
   if (/game|gaming|gamer|jogo|videogame/i.test(lower)) return 'gaming_cinematic';
   return 'youtube_thumbnail_1280x720';
 }

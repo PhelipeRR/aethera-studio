@@ -32,6 +32,13 @@ export interface ComfyUiImg2ImgInput extends ComfyUiTxt2ImgInput {
   denoise: number;
 }
 
+export interface ComfyUiInpaintInput extends ComfyUiTxt2ImgInput {
+  image: ComfyUiImageRef;
+  mask: ComfyUiImageRef;
+  denoise: number;
+  growMaskBy: number;
+}
+
 /**
  * Native ComfyUI graph used by the first production adapter. It deliberately avoids custom nodes so the graph can
  * be audited against /object_info and remains portable across a clean ComfyUI installation.
@@ -114,6 +121,52 @@ export function buildComfyUiImg2ImgWorkflow(input: ComfyUiImg2ImgInput): ComfyUi
     },
     '7': { ...node('6'), inputs: { samples: ['6', 0], vae: ['1', 2] } },
     '8': { ...node('7'), inputs: { filename_prefix: input.filenamePrefix, images: ['7', 0] } },
+  };
+}
+
+/**
+ * Native ComfyUI localized repair graph. The mask is deliberately supplied as a separate LoadImage node so the
+ * caller can audit exactly which pixels are allowed to change. This keeps localized repairs portable without
+ * requiring Impact Pack or another custom-node bundle.
+ */
+export function buildComfyUiInpaintWorkflow(input: ComfyUiInpaintInput): ComfyUiWorkflow {
+  const width = Math.max(64, Math.round(input.width / 8) * 8);
+  const height = Math.max(64, Math.round(input.height / 8) * 8);
+  const base = buildComfyUiTxt2ImgWorkflow({ ...input, width, height });
+  const imageName = input.image.subfolder ? `${input.image.subfolder}/${input.image.filename}` : input.image.filename;
+  const maskName = input.mask.subfolder ? `${input.mask.subfolder}/${input.mask.filename}` : input.mask.filename;
+  const node = (id: string): ComfyUiWorkflowNode => {
+    const value = base[id];
+    if (!value) throw new Error(`Base ComfyUI workflow is missing node ${id}.`);
+    return value;
+  };
+  return {
+    '1': node('1'),
+    '2': node('2'),
+    '3': node('3'),
+    '4': { class_type: 'LoadImage', inputs: { image: imageName }, _meta: { title: 'Aethera inpaint base image' } },
+    '5': { class_type: 'LoadImage', inputs: { image: maskName }, _meta: { title: 'Aethera localized repair mask' } },
+    '6': {
+      class_type: 'VAEEncodeForInpaint',
+      inputs: {
+        pixels: ['4', 0],
+        vae: ['1', 2],
+        mask: ['5', 0],
+        grow_mask_by: Math.max(0, Math.round(input.growMaskBy)),
+      },
+      _meta: { title: 'Aethera localized repair encode' },
+    },
+    '7': {
+      ...node('5'),
+      inputs: {
+        ...node('5').inputs,
+        denoise: Math.min(1, Math.max(0.01, input.denoise)),
+        latent_image: ['6', 0],
+      },
+      _meta: { title: 'Aethera localized repair sampler' },
+    },
+    '8': { ...node('6'), inputs: { samples: ['7', 0], vae: ['1', 2] }, _meta: { title: 'Aethera localized repair decode' } },
+    '9': { ...node('7'), inputs: { filename_prefix: input.filenamePrefix, images: ['8', 0] }, _meta: { title: 'Aethera localized repair output' } },
   };
 }
 

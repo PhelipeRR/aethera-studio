@@ -4,12 +4,13 @@ import { inspectComfyUiCapabilities } from '../src/comfyui-capabilities.js';
 describe('ComfyUI capability inspection', () => {
   it('reports only capabilities backed by nodes and model inventory', () => {
     const capabilities = inspectComfyUiCapabilities(
-      { CheckpointLoaderSimple: {}, CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {}, ControlNetApplyAdvanced: {}, IPAdapterAdvanced: {}, FaceDetailer: {}, ImageUpscaleWithModel: {}, LoraLoader: {} },
+      { CheckpointLoaderSimple: {}, CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {}, VAEEncodeForInpaint: {}, ControlNetApplyAdvanced: {}, IPAdapterAdvanced: {}, FaceDetailer: {}, ImageUpscaleWithModel: {}, LoraLoader: {} },
       { checkpoints: ['sdxl.safetensors'], controlnet: ['canny.safetensors'], diffusion_models: [], loras: ['style.safetensors'], vae: [], upscale_models: ['4x.pth'], embeddings: [] },
     );
     expect(capabilities).toEqual({
       nativeTxt2Img: true,
       nativeImg2Img: true,
+      inpaint: true,
       controlNet: true,
       ipAdapter: true,
       faceDetailer: true,
@@ -22,6 +23,7 @@ describe('ComfyUI capability inspection', () => {
     expect(inspectComfyUiCapabilities({ CheckpointLoaderSimple: {} }, { checkpoints: ['base.safetensors'], controlnet: ['canny.safetensors'], diffusion_models: [], loras: [], vae: [], upscale_models: [], embeddings: [] })).toEqual({
       nativeTxt2Img: false,
       nativeImg2Img: false,
+      inpaint: false,
       controlNet: false,
       ipAdapter: false,
       faceDetailer: false,

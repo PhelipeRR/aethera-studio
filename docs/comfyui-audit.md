@@ -44,6 +44,7 @@ The reproducible result is therefore:
   "capabilities": {
     "nativeTxt2Img": false,
     "nativeImg2Img": false,
+    "inpaint": false,
     "controlNet": false,
     "ipAdapter": false,
     "faceDetailer": false,
@@ -77,7 +78,7 @@ The Aethera path is now:
 5. the generated buffer receives a structural audit for dimensions and luminance variation;
 6. only a real output is composed; fallback reports remain visible in the panel and production console.
 
-Reference images use `/upload/image` and a native `LoadImage → VAEEncode → KSampler` graph. Jobs are serialized by a process-local GPU lease; memory can be released explicitly or after each generation.
+Reference images use `/upload/image` and a native `LoadImage → VAEEncode → KSampler` graph. Localized repair uses a bounded mask with `VAEEncodeForInpaint` when that node is exposed. Jobs are serialized by a process-local GPU lease; memory can be released explicitly or after each generation.
 
 ## What is still blocked
 

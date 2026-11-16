@@ -35,12 +35,13 @@ if (status.state !== 'ready' || status.models.checkpoints.length === 0) {
   const checkpoint = requestedCheckpoint ?? status.models.checkpoints[0];
   if (!checkpoint) throw new Error('ComfyUI reported ready without a checkpoint.');
   const adapter = new ComfyUiImageAdapter({ endpoint: status.endpoint, checkpoint, timeoutMs: 15 * 60_000 });
-  const cases: Array<{ id: string; preset: ProfessionalPresetId; prompt: string; width: number; height: number; reference?: string }> = [
-    { id: 'anime-single-character', preset: 'anime_premium_cinematic', prompt: 'one original anime hero, dynamic but clean pose, cinematic key light', width: 768, height: 768 },
-    { id: 'gaming-single-character', preset: 'gaming_cinematic', prompt: 'one heroic video game character, readable silhouette, dramatic action', width: 1024, height: 576 },
-    { id: 'cyberpunk-thumbnail', preset: 'cyberpunk_neon', prompt: 'one cyberpunk hero in a rain-slick futuristic city, cyan and magenta rim light', width: 1024, height: 576 },
-    { id: 'banner-safe-area', preset: 'banner_2560x1440', prompt: 'two original heroes at the far edges of a cinematic sci-fi skyline, calm center band', width: 1024, height: 576 },
-    { id: 'avatar-portrait', preset: 'youtube_thumbnail_1280x720', prompt: 'single friendly original mascot bust portrait, clean silhouette, simple background', width: 768, height: 768 },
+  const cases: Array<{ id: string; preset: ProfessionalPresetId; prompt: string; width: number; height: number; characterCount: number; reference?: string }> = [
+    { id: 'anime-close-up', preset: 'anime_cinematic', prompt: 'anime close-up portrait, one original warrior, expressive eyes, clean face and hands, cinematic key light', width: 768, height: 768, characterCount: 1 },
+    { id: 'anime-combat-two', preset: 'anime_premium_cinematic', prompt: 'two distinct anime warriors in an action combat exchange, full silhouettes separated left and right, energy clash', width: 1024, height: 576, characterCount: 2 },
+    { id: 'cyberpunk-trio', preset: 'cyberpunk_neon', prompt: 'three distinct cyberpunk characters in separate readable positions, rain-slick futuristic city, cyan and magenta rim light', width: 1024, height: 576, characterCount: 3 },
+    { id: 'cyberpunk-group-eight', preset: 'cyberpunk_neon', prompt: 'eight distinct cyberpunk characters arranged as a readable group, no fused bodies, varied silhouettes, cinematic city depth', width: 1024, height: 576, characterCount: 8 },
+    { id: 'gamer-thumbnail', preset: 'youtube_thumbnail_1280x720', prompt: 'professional gamer thumbnail, one expressive player reaction and a clear gaming setup, strong silhouette, negative space for editor text', width: 1280, height: 720, characterCount: 1 },
+    { id: 'nextworth-banner', preset: 'banner_2560x1440', prompt: 'NextWorth channel banner with two original tech heroes at the far edges, layered futuristic skyline, calm center safe area for editor text', width: 1280, height: 720, characterCount: 2 },
     ...(referencePath && existsSync(referencePath)
       ? [{ id: 'reference-img2img', preset: 'gaming_cinematic' as const, prompt: 'same subject, cinematic polished key art, preserve the reference identity', width: 768, height: 768, reference: referencePath }]
       : []),
@@ -58,16 +59,54 @@ if (status.state !== 'ready' || status.models.checkpoints.length === 0) {
         height: testCase.height,
         seed: 10_000 + results.length,
         preset: testCase.preset,
+        characterCount: testCase.characterCount,
         ...(testCase.reference ? { referenceImagePaths: [testCase.reference], strength: 0.42 } : {}),
       });
       const audit = await auditGeneratedImage(image, { expectedWidth: testCase.width, expectedHeight: testCase.height });
-      writeFileSync(join(outputDir, `${testCase.id}.png`), image);
-      results.push({ id: testCase.id, status: audit.passed ? 'passed' : 'rejected', ms: Date.now() - started, vramBeforeMiB: before, vramAfterMiB: await vramMiB(), audit });
+      const outputPath = join(outputDir, `${testCase.id}.png`);
+      writeFileSync(outputPath, image);
+      results.push({
+        id: testCase.id,
+        status: audit.passed ? 'passed' : 'rejected',
+        model: checkpoint,
+        workflow: testCase.reference ? 'native-img2img' : 'native-txt2img',
+        seed: 10_000 + results.length,
+        characterCount: testCase.characterCount,
+        resolution: `${testCase.width}x${testCase.height}`,
+        file: outputPath,
+        ms: Date.now() - started,
+        vramBeforeMiB: before,
+        vramAfterMiB: await vramMiB(),
+        audit,
+        defects: audit.findings,
+        corrections: [],
+      });
     } catch (error) {
-      results.push({ id: testCase.id, status: 'failed', ms: Date.now() - started, vramBeforeMiB: before, error: error instanceof Error ? error.message : String(error) });
+      results.push({
+        id: testCase.id,
+        status: 'failed',
+        model: checkpoint,
+        workflow: testCase.reference ? 'native-img2img' : 'native-txt2img',
+        seed: 10_000 + results.length,
+        characterCount: testCase.characterCount,
+        resolution: `${testCase.width}x${testCase.height}`,
+        ms: Date.now() - started,
+        vramBeforeMiB: before,
+        vramAfterMiB: await vramMiB(),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
-  const report = { generatedAt: new Date().toISOString(), status, checkpoint, results };
+  const report = {
+    generatedAt: new Date().toISOString(),
+    status,
+    checkpoint,
+    results,
+    limitations: [
+      'Structural audit does not prove identity, anatomy, character count, text legibility, or visual quality; human review is required.',
+      'The native acceptance path uses one full-canvas diffusion pass; regional multi-character generation and IP-Adapter identity locking require installed nodes/models and are not silently assumed.',
+    ],
+  };
   writeFileSync(join(outputDir, 'report.json'), JSON.stringify(report, null, 2), 'utf8');
   console.log(JSON.stringify(report, null, 2));
   process.exitCode = results.every((result) => result.status === 'passed') ? 0 : 1;

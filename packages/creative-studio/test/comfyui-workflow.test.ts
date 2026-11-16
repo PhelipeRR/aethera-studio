@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildComfyUiTxt2ImgWorkflow,
   buildComfyUiImg2ImgWorkflow,
+  buildComfyUiInpaintWorkflow,
   extractComfyUiImages,
   validateComfyUiWorkflow,
 } from '../src/comfyui-workflow.js';
@@ -92,5 +93,29 @@ describe('ComfyUI workflow registry', () => {
       },
     };
     expect(extractComfyUiImages(history)).toEqual([{ filename: 'Aethera_00001.png', subfolder: 'Aethera', type: 'output' }]);
+  });
+
+  it('builds a native inpaint graph with separate image and mask inputs', () => {
+    const workflow = buildComfyUiInpaintWorkflow({
+      checkpoint: 'sdxl.safetensors',
+      positivePrompt: 'repair the face and hands',
+      negativePrompt: 'deformed anatomy, extra fingers',
+      width: 1024,
+      height: 576,
+      seed: 4,
+      steps: 10,
+      cfg: 5,
+      samplerName: 'euler',
+      scheduler: 'normal',
+      denoise: 0.5,
+      image: { filename: 'base.png', subfolder: 'aethera', type: 'input' },
+      mask: { filename: 'mask.png', subfolder: 'aethera', type: 'input' },
+      growMaskBy: 8,
+      filenamePrefix: 'Aethera/inpaint',
+    });
+    expect(workflow['4']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/base.png' } });
+    expect(workflow['5']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/mask.png' } });
+    expect(workflow['6']).toMatchObject({ class_type: 'VAEEncodeForInpaint', inputs: { pixels: ['4', 0], mask: ['5', 0], vae: ['1', 2], grow_mask_by: 8 } });
+    expect(workflow['9']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['8', 0] } });
   });
 });

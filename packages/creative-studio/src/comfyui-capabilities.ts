@@ -3,6 +3,7 @@ import type { ComfyUiModelInventory } from './comfyui-discovery.js';
 export interface ComfyUiCapabilities {
   nativeTxt2Img: boolean;
   nativeImg2Img: boolean;
+  inpaint: boolean;
   controlNet: boolean;
   ipAdapter: boolean;
   faceDetailer: boolean;
@@ -19,6 +20,7 @@ export function inspectComfyUiCapabilities(objectInfo: Record<string, unknown>, 
   return {
     nativeTxt2Img: ['CheckpointLoaderSimple', 'CLIPTextEncode', 'EmptyLatentImage', 'KSampler', 'VAEDecode', 'SaveImage'].every((name) => nodes.has(name.toLowerCase())) && models.checkpoints.length > 0,
     nativeImg2Img: hasNode(nodes, 'LoadImage') && hasNode(nodes, 'VAEEncode') && models.checkpoints.length > 0,
+    inpaint: hasNode(nodes, 'LoadImage') && hasNode(nodes, 'VAEEncodeForInpaint') && models.checkpoints.length > 0,
     controlNet: models.controlnet.length > 0 && hasNode(nodes, 'ControlNetApplyAdvanced', 'ControlNetApply'),
     ipAdapter: hasNode(nodes, 'IPAdapterApply', 'IPAdapterAdvanced', 'IPAdapter'),
     faceDetailer: hasNode(nodes, 'FaceDetailer', 'DetailerForEach', 'UltralyticsDetectorProvider'),

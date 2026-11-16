@@ -472,6 +472,7 @@ export class AetheraCreativeStudioService {
     useAiGeneration?: boolean;
     professionalPreset?: ProfessionalPresetId;
     referenceImagePaths?: string[];
+    characterCount?: number;
     assetManifest?: Record<string, ManagedAssetRef>;
   }): Promise<{
     document: CreativeProjectDocument;
@@ -517,6 +518,7 @@ export class AetheraCreativeStudioService {
         ingestion: this.ingestion,
         ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
         ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths } : {}),
+        ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
       });
       generation = generated.report;
       this.reportGeneration(generation);

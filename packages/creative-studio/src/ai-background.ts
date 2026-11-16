@@ -30,6 +30,7 @@ export interface GenerateAiBackgroundInput {
   seedKey?: string;
   professionalPreset?: ProfessionalPresetId;
   referenceImagePaths?: string[];
+  characterCount?: number;
 }
 
 export async function generateAiBackground(
@@ -57,6 +58,7 @@ export async function generateAiBackground(
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
     ...(input.seedKey ? { seedKey: input.seedKey } : {}),
     ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
+    ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
   });
   const started = Date.now();
   try {
@@ -72,6 +74,7 @@ export async function generateAiBackground(
       scheduler: recipe.scheduler,
       preset: recipe.professionalPreset,
       ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths } : {}),
+      ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
     });
     const qualityAudit = await auditGeneratedImage(buffer, { expectedWidth: recipe.width, expectedHeight: recipe.height });
     if (!qualityAudit.passed) {
