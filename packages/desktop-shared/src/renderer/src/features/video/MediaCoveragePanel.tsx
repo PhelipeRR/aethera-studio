@@ -16,6 +16,14 @@ export interface MediaCoverageReportView {
   uncoveredSubjects: string[];
   incompatibleMedia: Array<{ mediaId: string; reason: string }>;
   contextualMedia?: Array<{ mediaId: string; reason: string }>;
+  recoveryGaps?: Array<{
+    segmentId: string;
+    subject: string;
+    expectedEvent?: string;
+    missingDurationSec: number;
+    uncoveredIntervals: Array<{ startSec: number; endSec: number }>;
+    editorialAlternatives: Array<{ kind: string; detail: string; countsAsFootage: false }>;
+  }>;
   segments: Array<{
     segmentId: string;
     subject: string;
@@ -96,6 +104,29 @@ export interface AcquisitionFunnelAuditView {
   }>;
   sceneDiagnostics?: SceneMediaDiagnosticView[];
   rightsReview?: Array<{ mediaId: string; title: string; sourceUrl: string; rightsStatus: RightsStatusView; note: string }>;
+  recoveryAttempts?: Array<{
+    attemptId: string;
+    round: number;
+    segmentId: string;
+    query: string;
+    strategy: string;
+    sourceStatuses: Array<{ provider: string; status: string; count: number }>;
+    candidatesFound: number;
+    approvedMediaIds: string[];
+    rejectedMediaIds: string[];
+    rejectionReasons: string[];
+    outcome: string;
+  }>;
+  affectedSegmentIds?: string[];
+  unresolvedGapsForReview?: Array<{
+    segmentId: string;
+    subject: string;
+    uncoveredIntervals: Array<{ startSec: number; endSec: number }>;
+    missingDurationSec: number;
+    attempts: number;
+    attemptsExhausted: boolean;
+    reason: string;
+  }>;
 }
 
 interface MediaCoveragePanelProps {
@@ -265,6 +296,39 @@ export function MediaCoveragePanel({
             {coverage.contextualMedia.slice(0, 8).map((media) => (
               <li key={media.mediaId}>
                 <code className="text-foreground">{media.mediaId}</code>: {media.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {coverage && coverage.recoveryGaps && coverage.recoveryGaps.length > 0 && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+          <p className="font-medium text-amber-200">Gaps exatos para recuperação</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Os intervalos abaixo não têm prova visual suficiente. Material contextual e gráficos continuam fora da cobertura.
+          </p>
+          <ul className="mt-2 space-y-1 text-muted-foreground">
+            {coverage.recoveryGaps.slice(0, 10).map((gap) => (
+              <li key={gap.segmentId}>
+                <code className="text-foreground">{gap.segmentId}</code> · {gap.uncoveredIntervals.map((interval) => `${interval.startSec}–${interval.endSec}s`).join(', ')} · faltam {gap.missingDurationSec}s
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {acquisitionAudit && acquisitionAudit.recoveryAttempts && acquisitionAudit.recoveryAttempts.length > 0 && (
+        <div className="space-y-1 rounded-xl border border-border bg-background/50 p-3 text-xs">
+          <p className="font-medium text-foreground">Tentativas de recuperação</p>
+          <p className="text-[11px] text-muted-foreground">
+            {acquisitionAudit.recoveryAttempts.length} tentativa(s) · {acquisitionAudit.affectedSegmentIds?.length ?? 0} cena(s) afetada(s)
+          </p>
+          <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-[11px] text-muted-foreground">
+            {acquisitionAudit.recoveryAttempts.slice(-12).map((attempt) => (
+              <li key={attempt.attemptId}>
+                R{attempt.round} · <code className="text-foreground">{attempt.segmentId}</code> · {attempt.outcome} · {attempt.candidatesFound} resultado(s) · fontes: {attempt.sourceStatuses.map((source) => source.provider).join(', ') || 'nenhuma'}
+                {attempt.rejectionReasons.length > 0 ? ` · ${attempt.rejectionReasons[0]}` : ''}
               </li>
             ))}
           </ul>

@@ -91,6 +91,9 @@ interface PendingMediaSlotView {
   clipId: string;
   query: string;
   reason: string;
+  uncoveredIntervals?: Array<{ startSec: number; endSec: number }>;
+  missingDurationSec?: number;
+  attempts?: number;
   resolvedUri?: string;
   allowProcedural?: boolean;
 }
@@ -1210,6 +1213,13 @@ export function CinemaDirectorPanel() {
                   <div className="font-semibold text-foreground">
                     Cena #{slot.slotIndex + 1} · {slot.query}
                   </div>
+                  {slot.uncoveredIntervals && slot.uncoveredIntervals.length > 0 && (
+                    <p className="text-[11px] text-amber-200">
+                      Intervalos sem prova: {slot.uncoveredIntervals.map((interval) => `${interval.startSec}–${interval.endSec}s`).join(', ')}
+                      {slot.missingDurationSec !== undefined ? ` · faltam ${slot.missingDurationSec}s` : ''}
+                      {slot.attempts !== undefined ? ` · ${slot.attempts} tentativa(s)` : ''}
+                    </p>
+                  )}
                   <p className="text-[11px] text-muted-foreground">{slot.reason}</p>
                   <div className="flex flex-wrap gap-2">
                     <button

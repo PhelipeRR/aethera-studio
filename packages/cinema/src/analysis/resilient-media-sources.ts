@@ -22,11 +22,14 @@ import {
   type AnimeProvenanceAdapter,
 } from './anime-source-adapters.js';
 import {
+  buildMediaRecoveryPlan,
   expandScriptOrientedQueries,
   planMediaCoverage,
   type AcquiredMediaAsset,
   type CoverageFormat,
+  type MediaCoverageGap,
   type MediaCoverageReport,
+  type MediaRecoveryQuery,
   type ScriptCoverageSegment,
 } from './media-coverage-planner.js';
 import type { MediaProviderRegistry } from './media-providers/registry.js';
@@ -828,6 +831,24 @@ export interface AutonomousAcquisitionAuditReport {
     reason: string;
   }>;
   autoResolvedGaps: Array<{ segmentId: string; subject: string; resolvedInRound: number; mediaId: string }>;
+  /** Every search attempt made for an uncovered interval, including provider results and rejection causes. */
+  recoveryAttempts: Array<{
+    attemptId: string;
+    round: number;
+    segmentId: string;
+    gapIndex: number;
+    query: string;
+    strategy: MediaRecoveryQuery['strategy'];
+    sourceStatuses: ProviderAttemptStatus[];
+    candidatesFound: number;
+    acquiredMediaIds: string[];
+    approvedMediaIds: string[];
+    rejectedMediaIds: string[];
+    rejectionReasons: string[];
+    outcome: 'no_results' | 'download_failed' | 'rejected' | 'verified_interval' | 'contextual_only' | 'exhausted';
+  }>;
+  /** Segments whose uncovered intervals were actually targeted by this run. */
+  affectedSegmentIds: string[];
   /** Media the relevance gate approved but whose license needs a human decision (never auto-approved). */
   pendingLicenseReview?: PendingLicenseReviewEntry[];
   /** Approved media whose rights are not resolved (draft use only; publication needs a human decision). */
@@ -835,7 +856,17 @@ export interface AutonomousAcquisitionAuditReport {
   /** Equivalent queries (same canonical key) not re-run, per segment. */
   equivalentQueriesSkipped?: number;
   sceneDiagnostics?: SceneMediaDiagnostic[];
-  unresolvedGapsForReview: Array<{ segmentId: string; subject: string; suggestedQuery: string; reason: string }>;
+  unresolvedGapsForReview: Array<{
+    segmentId: string;
+    subject: string;
+    suggestedQuery: string;
+    reason: string;
+    uncoveredIntervals: MediaCoverageGap['uncoveredIntervals'];
+    missingDurationSec: number;
+    attempts: number;
+    attemptsExhausted: boolean;
+    editorialAlternatives: MediaCoverageGap['editorialAlternatives'];
+  }>;
   providerStatuses: ProviderAttemptStatus[];
   segmentMetrics: SegmentAcquisitionMetrics[];
   funnelMetrics: AcquisitionFunnelMetrics;
@@ -1119,6 +1150,7 @@ export async function runAutonomousMediaAcquisition(input: {
     perDownloadTimeoutMs?: number;
     maxQueriesTotal?: number;
     maxCandidateDurationSec?: number;
+    maxRecoveryAttemptsPerGap?: number;
     discoveryConcurrency?: number;
     acquisitionConcurrency?: number;
     verificationConcurrency?: number;
@@ -1211,6 +1243,9 @@ export async function runAutonomousMediaAcquisition(input: {
   /** Local file of every downloaded candidate (for diagnostics thumbnails/inspection). */
   const localPathByMediaId = new Map<string, string>();
   const autoResolvedGaps: AutonomousAcquisitionAuditReport['autoResolvedGaps'] = [];
+  const recoveryAttempts: AutonomousAcquisitionAuditReport['recoveryAttempts'] = [];
+  const recoveryAttemptIdByQueryKey = new Map<string, string>();
+  const recoveryAttemptIdByCandidateKey = new Map<string, string>();
   const pendingLicenseReview: PendingLicenseReviewEntry[] = [];
 
   let candidatesFoundCount = 0;
@@ -1312,6 +1347,7 @@ export async function runAutonomousMediaAcquisition(input: {
         }]>;
         rejectedCandidates?: AutonomousAcquisitionAuditReport['rejectedCandidates'];
         relevanceDecisions?: MediaRelevanceDecision[];
+        recoveryAttempts?: AutonomousAcquisitionAuditReport['recoveryAttempts'];
         segmentMetrics?: SegmentAcquisitionMetrics[];
         visionCacheEntries?: Array<[string, MediaRelevanceDecision]>;
         stageTimingsMs?: {
@@ -1357,6 +1393,10 @@ export async function runAutonomousMediaAcquisition(input: {
         }
         if (saved.rejectedCandidates) rejectedCandidates.push(...saved.rejectedCandidates);
         if (saved.relevanceDecisions) relevanceDecisions.push(...saved.relevanceDecisions);
+        if (saved.recoveryAttempts) {
+          recoveryAttempts.push(...saved.recoveryAttempts);
+          for (const attempt of saved.recoveryAttempts) recoveryAttemptIdByQueryKey.set(canonicalQueryKey(attempt.query), attempt.attemptId);
+        }
         for (const sm of saved.segmentMetrics ?? []) {
           segMetricsMap.set(sm.segmentId, sm);
         }
@@ -1405,6 +1445,7 @@ export async function runAutonomousMediaAcquisition(input: {
             approvedMetaEntries: [...approvedMetaById.entries()],
             rejectedCandidates,
             relevanceDecisions,
+            recoveryAttempts,
             segmentMetrics: [...segMetricsMap.values()],
             visionCacheEntries: [...visionCache.entries()],
             stageTimingsMs,
@@ -1434,6 +1475,18 @@ export async function runAutonomousMediaAcquisition(input: {
     requireRelevanceApproval: true,
   });
 
+  const findRecoveryAttempt = (candidateKey: string): AutonomousAcquisitionAuditReport['recoveryAttempts'][number] | undefined => {
+    const attemptId = recoveryAttemptIdByCandidateKey.get(candidateKey);
+    return attemptId ? recoveryAttempts.find((attempt) => attempt.attemptId === attemptId) : undefined;
+  };
+
+  const noteRecoveryFailure = (candidateKey: string, reason: string, outcome: AutonomousAcquisitionAuditReport['recoveryAttempts'][number]['outcome'] = 'download_failed') => {
+    const attempt = findRecoveryAttempt(candidateKey);
+    if (!attempt) return;
+    if (!attempt.rejectionReasons.includes(reason)) attempt.rejectionReasons.push(reason);
+    if (attempt.outcome !== 'verified_interval' && attempt.outcome !== 'contextual_only') attempt.outcome = outcome;
+  };
+
   let roundsExecuted = 0;
 
   try {
@@ -1458,6 +1511,13 @@ export async function runAutonomousMediaAcquisition(input: {
       roundsExecuted = round;
       const covBySegId = new Map(latestCoverage.segments.map((c) => [c.segmentId, c]));
       const coveredSegIds = new Set(latestCoverage.segments.filter((c) => c.covered).map((c) => c.segmentId));
+      const recoveryPlan = buildMediaRecoveryPlan({
+        prompt: input.prompt,
+        segments: input.segments,
+        coverageReport: latestCoverage,
+        ...(input.genre ? { genre: input.genre } : {}),
+        maxAttemptsPerGap: input.limits?.maxRecoveryAttemptsPerGap ?? 4,
+      });
       const targetSegments = input.segments
         .filter((s) => !coveredSegIds.has(s.segmentId))
         .sort((a, b) => {
@@ -1482,16 +1542,22 @@ export async function runAutonomousMediaAcquisition(input: {
       const sharedFromEquivalent: Array<{ segment: ScriptCoverageSegment; queryKey: string }> = [];
       const plannedThisRound = new Set<string>();
       for (const s of targetSegments) {
+        const gapQueries = recoveryPlan.queries
+          .filter((query) => query.segmentId === s.segmentId)
+          .map((query) => query.query);
+        const firstPassQueries = s.preferredQueries?.length
+          ? s.preferredQueries
+          : [`${s.subject} ${s.entities?.slice(0, 2).join(' ') ?? ''}`.trim() || input.prompt];
         const ladder = [
-          ...(s.preferredQueries ?? []),
-          ...(round > 1
+          ...(round === 1 ? firstPassQueries : gapQueries),
+          ...(round > 1 && gapQueries.length === 0
             ? expandScriptOrientedQueries({
-                prompt: input.prompt,
-                segments: [s],
-                ...(input.genre ? { genre: input.genre } : {}),
-                uncoveredSegmentIds: [s.segmentId],
-                maxQueries: 6,
-              })
+              prompt: input.prompt,
+              segments: [s],
+              ...(input.genre ? { genre: input.genre } : {}),
+              uncoveredSegmentIds: [s.segmentId],
+              maxQueries: 6,
+            })
             : []),
         ];
         if (ladder.length === 0) {
@@ -1593,6 +1659,32 @@ export async function runAutonomousMediaAcquisition(input: {
           globalQueryKeys.add(itemQueryKey);
           const keysForQuery = candKeysByQueryKey.get(itemQueryKey) ?? [];
           candKeysByQueryKey.set(itemQueryKey, keysForQuery);
+          const plannedRecoveryQuery = recoveryPlan.queries.find(
+            (query) => query.segmentId === item.segment.segmentId && canonicalQueryKey(query.query) === itemQueryKey,
+          );
+          let recoveryAttempt = recoveryAttempts.find(
+            (attempt) => attempt.attemptId === recoveryAttemptIdByQueryKey.get(itemQueryKey),
+          );
+          if (!recoveryAttempt) {
+            const attemptId = `recovery_${round}_${recoveryAttempts.length + 1}`;
+            recoveryAttempt = {
+              attemptId,
+              round,
+              segmentId: item.segment.segmentId,
+              gapIndex: plannedRecoveryQuery?.gapIndex ?? 0,
+              query: item.query,
+              strategy: plannedRecoveryQuery?.strategy ?? (round === 1 ? 'preferred' : 'alternative_source'),
+              sourceStatuses: [],
+              candidatesFound: 0,
+              acquiredMediaIds: [],
+              approvedMediaIds: [],
+              rejectedMediaIds: [],
+              rejectionReasons: [],
+              outcome: 'exhausted',
+            };
+            recoveryAttempts.push(recoveryAttempt);
+            recoveryAttemptIdByQueryKey.set(itemQueryKey, attemptId);
+          }
 
           try {
             const searchRes = await searchResilientMediaSources(
@@ -1610,6 +1702,9 @@ export async function runAutonomousMediaAcquisition(input: {
               },
             );
             allStatuses.push(...searchRes.providerStatuses);
+            recoveryAttempt.sourceStatuses = searchRes.providerStatuses.map((status) => ({ ...status }));
+            recoveryAttempt.candidatesFound = searchRes.candidates.length;
+            recoveryAttempt.outcome = searchRes.candidates.length > 0 ? 'exhausted' : 'no_results';
             if (searchRes.providerStatuses.some((s) => s.provider === 'yt_dlp' && s.status === 'blocked_auth_or_antibot')) {
               ytDlpBlocked = true;
             }
@@ -1617,6 +1712,7 @@ export async function runAutonomousMediaAcquisition(input: {
             for (const cand of searchRes.candidates) {
               candidatesByProvider[cand.origin] = (candidatesByProvider[cand.origin] ?? 0) + 1;
               const candKey = `${cand.origin}:${cand.url}`;
+              recoveryAttemptIdByCandidateKey.set(candKey, recoveryAttempt.attemptId);
               if (!keysForQuery.includes(candKey)) keysForQuery.push(candKey);
               if (seenCandidateKeys.has(candKey)) continue;
               seenCandidateKeys.add(candKey);
@@ -1639,6 +1735,7 @@ export async function runAutonomousMediaAcquisition(input: {
                   rejectionCode: 'duration_limit_exceeded',
                   reason: `Candidato excede limite de duração (${Math.round(cand.durationSec)}s > ${effectiveMaxDurationSec}s), evitando download longo bloqueante.`,
                 });
+                noteRecoveryFailure(candKey, 'duration_limit_exceeded', 'rejected');
                 continue;
               }
 
@@ -1655,6 +1752,7 @@ export async function runAutonomousMediaAcquisition(input: {
                   rejectionCode: 'triage_irrelevant_metadata',
                   reason: triage.reason ?? 'Eliminado na triagem de metadados.',
                 });
+                noteRecoveryFailure(candKey, triage.reason ?? 'triage_irrelevant_metadata', 'rejected');
                 continue;
               }
               const priorityScore = triage.score;
@@ -1865,6 +1963,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 reasonCode: failure.reasonCode,
                 detail: failure.detail,
               });
+              noteRecoveryFailure(candKey, failure.detail, 'download_failed');
               return;
             }
 
@@ -1879,6 +1978,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 reasonCode: 'invalid_file',
                 detail: `Arquivo inválido (${fileSizeBytes} bytes)`,
               });
+              noteRecoveryFailure(candKey, `Arquivo inválido (${fileSizeBytes} bytes)`, 'download_failed');
               return;
             }
 
@@ -1895,6 +1995,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 rejectionCode: 'duplicate_file_hash',
                 reason: `Arquivo duplicado idêntico (SHA-256 ${sha256.slice(0, 12)}) descartado para não inflar cobertura.`,
               });
+              noteRecoveryFailure(candKey, 'duplicate_file_hash', 'rejected');
               return;
             }
             seenFileHashes.add(sha256);
@@ -2027,6 +2128,10 @@ export async function runAutonomousMediaAcquisition(input: {
           if (!canUseCachedDecision && input.analyzeFrames) visionDiagnostics.callsSucceeded += 1;
           pendingVerificationAssets.delete(candKey);
           relevanceDecisions.push(decision);
+          const recoveryAttemptForAsset = findRecoveryAttempt(candKey);
+          if (recoveryAttemptForAsset && !recoveryAttemptForAsset.acquiredMediaIds.includes(item.mediaId)) {
+            recoveryAttemptForAsset.acquiredMediaIds.push(item.mediaId);
+          }
 
           if (
             input.evolution &&
@@ -2065,6 +2170,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 status: decision.editorialStatus,
                 reason: decision.reason,
               });
+              if (recoveryAttemptForAsset) recoveryAttemptForAsset.outcome = 'contextual_only';
               return;
             }
             candidateStates.set(candKey, 'rejected');
@@ -2077,6 +2183,13 @@ export async function runAutonomousMediaAcquisition(input: {
               ...(decision.rejectionCode ? { rejectionCode: decision.rejectionCode } : {}),
               reason: decision.reason,
             });
+            if (recoveryAttemptForAsset) {
+              recoveryAttemptForAsset.rejectedMediaIds.push(item.mediaId);
+              if (!recoveryAttemptForAsset.rejectionReasons.includes(decision.reason)) {
+                recoveryAttemptForAsset.rejectionReasons.push(decision.reason);
+              }
+              recoveryAttemptForAsset.outcome = 'rejected';
+            }
             return;
           }
 
@@ -2119,6 +2232,11 @@ export async function runAutonomousMediaAcquisition(input: {
               rejectionCode: 'license_pending_human_review',
               reason: `Relevância aprovada, mas a licença requer revisão humana: ${item.cand.licenseDecision.reasons.join(' ')}`,
             });
+            if (recoveryAttemptForAsset) {
+              recoveryAttemptForAsset.rejectedMediaIds.push(item.mediaId);
+              recoveryAttemptForAsset.rejectionReasons.push('license_pending_human_review');
+              recoveryAttemptForAsset.outcome = 'rejected';
+            }
             return;
           }
 
@@ -2147,6 +2265,10 @@ export async function runAutonomousMediaAcquisition(input: {
             ...(item.cand.providerItem ? { providerItem: item.cand.providerItem } : {}),
             ...(item.cand.licenseDecision ? { licenseDecision: item.cand.licenseDecision } : {}),
           });
+          if (recoveryAttemptForAsset) {
+            recoveryAttemptForAsset.approvedMediaIds.push(item.mediaId);
+            recoveryAttemptForAsset.outcome = 'verified_interval';
+          }
 
           if (round > 1 && uncoveredAfterRound1.has(seg.segmentId)) {
             autoResolvedGaps.push({
@@ -2261,15 +2383,42 @@ export async function runAutonomousMediaAcquisition(input: {
     });
   }
 
-  const unresolvedGapsForReview = latestCoverage.segments
-    .filter((s) => !s.covered)
-    .map((s) => ({
-      segmentId: s.segmentId,
-      subject: s.subject,
-      suggestedQuery:
-        input.segments.find((seg) => seg.segmentId === s.segmentId)?.preferredQueries?.[0] ?? s.subject,
-      reason: `Cobertura insuficiente após ${roundsExecuted} rodada(s) automática(s): ${s.usableDurationSec}s / ${s.expectedDurationSec}s.`,
-    }));
+  const finalRecoveryPlan = buildMediaRecoveryPlan({
+    prompt: input.prompt,
+    segments: input.segments,
+    coverageReport: latestCoverage,
+    ...(input.genre ? { genre: input.genre } : {}),
+    maxAttemptsPerGap: input.limits?.maxRecoveryAttemptsPerGap ?? 4,
+  });
+  const maxRecoveryAttemptsPerGap = Math.max(1, Math.min(8, input.limits?.maxRecoveryAttemptsPerGap ?? 4));
+  const affectedSegmentIds = [
+    ...new Set([
+      ...recoveryAttempts.map((attempt) => attempt.segmentId),
+      ...finalRecoveryPlan.gaps.map((gap) => gap.segmentId),
+    ]),
+  ];
+  const unresolvedGapsForReview = finalRecoveryPlan.gaps.map((gap) => {
+    const attempts = recoveryAttempts.filter((attempt) => attempt.segmentId === gap.segmentId);
+    const suggestedQuery =
+      finalRecoveryPlan.queries.find((query) => query.segmentId === gap.segmentId)?.query ??
+      input.segments.find((seg) => seg.segmentId === gap.segmentId)?.preferredQueries?.[0] ??
+      gap.subject;
+    return {
+      segmentId: gap.segmentId,
+      subject: gap.subject,
+      suggestedQuery,
+      uncoveredIntervals: gap.uncoveredIntervals,
+      missingDurationSec: gap.missingDurationSec,
+      attempts: attempts.length,
+      attemptsExhausted:
+        attempts.length >= maxRecoveryAttemptsPerGap ||
+        roundsExecuted >= maxRounds ||
+        stoppedReason === 'max_queries' ||
+        stoppedReason === 'deadline_exceeded',
+      reason: `Trechos ${gap.uncoveredIntervals.map((interval) => `${interval.startSec}-${interval.endSec}s`).join(', ')} sem footage comprovado após ${roundsExecuted} rodada(s): ${gap.coveredDurationSec}s / ${gap.expectedDurationSec}s. Tentativas: ${attempts.length}/${maxRecoveryAttemptsPerGap}.`,
+      editorialAlternatives: gap.editorialAlternatives,
+    };
+  });
 
   const stateCounts: Record<CandidateLifecycleState, number> = {
     discovered: 0,
@@ -2404,6 +2553,8 @@ export async function runAutonomousMediaAcquisition(input: {
     approvedForAssemblyCount: approvedAssets.length,
     rejectedCandidates,
     autoResolvedGaps,
+    recoveryAttempts,
+    affectedSegmentIds,
     pendingLicenseReview,
     rightsReview,
     equivalentQueriesSkipped,

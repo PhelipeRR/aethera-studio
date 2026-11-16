@@ -63,11 +63,46 @@ export interface SegmentCoverageRecord {
   expectedDurationSec: number;
   candidateMediaIds: string[];
   relevantIntervals: Array<{ mediaId: string; startSec: number; endSec: number }>;
+  /** Timeline intervals that are backed by a visually proven source interval. */
+  provenTimelineIntervals: Array<{ startSec: number; endSec: number }>;
+  /** Complement of provenTimelineIntervals inside [0, expectedDurationSec]. */
+  uncoveredIntervals: Array<{ startSec: number; endSec: number }>;
   usableDurationSec: number;
   sourceDiversityCount: number;
   plannedReuses: number;
   coverageGapSec: number;
   covered: boolean;
+}
+
+export interface MediaRecoveryEditorialAlternative {
+  kind: 'explanatory_graphic' | 'localized_editorial_adjustment';
+  detail: string;
+  countsAsFootage: false;
+}
+
+export interface MediaCoverageGap {
+  segmentId: string;
+  subject: string;
+  expectedEvent?: string;
+  expectedDurationSec: number;
+  coveredDurationSec: number;
+  missingDurationSec: number;
+  uncoveredIntervals: Array<{ startSec: number; endSec: number }>;
+  provenTimelineIntervals: Array<{ startSec: number; endSec: number }>;
+  editorialAlternatives: MediaRecoveryEditorialAlternative[];
+}
+
+export interface MediaRecoveryQuery {
+  segmentId: string;
+  gapIndex: number;
+  query: string;
+  strategy: 'preferred' | 'event_specific' | 'alternative_source' | 'broader_context';
+  attemptKey: string;
+}
+
+export interface MediaRecoveryPlan {
+  gaps: MediaCoverageGap[];
+  queries: MediaRecoveryQuery[];
 }
 
 export interface RepetitionViolation {
@@ -106,6 +141,8 @@ export interface MediaCoverageReport {
   incompatibleMedia: Array<{ mediaId: string; reason: string }>;
   contextualMedia: Array<{ mediaId: string; reason: string }>;
   segments: SegmentCoverageRecord[];
+  /** Every uncovered timeline interval; contextual material is never included here as proven coverage. */
+  recoveryGaps: MediaCoverageGap[];
   repetition: RepetitionReport;
   gatePassed: boolean;
   gateReasons: string[];
@@ -315,6 +352,140 @@ export function usableSourceIntervals(
   return out;
 }
 
+function mergeTimelineIntervals(
+  intervals: Array<{ startSec: number; endSec: number }>,
+): Array<{ startSec: number; endSec: number }> {
+  const sorted = intervals
+    .map((iv) => ({ startSec: Math.max(0, iv.startSec), endSec: Math.max(0, iv.endSec) }))
+    .filter((iv) => iv.endSec - iv.startSec >= 0.01)
+    .sort((a, b) => a.startSec - b.startSec);
+  const merged: Array<{ startSec: number; endSec: number }> = [];
+  for (const interval of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && interval.startSec <= last.endSec + 0.01) {
+      last.endSec = Math.max(last.endSec, interval.endSec);
+    } else {
+      merged.push({ ...interval });
+    }
+  }
+  return merged.map((iv) => ({
+    startSec: Number(iv.startSec.toFixed(2)),
+    endSec: Number(iv.endSec.toFixed(2)),
+  }));
+}
+
+function complementTimelineIntervals(
+  expectedDurationSec: number,
+  provenIntervals: Array<{ startSec: number; endSec: number }>,
+): Array<{ startSec: number; endSec: number }> {
+  const expected = Math.max(0, expectedDurationSec);
+  const covered = mergeTimelineIntervals(
+    provenIntervals.map((iv) => ({
+      startSec: Math.min(expected, Math.max(0, iv.startSec)),
+      endSec: Math.min(expected, Math.max(0, iv.endSec)),
+    })),
+  );
+  const gaps: Array<{ startSec: number; endSec: number }> = [];
+  let cursor = 0;
+  for (const interval of covered) {
+    if (interval.startSec > cursor + 0.01) gaps.push({ startSec: Number(cursor.toFixed(2)), endSec: interval.startSec });
+    cursor = Math.max(cursor, interval.endSec);
+  }
+  if (cursor < expected - 0.01) gaps.push({ startSec: Number(cursor.toFixed(2)), endSec: Number(expected.toFixed(2)) });
+  return gaps.filter((iv) => iv.endSec - iv.startSec >= 0.01);
+}
+
+function buildMediaCoverageGap(record: SegmentCoverageRecord): MediaCoverageGap {
+  return {
+    segmentId: record.segmentId,
+    subject: record.subject,
+    ...(record.expectedEvent ? { expectedEvent: record.expectedEvent } : {}),
+    expectedDurationSec: record.expectedDurationSec,
+    coveredDurationSec: record.usableDurationSec,
+    missingDurationSec: record.coverageGapSec,
+    uncoveredIntervals: record.uncoveredIntervals,
+    provenTimelineIntervals: record.provenTimelineIntervals,
+    editorialAlternatives: [
+      {
+        kind: 'explanatory_graphic',
+        detail: `Preencher ${Math.round(record.coverageGapSec * 10) / 10}s com gráfico explicativo identificado como composição editorial; não representa a obra nem prova personagem/acontecimento.`,
+        countsAsFootage: false,
+      },
+      {
+        kind: 'localized_editorial_adjustment',
+        detail: 'Reduzir ou reescrever apenas a afirmação correspondente ao intervalo sem evidência, preservando o trecho visual comprovado.',
+        countsAsFootage: false,
+      },
+    ],
+  };
+}
+
+/** Builds a finite, gap-specific recovery plan from the latest coverage report. */
+export function buildMediaRecoveryPlan(input: {
+  prompt: string;
+  segments: ScriptCoverageSegment[];
+  coverageReport: MediaCoverageReport;
+  genre?: string;
+  maxAttemptsPerGap?: number;
+}): MediaRecoveryPlan {
+  const maxAttemptsPerGap = Math.max(1, Math.min(8, input.maxAttemptsPerGap ?? 4));
+  const segmentById = new Map(input.segments.map((segment) => [segment.segmentId, segment]));
+  const gaps = input.coverageReport.recoveryGaps
+    .filter((gap) => gap.uncoveredIntervals.length > 0 && !input.coverageReport.segments.find((s) => s.segmentId === gap.segmentId)?.covered)
+    .map((gap) => ({
+      ...gap,
+      editorialAlternatives: gap.editorialAlternatives.map((alternative) => ({ ...alternative })),
+    }));
+  const queries: MediaRecoveryQuery[] = [];
+
+  for (const gap of gaps) {
+    const segment = segmentById.get(gap.segmentId);
+    if (!segment) continue;
+    for (const [gapIndex, interval] of gap.uncoveredIntervals.entries()) {
+      const intervalLabel = `${interval.startSec.toFixed(1)}-${interval.endSec.toFixed(1)}s`;
+      const event = segment.expectedEvent?.trim() || 'cena específica';
+      const core = [segment.subject, ...(segment.entities ?? []).slice(0, 2)].filter(Boolean).join(' ');
+      const candidates: Array<{ query: string; strategy: MediaRecoveryQuery['strategy'] }> = [];
+      for (const preferred of segment.preferredQueries ?? []) {
+        candidates.push({ query: preferred, strategy: 'preferred' });
+      }
+      candidates.push(
+        { query: `${core} ${event} anime scene clip`, strategy: 'event_specific' },
+        { query: `official ${core} ${event} footage scene`, strategy: 'alternative_source' },
+        { query: `${core} anime scene visual reference`, strategy: 'broader_context' },
+      );
+      const expanded = expandScriptOrientedQueries({
+        prompt: input.prompt,
+        segments: [segment],
+        ...(input.genre ? { genre: input.genre } : {}),
+        uncoveredSegmentIds: [segment.segmentId],
+        maxQueries: maxAttemptsPerGap * 2,
+      });
+      for (const expandedQuery of expanded) candidates.push({ query: expandedQuery, strategy: 'alternative_source' });
+
+      const seen = new Set<string>();
+      let attempt = 0;
+      for (const candidate of candidates) {
+        const normalized = candidate.query.replace(/\s+/g, ' ').trim();
+        const key = normalized.toLowerCase();
+        if (!normalized || seen.has(key)) continue;
+        seen.add(key);
+        queries.push({
+          segmentId: gap.segmentId,
+          gapIndex,
+          query: normalized,
+          strategy: candidate.strategy,
+          attemptKey: `${gap.segmentId}:${intervalLabel}:${attempt}:${key}`,
+        });
+        attempt += 1;
+        if (attempt >= maxAttemptsPerGap) break;
+      }
+    }
+  }
+
+  return { gaps, queries };
+}
+
 /**
  * Media Coverage Planner + Quality Gate: never mistakes raw file duration for editorial coverage.
  */
@@ -362,7 +533,7 @@ export function planMediaCoverage(input: {
       incompatibleMap.set(a.mediaId, a.rejectedReason ?? 'Mídia incompatível com o roteiro.');
       continue;
     }
-    if (input.requireRelevanceApproval && !decision.accepted && a.compatible !== true) {
+    if (input.requireRelevanceApproval && !decision?.accepted && a.compatible !== true) {
       incompatibleMap.set(a.mediaId, 'Sem aprovação explícita do Media Relevance Gate.');
       continue;
     }
@@ -459,6 +630,8 @@ export function planMediaCoverage(input: {
     const segUsages = usages.filter((u) => u.segmentId === seg.segmentId);
     let usableDurationSec = 0;
     const relevantIntervals: Array<{ mediaId: string; startSec: number; endSec: number }> = [];
+    const provenTimelineIntervals: Array<{ startSec: number; endSec: number }> = [];
+    let timelineCursorSec = 0;
     const usedSources = new Set<string>();
     let plannedReuses = 0;
 
@@ -503,6 +676,13 @@ export function planMediaCoverage(input: {
           Number(pool.reduce((acc, iv) => acc + (iv.endSec - iv.startSec), 0).toFixed(2)),
         );
         if (credited < u.timelineDurationSec * 0.5) plannedReuses += 1;
+        if (credited > 0) {
+          provenTimelineIntervals.push({
+            startSec: timelineCursorSec,
+            endSec: timelineCursorSec + credited,
+          });
+          timelineCursorSec += credited;
+        }
         usableDurationSec += credited;
       }
     } else {
@@ -530,6 +710,11 @@ export function planMediaCoverage(input: {
             startSec: Number(iv.startSec.toFixed(2)),
             endSec: Number((iv.startSec + take).toFixed(2)),
           });
+          provenTimelineIntervals.push({
+            startSec: timelineCursorSec,
+            endSec: timelineCursorSec + take,
+          });
+          timelineCursorSec += take;
           usedSources.add(cand.mediaId);
           usableDurationSec += take;
           takenFromSource += take;
@@ -545,6 +730,11 @@ export function planMediaCoverage(input: {
     }
 
     const coverageGapSec = Number(Math.max(0, seg.expectedDurationSec - usableDurationSec).toFixed(2));
+    const normalizedProvenIntervals = mergeTimelineIntervals(provenTimelineIntervals).map((iv) => ({
+      startSec: Number(Math.min(seg.expectedDurationSec, iv.startSec).toFixed(2)),
+      endSec: Number(Math.min(seg.expectedDurationSec, iv.endSec).toFixed(2)),
+    }));
+    const uncoveredIntervals = complementTimelineIntervals(seg.expectedDurationSec, normalizedProvenIntervals);
     const covered = coverageGapSec <= seg.expectedDurationSec * (1 - policy.minCoverageRatio);
     if (!covered) uncoveredSubjects.push(seg.subject);
 
@@ -557,6 +747,8 @@ export function planMediaCoverage(input: {
       expectedDurationSec: seg.expectedDurationSec,
       candidateMediaIds: candidates.map((c) => c.mediaId),
       relevantIntervals,
+      provenTimelineIntervals: normalizedProvenIntervals,
+      uncoveredIntervals,
       usableDurationSec: Number(usableDurationSec.toFixed(2)),
       sourceDiversityCount: usedSources.size,
       plannedReuses,
@@ -579,6 +771,7 @@ export function planMediaCoverage(input: {
   );
 
   const repetition = detectMediaRepetition(usages, policy, input.intentionalRepetition);
+  const recoveryGaps = segments.map(buildMediaCoverageGap).filter((gap) => gap.uncoveredIntervals.length > 0);
 
   const gateReasons: string[] = [];
   if (rejectedUsages.length > 0) {
@@ -619,6 +812,7 @@ export function planMediaCoverage(input: {
     incompatibleMedia,
     contextualMedia,
     segments,
+    recoveryGaps,
     repetition,
     gatePassed: gateReasons.length === 0,
     gateReasons,

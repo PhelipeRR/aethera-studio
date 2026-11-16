@@ -600,6 +600,10 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(audit.rejectedCandidates).toHaveLength(1);
     expect(audit.autoResolvedGaps.some((g) => g.segmentId === 's2' && g.resolvedInRound === 2)).toBe(true);
     expect(audit.unresolvedGapsForReview.map((g) => g.segmentId)).toEqual(['s3']);
+    expect(audit.affectedSegmentIds).toEqual(expect.arrayContaining(['s1', 's2', 's3']));
+    expect(audit.recoveryAttempts.length).toBeGreaterThan(0);
+    expect(audit.recoveryAttempts.some((attempt) => attempt.candidatesFound > 0 && attempt.sourceStatuses.length > 0)).toBe(true);
+    expect(audit.unresolvedGapsForReview[0]?.uncoveredIntervals.length).toBeGreaterThan(0);
   });
 
   it('audit: accepts same-universe DBZ Vegeta clip without false negative, rejects other anime, and enforces deadline + deduplication', async () => {

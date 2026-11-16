@@ -20,8 +20,10 @@ describe('Scene Grounding Real E2E Integration Audit', () => {
   it('validates acquisition -> distributed frame VisionRouter -> coverage -> MP4 trim -> incremental regen -> Visual Critic', async () => {
     const workRoot = join(tmpdir(), `aethera-grounding-e2e-${Date.now()}`);
     const mediaSourceDir = join(workRoot, 'source-library');
+    const positiveMediaSourceDir = join(workRoot, 'positive-source-library');
     const framesDir = join(workRoot, 'extracted-frames');
     mkdirSync(mediaSourceDir, { recursive: true });
+    mkdirSync(positiveMediaSourceDir, { recursive: true });
     mkdirSync(framesDir, { recursive: true });
 
     try {
@@ -194,7 +196,7 @@ describe('Scene Grounding Real E2E Integration Audit', () => {
       expect(noVisionDecision.visualVerificationStatus).toBe('unverified_metadata_only');
       expect(noVisionDecision.rejectionCode).toBe('unverified_no_visual_evidence');
 
-      // 4. Pipeline real completo: aquisição autônoma -> análise visual -> cobertura -> montagem -> MP4 -> Visual Critic
+      // 4. Caso negativo: a aquisição encontra contexto, mas a cobertura comprovada é insuficiente.
       const evolutionCore = new AetheraEvolutionCore(join(workRoot, 'evolution.json'));
       let latestPkg: any;
       let latestRender: any;
@@ -231,14 +233,88 @@ describe('Scene Grounding Real E2E Integration Audit', () => {
         useNvenc: false,
       });
 
-      expect(job.state).toBe('editor');
+      expect(job.state).toBe('paused_pending_media');
       expect(job.autonomousAudit).toBeDefined();
       expect(job.acquiredMedia.length).toBeGreaterThan(0);
       expect(job.mediaRelevanceDecisions?.some((d) => d.visualVerificationStatus === 'visually_verified')).toBe(true);
+      expect(job.coverageReport?.coverageRatio ?? 1).toBeLessThan(0.8);
+      expect(job.pendingMedia.length).toBeGreaterThan(0);
+      expect(job.pendingMedia.some((slot) => (slot.uncoveredIntervals?.length ?? 0) > 0)).toBe(true);
+      expect(job.autonomousAudit?.recoveryAttempts.length).toBeGreaterThan(0);
+      expect(job.autonomousAudit?.affectedSegmentIds.length).toBeGreaterThan(0);
+      expect(latestRender).toBeUndefined();
+
+      const resumedNegative = await pipeline.resume('e2e_dbz_grounding');
+      expect(resumedNegative.state).toBe('paused_pending_media');
+      expect(resumedNegative.acquiredMedia.length).toBe(job.acquiredMedia.length);
+      expect(resumedNegative.pendingMedia.length).toBeGreaterThan(0);
+      expect(resumedNegative.autonomousAudit?.coverageReport.recoveryGaps.length).toBeGreaterThan(0);
+
+      // 5. Caso positivo: uma fonte local com todos os frames visualmente comprovados chega ao Editor e renderiza MP4.
+      const positiveClip = join(positiveMediaSourceDir, 'dragon_ball_z_goku_super_saiyajin_verified.mp4');
+      execFileSync(
+        'ffmpeg',
+        [
+          '-y', '-f', 'lavfi', '-i', 'color=c=0xfacc15:s=640x360:d=12',
+          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', positiveClip,
+        ],
+        { stdio: 'pipe' },
+      );
+      const positiveAnalyzeFrames = async (
+        _uri: string,
+        timestampsSec: number[],
+      ): Promise<DistributedFrameAnalysis[]> => timestampsSec.map((timestampSec) => ({
+        timestampSec,
+        visualCategory: 'anime_animation' as const,
+        detectedEntities: ['dragon ball z', 'goku', 'super saiyajin'],
+        detectedActions: ['transformacao'],
+        description: 'Footage de anime: Goku libera a transformação em Super Saiyajin durante o confronto.',
+        confidence: 0.96,
+      }));
+      const positivePipeline = new StagedCinemaPipeline({
+        jobsDir: join(workRoot, 'positive-jobs'),
+        mediaDir: join(workRoot, 'positive-media'),
+        outputDir: join(workRoot, 'positive-renders'),
+        workspacesDir: join(workRoot, 'positive-workspaces'),
+        cacheDir: join(workRoot, 'positive-cache'),
+        libraryDir: join(workRoot, 'positive-library'),
+        evolutionCore,
+        requireVisualVerification: true,
+        analyzeFrames: positiveAnalyzeFrames,
+        autonomousAcquisitionDeps: {
+          localMediaDirs: [positiveMediaSourceDir],
+          fetchImpl: (async () => new Response('{}', { status: 404 })) as unknown as typeof fetch,
+        },
+        generateAgentScript: async () => ({
+          treatment: 'Cena comprovada de transformação em Namek.',
+          beats: [{ stage: 'climax' as const, summary: 'Goku libera a transformação em Super Saiyajin durante o confronto em Namek.' }],
+        }),
+        onPackageReady: (pkg) => {
+          latestPkg = pkg;
+        },
+        onRenderReady: (_id, render) => {
+          latestRender = render;
+        },
+      });
+      const positiveJob = await positivePipeline.start({
+        projectId: 'e2e_dbz_grounding_positive',
+        prompt: 'Dragon Ball Z Goku Super Saiyajin: transformação em Namek',
+        genre: 'documentary',
+        targetDurationSec: 8,
+        humorIntensity: 0,
+        renderProfile: 'draft_540p',
+        useNvenc: false,
+      });
+
+      expect(positiveJob.state).toBe('editor');
+      expect(positiveJob.autonomousAudit?.coverageReport.gatePassed).toBe(true);
+      expect(positiveJob.autonomousAudit?.approvedForAssemblyCount).toBeGreaterThan(0);
+      expect(positiveJob.mediaRelevanceDecisions?.some((d) => d.assemblyEligible === true)).toBe(true);
+      expect(positiveJob.autonomousAudit?.recoveryAttempts.some((attempt) => attempt.outcome === 'verified_interval')).toBe(true);
       expect(latestRender?.mp4Path).toBeTruthy();
       expect(existsSync(latestRender.mp4Path)).toBe(true);
 
-      // 5. Preservação de cache incremental ao regenerar apenas 1 cena
+      // 6. Preservação de cache incremental ao regenerar apenas 1 cena
       const secondRender = await renderRealCinemaMp4({
         pkg: {
           ...latestPkg,
@@ -254,23 +330,23 @@ describe('Scene Grounding Real E2E Integration Audit', () => {
         useNvenc: false,
         requireRealMedia: true,
         evolution: evolutionCore,
-        prompt: job.prompt,
+        prompt: positiveJob.prompt,
         genre: 'documentary',
         previewQuality: 'fast_preview',
-        segmentCacheDir: join(job.workspaceDir!, 'temp', 'segment-cache'),
+        segmentCacheDir: join(positiveJob.workspaceDir!, 'temp', 'segment-cache'),
       });
       expect(secondRender.incrementalRenderStats?.cacheHits ?? 0).toBeGreaterThan(0);
       expect(secondRender.incrementalRenderStats?.reRenderedScenes).toBe(1);
 
-      // 6. Visual Critic no MP4 final
+      // 7. Visual Critic no MP4 final
       const criticReport = await evaluateRenderedVisualCritic({
-        projectId: 'e2e_dbz_grounding',
+        projectId: 'e2e_dbz_grounding_positive',
         mp4Path: latestRender.mp4Path,
         framesDir: join(workRoot, 'critic-check'),
-        prompt: job.prompt,
+        prompt: positiveJob.prompt,
         genre: 'documentary',
-        ...(job.mediaRelevanceDecisions ? { mediaRelevanceDecisions: job.mediaRelevanceDecisions } : {}),
-        ...(job.coverageReport ? { coverageReport: job.coverageReport } : {}),
+        ...(positiveJob.mediaRelevanceDecisions ? { mediaRelevanceDecisions: positiveJob.mediaRelevanceDecisions } : {}),
+        ...(positiveJob.coverageReport ? { coverageReport: positiveJob.coverageReport } : {}),
         scenes: latestPkg.timeline.clips
           .filter((c: any) => c.trackId === 'v1')
           .map((c: any) => ({
@@ -286,8 +362,8 @@ describe('Scene Grounding Real E2E Integration Audit', () => {
       console.log(
         '[SCENE_GROUNDING_E2E_EVIDENCE]',
         JSON.stringify({
-          acquiredMedia: job.acquiredMedia.map((m) => ({ mediaId: m.mediaId, uri: m.uri })),
-          relevanceDecisions: job.mediaRelevanceDecisions?.map((d) => ({
+          acquiredMedia: positiveJob.acquiredMedia.map((m) => ({ mediaId: m.mediaId, uri: m.uri })),
+          relevanceDecisions: positiveJob.mediaRelevanceDecisions?.map((d) => ({
             mediaId: d.mediaId,
             accepted: d.accepted,
             correspondenceLevel: d.correspondenceLevel,
