@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Film, RefreshCw, Search, Sparkles } from 'lucide-react';
+import { SceneMediaDiagnosticsPanel } from './SceneMediaDiagnosticsPanel';
+import type { RightsStatusView, SceneAssemblyView, SceneMediaDiagnosticView } from './scene-media-diagnostics-model';
 
 export interface MediaCoverageReportView {
   format: string;
@@ -85,6 +87,8 @@ export interface AcquisitionFunnelAuditView {
     approvedCount: number;
     rejectedCount: number;
   }>;
+  sceneDiagnostics?: SceneMediaDiagnosticView[];
+  rightsReview?: Array<{ mediaId: string; title: string; sourceUrl: string; rightsStatus: RightsStatusView; note: string }>;
 }
 
 interface MediaCoveragePanelProps {
@@ -92,6 +96,8 @@ interface MediaCoveragePanelProps {
   relevanceDecisions?: MediaRelevanceDecisionView[];
   acquisitionAudit?: AcquisitionFunnelAuditView | null;
   plannedQueriesCount?: number;
+  /** Per-scene assembly outcome (verified footage vs. labeled graphic recovery). */
+  sceneAssembly?: SceneAssemblyView[] | null;
   onPromptAction?: (promptText: string) => void;
 }
 
@@ -100,6 +106,7 @@ export function MediaCoveragePanel({
   relevanceDecisions = [],
   acquisitionAudit,
   plannedQueriesCount = 0,
+  sceneAssembly,
   onPromptAction,
 }: MediaCoveragePanelProps) {
   const [expandedSegId, setExpandedSegId] = useState<string | null>(null);
@@ -315,6 +322,12 @@ export function MediaCoveragePanel({
           })}
         </div>
       )}
+
+      <SceneMediaDiagnosticsPanel
+        diagnostics={acquisitionAudit?.sceneDiagnostics ?? null}
+        assembly={sceneAssembly ?? null}
+        rightsReview={acquisitionAudit?.rightsReview ?? null}
+      />
 
       {onPromptAction && (
         <div className="flex flex-wrap gap-2 border-t border-border pt-3">
