@@ -31,8 +31,19 @@ interface CreativeBridge {
       durationMs?: number;
       recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine' };
       qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
+      generationRunId?: string;
     };
   }>;
+  creativeGenerationHistory?: (limit?: number) => Promise<Array<{
+    id: string;
+    projectId: string | null;
+    artType: string;
+    prompt: string;
+    status: string;
+    createdAt: string;
+    report: { status: string; engineId: string; message: string; durationMs?: number; recipe?: { preset: string; seed: number } };
+  }>>;
+  creativeRegenerate?: (id: string) => Promise<Awaited<ReturnType<NonNullable<CreativeBridge['creativeCreateFromPrompt']>>>>;
   creativeThumbnailLab?: (input: Record<string, unknown>) => Promise<{
     availableEngines: string[];
     variants: Array<{
@@ -120,6 +131,7 @@ export function CreativeStudioPanel() {
   const [selectedBrandKitId, setSelectedBrandKitId] = useState<string>('');
   const [newKitName, setNewKitName] = useState('');
   const [projects, setProjects] = useState<CreativeProjectDocument[]>([]);
+  const [generationHistory, setGenerationHistory] = useState<Awaited<ReturnType<NonNullable<CreativeBridge['creativeGenerationHistory']>>>>([]);
   const [activeDoc, setActiveDoc] = useState<CreativeProjectDocument | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>('');
   const [audit, setAudit] = useState<QualityAuditReport | null>(null);
@@ -175,17 +187,19 @@ export function CreativeStudioPanel() {
   const refreshLists = async () => {
     const bridge = getBridge();
     if (!bridge) return;
-    const [eng, kits, projs, ai, imageEngine, persistedImageEngine] = await Promise.all([
+    const [eng, kits, projs, ai, imageEngine, persistedImageEngine, history] = await Promise.all([
       bridge.creativeEngines?.() ?? Promise.resolve([]),
       bridge.creativeListBrandKits?.() ?? Promise.resolve([]),
       bridge.creativeListProjects?.() ?? Promise.resolve([]),
       bridge.creativeAiStatus?.() ?? Promise.resolve({ available: false, provider: 'none' }),
       bridge.creativeImageEngineStatus?.() ?? Promise.resolve(null),
       bridge.creativeImageEngineSettings?.() ?? Promise.resolve(null),
+      bridge.creativeGenerationHistory?.(20) ?? Promise.resolve([]),
     ]);
     setEngines(eng);
     setBrandKits(kits);
     setProjects(projs);
+    setGenerationHistory(history);
     setAiAvailable(ai.available);
     if (persistedImageEngine) {
       setEngineStatus(persistedImageEngine.status);
@@ -246,6 +260,27 @@ export function CreativeStudioPanel() {
     if (!bridge?.creativeCancelGeneration) return;
     const cancelled = await bridge.creativeCancelGeneration();
     setStatusMsg(cancelled ? 'Cancelamento solicitado ao motor de imagem.' : 'Nenhuma geração ComfyUI ativa para cancelar.');
+  };
+
+  const handleRegenerate = async (id: string) => {
+    const bridge = getBridge();
+    if (!bridge?.creativeRegenerate) return;
+    setGenerationBusy(true);
+    setStatusMsg('Regenerando a partir do histórico...');
+    try {
+      const res = await bridge.creativeRegenerate(id);
+      setActiveDoc(res.document);
+      setPreviewUrl(res.previewDataUrl);
+      setAudit(res.audit);
+      setGenerationReport(res.generation ?? null);
+      setSelectedLayerId(res.document.layers[res.document.layers.length - 1]?.id ?? '');
+      setStatusMsg('Regeneração concluída e salva como novo projeto.');
+      await refreshLists();
+    } catch (err) {
+      setStatusMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerationBusy(false);
+    }
   };
 
   const saveImageEngineSettings = async (patch: Record<string, unknown>) => {
@@ -584,6 +619,20 @@ export function CreativeStudioPanel() {
                 [{p.artType}] {p.title}
               </button>
             ))}
+          </div>
+          <strong style={{ fontSize: 13, marginTop: 6 }}>Histórico de Gerações ({generationHistory.length})</strong>
+          <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {generationHistory.slice(0, 8).map((run) => (
+              <button
+                key={run.id}
+                onClick={() => void handleRegenerate(run.id)}
+                title={`Regenerar: ${run.prompt}`}
+                style={{ textAlign: 'left', padding: '5px 8px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11, cursor: 'pointer' }}
+              >
+                ↻ {run.artType} · {run.report.recipe?.preset ?? 'sem preset'} · {run.status}
+              </button>
+            ))}
+            {generationHistory.length === 0 && <span style={{ fontSize: 11, color: 'var(--muted-foreground)' }}>Nenhuma geração persistida.</span>}
           </div>
         </div>
       </div>

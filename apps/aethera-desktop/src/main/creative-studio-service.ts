@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { IpcMain } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
@@ -444,6 +445,39 @@ export class AetheraCreativeStudioService {
       .map((row) => creativeProjectDocumentSchema.parse(JSON.parse(row.dataJson)));
   }
 
+  listGenerationHistory(limit = 30): Array<{
+    id: string;
+    projectId: string | null;
+    artType: string;
+    prompt: string;
+    status: string;
+    request: Record<string, unknown>;
+    report: AiGenerationReport;
+    createdAt: string;
+  }> {
+    return this.repo.listGenerationRuns(limit).flatMap((row) => {
+      try {
+        const request = JSON.parse(row.requestJson) as Record<string, unknown>;
+        const report = JSON.parse(row.reportJson) as AiGenerationReport;
+        return [{ id: row.id, projectId: row.projectId, artType: row.artType, prompt: row.prompt, status: row.status, request, report, createdAt: row.createdAt }];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  async regenerateGeneration(id: string): Promise<Awaited<ReturnType<AetheraCreativeStudioService['createFromPrompt']>>> {
+    const row = this.repo.getGenerationRun(id);
+    if (!row) throw new Error(`Generation history item not found: ${id}`);
+    let request: unknown;
+    try {
+      request = JSON.parse(row.requestJson);
+    } catch (error) {
+      throw new Error(`Generation history item is corrupted: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+    return this.createFromPrompt(request as Parameters<AetheraCreativeStudioService['createFromPrompt']>[0]);
+  }
+
   getOrCreateEditor(projectId: string): LayeredDocumentEditor {
     const existing = this.editors.get(projectId);
     if (existing) return existing;
@@ -480,7 +514,7 @@ export class AetheraCreativeStudioService {
     previewDataUrl: string;
     availableEngines: string[];
     /** CF-1: what happened in the AI image step (shown to the user instead of a silent gradient fallback). */
-    generation: AiGenerationReport;
+    generation: AiGenerationReport & { generationRunId: string };
   }> {
     const brandKit = input.brandKitId ? this.brandKits.get(input.brandKitId) : null;
     let backgroundAsset = input.backgroundAssetId ? input.assetManifest?.[input.backgroundAssetId] ?? null : null;
@@ -577,13 +611,41 @@ export class AetheraCreativeStudioService {
       this.brandKits.registerIdentityAsset(activeBrandKit.id, role, identityRef);
     }
     const previewDataUrl = await this.renderPreviewDataUrl(saved);
+    const generationRunId = randomUUID();
+    const createdAt = new Date().toISOString();
+    const historyRequest: Record<string, unknown> = {
+      artType: input.artType,
+      prompt: input.prompt,
+      ...(input.title ? { title: input.title } : {}),
+      ...(input.headline ? { headline: input.headline } : {}),
+      ...(input.brandKitId ? { brandKitId: input.brandKitId } : {}),
+      ...(input.backgroundAssetId ? { backgroundAssetId: input.backgroundAssetId } : {}),
+      ...(input.subjectAssetId ? { subjectAssetId: input.subjectAssetId } : {}),
+      ...(input.sourceCinemaProjectId ? { sourceCinemaProjectId: input.sourceCinemaProjectId } : {}),
+      ...(input.avatarBackdrop ? { avatarBackdrop: input.avatarBackdrop } : {}),
+      ...(input.useAiGeneration !== undefined ? { useAiGeneration: input.useAiGeneration } : {}),
+      ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
+      ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths.slice(0, 4) } : {}),
+      ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
+    };
+    this.repo.saveGenerationRun({
+      id: generationRunId,
+      projectId: saved.id,
+      artType: input.artType,
+      prompt: input.prompt,
+      status: generation.status,
+      requestJson: JSON.stringify(historyRequest),
+      reportJson: JSON.stringify(generation),
+      createdAt,
+      updatedAt: createdAt,
+    });
 
     return {
       document: saved,
       audit: result.audit,
       previewDataUrl,
       availableEngines: result.availableEngines,
-      generation,
+      generation: { ...generation, generationRunId },
     };
   }
 
@@ -915,6 +977,8 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
   ipcMain.handle('creative:create-from-prompt', async (_ev, input: Parameters<AetheraCreativeStudioService['createFromPrompt']>[0]) => {
     return service.createFromPrompt(input);
   });
+  ipcMain.handle('creative:generation-history', async (_ev, limit?: number) => service.listGenerationHistory(limit));
+  ipcMain.handle('creative:regenerate', async (_ev, id: string) => service.regenerateGeneration(id));
 
   ipcMain.handle('creative:thumbnail-lab', async (_ev, input: Parameters<AetheraCreativeStudioService['runThumbnailLabFromVideo']>[0]) => {
     try {

@@ -917,3 +917,14 @@ export const aetheraCreativeBrandKits = sqliteTable('aethera_creative_brand_kits
 export const aetheraCreativeProjects = sqliteTable('aethera_creative_projects', {
   id: text('id').primaryKey(), artType: text('art_type').notNull(), title: text('title').notNull(), brandKitId: text('brand_kit_id').references(() => aetheraCreativeBrandKits.id, { onDelete: 'set null' }), sourceCinemaProjectId: text('source_cinema_project_id'), schemaVersion: integer('schema_version').notNull(), dataJson: text('data_json').notNull(), approvedBy: text('approved_by'), approvedAt: text('approved_at'), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
 }, (t) => [index('aethera_creative_projects_art_type_idx').on(t.artType, t.updatedAt), index('aethera_creative_projects_cinema_idx').on(t.sourceCinemaProjectId)]);
+export const aetheraCreativeGenerationRuns = sqliteTable('aethera_creative_generation_runs', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').references(() => aetheraCreativeProjects.id, { onDelete: 'set null' }),
+  artType: text('art_type').notNull(),
+  prompt: text('prompt').notNull(),
+  status: text('status').notNull(),
+  requestJson: text('request_json').notNull(),
+  reportJson: text('report_json').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (t) => [index('aethera_creative_generation_runs_project_idx').on(t.projectId, t.createdAt), index('aethera_creative_generation_runs_created_idx').on(t.createdAt)]);

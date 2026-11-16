@@ -1,6 +1,6 @@
 import { desc, eq } from 'drizzle-orm';
 import type { Db } from './open.js';
-import { aetheraCreativeBrandKits, aetheraCreativeProjects } from './schema.js';
+import { aetheraCreativeBrandKits, aetheraCreativeGenerationRuns, aetheraCreativeProjects } from './schema.js';
 
 export interface StoredCreativeBrandKitRow {
   id: string;
@@ -21,6 +21,18 @@ export interface StoredCreativeProjectRow {
   dataJson: string;
   approvedBy: string | null;
   approvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredCreativeGenerationRunRow {
+  id: string;
+  projectId: string | null;
+  artType: string;
+  prompt: string;
+  status: string;
+  requestJson: string;
+  reportJson: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -153,5 +165,37 @@ export class AetheraCreativeStudioRepository {
   deleteProject(id: string): boolean {
     const res = this.db.delete(aetheraCreativeProjects).where(eq(aetheraCreativeProjects.id, id)).run();
     return res.changes > 0;
+  }
+
+  saveGenerationRun(input: {
+    id: string;
+    projectId?: string | null;
+    artType: string;
+    prompt: string;
+    status: string;
+    requestJson: string;
+    reportJson: string;
+    createdAt: string;
+    updatedAt: string;
+  }): void {
+    this.db.insert(aetheraCreativeGenerationRuns).values({
+      id: input.id,
+      projectId: input.projectId ?? null,
+      artType: input.artType,
+      prompt: input.prompt,
+      status: input.status,
+      requestJson: input.requestJson,
+      reportJson: input.reportJson,
+      createdAt: input.createdAt,
+      updatedAt: input.updatedAt,
+    }).run();
+  }
+
+  getGenerationRun(id: string): StoredCreativeGenerationRunRow | null {
+    return this.db.select().from(aetheraCreativeGenerationRuns).where(eq(aetheraCreativeGenerationRuns.id, id)).get() ?? null;
+  }
+
+  listGenerationRuns(limit = 30): StoredCreativeGenerationRunRow[] {
+    return this.db.select().from(aetheraCreativeGenerationRuns).orderBy(desc(aetheraCreativeGenerationRuns.createdAt)).limit(Math.max(1, Math.min(100, Math.floor(limit)))).all();
   }
 }

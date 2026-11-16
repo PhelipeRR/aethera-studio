@@ -3,10 +3,11 @@
 ## ComfyUI image engine — audit and native integration (2026-11-16)
 
 - [x] **Diagnóstico reproduzível:** `npx tsx scripts/comfyui-audit.ts` encontrou ComfyUI `0.20.1` em `C:\Users\Pheli\AppData\Local\Programs\ComfyUI`, mas os endpoints `127.0.0.1:8188`/`:8000` estão offline e o inventário de checkpoints, VAE, LoRA, ControlNet e upscale está vazio. Evidência completa: `docs/comfyui-audit.md`.
-- [x] **Engine real:** cliente loopback (`/system_stats`, `/object_info`, `/prompt`, `/history`, `/view`, `/upload/image`, `/interrupt`, `/free`), discovery, workflows nativos txt2img/img2img e adapter integrado antes do fallback SDXL local.
+- [x] **Engine real:** cliente loopback (`/system_stats`, `/object_info`, `/prompt`, `/history`, `/view`, `/upload/image`, `/interrupt`, `/free`), discovery, workflows nativos txt2img/img2img/inpaint/upscale e adapter integrado antes do fallback SDXL local.
 - [x] **Controles profissionais:** presets Anime Premium, Anime Cinematic, Gaming Cinematic, Cyberpunk Neon, YouTube Thumbnail e Banner; seed, resolução, steps, CFG, sampler, scheduler, checkpoint persistido, referência img2img e reparo localizado nativo (`VAEEncodeForInpaint`) quando disponível.
 - [x] **Segurança de qualidade/VRAM:** lease serial de GPU, liberação explícita/opcional de memória, relatório visível no painel, rejeição de buffers inválidos/quase uniformes por dimensão e `σ` de luminância.
 - [x] **Harness de aceitação:** `npx tsx scripts/comfyui-acceptance.ts` e variante `--reference`; no estado atual encerra como bloqueado, sem fabricar seis resultados.
+- [x] **Histórico persistente:** migração aditiva `0122_aethera_creative_generation_runs.sql`, IPC de listagem/regeneração e painel com regeneração explícita; o pedido armazenado exclui o manifesto transitório de assets.
 - [ ] **Bloqueio operacional:** iniciar o ComfyUI e instalar/aprovar pelo menos um checkpoint compatível. ControlNet/IP-Adapter, LoRA, upscale e face-detail continuam não validados enquanto os modelos/nodes não existirem no runtime.
 - [x] **Validação de código:** testes focados dos módulos novos passando; `npm run build:aethera` passando. O typecheck node ainda reproduz somente o JSX6142 preexistente em `apps/aethera-desktop/test/delete-prompt-dialog.test.ts`.
 
