@@ -79,7 +79,7 @@ const PERIODS: Array<{ id: ConsoleFilters['period']; label: string }> = [
 
 const STATUS_STYLE: Record<string, { dot: string; label: string }> = {
   pending: { dot: '#334155', label: '#64748b' },
-  active: { dot: '#2dd4bf', label: '#99f6e4' },
+  active: { dot: '#a78bfa', label: '#ddd6fe' },
   done: { dot: '#34d399', label: '#6ee7b7' },
   failed: { dot: '#f87171', label: '#fca5a5' },
   retry: { dot: '#fbbf24', label: '#fcd34d' },
@@ -393,13 +393,13 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
                     onClick={() => patchFilters({ jobId: selected ? 'all' : job.jobId })}
                     style={{
                       ...jobChipStyle,
-                      borderColor: selected ? JOB_STATUS_COLORS[job.status] : '#115e59',
-                      background: selected ? '#115e59' : 'transparent',
+                      borderColor: selected ? JOB_STATUS_COLORS[job.status] : 'var(--input)',
+                      background: selected ? 'var(--input)' : 'transparent',
                     }}
                   >
                     <span style={{ color: JOB_STATUS_COLORS[job.status] }}>●</span>
-                    <span style={{ color: '#ecfdf5' }}>{jobLabel(job)}</span>
-                    <span style={{ color: '#5eead4' }}>{job.pct !== undefined ? `${job.pct}%` : '—'}</span>
+                    <span style={{ color: 'var(--foreground)' }}>{jobLabel(job)}</span>
+                    <span style={{ color: '#c4b5fd' }}>{job.pct !== undefined ? `${job.pct}%` : '—'}</span>
                     <span style={{ color: '#94a3b8' }}>{JOB_STATUS_LABELS[job.status]}</span>
                   </button>
                 );
@@ -416,7 +416,7 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
                 </div>
                 <span
                   data-console-progress-label
-                  style={{ fontFamily: 'monospace', fontSize: 11, color: '#99f6e4', minWidth: 132 }}
+                  style={{ fontFamily: 'monospace', fontSize: 11, color: '#ddd6fe', minWidth: 132 }}
                 >
                   {progress ? `${progress.pct}% · ${progress.label}` : 'aguardando progresso'}
                 </span>
@@ -436,8 +436,8 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
                       onClick={() => patchFilters({ stage: filters.stage === item.stage ? 'all' : item.stage })}
                       style={{
                         ...stageChipStyle,
-                        borderColor: filters.stage === item.stage ? style.dot : '#115e59',
-                        background: filters.stage === item.stage ? '#115e59' : 'transparent',
+                        borderColor: filters.stage === item.stage ? style.dot : 'var(--input)',
+                        background: filters.stage === item.stage ? 'var(--input)' : 'transparent',
                       }}
                     >
                       <span style={{ color: style.dot }}>{STATUS_ICON[item.status] ?? '○'}</span>
@@ -458,8 +458,8 @@ export function ProductionConsoleAccordion(props: ProductionConsoleProps) {
                 style={{
                   ...tabStyle,
                   fontWeight: filters.tab === tab.id ? 700 : 400,
-                  background: filters.tab === tab.id ? '#14b8a6' : '#0f3d3a',
-                  color: filters.tab === tab.id ? '#042f2e' : '#99f6e4',
+                  background: filters.tab === tab.id ? 'var(--primary)' : 'color-mix(in srgb, var(--primary) 14%, var(--card))',
+                  color: filters.tab === tab.id ? 'var(--primary-foreground)' : '#ddd6fe',
                 }}
               >
                 {tab.label}
@@ -649,7 +649,7 @@ const ConsoleRow = memo(function ConsoleRow({ entry, showJob, expanded, onToggle
             {entry.attempt && entry.attempt > 1 ? `#${entry.attempt}` : ''}
           </span>
         )}
-        <span style={{ ...severityStyle, color: SEVERITY_COLORS[entry.severity] ?? '#5eead4' }}>
+        <span style={{ ...severityStyle, color: SEVERITY_COLORS[entry.severity] ?? '#c4b5fd' }}>
           {entry.severity.toUpperCase()}
         </span>
         <span style={{ ...originBadgeStyle, borderColor: originColor, color: originColor }}>
@@ -717,8 +717,8 @@ function FilterSelect({
 const panelStyle: React.CSSProperties = {
   marginTop: 8,
   borderRadius: 8,
-  border: '1px solid #134e4a',
-  background: '#042f2e',
+  border: '1px solid var(--border)',
+  background: 'var(--card)',
   overflow: 'hidden',
 };
 
@@ -726,8 +726,8 @@ const headerStyle: React.CSSProperties = {
   width: '100%',
   textAlign: 'left',
   padding: '8px 12px',
-  background: '#0f3d3a',
-  color: '#ecfdf5',
+  background: 'color-mix(in srgb, var(--primary) 14%, var(--card))',
+  color: 'var(--foreground)',
   border: 0,
   cursor: 'pointer',
   fontSize: 12,
@@ -738,20 +738,20 @@ const headerStyle: React.CSSProperties = {
   gap: 8,
 };
 
-const headerOpenStyle: React.CSSProperties = { ...headerStyle, background: '#0d9488' };
+const headerOpenStyle: React.CSSProperties = { ...headerStyle, background: 'color-mix(in srgb, var(--primary) 30%, var(--card))' };
 const headerProgressStyle: React.CSSProperties = {
   fontFamily: 'monospace',
   fontSize: 10,
   fontWeight: 400,
   padding: '1px 6px',
   borderRadius: 999,
-  background: 'rgba(4, 47, 46, 0.45)',
+  background: 'rgb(0 0 0 / 28%)',
 };
 const headerJobStyle: React.CSSProperties = {
   fontFamily: 'monospace',
   fontSize: 10,
   fontWeight: 400,
-  color: '#99f6e4',
+  color: '#ddd6fe',
   opacity: 0.9,
 };
 const jobStripStyle: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 };
@@ -761,7 +761,7 @@ const jobChipStyle: React.CSSProperties = {
   gap: 6,
   padding: '3px 8px',
   borderRadius: 6,
-  border: '1px solid #115e59',
+  border: '1px solid var(--input)',
   fontSize: 10,
   fontFamily: '"JetBrains Mono", "Fira Code", monospace',
   cursor: 'pointer',
@@ -782,13 +782,13 @@ const progressTrackStyle: React.CSSProperties = {
   flex: 1,
   height: 6,
   borderRadius: 999,
-  background: '#071110',
-  border: '1px solid #115e59',
+  background: 'var(--background)',
+  border: '1px solid var(--input)',
   overflow: 'hidden',
 };
 const progressFillStyle: React.CSSProperties = {
   height: '100%',
-  background: 'linear-gradient(90deg, #0d9488, #5eead4)',
+  background: 'var(--primary)',
   transition: 'width 220ms ease-out',
 };
 
@@ -799,7 +799,7 @@ const stageChipStyle: React.CSSProperties = {
   gap: 4,
   padding: '2px 7px',
   borderRadius: 999,
-  border: '1px solid #115e59',
+  border: '1px solid var(--input)',
   background: 'transparent',
   fontSize: 10,
   fontFamily: '"JetBrains Mono", "Fira Code", monospace',
@@ -825,9 +825,9 @@ const searchStyle: React.CSSProperties = {
   minWidth: 140,
   padding: '4px 8px',
   borderRadius: 4,
-  border: '1px solid #115e59',
-  background: '#071110',
-  color: '#ecfdf5',
+  border: '1px solid var(--input)',
+  background: 'var(--background)',
+  color: 'var(--foreground)',
   fontSize: 11,
 };
 const selectLabelStyle: React.CSSProperties = {
@@ -835,21 +835,21 @@ const selectLabelStyle: React.CSSProperties = {
   alignItems: 'center',
   gap: 4,
   fontSize: 10,
-  color: '#5eead4',
+  color: '#c4b5fd',
   fontFamily: 'monospace',
 };
 const selectStyle: React.CSSProperties = {
   padding: '3px 6px',
   borderRadius: 4,
-  border: '1px solid #115e59',
-  background: '#071110',
-  color: '#ecfdf5',
+  border: '1px solid var(--input)',
+  background: 'var(--background)',
+  color: 'var(--foreground)',
   fontSize: 11,
   maxWidth: 150,
 };
 const checkboxStyle: React.CSSProperties = {
   fontSize: 11,
-  color: '#99f6e4',
+  color: '#ddd6fe',
   display: 'flex',
   alignItems: 'center',
   gap: 4,
@@ -859,7 +859,7 @@ const logAreaStyle: React.CSSProperties = {
   maxHeight: 320,
   overflowY: 'auto',
   overflowX: 'hidden',
-  background: '#071110',
+  background: 'var(--background)',
   borderRadius: 6,
   padding: 8,
   fontFamily: '"JetBrains Mono", "Fira Code", monospace',
@@ -891,10 +891,10 @@ const originBadgeStyle: React.CSSProperties = {
   textTransform: 'uppercase',
   letterSpacing: 0.4,
 };
-const stageStyle: React.CSSProperties = { color: '#2dd4bf' };
+const stageStyle: React.CSSProperties = { color: '#a78bfa' };
 const pctStyle: React.CSSProperties = {
-  color: '#042f2e',
-  background: '#5eead4',
+  color: 'var(--card)',
+  background: '#c4b5fd',
   borderRadius: 999,
   padding: '0 6px',
   fontSize: 9,
@@ -904,7 +904,7 @@ const eventStyle: React.CSSProperties = { fontSize: 9, textTransform: 'uppercase
 const streamStyle: React.CSSProperties = { fontSize: 9, color: '#94a3b8', textTransform: 'lowercase' };
 const sourceStyle: React.CSSProperties = { color: '#94a3b8' };
 const metaStyle: React.CSSProperties = { color: '#64748b' };
-const messageStyle: React.CSSProperties = { color: '#ecfdf5', wordBreak: 'break-word', whiteSpace: 'pre-wrap' };
+const messageStyle: React.CSSProperties = { color: 'var(--foreground)', wordBreak: 'break-word', whiteSpace: 'pre-wrap' };
 const streamMessageStyle: React.CSSProperties = { color: '#cbd5e1' };
 const detailsBtnStyle: React.CSSProperties = {
   marginLeft: 'auto',
@@ -919,13 +919,13 @@ const detailsPanelStyle: React.CSSProperties = {
   marginTop: 4,
   padding: 6,
   borderRadius: 4,
-  background: '#0b1a19',
-  border: '1px solid #115e59',
+  background: 'var(--card)',
+  border: '1px solid var(--input)',
 };
 const detailRowStyle: React.CSSProperties = { display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 2 };
 const detailLabelStyle: React.CSSProperties = {
   minWidth: 96,
-  color: '#5eead4',
+  color: '#c4b5fd',
   fontSize: 10,
   textTransform: 'uppercase',
   letterSpacing: 0.4,
@@ -953,9 +953,9 @@ const footerStyle: React.CSSProperties = {
 const toolbarBtnStyle: React.CSSProperties = {
   padding: '4px 8px',
   borderRadius: 4,
-  border: '1px solid #115e59',
-  background: '#0f3d3a',
-  color: '#99f6e4',
+  border: '1px solid var(--input)',
+  background: 'color-mix(in srgb, var(--primary) 14%, var(--card))',
+  color: '#ddd6fe',
   cursor: 'pointer',
   fontSize: 11,
 };

@@ -23,20 +23,35 @@ import {
   Bot,
   Camera,
   CheckCircle2,
-  Clapperboard,
+  ChevronDown,
+  Circle,
+  CircleAlert,
   Download,
   Film,
+  Info,
   Laugh,
   LoaderCircle,
+  RefreshCw,
+  RotateCcw,
   Send,
   ShieldAlert,
   Sparkles,
   Trash2,
+  TriangleAlert,
   Volume2,
   Wrench,
   X,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Field, Input, Select, Textarea } from '@/components/ui/field';
+import { Progress } from '@/components/ui/progress';
+import { Separator } from '@/components/ui/separator';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { cn } from '@/lib/utils';
 import { ProductionConsoleAccordion } from './ProductionConsoleAccordion';
 import { healthOf, useAgents } from '@/app/useAgents';
 import { notify } from '@/components/NotificationsOverlay';
@@ -409,6 +424,7 @@ export function CinemaDirectorPanel() {
   const readyAgents = (agents ?? []).filter((a) => healthOf(a) === 'ready');
   const [readyExtraCount, setReadyExtraCount] = useState(0);
   const [workspaceTab, setWorkspaceTab] = useState<'producao' | 'auditoria'>('producao');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -1023,74 +1039,61 @@ export function CinemaDirectorPanel() {
     }
   }
 
+  const activeTiming = computeJobTiming(stagedJob, nowMs, activeStartMs);
+  const activePct = stagedJob?.progressPct ?? progressPct ?? 0;
+  const hasActiveProduction = progressPct !== null || Boolean(stagedJob);
+  const summaryOf = (items: ReadonlyArray<{ id: string; label: string }>, id: string) =>
+    id === 'automatic' ? 'Automático' : (items.find((item) => item.id === id)?.label ?? id);
+  const advancedSummary = [
+    summaryOf(NARRATIVE_FORMATS, creativeSelection.narrativeFormatId),
+    summaryOf(CONTENT_CATEGORIES, creativeSelection.contentCategoryId),
+    summaryOf(AESTHETIC_DIRECTIONS, creativeSelection.aestheticDirectionId),
+    deliveryPresetId === 'automatic'
+      ? `Entrega: ${DELIVERY_PRESETS.find((item) => item.id === detectedDeliveryPresetId)?.label ?? 'automática'}`
+      : summaryOf(DELIVERY_PRESETS, deliveryPresetId),
+  ].join(' · ');
+
   return (
-    <div className="space-y-6 p-6 xl:p-8">
-      {/* Creative Direction Hero */}
-      <section className="rounded-2xl border border-primary/30 bg-gradient-to-r from-[#1a102d] via-[#100e1b] to-[#17120c] p-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-[11px] font-semibold tracking-[0.22em] text-amber-400 uppercase">
-              Direção Criativa IA
-            </p>
-            <h1 className="mt-1 text-2xl font-semibold text-foreground">Produção com IA</h1>
-            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              Descreva o vídeo desejado em linguagem natural. O Aethera planeja narrativa, storyboard, ritmo e humor pontual ({humorIntensity}%{humorIntensity === 35 ? ' padrão' : humorIntensity === 0 ? ' desativado' : ' ativo'}).
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2 text-xs">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-[#121220] px-3 py-1 text-purple-200">
-              <Bot className="size-3.5 text-purple-400" />
-              {totalReadyProviders > 0
-                ? `${directorCount} diretores · ${totalReadyProviders} provedor(es) RF-07`
-                : `${directorCount} diretores · Modo determinístico local`}
-            </span>
-            {capabilities && (
-              <span className="rounded-full border border-border bg-[#121220] px-3 py-1 text-muted-foreground">
-                FFmpeg {capabilities.ffmpeg ? 'OK' : 'Fallback'}
-              </span>
-            )}
-          </div>
+    <Tabs
+      value={workspaceTab}
+      onValueChange={(value) => setWorkspaceTab(value as 'producao' | 'auditoria')}
+      className="gap-8 p-6 xl:p-8"
+    >
+      <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <p className="text-xs font-medium tracking-[0.18em] text-primary uppercase">Direção criativa IA</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Produção com IA</h1>
+          <p className="max-w-2xl text-sm text-muted-foreground">
+            Descreva o vídeo em linguagem natural. O Aethera planeja narrativa, storyboard, ritmo e humor pontual.
+          </p>
         </div>
-      </section>
-
-      {/* Workspace Tab Bar: Produção vs Auditoria Editorial */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3">
-        <button
-          type="button"
-          onClick={() => setWorkspaceTab('producao')}
-          className={`rounded-xl border px-3.5 py-1.5 text-xs font-medium transition ${
-            workspaceTab === 'producao'
-              ? 'border-primary bg-primary/15 text-primary'
-              : 'border-border bg-card text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          Produção & Direção
-        </button>
-        <button
-          type="button"
-          onClick={() => setWorkspaceTab('auditoria')}
-          className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-1.5 text-xs font-medium transition ${
-            workspaceTab === 'auditoria'
-              ? 'border-primary bg-primary/15 text-primary'
-              : 'border-border bg-card text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          Auditoria Editorial
-          {stagedJob?.editorialAudit?.integrityReport && (
-            <span
-              className={`rounded px-1.5 py-0.5 text-[10px] ${
-                stagedJob.editorialAudit.integrityReport.passed
-                  ? 'bg-emerald-500/15 text-emerald-300'
-                  : 'bg-rose-500/15 text-rose-300'
-              }`}
-            >
-              {stagedJob.editorialAudit.integrityReport.errorCount} erro(s)
-            </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="muted">
+            <Bot aria-hidden />
+            {totalReadyProviders > 0
+              ? `${directorCount} diretores · ${totalReadyProviders} provedor(es) RF-07`
+              : `${directorCount} diretores · Modo determinístico local`}
+          </Badge>
+          {capabilities && (
+            <Badge variant={capabilities.ffmpeg ? 'muted' : 'warning'}>FFmpeg {capabilities.ffmpeg ? 'OK' : 'Fallback'}</Badge>
           )}
-        </button>
-      </div>
+        </div>
+        <TabsList variant="line" aria-label="Áreas da Produção com IA" className="w-full justify-start border-b border-border">
+          <TabsTrigger value="producao" className="flex-none px-3">
+            Produção & Direção
+          </TabsTrigger>
+          <TabsTrigger value="auditoria" className="flex-none px-3">
+            Auditoria Editorial
+            {stagedJob?.editorialAudit?.integrityReport && (
+              <Badge variant={stagedJob.editorialAudit.integrityReport.passed ? 'success' : 'destructive'}>
+                {stagedJob.editorialAudit.integrityReport.errorCount} erro(s)
+              </Badge>
+            )}
+          </TabsTrigger>
+        </TabsList>
+      </header>
 
-      {workspaceTab === 'auditoria' ? (
+      <TabsContent value="auditoria">
         <EditorialAuditPanel
           projectId={stagedJob?.projectId}
           jobState={stagedJob?.state}
@@ -1115,868 +1118,939 @@ export function CinemaDirectorPanel() {
             }
           }}
         />
-      ) : (
-        <>
+      </TabsContent>
 
-      <TrendRadarPanel
-        api={(bridge() ?? {}) as TrendRadarBridgeApi}
-        onApplyIdea={(payload) => {
-          const nextManualFields: ContractControlField[] = [];
-          const sync = syncPromptToControls(
-            payload.promptText,
-            {
-              ...currentControlDraft(),
-              genre: payload.genre,
-              format: payload.format,
-              targetDurationSec: Math.max(30, payload.durationMin * 60),
-              humorIntensity: payload.humorIntensity,
-            },
-            nextManualFields,
-          );
-          setPrompt(payload.promptText);
-          setManualControlFields(nextManualFields);
-          applyPromptSync(sync);
-        }}
-      />
-
-      {/* Main Prompt & Creative Controls */}
-      <form onSubmit={handleProduce} className="grid gap-4 rounded-2xl border border-border bg-card p-5 lg:grid-cols-12">
-        <div className="space-y-2 lg:col-span-12">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-prompt">
-            Direção Criativa / Briefing
-          </label>
-          <textarea
-            id="cinema-prompt"
-            value={prompt}
-            onChange={(e) => handlePromptChange(e.target.value)}
-            rows={3}
-            className="w-full rounded-xl border border-border bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none"
-          />
-          {durationSyncedFromPrompt && (
-            <p className="text-[11px] text-emerald-400">
-              Duração sincronizada automaticamente com o briefing: {targetDurationSec}s ({Math.round(targetDurationSec / 60)} min)
-            </p>
-          )}
-          {promptConflicts.length > 0 && (
-            <div className="space-y-2 rounded-lg border border-amber-500/35 bg-amber-500/10 p-3 text-[11px] text-amber-100">
-              <div className="font-semibold">O briefing entrou em conflito com controles alterados manualmente</div>
-              {promptConflicts.map((conflict) => (
-                <div key={conflict.id} className="flex flex-wrap items-center justify-between gap-2">
-                  <span>{conflict.message}</span>
-                  <span className="flex shrink-0 gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => handleConflictResolution(conflict.field, 'use_prompt')}
-                      className="rounded-md border border-amber-300/50 px-2 py-1 text-[10px] hover:bg-amber-300/15"
-                    >
-                      Usar briefing
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleConflictResolution(conflict.field, 'keep_manual')}
-                      className="rounded-md border border-border px-2 py-1 text-[10px] hover:border-primary"
-                    >
-                      Manter controle
-                    </button>
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-          {creativeConflicts.length > 0 && (
-            <div className="rounded-lg border border-amber-500/35 bg-amber-500/10 p-3 text-[11px] text-amber-100">
-              <div className="font-semibold">O prompt sugere uma combinação diferente dos controles manuais</div>
-              <div className="mt-1 space-y-1">
-                {creativeConflicts.map((conflict) => (
-                  <div key={conflict.field}>
-                    {conflict.field}: automático = <span className="font-mono">{conflict.automaticValue}</span>; manual = <span className="font-mono">{conflict.manualValue}</span>. O manual permanece prioritário.
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-1 lg:col-span-3">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-narrative-format">Formato narrativo</label>
-          <select
-            id="cinema-narrative-format"
-            value={creativeSelection.narrativeFormatId}
-            onChange={(e) => handleCreativeDimensionChange('narrativeFormatId', e.target.value)}
-            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
-          >
-            <option value="automatic">Automático (Detectar pelo Prompt)</option>
-            {NARRATIVE_FORMATS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-          </select>
-          <p className="text-[10px] text-muted-foreground">{NARRATIVE_FORMATS.find((item) => item.id === creativeSelection.narrativeFormatId)?.description ?? 'O briefing escolhe a estrutura narrativa.'}</p>
-        </div>
-
-        <div className="space-y-1 lg:col-span-3">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-content-category">Categoria do conteúdo</label>
-          <select
-            id="cinema-content-category"
-            value={creativeSelection.contentCategoryId}
-            onChange={(e) => handleCreativeDimensionChange('contentCategoryId', e.target.value)}
-            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
-          >
-            <option value="automatic">Automático (Detectar pelo Prompt)</option>
-            {CONTENT_CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-          </select>
-          <p className="text-[10px] text-muted-foreground">{CONTENT_CATEGORIES.find((item) => item.id === creativeSelection.contentCategoryId)?.description ?? 'A categoria define pesquisa e critérios de evidência.'}</p>
-        </div>
-
-        <div className="space-y-1 lg:col-span-3">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-aesthetic-direction">Direção estética</label>
-          <select
-            id="cinema-aesthetic-direction"
-            value={creativeSelection.aestheticDirectionId}
-            onChange={(e) => handleCreativeDimensionChange('aestheticDirectionId', e.target.value)}
-            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
-          >
-            <option value="automatic">Automático (Detectar pelo Prompt)</option>
-            {AESTHETIC_DIRECTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-          </select>
-          <p className="text-[10px] text-muted-foreground">{AESTHETIC_DIRECTIONS.find((item) => item.id === creativeSelection.aestheticDirectionId)?.description ?? 'A direção estética controla motion, VFX e mix.'}</p>
-        </div>
-
-        <div className="space-y-1 lg:col-span-3">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-delivery-preset">Entrega audiovisual</label>
-          <select
-            id="cinema-delivery-preset"
-            value={deliveryPresetId}
-            onChange={(e) => handleDeliveryPresetChange(e.target.value)}
-            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
-          >
-            <option value="automatic">Automático (Detectar pelo Prompt)</option>
-            {DELIVERY_PRESETS.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.aspectRatio}</option>)}
-          </select>
-          <p className="text-[10px] text-muted-foreground">
-            {DELIVERY_PRESETS.find((item) => item.id === deliveryPresetId)?.description ?? `Detectado: ${DELIVERY_PRESETS.find((item) => item.id === detectedDeliveryPresetId)?.label ?? detectedDeliveryPresetId}`}
-          </p>
-        </div>
-
-        <div className="space-y-1 lg:col-span-12">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-additional-exports">Exportações adicionais (opcional)</label>
-          <select
-            id="cinema-additional-exports"
-            multiple
-            value={additionalExportPresetIds}
-            onChange={(e) => setAdditionalExportPresetIds(Array.from(e.target.selectedOptions, (option) => option.value))}
-            className="min-h-20 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
-          >
-            {DELIVERY_PRESETS.filter((item) => item.id !== deliveryPresetId).map((item) => <option key={item.id} value={item.id}>{item.label} · {item.aspectRatio} · reaproveita materiais</option>)}
-          </select>
-          <p className="text-[10px] text-muted-foreground">A timeline e os materiais são compartilhados; cenas só são re-renderizadas quando dimensões/FPS/codec exigem.</p>
-        </div>
-
-        <div className="space-y-1 lg:col-span-12">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-format-search">Buscar formatos do catálogo</label>
-          <input
-            id="cinema-format-search"
-            value={catalogSearch}
-            onChange={(e) => setCatalogSearch(e.target.value)}
-            placeholder="Ex.: boss fight, apresentação executiva, podcast..."
-            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
-          />
-          {catalogSearch.trim() && (
-            <div className="grid gap-2 rounded-xl border border-border/70 bg-background/60 p-3 md:grid-cols-2 lg:grid-cols-3">
-              {CONTENT_CATEGORIES.map((category) => {
-                const matches = groupedCatalog[category.id] ?? [];
-                if (matches.length === 0) return null;
-                return (
-                  <div key={category.id} className="space-y-1">
-                    <div className="text-[10px] font-semibold tracking-wide text-primary uppercase">{category.label}</div>
-                    {matches.slice(0, 4).map((item) => <div key={item.id} title={item.description} className="text-[11px] text-muted-foreground">{item.label}</div>)}
-                  </div>
+      <TabsContent value="producao" className="flex flex-col gap-12">
+        <div className="grid items-start gap-10 xl:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
+          {/* Briefing & settings */}
+          <div className="flex min-w-0 flex-col gap-8">
+            <TrendRadarPanel
+              api={(bridge() ?? {}) as TrendRadarBridgeApi}
+              onApplyIdea={(payload) => {
+                const nextManualFields: ContractControlField[] = [];
+                const sync = syncPromptToControls(
+                  payload.promptText,
+                  {
+                    ...currentControlDraft(),
+                    genre: payload.genre,
+                    format: payload.format,
+                    targetDurationSec: Math.max(30, payload.durationMin * 60),
+                    humorIntensity: payload.humorIntensity,
+                  },
+                  nextManualFields,
                 );
-              })}
-              {catalogResults.length === 0 && <span className="text-[11px] text-muted-foreground">Nenhum formato encontrado.</span>}
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-1 lg:col-span-2">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="cinema-duration">Duração (min)</label>
-          <input
-            id="cinema-duration"
-            type="number"
-            min={0.5}
-            max={60}
-            step={0.5}
-            value={Number((targetDurationSec / 60).toFixed(2))}
-            onChange={(e) => handleManualControlChange('targetDurationSec', Math.max(15, Math.round((Number(e.target.value) || 1) * 60)))}
-            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
-          />
-        </div>
-
-        <div className="space-y-1 lg:col-span-4">
-          <label className="flex items-center justify-between text-xs font-medium text-muted-foreground" htmlFor="cinema-humor">
-            <span className="inline-flex items-center gap-1"><Laugh className="size-3.5 text-amber-400" /> Intensidade de Humor</span>
-            <span className="font-mono text-foreground">{humorIntensity}% {humorIntensity === 35 ? '(Padrão)' : humorIntensity === 0 ? '(Desativado)' : ''}</span>
-          </label>
-          <input
-            id="cinema-humor"
-            type="range"
-            min={0}
-            max={100}
-            step={5}
-            value={humorIntensity}
-            onChange={(e) => handleManualControlChange('humorIntensity', Number(e.target.value))}
-            className="w-full accent-purple-500"
-          />
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 lg:col-span-12">
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              aria-label="Perfil de render"
-              value={renderProfile}
-              onChange={(e) => handleManualControlChange('renderProfile', e.target.value as typeof renderProfile)}
-              className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
-            >
-              <option value="draft_540p">Draft 540p (1.4 GB VRAM)</option>
-              <option value="review_720p">Review 720p (2.4 GB VRAM)</option>
-              <option value="master_1080p">Master 1080p (4.8 GB VRAM)</option>
-              <option value="master_4k">Master 4K (alto custo)</option>
-            </select>
-
-            <select
-              aria-label="Resolução de preview"
-              value={previewProfile}
-              onChange={(e) => {
-                const value = e.target.value as DeliveryQualityProfile;
-                setPreviewProfile(value);
-                handleManualControlChange('previewProfile', value);
+                setPrompt(payload.promptText);
+                setManualControlFields(nextManualFields);
+                applyPromptSync(sync);
               }}
-              className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
-            >
-              <option value="draft_540p">Preview 540p</option>
-              <option value="review_720p">Preview 720p</option>
-              <option value="master_1080p">Preview Full HD</option>
-              <option value="master_4k">Preview 4K</option>
-            </select>
+            />
 
-            <select
-              id="cinema-language"
-              aria-label="Idioma do vídeo"
-              value={videoLanguage}
-              onChange={(e) => handleManualControlChange('language', e.target.value)}
-              className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
-            >
-              <option value="pt-BR">Idioma: Português (BR)</option>
-              <option value="en-US">Idioma: English (US)</option>
-              <option value="es-ES">Idioma: Español</option>
-              <option value="fr-FR">Idioma: Français</option>
-              <option value="de-DE">Idioma: Deutsch</option>
-              <option value="it-IT">Idioma: Italiano</option>
-              <option value="ja-JP">Idioma: 日本語 (JP)</option>
-            </select>
+            <form onSubmit={handleProduce} aria-labelledby="cinema-briefing-title" className="flex flex-col gap-6">
+              <SectionHeading
+                id="cinema-briefing-title"
+                title="Briefing"
+                description="O texto define tema, duração e tom. Os ajustes abaixo só precisam mudar quando o automático não servir."
+              />
 
-            <div className="flex items-center gap-1.5">
-              <select
-                aria-label="Voz (VoiceStudio)"
-                value={selectedVoiceId}
-                onChange={(e) => handleManualControlChange('voiceId', e.target.value)}
-                className="rounded-xl border border-border bg-background px-3 py-1.5 text-xs"
-              >
-                {voiceOptions.length > 0 ? (
-                  voiceOptions.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      Voz: {v.label} ({v.id})
-                    </option>
-                  ))
-                ) : (
-                  <option value="9190edfa">
-                    {voiceStudioAvailable ? 'Voz padrão (9190edfa)' : 'Voz: 9190edfa (VoiceStudio offline)'}
-                  </option>
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium text-foreground" htmlFor="cinema-prompt">
+                  Direção Criativa / Briefing
+                </label>
+                <Textarea
+                  id="cinema-prompt"
+                  value={prompt}
+                  onChange={(e) => handlePromptChange(e.target.value)}
+                  rows={5}
+                  className="min-h-32 resize-y text-[15px]"
+                />
+                {durationSyncedFromPrompt && (
+                  <p className="text-xs text-success">
+                    Duração sincronizada automaticamente com o briefing: {targetDurationSec}s ({Math.round(targetDurationSec / 60)} min)
+                  </p>
                 )}
-              </select>
-              <button
-                type="button"
-                onClick={() => void loadVoices()}
-                title="Atualizar lista de vozes do VoiceStudio"
-                className="rounded-xl border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground hover:border-primary hover:text-foreground"
-              >
-                ↻
-              </button>
-            </div>
+              </div>
+
+              {promptConflicts.length > 0 && (
+                <Alert variant="warning">
+                  <TriangleAlert aria-hidden />
+                  <AlertTitle>O briefing entrou em conflito com controles alterados manualmente</AlertTitle>
+                  <AlertDescription className="w-full">
+                    {promptConflicts.map((conflict) => (
+                      <div key={conflict.id} className="flex w-full flex-wrap items-center justify-between gap-2">
+                        <span>{conflict.message}</span>
+                        <span className="flex shrink-0 gap-1.5">
+                          <Button type="button" size="sm" variant="outline" onClick={() => handleConflictResolution(conflict.field, 'use_prompt')}>
+                            Usar briefing
+                          </Button>
+                          <Button type="button" size="sm" variant="ghost" onClick={() => handleConflictResolution(conflict.field, 'keep_manual')}>
+                            Manter controle
+                          </Button>
+                        </span>
+                      </div>
+                    ))}
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {creativeConflicts.length > 0 && (
+                <Alert variant="warning">
+                  <Info aria-hidden />
+                  <AlertTitle>O prompt sugere uma combinação diferente dos controles manuais</AlertTitle>
+                  <AlertDescription>
+                    {creativeConflicts.map((conflict) => (
+                      <p key={conflict.field}>
+                        {conflict.field}: automático = <span className="font-mono">{conflict.automaticValue}</span>; manual ={' '}
+                        <span className="font-mono">{conflict.manualValue}</span>. O manual permanece prioritário.
+                      </p>
+                    ))}
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {/* Essential settings */}
+              <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
+                <Field label="Duração (min)" htmlFor="cinema-duration">
+                  <Input
+                    id="cinema-duration"
+                    type="number"
+                    min={0.5}
+                    max={60}
+                    step={0.5}
+                    value={Number((targetDurationSec / 60).toFixed(2))}
+                    onChange={(e) => handleManualControlChange('targetDurationSec', Math.max(15, Math.round((Number(e.target.value) || 1) * 60)))}
+                  />
+                </Field>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="flex items-center justify-between gap-2 text-[13px] font-medium" htmlFor="cinema-humor">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Laugh className="size-3.5 text-primary" aria-hidden /> Humor
+                    </span>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {humorIntensity}% {humorIntensity === 35 ? '(Padrão)' : humorIntensity === 0 ? '(Desativado)' : ''}
+                    </span>
+                  </label>
+                  <div className="flex h-9 items-center">
+                    <input
+                      id="cinema-humor"
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={humorIntensity}
+                      aria-valuetext={`${humorIntensity}%`}
+                      onChange={(e) => handleManualControlChange('humorIntensity', Number(e.target.value))}
+                      className="w-full accent-primary"
+                    />
+                  </div>
+                </div>
+
+                <Field label="Idioma do vídeo" htmlFor="cinema-language">
+                  <Select
+                    id="cinema-language"
+                    value={videoLanguage}
+                    onChange={(e) => handleManualControlChange('language', e.target.value)}
+                  >
+                    <option value="pt-BR">Português (BR)</option>
+                    <option value="en-US">English (US)</option>
+                    <option value="es-ES">Español</option>
+                    <option value="fr-FR">Français</option>
+                    <option value="de-DE">Deutsch</option>
+                    <option value="it-IT">Italiano</option>
+                    <option value="ja-JP">日本語 (JP)</option>
+                  </Select>
+                </Field>
+
+                <Field label="Voz (VoiceStudio)" htmlFor="cinema-voice">
+                  <div className="flex gap-1.5">
+                    <Select
+                      id="cinema-voice"
+                      value={selectedVoiceId}
+                      onChange={(e) => handleManualControlChange('voiceId', e.target.value)}
+                      className="min-w-0 flex-1"
+                    >
+                      {voiceOptions.length > 0 ? (
+                        voiceOptions.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.label} ({v.id})
+                          </option>
+                        ))
+                      ) : (
+                        <option value="9190edfa">
+                          {voiceStudioAvailable ? 'Voz padrão (9190edfa)' : '9190edfa (VoiceStudio offline)'}
+                        </option>
+                      )}
+                    </Select>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={() => void loadVoices()}
+                      title="Atualizar lista de vozes do VoiceStudio"
+                      aria-label="Atualizar lista de vozes do VoiceStudio"
+                    >
+                      <RefreshCw aria-hidden />
+                    </Button>
+                  </div>
+                </Field>
+              </div>
+
+              {/* Advanced settings */}
+              <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="flex flex-col gap-4">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <CollapsibleTrigger asChild>
+                    <Button type="button" variant="ghost" size="sm" className="-ml-3">
+                      <ChevronDown
+                        data-icon="inline-start"
+                        aria-hidden
+                        className={cn('transition-transform motion-reduce:transition-none', advancedOpen && 'rotate-180')}
+                      />
+                      Configurações avançadas
+                    </Button>
+                  </CollapsibleTrigger>
+                  {!advancedOpen && <span className="min-w-0 truncate text-xs text-muted-foreground">{advancedSummary}</span>}
+                </div>
+                <CollapsibleContent className="grid gap-x-4 gap-y-5 md:grid-cols-2">
+                  <Field
+                    label="Formato narrativo"
+                    htmlFor="cinema-narrative-format"
+                    hint={NARRATIVE_FORMATS.find((item) => item.id === creativeSelection.narrativeFormatId)?.description ?? 'O briefing escolhe a estrutura narrativa.'}
+                  >
+                    <Select
+                      id="cinema-narrative-format"
+                      value={creativeSelection.narrativeFormatId}
+                      onChange={(e) => handleCreativeDimensionChange('narrativeFormatId', e.target.value)}
+                    >
+                      <option value="automatic">Automático (Detectar pelo Prompt)</option>
+                      {NARRATIVE_FORMATS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                    </Select>
+                  </Field>
+
+                  <Field
+                    label="Categoria do conteúdo"
+                    htmlFor="cinema-content-category"
+                    hint={CONTENT_CATEGORIES.find((item) => item.id === creativeSelection.contentCategoryId)?.description ?? 'A categoria define pesquisa e critérios de evidência.'}
+                  >
+                    <Select
+                      id="cinema-content-category"
+                      value={creativeSelection.contentCategoryId}
+                      onChange={(e) => handleCreativeDimensionChange('contentCategoryId', e.target.value)}
+                    >
+                      <option value="automatic">Automático (Detectar pelo Prompt)</option>
+                      {CONTENT_CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                    </Select>
+                  </Field>
+
+                  <Field
+                    label="Direção estética"
+                    htmlFor="cinema-aesthetic-direction"
+                    hint={AESTHETIC_DIRECTIONS.find((item) => item.id === creativeSelection.aestheticDirectionId)?.description ?? 'A direção estética controla motion, VFX e mix.'}
+                  >
+                    <Select
+                      id="cinema-aesthetic-direction"
+                      value={creativeSelection.aestheticDirectionId}
+                      onChange={(e) => handleCreativeDimensionChange('aestheticDirectionId', e.target.value)}
+                    >
+                      <option value="automatic">Automático (Detectar pelo Prompt)</option>
+                      {AESTHETIC_DIRECTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                    </Select>
+                  </Field>
+
+                  <Field
+                    label="Entrega audiovisual"
+                    htmlFor="cinema-delivery-preset"
+                    hint={
+                      DELIVERY_PRESETS.find((item) => item.id === deliveryPresetId)?.description ??
+                      `Detectado: ${DELIVERY_PRESETS.find((item) => item.id === detectedDeliveryPresetId)?.label ?? detectedDeliveryPresetId}`
+                    }
+                  >
+                    <Select
+                      id="cinema-delivery-preset"
+                      value={deliveryPresetId}
+                      onChange={(e) => handleDeliveryPresetChange(e.target.value)}
+                    >
+                      <option value="automatic">Automático (Detectar pelo Prompt)</option>
+                      {DELIVERY_PRESETS.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.aspectRatio}</option>)}
+                    </Select>
+                  </Field>
+
+                  <Field label="Perfil de render" htmlFor="cinema-render-profile">
+                    <Select
+                      id="cinema-render-profile"
+                      value={renderProfile}
+                      onChange={(e) => handleManualControlChange('renderProfile', e.target.value as typeof renderProfile)}
+                    >
+                      <option value="draft_540p">Draft 540p (1.4 GB VRAM)</option>
+                      <option value="review_720p">Review 720p (2.4 GB VRAM)</option>
+                      <option value="master_1080p">Master 1080p (4.8 GB VRAM)</option>
+                      <option value="master_4k">Master 4K (alto custo)</option>
+                    </Select>
+                  </Field>
+
+                  <Field label="Resolução de preview" htmlFor="cinema-preview-profile">
+                    <Select
+                      id="cinema-preview-profile"
+                      value={previewProfile}
+                      onChange={(e) => {
+                        const value = e.target.value as DeliveryQualityProfile;
+                        setPreviewProfile(value);
+                        handleManualControlChange('previewProfile', value);
+                      }}
+                    >
+                      <option value="draft_540p">Preview 540p</option>
+                      <option value="review_720p">Preview 720p</option>
+                      <option value="master_1080p">Preview Full HD</option>
+                      <option value="master_4k">Preview 4K</option>
+                    </Select>
+                  </Field>
+
+                  <div className="md:col-span-2">
+                    <Field
+                      label="Exportações adicionais (opcional)"
+                      htmlFor="cinema-additional-exports"
+                      hint="A timeline e os materiais são compartilhados; cenas só são re-renderizadas quando dimensões/FPS/codec exigem."
+                    >
+                      <Select
+                        id="cinema-additional-exports"
+                        multiple
+                        value={additionalExportPresetIds}
+                        onChange={(e) => setAdditionalExportPresetIds(Array.from(e.target.selectedOptions, (option) => option.value))}
+                        className="h-auto min-h-24 py-1.5"
+                      >
+                        {DELIVERY_PRESETS.filter((item) => item.id !== deliveryPresetId).map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.label} · {item.aspectRatio} · reaproveita materiais
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  </div>
+
+                  <div className="flex flex-col gap-3 md:col-span-2">
+                    <Field label="Buscar formatos do catálogo" htmlFor="cinema-format-search">
+                      <Input
+                        id="cinema-format-search"
+                        type="search"
+                        value={catalogSearch}
+                        onChange={(e) => setCatalogSearch(e.target.value)}
+                        placeholder="Ex.: boss fight, apresentação executiva, podcast..."
+                      />
+                    </Field>
+                    {catalogSearch.trim() && (
+                      <div className="grid gap-x-6 gap-y-4 md:grid-cols-2 lg:grid-cols-3" aria-live="polite">
+                        {CONTENT_CATEGORIES.map((category) => {
+                          const matches = groupedCatalog[category.id] ?? [];
+                          if (matches.length === 0) return null;
+                          return (
+                            <div key={category.id} className="flex flex-col gap-1">
+                              <div className="text-xs font-medium text-primary">{category.label}</div>
+                              {matches.slice(0, 4).map((item) => (
+                                <div key={item.id} title={item.description} className="text-xs text-muted-foreground">
+                                  {item.label}
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })}
+                        {catalogResults.length === 0 && <span className="text-xs text-muted-foreground">Nenhum formato encontrado.</span>}
+                      </div>
+                    )}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+
+              <Separator />
+
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button type="button" variant="ghost" onClick={handleBenchmark} disabled={busy || benchmarking}>
+                  {benchmarking ? <LoaderCircle className="animate-spin" aria-hidden /> : <Activity aria-hidden />}
+                  {benchmarking ? 'Rodando Benchmark...' : 'Rodar Benchmark'}
+                </Button>
+                <Button type="submit" size="lg" disabled={busy || renderingReal}>
+                  {busy || renderingReal ? <LoaderCircle className="animate-spin" aria-hidden /> : <Sparkles aria-hidden />}
+                  {busy || renderingReal ? 'Produzindo e renderizando...' : 'Gerar Direção & Storyboard'}
+                </Button>
+              </div>
+            </form>
+
+            <ProductionContractCompliancePanel
+              contract={stagedJob?.contract ?? null}
+              compliance={stagedJob?.contractCompliance ?? null}
+              conflicts={stagedJob?.contract?.conflicts ?? promptConflicts}
+            />
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={handleBenchmark}
-              disabled={busy || benchmarking}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-medium hover:border-primary disabled:opacity-50"
-            >
-              {benchmarking ? <LoaderCircle className="size-3.5 animate-spin" /> : <Activity className="size-3.5" />}
-              {benchmarking ? 'Rodando Benchmark...' : 'Rodar Benchmark'}
-            </button>
-            <button
-              type="submit"
-              disabled={busy || renderingReal}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-purple-600 to-amber-500 px-5 py-2 text-xs font-semibold text-white shadow-lg hover:brightness-110 disabled:opacity-50"
-            >
-              {busy || renderingReal ? <LoaderCircle className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
-              {busy || renderingReal ? 'Produzindo e renderizando...' : 'Gerar Direção & Storyboard'}
-            </button>
-          </div>
+          {/* Live tracking of the active production */}
+          <aside aria-labelledby="cinema-tracking-title" className="flex flex-col gap-6 xl:sticky xl:top-6">
+            <SectionHeading id="cinema-tracking-title" title="Acompanhamento" />
+
+            {hasActiveProduction ? (
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-3" aria-live="polite">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="font-mono text-3xl font-light tabular-nums text-foreground">{activePct}%</span>
+                    {stagedJob && (
+                      <Badge variant={stagedJob.state === 'error' ? 'destructive' : stagedJob.state.startsWith('paused') ? 'warning' : 'muted'}>
+                        {STAGE_DISPLAY_LABELS[stagedJob.state] ?? stagedJob.state}
+                      </Badge>
+                    )}
+                  </div>
+                  <Progress value={activePct} aria-label="Progresso da produção ativa" />
+                  <p className="text-sm text-foreground/90">{stagedJob?.message || progressStage}</p>
+                  <dl className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="flex flex-col gap-0.5">
+                      <dt className="text-muted-foreground">Decorrido</dt>
+                      <dd className="font-mono tabular-nums text-foreground">{activeTiming.elapsedLabel}</dd>
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      <dt className="text-muted-foreground">Restante aprox.</dt>
+                      <dd className="font-mono tabular-nums text-foreground">{activeTiming.etaLabel}</dd>
+                    </div>
+                  </dl>
+                </div>
+
+                {stagedJob && (isJobRunning(stagedJob) || (!busy && isResumableJobState(stagedJob.state))) && (
+                  <div className="flex flex-wrap gap-2">
+                    {isJobRunning(stagedJob) && (
+                      <Button type="button" size="sm" variant="outline" onClick={handleCancelStaged}>
+                        <X aria-hidden /> Cancelar
+                      </Button>
+                    )}
+                    {!busy && isResumableJobState(stagedJob.state) && (
+                      <Button type="button" size="sm" onClick={() => void handleResumeStaged()}>
+                        <RotateCcw aria-hidden /> Retomar Projeto
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                <ol aria-label="Etapas da produção" className="flex flex-col">
+                  {PIPELINE_STAGES.map((st) => {
+                    const done = stagedJob?.completedStages?.includes(st.id);
+                    const active = stagedJob?.state === st.id;
+                    return (
+                      <li
+                        key={st.id}
+                        data-stage-state={done ? 'done' : active ? 'active' : 'pending'}
+                        aria-current={active ? 'step' : undefined}
+                        className={cn(
+                          'flex items-center gap-3 py-1.5 text-xs',
+                          done ? 'text-foreground/80' : active ? 'font-medium text-foreground' : 'text-muted-foreground/70',
+                        )}
+                      >
+                        {done ? (
+                          <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-hidden />
+                        ) : active ? (
+                          <LoaderCircle className="size-3.5 shrink-0 animate-spin text-primary motion-reduce:animate-none" aria-hidden />
+                        ) : (
+                          <Circle className="size-3.5 shrink-0" aria-hidden />
+                        )}
+                        <span className="capitalize">{st.label.toLowerCase()}</span>
+                        <span className="sr-only">{done ? ' (concluída)' : active ? ' (em andamento)' : ' (pendente)'}</span>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Nenhuma produção ativa. Envie o briefing para acompanhar etapas, tempo e pendências aqui.
+              </p>
+            )}
+
+            {stagedJob?.state === 'paused_pending_media' && stagedJob.pendingMedia.length > 0 && (
+              <Alert variant="warning">
+                <TriangleAlert aria-hidden />
+                <AlertTitle>Pendências de Mídia Real ({stagedJob.pendingMedia.length} cena(s))</AlertTitle>
+                <AlertDescription className="w-full gap-3">
+                  <p>A montagem final aguarda mídias válidas. Nenhuma cena foi substituída silenciosamente por placeholder.</p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={async () => {
+                      const api = bridge();
+                      if (!api?.cinemaResolvePendingMedia || !stagedJob) return;
+                      setBusy(true);
+                      try {
+                        const updated = await api.cinemaResolvePendingMedia({
+                          projectId: stagedJob.projectId,
+                          resolutions: stagedJob.pendingMedia.map((s) => ({
+                            slotIndex: s.slotIndex,
+                            allowProcedural: true,
+                          })),
+                        });
+                        setStagedJob(updated);
+                        if (updated.state === 'editor') {
+                          navigate(`/video?projectId=${encodeURIComponent(updated.projectId)}`);
+                        }
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Autorizar Motion Visual para todas e Continuar
+                  </Button>
+                  <ul className="flex w-full flex-col">
+                    {stagedJob.pendingMedia.map((slot, index) => (
+                      <li key={slot.clipId} className="flex flex-col gap-1.5">
+                        {index > 0 && <Separator className="my-2" />}
+                        <span className="font-medium text-foreground">
+                          Cena #{slot.slotIndex + 1} · {slot.query}
+                        </span>
+                        {slot.uncoveredIntervals && slot.uncoveredIntervals.length > 0 && (
+                          <span className="text-xs text-warning">
+                            Intervalos sem prova: {slot.uncoveredIntervals.map((interval) => `${interval.startSec}–${interval.endSec}s`).join(', ')}
+                            {slot.missingDurationSec !== undefined ? ` · faltam ${slot.missingDurationSec}s` : ''}
+                            {slot.attempts !== undefined ? ` · ${slot.attempts} tentativa(s)` : ''}
+                          </span>
+                        )}
+                        {slot.editorialAlternatives && slot.editorialAlternatives.length > 0 && (
+                          <ul className="flex flex-col gap-1 text-xs text-info">
+                            {slot.editorialAlternatives.map((alternative) => (
+                              <li key={alternative.kind}>Alternativa editorial ({alternative.kind}): {alternative.detail}</li>
+                            ))}
+                          </ul>
+                        )}
+                        <span className="text-xs text-muted-foreground">{slot.reason}</span>
+                        <span className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            disabled={busy}
+                            onClick={() => handleResolvePendingSlot(slot.slotIndex, { pickFile: true })}
+                          >
+                            Importar Mídia Local
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy}
+                            onClick={() => handleResolvePendingSlot(slot.slotIndex, { allowProcedural: true })}
+                          >
+                            Autorizar Motion Visual
+                          </Button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {error && (
+              <Alert variant="destructive">
+                <CircleAlert aria-hidden />
+                <AlertTitle>Falha na produção</AlertTitle>
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+          </aside>
         </div>
 
-        {(progressPct !== null || stagedJob) && (() => {
-          const activeTiming = computeJobTiming(stagedJob, nowMs, activeStartMs);
-          return (
-          <div className="lg:col-span-12 space-y-2.5 rounded-xl border border-purple-500/30 bg-[#0d0d17] p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-              <span className="text-purple-200">{stagedJob?.message || progressStage}</span>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-[10px] text-muted-foreground">
-                  Decorrido: <span className="text-foreground">{activeTiming.elapsedLabel}</span> · Restante aprox.: <span className="text-foreground">{activeTiming.etaLabel}</span>
-                </span>
-                {stagedJob && isJobRunning(stagedJob) && (
-                  <button
-                    type="button"
-                    onClick={handleCancelStaged}
-                    className="rounded-lg border border-destructive/40 bg-destructive/15 px-2.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/25"
-                  >
-                    Cancelar
-                  </button>
-                )}
-                {!busy && stagedJob && isResumableJobState(stagedJob.state) && (
-                  <button
-                    type="button"
-                    onClick={() => void handleResumeStaged()}
-                    className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/25"
-                  >
-                    Retomar Projeto
-                  </button>
-                )}
-                <span className="font-mono font-semibold text-amber-300">{stagedJob?.progressPct ?? progressPct ?? 0}%</span>
-              </div>
-            </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-purple-500 to-amber-400 transition-all duration-300"
-                style={{ width: `${stagedJob?.progressPct ?? progressPct ?? 0}%` }}
-              />
-            </div>
-            <div className="flex flex-wrap gap-1.5 pt-1">
-              {PIPELINE_STAGES.map((st) => {
-                const done = stagedJob?.completedStages?.includes(st.id);
-                const active = stagedJob?.state === st.id;
+        {stagedJobs.length > 0 && (
+          <section aria-labelledby="cinema-productions-title" className="flex flex-col gap-4">
+            <SectionHeading
+              id="cinema-productions-title"
+              title={`Projetos em Produção com IA (${stagedJobs.length})`}
+              description="Etapa atual e porcentagem de cada produção. O Editor é liberado somente após concluir todas as etapas. Cada projeto tem o próprio console."
+            />
+            <ul className="flex flex-col">
+              {stagedJobs.map((job, index) => {
+                const ready = isJobReadyForEditor(job);
+                const jobKey = jobKeyOf(job);
+                const stageLabel = STAGE_DISPLAY_LABELS[job.state] ?? job.state;
+                const completedCount = Math.min(8, job.completedStages?.length ?? 0);
+                const timing = computeJobTiming(job, nowMs);
                 return (
-                  <span
-                    key={st.id}
-                    className={`rounded-md border px-2 py-0.5 text-[10px] font-medium ${
-                      done
-                        ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-                        : active
-                          ? 'border-amber-400/60 bg-amber-500/20 text-amber-200'
-                          : 'border-border/60 bg-background/40 text-muted-foreground'
-                    }`}
-                  >
-                    {st.label}
-                  </span>
+                  <li key={jobKey} className="flex flex-col">
+                    {index > 0 && <Separator />}
+                    <article
+                      data-production-job={jobKey}
+                      aria-label={job.prompt || job.projectId}
+                      className="flex flex-col gap-3 py-5"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+                        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                          <p className="line-clamp-2 text-sm font-medium text-foreground">{job.prompt || job.projectId}</p>
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                            <span className="text-foreground/85">
+                              Etapa ({completedCount}/8): {stageLabel}
+                            </span>
+                            <span className="font-mono" title={`Projeto ${job.projectId}`}>
+                              {jobKey}
+                              {job.attempt && job.attempt > 1 ? ` · tentativa ${job.attempt}` : ''}
+                            </span>
+                            {job.renderExports && job.renderExports.length > 0 && (
+                              <Badge variant={job.renderExports.every((item) => item.validationValid) ? 'success' : 'warning'}>
+                                {job.renderExports.length} exportação(ões) master ·{' '}
+                                {job.renderExports.every((item) => item.validationValid) ? 'FFprobe OK' : 'revisão técnica necessária'}
+                              </Badge>
+                            )}
+                          </div>
+                          {job.message && <p className="truncate text-xs text-muted-foreground">{job.message}</p>}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => void openDeleteModal(job)}
+                            title="Excluir projeto"
+                            aria-label={`Excluir prompt ${promptDeleteLabel({ prompt: job.prompt, fallback: job.projectId })}`}
+                            className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          >
+                            <Trash2 aria-hidden />
+                          </Button>
+                          {job.state === 'paused_pending_media' ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setStagedJob(job);
+                                setProgressPct(job.progressPct);
+                                setProgressStage(job.message);
+                                window.scrollTo({ top: 0, behavior: 'smooth' });
+                              }}
+                            >
+                              Resolver Mídias ({job.pendingMedia.length})
+                            </Button>
+                          ) : isResumableJobState(job.state) ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              disabled={busy}
+                              onClick={() => {
+                                setStagedJob(job);
+                                setProgressPct(job.progressPct);
+                                setProgressStage(job.message);
+                                window.scrollTo({ top: 0, behavior: 'smooth' });
+                                void handleResumeStaged(job.projectId);
+                              }}
+                            >
+                              Retomar Projeto
+                            </Button>
+                          ) : (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={ready ? 'default' : 'secondary'}
+                              disabled={!ready}
+                              title={ready ? 'Abrir produção concluída no Editor' : 'Aguarde todas as etapas serem concluídas para abrir no Editor'}
+                              onClick={() => navigate(`/video?projectId=${encodeURIComponent(job.projectId)}`)}
+                            >
+                              <Film aria-hidden />
+                              {ready ? 'Editor' : 'Aguardando etapas'}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Progress value={job.progressPct} className="h-1.5" aria-label={`Progresso de ${job.prompt || job.projectId}`} />
+                        <span className="w-10 shrink-0 text-right font-mono text-xs tabular-nums text-foreground">{job.progressPct}%</span>
+                      </div>
+                      <div className="flex items-center justify-between font-mono text-[11px] text-muted-foreground">
+                        <span>Decorrido: {timing.elapsedLabel}</span>
+                        <span>Restante aprox.: {timing.etaLabel}</span>
+                      </div>
+                      <ProductionConsoleAccordion jobId={jobKey} title="Console desta produção" />
+                    </article>
+                  </li>
                 );
               })}
-            </div>
-          </div>
-          );
-        })()}
+            </ul>
+          </section>
+        )}
 
-        {stagedJob?.state === 'paused_pending_media' && stagedJob.pendingMedia.length > 0 && (
-          <div className="lg:col-span-12 space-y-2.5 rounded-xl border border-amber-500/45 bg-amber-500/10 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h3 className="text-xs font-semibold text-amber-200">
-                  Pendências de Mídia Real ({stagedJob.pendingMedia.length} cena(s))
-                </h3>
-                <p className="text-[11px] text-amber-100/80">
-                  A montagem final aguarda mídias válidas. Nenhuma cena foi substituída silenciosamente por placeholder.
-                </p>
+        {stagedJobs.length > 0 && (
+          <section aria-labelledby="cinema-general-console-title" className="flex flex-col gap-4">
+            <SectionHeading
+              id="cinema-general-console-title"
+              title="Console Geral"
+              description="Todas as produções (vídeos e thumbnails) ao mesmo tempo, com filtros por job, status, agente e etapa. Independente dos consoles de cada projeto."
+            />
+            <ProductionConsoleAccordion scope="all" />
+          </section>
+        )}
+
+        {benchmark && (
+          <section aria-labelledby="cinema-benchmark-title" className="flex flex-col gap-4">
+            <SectionHeading
+              id="cinema-benchmark-title"
+              title={`Benchmark Corpus (${benchmark.devCount} dev / ${benchmark.holdoutCount} holdout)`}
+            />
+            <dl className="grid gap-x-8 gap-y-5 sm:grid-cols-2 lg:grid-cols-5">
+              <Metric label="Recall Defeitos Críticos" value={`${(benchmark.criticalDefectRecall * 100).toFixed(0)}%`} tone="success" />
+              <Metric label="Falso Positivo" value={`${(benchmark.falsePositiveRate * 100).toFixed(1)}%`} />
+              <Metric label="Bloqueio Sensível" value={`${(benchmark.sensitiveBlockAccuracy * 100).toFixed(0)}%`} tone="success" />
+              <Metric label="Direcionado vs Baseline" value={`${benchmark.meanDirectedScore} vs ${benchmark.meanBaselineScore}`} />
+              <Metric
+                label="A/B Humor (35% vs 0%)"
+                value={`${(benchmark.abHumor35ActiveRate * 100).toFixed(0)}% vs ${(benchmark.abHumor0ActiveRate * 100).toFixed(0)}%`}
+              />
+            </dl>
+          </section>
+        )}
+
+        {pkg && (
+          <div className="grid items-start gap-10 lg:grid-cols-12">
+            {/* Narrative & Storyboard */}
+            <section aria-labelledby="cinema-storyboard-title" className="flex flex-col gap-5 lg:col-span-7">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <SectionHeading
+                  id="cinema-storyboard-title"
+                  title={`Planejamento Narrativo & Storyboard (${pkg.direction.shots.length} cenas)`}
+                  description={pkg.direction.treatment}
+                />
+                <Button type="button" variant="outline" size="sm" onClick={handleExportOtio}>
+                  <Download aria-hidden /> Exportar OTIO
+                </Button>
               </div>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={async () => {
-                  const api = bridge();
-                  if (!api?.cinemaResolvePendingMedia || !stagedJob) return;
-                  setBusy(true);
-                  try {
-                    const updated = await api.cinemaResolvePendingMedia({
-                      projectId: stagedJob.projectId,
-                      resolutions: stagedJob.pendingMedia.map((s) => ({
-                        slotIndex: s.slotIndex,
-                        allowProcedural: true,
-                      })),
-                    });
-                    setStagedJob(updated);
-                    if (updated.state === 'editor') {
-                      navigate(`/video?projectId=${encodeURIComponent(updated.projectId)}`);
-                    }
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-                className="rounded-lg border border-amber-400/50 bg-amber-500/20 px-3 py-1.5 text-[11px] font-semibold text-amber-100 hover:bg-amber-500/30 disabled:opacity-50"
-              >
-                Autorizar Motion Visual para todas e Continuar
-              </button>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {stagedJob.pendingMedia.map((slot) => (
-                <div key={slot.clipId} className="rounded-lg border border-border bg-[#0d0d17] p-3 text-xs space-y-2">
-                  <div className="font-semibold text-foreground">
-                    Cena #{slot.slotIndex + 1} · {slot.query}
-                  </div>
-                  {slot.uncoveredIntervals && slot.uncoveredIntervals.length > 0 && (
-                    <p className="text-[11px] text-amber-200">
-                      Intervalos sem prova: {slot.uncoveredIntervals.map((interval) => `${interval.startSec}–${interval.endSec}s`).join(', ')}
-                      {slot.missingDurationSec !== undefined ? ` · faltam ${slot.missingDurationSec}s` : ''}
-                      {slot.attempts !== undefined ? ` · ${slot.attempts} tentativa(s)` : ''}
-                    </p>
+
+              <ul className="grid gap-3 sm:grid-cols-2">
+                {pkg.direction.shots.map((s, idx) => {
+                  const sceneDur = Math.max(4, Math.round(pkg.direction.brief.targetDurationSec / Math.max(1, pkg.direction.shots.length)));
+                  return (
+                    <li key={s.shotId} className="overflow-hidden rounded-lg bg-muted/50 text-xs">
+                      <div className="flex h-20 items-end justify-between bg-gradient-to-br from-primary/25 via-muted to-background p-2.5">
+                        <Badge variant="secondary" className="font-mono">
+                          Cena {idx + 1} · {sceneDur}s
+                        </Badge>
+                        <Badge variant="outline" className="bg-background/60">{s.framing}</Badge>
+                      </div>
+                      <div className="flex flex-col gap-1 p-3">
+                        <div className="flex items-center justify-between font-medium text-foreground">
+                          <span className="font-mono">{s.shotId}</span>
+                          <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                            <Volume2 className="size-3" aria-hidden /> Narração + SFX
+                          </span>
+                        </div>
+                        <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                          <Camera className="size-3 text-primary" aria-hidden /> {s.cameraMotion} · Transição: {s.transitionIn}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground">
+                          Plano B: {s.alternativePlanB.framing} ({s.alternativePlanB.transitionIn})
+                        </p>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                <span className="text-muted-foreground">
+                  {planApproved ? 'Plano aprovado para edição e renderização.' : 'Revise as cenas acima antes de avançar para o Editor NLE.'}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={planApproved ? 'secondary' : 'default'}
+                    onClick={() => setPlanApproved(true)}
+                  >
+                    {planApproved && <CheckCircle2 className="text-success" aria-hidden />}
+                    {planApproved ? 'Plano Aprovado' : 'Aprovar Plano'}
+                  </Button>
+                  <Button asChild size="sm" variant="outline">
+                    <Link to="/video">Abrir no Editor NLE</Link>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Natural-language revision input */}
+              <form onSubmit={handleRevision} className="flex gap-2">
+                <label htmlFor="cinema-revision" className="sr-only">
+                  Pedir alteração por linguagem natural
+                </label>
+                <Input
+                  id="cinema-revision"
+                  value={revisionNote}
+                  onChange={(e) => setRevisionNote(e.target.value)}
+                  placeholder="Pedir alteração por linguagem natural (ex.: acelerar abertura e reduzir humor)..."
+                  className="flex-1"
+                />
+                <Button type="submit" disabled={busy}>
+                  <Send aria-hidden /> Revisar
+                </Button>
+              </form>
+            </section>
+
+            {/* Comedy Beats & Release Gates */}
+            <section aria-labelledby="cinema-quality-title" className="flex flex-col gap-5 lg:col-span-5">
+              <div className="flex items-center justify-between gap-3">
+                <h2 id="cinema-quality-title" className="inline-flex items-center gap-2 text-base font-semibold text-foreground">
+                  {pkg.releaseGates.passed ? (
+                    <CheckCircle2 className="size-4 text-success" aria-hidden />
+                  ) : (
+                    <ShieldAlert className="size-4 text-warning" aria-hidden />
                   )}
-                  {slot.editorialAlternatives && slot.editorialAlternatives.length > 0 && (
-                    <ul className="space-y-1 text-[11px] text-sky-200/80">
-                      {slot.editorialAlternatives.map((alternative) => (
-                        <li key={alternative.kind}>Alternativa editorial ({alternative.kind}): {alternative.detail}</li>
+                  Qualidade & Beats de Humor
+                </h2>
+                <Badge variant={pkg.releaseGates.passed ? 'success' : 'warning'} className="font-mono">
+                  {pkg.scorecard.compositeScore}/100
+                </Badge>
+              </div>
+
+              {!pkg.releaseGates.passed && (
+                <Button type="button" variant="secondary" onClick={handleRepair} disabled={busy}>
+                  <Wrench aria-hidden /> Executar Reparo Cirúrgico (Budget 3)
+                </Button>
+              )}
+
+              {pkg.timeline.comedyBeats.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Nenhum beat de humor ativo (intensidade 0% ou contexto sensível).</p>
+              ) : (
+                <ul className="flex flex-col">
+                  {pkg.timeline.comedyBeats.map((cb, index) => (
+                    <li key={cb.beatId} className="flex flex-col gap-1 text-xs">
+                      {index > 0 && <Separator className="my-3" />}
+                      <div className="flex items-center justify-between font-medium text-foreground">
+                        <span>
+                          {cb.humorMechanism} · pausa {cb.pauseFrames}f
+                        </span>
+                        <span className="text-muted-foreground">{cb.contextRisk}</span>
+                      </div>
+                      <p className="text-foreground/90">{cb.punchline}</p>
+                      <p className="text-muted-foreground">Fallback sem humor: {cb.fallbackWithoutHumor}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <Separator />
+
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5">
+                  <Film className="size-3.5" aria-hidden /> {pkg.renderProfile.profile}
+                </span>
+                <span className="font-mono">
+                  {pkg.renderProfile.width}x{pkg.renderProfile.height}
+                </span>
+              </div>
+
+              <Button type="button" onClick={handleRenderRealMp4} disabled={busy || renderingReal}>
+                <Film aria-hidden /> {renderingReal ? 'Renderizando MP4 Real...' : 'Renderizar MP4 Real (FFmpeg)'}
+              </Button>
+
+              {realRender && (
+                <div className="flex flex-col gap-3 text-xs">
+                  <div className="flex items-center justify-between gap-2 font-medium text-success">
+                    <span className="inline-flex items-center gap-1.5">
+                      <CheckCircle2 className="size-3.5" aria-hidden /> MP4 Real Verificado (FFprobe/ebur128)
+                    </span>
+                    <span className="font-mono text-[11px] text-muted-foreground">{realRender.encoderUsed}</span>
+                  </div>
+                  <p className="font-mono text-[11px] break-all text-muted-foreground">{realRender.mp4Path}</p>
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                    <RenderFact label="Duração" value={`${realRender.probe.durationSec.toFixed(2)}s`} />
+                    <RenderFact label="Resolução" value={`${realRender.probe.width}x${realRender.probe.height}`} />
+                    <RenderFact label="LUFS" value={String(realRender.probe.integratedLufs ?? 'N/A')} />
+                    <RenderFact label="True Peak" value={`${realRender.probe.truePeakDbtp ?? 'N/A'} dBTP`} />
+                    <RenderFact label="Black frames" value={String(realRender.probe.blackFrames.length)} />
+                    <RenderFact label="Narração" value={realRender.narrationMode} />
+                  </dl>
+                  <p className="text-muted-foreground">Efeitos: {realRender.appliedEffects.join(' · ')}</p>
+                  {realRender.realQcFindings.length > 0 && (
+                    <ul className="flex flex-col gap-1">
+                      {realRender.realQcFindings.map((f) => (
+                        <li key={f.issueId} className="text-warning">
+                          [{f.severity}] {f.evidence}
+                        </li>
                       ))}
                     </ul>
                   )}
-                  <p className="text-[11px] text-muted-foreground">{slot.reason}</p>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => handleResolvePendingSlot(slot.slotIndex, { pickFile: true })}
-                      className="rounded-md border border-primary/50 bg-primary/20 px-2.5 py-1 text-[11px] font-medium text-purple-200 hover:bg-primary/30 disabled:opacity-50"
-                    >
-                      Importar Mídia Local
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => handleResolvePendingSlot(slot.slotIndex, { allowProcedural: true })}
-                      className="rounded-md border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
-                    >
-                      Autorizar Motion Visual
-                    </button>
-                  </div>
                 </div>
-              ))}
-            </div>
+              )}
+
+              {otioPreview && (
+                <pre className="max-h-40 overflow-auto rounded-lg bg-muted/50 p-3 text-[11px] text-muted-foreground">{otioPreview}</pre>
+              )}
+            </section>
           </div>
         )}
-      </form>
 
-      <ProductionContractCompliancePanel
-        contract={stagedJob?.contract ?? null}
-        compliance={stagedJob?.contractCompliance ?? null}
-        conflicts={stagedJob?.contract?.conflicts ?? promptConflicts}
-      />
-
-      {stagedJobs.length > 0 && (
-        <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-foreground">
-                Projetos em Produção com IA ({stagedJobs.length})
-              </h2>
-              <p className="text-[11px] text-muted-foreground">
-                Acompanhe a etapa atual e a porcentagem de cada produção. O botão Editor é liberado somente após concluir todas as etapas.
-              </p>
-            </div>
-          </div>
-          <div className="grid gap-3 md:grid-cols-2">
-            {stagedJobs.map((job) => {
-              const ready = isJobReadyForEditor(job);
-              const jobKey = jobKeyOf(job);
-              const stageLabel = STAGE_DISPLAY_LABELS[job.state] ?? job.state;
-              const completedCount = Math.min(8, job.completedStages?.length ?? 0);
-              return (
-                <article
-                  key={jobKey}
-                  data-production-job={jobKey}
-                  className="flex flex-col gap-3 rounded-xl border border-border/80 bg-[#0d0d17] p-4"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="line-clamp-2 text-xs font-semibold text-foreground">
-                        {job.prompt || job.projectId}
-                      </p>
-                      <span className="shrink-0 rounded-full border border-purple-500/35 bg-purple-500/15 px-2 py-0.5 font-mono text-[10px] text-purple-200">
-                        {job.progressPct}%
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-amber-300">
-                      Etapa ({completedCount}/8): {stageLabel}
-                    </p>
-                    {job.message && (
-                      <p className="truncate text-[10px] text-muted-foreground">{job.message}</p>
-                    )}
-                    {job.renderExports && job.renderExports.length > 0 && (
-                      <p className="text-[10px] text-emerald-300">
-                        {job.renderExports.length} exportação(ões) master · {job.renderExports.every((item) => item.validationValid) ? 'FFprobe OK' : 'revisão técnica necessária'}
-                      </p>
-                    )}
-                  </div>
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-purple-500 to-amber-400 transition-all duration-300"
-                        style={{ width: `${job.progressPct}%` }}
-                      />
-                    </div>
-                    {(() => {
-                      const timing = computeJobTiming(job, nowMs);
-                      return (
-                        <div className="flex items-center justify-between font-mono text-[10px] text-muted-foreground">
-                          <span>Decorrido: {timing.elapsedLabel}</span>
-                          <span>Restante aprox.: {timing.etaLabel}</span>
-                        </div>
-                      );
-                    })()}
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-[10px] text-muted-foreground" title={`Projeto ${job.projectId}`}>
-                        {jobKey}
-                        {job.attempt && job.attempt > 1 ? ` · tentativa ${job.attempt}` : ''}
-                      </span>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => void openDeleteModal(job)}
-                          title="Excluir projeto"
-                          aria-label={`Excluir prompt ${promptDeleteLabel({ prompt: job.prompt, fallback: job.projectId })}`}
-                          className="inline-flex items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-300 hover:border-rose-400 hover:bg-rose-500/20"
-                        >
-                          <Trash2 className="size-3.5" />
-                        </button>
-                        {job.state === 'paused_pending_media' ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setStagedJob(job);
-                              setProgressPct(job.progressPct);
-                              setProgressStage(job.message);
-                              window.scrollTo({ top: 0, behavior: 'smooth' });
-                            }}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/50 bg-amber-500/20 px-3 py-1.5 text-[11px] font-semibold text-amber-200 hover:bg-amber-500/30"
-                          >
-                            Resolver Mídias ({job.pendingMedia.length})
-                          </button>
-                        ) : isResumableJobState(job.state) ? (
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => {
-                              setStagedJob(job);
-                              setProgressPct(job.progressPct);
-                              setProgressStage(job.message);
-                              window.scrollTo({ top: 0, behavior: 'smooth' });
-                              void handleResumeStaged(job.projectId);
-                            }}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/45 bg-emerald-500/20 px-3 py-1.5 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            Retomar Projeto
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            disabled={!ready}
-                            title={ready ? 'Abrir produção concluída no Editor' : 'Aguarde todas as etapas serem concluídas para abrir no Editor'}
-                            onClick={() => navigate(`/video?projectId=${encodeURIComponent(job.projectId)}`)}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-primary/25 px-3 py-1.5 text-[11px] font-semibold text-purple-100 hover:bg-primary/40 disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            <Film className="size-3.5" />
-                            {ready ? 'Editor' : 'Aguardando etapas'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  <ProductionConsoleAccordion jobId={jobKey} title="Console desta produção" />
-                </article>
-              );
-            })}
+        <section aria-labelledby="cinema-diagnostics-title" className="flex flex-col gap-4">
+          <SectionHeading
+            id="cinema-diagnostics-title"
+            title="Diagnósticos da produção"
+            description="Cobertura de mídia e direção de voz da produção selecionada."
+          />
+          <div className="grid gap-6 lg:grid-cols-2">
+            <MediaCoveragePanel
+              coverage={(stagedJob as unknown as { coverageReport?: Parameters<typeof MediaCoveragePanel>[0]['coverage'] })?.coverageReport ?? null}
+              relevanceDecisions={(stagedJob as unknown as { mediaRelevanceDecisions?: Parameters<typeof MediaCoveragePanel>[0]['relevanceDecisions'] })?.mediaRelevanceDecisions ?? []}
+              acquisitionAudit={(stagedJob as unknown as { autonomousAudit?: Parameters<typeof MediaCoveragePanel>[0]['acquisitionAudit'] })?.autonomousAudit ?? null}
+              plannedQueriesCount={(stagedJob as unknown as { sceneDecupagem?: unknown[] })?.sceneDecupagem?.length ?? 0}
+              sceneAssembly={(stagedJob as unknown as { sceneAssembly?: Parameters<typeof MediaCoveragePanel>[0]['sceneAssembly'] })?.sceneAssembly ?? null}
+              onPromptAction={(actionPrompt) => {
+                setPrompt((prev) => (prev ? `${prev}\n\n[Diretriz de Cobertura] ${actionPrompt}` : actionPrompt));
+                notify({ title: 'Cobertura', message: 'Diretriz de cobertura adicionada ao prompt.', type: 'info' });
+              }}
+            />
+            <VoiceDirectorPanel
+              voiceId={selectedVoiceId}
+              audioQuality={(realRender as unknown as { audioQuality?: Parameters<typeof VoiceDirectorPanel>[0]['audioQuality'] })?.audioQuality ?? null}
+              segments={pkg?.direction?.narrativeBeats?.map((b) => ({ segmentId: b.beatId, text: b.summary })) ?? []}
+              onRegenerateSegment={(segmentId) => {
+                setPrompt((prev) => `${prev}\n[Corrigir narração do trecho ${segmentId}]`);
+                notify({ title: 'Voice Director', message: `Regeneração direcionada agendada para o trecho ${segmentId}.`, type: 'info' });
+              }}
+              onTestSample={async (sampleText) => {
+                notify({ title: 'Voice Studio', message: `Amostra enviada para Voice Studio (${sampleText.slice(0, 40)}...).`, type: 'info' });
+              }}
+            />
           </div>
         </section>
-      )}
 
-      {stagedJobs.length > 0 && (
-        <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
-          <div>
-            <h2 className="text-sm font-semibold text-foreground">Console Geral</h2>
-            <p className="text-[11px] text-muted-foreground">
-              Monitoramento de todas as produções (vídeos e thumbnails) ao mesmo tempo, com filtros por job, status,
-              agente e etapa. Cada produção tem também o seu próprio console, isolado, no card dela.
-            </p>
-          </div>
-          <ProductionConsoleAccordion scope="all" />
-        </section>
-      )}
+        {deleteTarget && (
+          <DeletePromptDialog
+            label={promptDeleteLabel({ prompt: deleteTarget.prompt, fallback: deleteTarget.projectId })}
+            pending={deletingProject}
+            details={deleteInspection?.itemsToRemove}
+            footnote={
+              deleteInspection
+                ? `Biblioteca global (SFX/VFX/músicas/templates) e ${deleteInspection.sharedCacheEntriesPreserved} referência(s) compartilhada(s) com outros projetos serão preservadas.`
+                : undefined
+            }
+            onCancel={closeDeleteModal}
+            onConfirm={() => void handleConfirmDeleteJob()}
+          />
+        )}
+      </TabsContent>
+    </Tabs>
+  );
+}
 
-      {error && (
-        <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-          {error}
-        </div>
-      )}
+function SectionHeading({ id, title, description }: { id: string; title: string; description?: string }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <h2 id={id} className="text-base font-semibold tracking-tight text-foreground">
+        {title}
+      </h2>
+      {description && <p className="max-w-3xl text-sm text-muted-foreground">{description}</p>}
+    </div>
+  );
+}
 
-      {benchmark && (
-        <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
-          <h2 className="text-sm font-semibold">Benchmark Corpus ({benchmark.devCount} dev / {benchmark.holdoutCount} holdout)</h2>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 text-xs">
-            <div className="rounded-xl border border-border bg-[#0d0d17] p-3">
-              <div className="text-muted-foreground">Recall Defeitos Críticos</div>
-              <div className="mt-1 text-lg font-bold text-emerald-400">{(benchmark.criticalDefectRecall * 100).toFixed(0)}%</div>
-            </div>
-            <div className="rounded-xl border border-border bg-[#0d0d17] p-3">
-              <div className="text-muted-foreground">Falso Positivo</div>
-              <div className="mt-1 text-lg font-bold">{(benchmark.falsePositiveRate * 100).toFixed(1)}%</div>
-            </div>
-            <div className="rounded-xl border border-border bg-[#0d0d17] p-3">
-              <div className="text-muted-foreground">Bloqueio Sensível</div>
-              <div className="mt-1 text-lg font-bold text-emerald-400">{(benchmark.sensitiveBlockAccuracy * 100).toFixed(0)}%</div>
-            </div>
-            <div className="rounded-xl border border-border bg-[#0d0d17] p-3">
-              <div className="text-muted-foreground">Direcionado vs Baseline</div>
-              <div className="mt-1 text-lg font-bold">{benchmark.meanDirectedScore} vs {benchmark.meanBaselineScore}</div>
-            </div>
-            <div className="rounded-xl border border-border bg-[#0d0d17] p-3">
-              <div className="text-muted-foreground">A/B Humor (35% vs 0%)</div>
-              <div className="mt-1 text-lg font-bold">{(benchmark.abHumor35ActiveRate * 100).toFixed(0)}% vs {(benchmark.abHumor0ActiveRate * 100).toFixed(0)}%</div>
-            </div>
-          </div>
-        </section>
-      )}
+function Metric({ label, value, tone }: { label: string; value: string; tone?: 'success' }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className={cn('text-xl font-light tabular-nums', tone === 'success' ? 'text-success' : 'text-foreground')}>{value}</dd>
+    </div>
+  );
+}
 
-      {pkg && (
-        <div className="grid gap-6 lg:grid-cols-12">
-          {/* Narrative & Storyboard */}
-          <section className="space-y-4 rounded-2xl border border-border bg-card p-5 lg:col-span-7">
-            <div className="flex items-center justify-between">
-              <h2 className="inline-flex items-center gap-2 text-sm font-semibold">
-                <Clapperboard className="size-4 text-purple-400" /> Planejamento Narrativo & Storyboard ({pkg.direction.shots.length} cenas)
-              </h2>
-              <button
-                type="button"
-                onClick={handleExportOtio}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs hover:border-primary"
-              >
-                <Download className="size-3.5" /> Exportar OTIO
-              </button>
-            </div>
-            <p className="text-xs text-muted-foreground">{pkg.direction.treatment}</p>
-
-            <div className="grid gap-2.5 sm:grid-cols-2">
-              {pkg.direction.shots.map((s, idx) => {
-                const sceneDur = Math.max(4, Math.round(pkg.direction.brief.targetDurationSec / Math.max(1, pkg.direction.shots.length)));
-                return (
-                  <div key={s.shotId} className="overflow-hidden rounded-xl border border-border bg-[#0d0d17] text-xs">
-                    <div className="relative flex h-20 items-end justify-between bg-gradient-to-br from-[#23133d] via-[#131326] to-[#1f160c] p-2.5">
-                      <span className="rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-amber-300">
-                        Cena {idx + 1} · {sceneDur}s
-                      </span>
-                      <span className="rounded bg-primary/30 px-1.5 py-0.5 text-[10px] text-purple-100">{s.framing}</span>
-                    </div>
-                    <div className="p-3 space-y-1">
-                      <div className="flex items-center justify-between font-semibold text-foreground">
-                        <span className="font-mono">{s.shotId}</span>
-                        <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300">
-                          <Volume2 className="size-3" /> Narração + SFX
-                        </span>
-                      </div>
-                      <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                        <Camera className="size-3 text-purple-400" /> {s.cameraMotion} · Transição: {s.transitionIn}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground">
-                        Plano B: {s.alternativePlanB.framing} ({s.alternativePlanB.transitionIn})
-                      </p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-[#0d0d17] p-3 text-xs">
-              <span>
-                {planApproved
-                  ? 'Plano aprovado para edição e renderização.'
-                  : 'Revise as cenas acima antes de avançar para o Editor NLE.'}
-              </span>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPlanApproved(true)}
-                  className={`rounded-lg px-3 py-1.5 font-semibold ${
-                    planApproved
-                      ? 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-                      : 'bg-emerald-600 text-white hover:brightness-110'
-                  }`}
-                >
-                  {planApproved ? 'Plano Aprovado' : 'Aprovar Plano'}
-                </button>
-                <Link
-                  to="/video"
-                  className="rounded-lg border border-primary/50 bg-primary/20 px-3 py-1.5 font-medium text-purple-200 hover:bg-primary/30"
-                >
-                  Abrir no Editor NLE
-                </Link>
-              </div>
-            </div>
-
-            {/* Natural-language revision input */}
-            <form onSubmit={handleRevision} className="flex gap-2 pt-2">
-              <input
-                value={revisionNote}
-                onChange={(e) => setRevisionNote(e.target.value)}
-                placeholder="Pedir alteração por linguagem natural (ex.: acelerar abertura e reduzir humor)..."
-                className="flex-1 rounded-xl border border-border bg-background px-3 py-2 text-xs"
-              />
-              <button
-                type="submit"
-                disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-3.5 py-2 text-xs font-semibold text-white"
-              >
-                <Send className="size-3.5" /> Revisar
-              </button>
-            </form>
-          </section>
-
-          {/* Comedy Beats & Release Gates */}
-          <section className="space-y-4 rounded-2xl border border-border bg-card p-5 lg:col-span-5">
-            <div className="flex items-center justify-between">
-              <h2 className="inline-flex items-center gap-2 text-sm font-semibold">
-                {pkg.releaseGates.passed ? (
-                  <CheckCircle2 className="size-4 text-emerald-400" />
-                ) : (
-                  <ShieldAlert className="size-4 text-amber-400" />
-                )}
-                Qualidade & Beats de Humor
-              </h2>
-              <span className="font-mono text-xs">{pkg.scorecard.compositeScore}/100</span>
-            </div>
-
-            {!pkg.releaseGates.passed && (
-              <button
-                type="button"
-                onClick={handleRepair}
-                disabled={busy}
-                className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-amber-500 px-3 py-2 text-xs font-semibold text-black"
-              >
-                <Wrench className="size-3.5" /> Executar Reparo Cirúrgico (Budget 3)
-              </button>
-            )}
-
-            <div className="space-y-2">
-              {pkg.timeline.comedyBeats.length === 0 ? (
-                <p className="text-xs text-muted-foreground">Nenhum beat de humor ativo (intensidade 0% ou contexto sensível).</p>
-              ) : (
-                pkg.timeline.comedyBeats.map((cb) => (
-                  <div key={cb.beatId} className="rounded-xl border border-border bg-[#0d0d17] p-3 text-xs space-y-1">
-                    <div className="flex items-center justify-between font-medium">
-                      <span>{cb.humorMechanism} · pausa {cb.pauseFrames}f</span>
-                      <span className="text-muted-foreground">{cb.contextRisk}</span>
-                    </div>
-                    <p>{cb.punchline}</p>
-                    <p className="text-[11px] text-muted-foreground">Fallback sem humor: {cb.fallbackWithoutHumor}</p>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="rounded-xl border border-border bg-[#0d0d17] p-3 text-xs text-muted-foreground flex items-center justify-between">
-              <span className="inline-flex items-center gap-1.5"><Film className="size-3.5" /> {pkg.renderProfile.profile}</span>
-              <span>{pkg.renderProfile.width}x{pkg.renderProfile.height}</span>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleRenderRealMp4}
-              disabled={busy || renderingReal}
-              className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-cyan-600 px-3 py-2 text-xs font-semibold text-white hover:brightness-110 disabled:opacity-50"
-            >
-              <Film className="size-3.5" /> {renderingReal ? 'Renderizando MP4 Real...' : 'Renderizar MP4 Real (FFmpeg)'}
-            </button>
-
-            {realRender && (
-              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs space-y-2">
-                <div className="flex items-center justify-between font-semibold text-emerald-300">
-                  <span>MP4 Real Verificado (FFprobe/ebur128)</span>
-                  <span className="font-mono text-[11px]">{realRender.encoderUsed}</span>
-                </div>
-                <p className="font-mono text-[10px] text-muted-foreground break-all">{realRender.mp4Path}</p>
-                <div className="grid grid-cols-2 gap-1.5 text-[11px]">
-                  <div>Duração: <span className="font-mono text-foreground">{realRender.probe.durationSec.toFixed(2)}s</span></div>
-                  <div>Resolução: <span className="font-mono text-foreground">{realRender.probe.width}x{realRender.probe.height}</span></div>
-                  <div>LUFS: <span className="font-mono text-foreground">{realRender.probe.integratedLufs ?? 'N/A'}</span></div>
-                  <div>True Peak: <span className="font-mono text-foreground">{realRender.probe.truePeakDbtp ?? 'N/A'} dBTP</span></div>
-                  <div>Black frames: <span className="font-mono text-foreground">{realRender.probe.blackFrames.length}</span></div>
-                  <div>Narração: <span className="font-mono text-foreground">{realRender.narrationMode}</span></div>
-                </div>
-                <div className="text-[11px] text-muted-foreground">
-                  Efeitos: {realRender.appliedEffects.join(' · ')}
-                </div>
-                {realRender.realQcFindings.length > 0 && (
-                  <div className="space-y-1 pt-1">
-                    {realRender.realQcFindings.map((f) => (
-                      <div key={f.issueId} className="text-[11px] text-amber-300">
-                        [{f.severity}] {f.evidence}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {otioPreview && (
-              <pre className="max-h-40 overflow-auto rounded-xl border border-border bg-background p-3 text-[11px] text-muted-foreground">
-                {otioPreview}
-              </pre>
-            )}
-          </section>
-        </div>
-      )}
-
-      <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        <MediaCoveragePanel
-          coverage={(stagedJob as unknown as { coverageReport?: Parameters<typeof MediaCoveragePanel>[0]['coverage'] })?.coverageReport ?? null}
-          relevanceDecisions={(stagedJob as unknown as { mediaRelevanceDecisions?: Parameters<typeof MediaCoveragePanel>[0]['relevanceDecisions'] })?.mediaRelevanceDecisions ?? []}
-          acquisitionAudit={(stagedJob as unknown as { autonomousAudit?: Parameters<typeof MediaCoveragePanel>[0]['acquisitionAudit'] })?.autonomousAudit ?? null}
-          plannedQueriesCount={(stagedJob as unknown as { sceneDecupagem?: unknown[] })?.sceneDecupagem?.length ?? 0}
-          sceneAssembly={(stagedJob as unknown as { sceneAssembly?: Parameters<typeof MediaCoveragePanel>[0]['sceneAssembly'] })?.sceneAssembly ?? null}
-          onPromptAction={(actionPrompt) => {
-            setPrompt((prev) => (prev ? `${prev}\n\n[Diretriz de Cobertura] ${actionPrompt}` : actionPrompt));
-            notify({ title: 'Cobertura', message: 'Diretriz de cobertura adicionada ao prompt.', type: 'info' });
-          }}
-        />
-        <VoiceDirectorPanel
-          voiceId={selectedVoiceId}
-          audioQuality={(realRender as unknown as { audioQuality?: Parameters<typeof VoiceDirectorPanel>[0]['audioQuality'] })?.audioQuality ?? null}
-          segments={pkg?.direction?.narrativeBeats?.map((b) => ({ segmentId: b.beatId, text: b.summary })) ?? []}
-          onRegenerateSegment={(segmentId) => {
-            setPrompt((prev) => `${prev}\n[Corrigir narração do trecho ${segmentId}]`);
-            notify({ title: 'Voice Director', message: `Regeneração direcionada agendada para o trecho ${segmentId}.`, type: 'info' });
-          }}
-          onTestSample={async (sampleText) => {
-            notify({ title: 'Voice Studio', message: `Amostra enviada para Voice Studio (${sampleText.slice(0, 40)}...).`, type: 'info' });
-          }}
-        />
-      </div>
-
-      {deleteTarget && (
-        <DeletePromptDialog
-          label={promptDeleteLabel({ prompt: deleteTarget.prompt, fallback: deleteTarget.projectId })}
-          pending={deletingProject}
-          details={deleteInspection?.itemsToRemove}
-          footnote={
-            deleteInspection
-              ? `Biblioteca global (SFX/VFX/músicas/templates) e ${deleteInspection.sharedCacheEntriesPreserved} referência(s) compartilhada(s) com outros projetos serão preservadas.`
-              : undefined
-          }
-          onCancel={closeDeleteModal}
-          onConfirm={() => void handleConfirmDeleteJob()}
-        />
-      )}
-        </>
-      )}
+function RenderFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex gap-1.5">
+      <dt className="text-muted-foreground">{label}:</dt>
+      <dd className="font-mono text-foreground">{value}</dd>
     </div>
   );
 }
