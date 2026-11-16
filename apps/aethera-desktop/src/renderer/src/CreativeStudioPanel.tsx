@@ -61,6 +61,12 @@ interface CreativeBridge {
     promptSummary?: string;
   }>;
   creativeApprove?: (input: { projectId: string; approvedBy: string }) => Promise<CreativeProjectDocument>;
+  creativeAestheticDecision?: (input: {
+    projectId: string;
+    decision: 'approved' | 'rejected';
+    reviewer: string;
+    notes?: string;
+  }) => Promise<{ document: CreativeProjectDocument; readiness: { ready: boolean; blockers: string[] } }>;
   creativeAiStatus?: () => Promise<{ available: boolean; provider: string }>;
 }
 
@@ -548,19 +554,32 @@ export function CreativeStudioPanel() {
                     [{f.severity}] {f.message}
                   </div>
                 ))}
-                <button
-                  disabled={!audit.passed}
-                  onClick={async () => {
-                    const approved = await getBridge()?.creativeApprove?.({ projectId: activeDoc.id, approvedBy: 'Criador' });
-                    if (approved) {
-                      setActiveDoc(approved);
-                      setStatusMsg('Composição aprovada manualmente.');
-                    }
-                  }}
-                  style={{ marginTop: 8, width: '100%', padding: '8px 10px', background: audit.passed ? '#14b8a6' : '#334155', color: '#042f2e', fontWeight: 700, border: 'none', borderRadius: 6, cursor: audit.passed ? 'pointer' : 'not-allowed' }}
-                >
-                  Aprovar Composição
-                </button>
+                <ApprovalStatesView doc={activeDoc} />
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  {(['approved', 'rejected'] as const).map((decision) => (
+                    <button
+                      key={decision}
+                      onClick={async () => {
+                        const result = await getBridge()?.creativeAestheticDecision?.({
+                          projectId: activeDoc.id,
+                          decision,
+                          reviewer: 'Criador',
+                        });
+                        if (result) {
+                          setActiveDoc(result.document);
+                          setStatusMsg(
+                            result.readiness.ready
+                              ? 'Peça pronta: técnica, fidelidade semântica e estética aprovadas.'
+                              : `Decisão estética registrada. Pendências: ${result.readiness.blockers.join(' ')}`,
+                          );
+                        }
+                      }}
+                      style={{ flex: 1, padding: '8px 10px', background: decision === 'approved' ? '#14b8a6' : '#7f1d1d', color: decision === 'approved' ? '#042f2e' : '#fee2e2', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}
+                    >
+                      {decision === 'approved' ? 'Aprovar estética (humano)' : 'Rejeitar estética'}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -569,5 +588,45 @@ export function CreativeStudioPanel() {
 
       <ProductionConsoleAccordion scope="all" kind="thumbnail" title="Console de Thumbnails" />
     </div>
+  );
+}
+
+const APPROVAL_LABELS: Record<string, string> = {
+  not_evaluated: 'não avaliada',
+  passed: 'aprovada',
+  failed: 'reprovada',
+  confirmed: 'confirmada',
+  rejected: 'rejeitada',
+  unverified: 'não verificada',
+  pending: 'pendente',
+  approved: 'aprovada',
+};
+
+/** CS-9: the three approval states are shown separately; none implies another. */
+function ApprovalStatesView({ doc }: { doc: CreativeProjectDocument }) {
+  const states = doc.approvalStates;
+  const rows: Array<[string, string, string | undefined]> = [
+    ['Técnica (automática)', states?.technical.status ?? 'not_evaluated', states?.technical.criticalCodes.join(', ') || undefined],
+    [
+      'Fidelidade semântica',
+      states?.semanticFidelity.status ?? 'not_evaluated',
+      states?.semanticFidelity.identity
+        ? `identidade "${states.semanticFidelity.identity.subject}": ${states.semanticFidelity.identity.status}`
+        : undefined,
+    ],
+    ['Estética (humana)', states?.humanAesthetic.status ?? 'pending', states?.humanAesthetic.reviewer],
+  ];
+  return (
+    <dl aria-label="Estados de aprovação" style={{ margin: '8px 0 0', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 8px' }}>
+      {rows.map(([label, status, detail]) => (
+        <div key={label} style={{ display: 'contents' }}>
+          <dt style={{ color: '#99f6e4' }}>{label}</dt>
+          <dd style={{ margin: 0 }}>
+            {APPROVAL_LABELS[status] ?? status}
+            {detail ? ` — ${detail}` : ''}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }

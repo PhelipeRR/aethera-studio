@@ -272,6 +272,17 @@ export class PersistentPythonAiAdapter implements ExternalImageAdapter {
     }
   }
 
+  /** CS-9: L2-normalised CLIP image embeddings for image-to-image identity comparison. */
+  async embedImages(imagePaths: string[]): Promise<number[][]> {
+    const resp = await this.sendCommand({ command: 'embed-images', images: imagePaths.join('|') });
+    if (!resp.ok) throw new Error(`Worker embed-images failed: ${resp.error ?? 'unknown error'}`);
+    const embeddings = resp.embeddings as number[][] | undefined;
+    if (!embeddings || embeddings.length !== imagePaths.length) {
+      throw new Error('Worker embed-images returned an unexpected number of embeddings.');
+    }
+    return embeddings;
+  }
+
   /**
    * Gracefully shuts down the persistent worker, freeing GPU memory.
    */

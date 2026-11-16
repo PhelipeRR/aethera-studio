@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import { fitTextToBox, type SharpSvgCompositionEngine } from './image-generation-adapter.js';
+import { auditTypographyGeometry, type TextLayerGeometry } from './typography-geometry-audit.js';
 import {
   ART_SPECIFICATIONS,
   qualityAuditReportSchema,
@@ -392,6 +393,18 @@ export class QualityGateService {
       });
     }
 
+    // 6.5. CS-9: typography audited on REAL rendered glyph geometry (clipping, collisions, safe area,
+    // timestamp badge, occlusion, measured size and contrast at 224×126). Replaces box-only assumptions.
+    let typographyGeometry: TextLayerGeometry[] | undefined;
+    if (doc.artType === 'thumbnail' && visibleTexts.length > 0) {
+      const geo = await auditTypographyGeometry(this.engine, doc, rendered);
+      typographyGeometry = geo.layers;
+      for (const f of geo.findings) {
+        findings.push(f);
+        legibility -= f.severity === 'critical' ? 20 : 5;
+      }
+    }
+
     // 7. Brand Kit consistency
     let brandConsistency = 85;
     if (options?.brandKit) {
@@ -465,6 +478,7 @@ export class QualityGateService {
         disclaimer: 'Heuristic visual quality score only; does not predict actual CTR.',
       },
       checkedAt: new Date().toISOString(),
+      ...(typographyGeometry ? { typographyGeometry: typographyGeometry as unknown as Array<Record<string, unknown>> } : {}),
     });
   }
 }

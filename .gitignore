@@ -21,3 +21,6 @@ docs/aethera/cinema/**/*.mp4
 docs/aethera/cinema/**/*.wav
 docs/aethera/cinema/**/_work*/
 docs/aethera/cinema/**/stems*/
+
+# Third-party video frames (CS-9 identity references): local only, regenerate from manifest.json sources
+artifacts/cs9-reference-set/identity-references/**/*.png

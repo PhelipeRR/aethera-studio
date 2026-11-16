@@ -1,0 +1,1096 @@
+{
+  "summary": {
+    "generatedAt": "2026-11-15T23:55:44.354Z",
+    "labelOrigins": {
+      "human": 0,
+      "human_documented_set_level": 6,
+      "claude_provisional": 26
+    },
+    "all": {
+      "n": 32,
+      "historicalGateVsOverall": {
+        "tp": 0,
+        "fp": 2,
+        "tn": 3,
+        "fn": 0,
+        "n": 5,
+        "fpIds": [
+          "cs9-johnny-step2",
+          "cs9-malenia-step3"
+        ],
+        "fnIds": [],
+        "notEvaluable": 0
+      },
+      "cs9ScriptQualityVsTechnical": {
+        "tp": 7,
+        "fp": 23,
+        "tn": 2,
+        "fn": 0,
+        "n": 32,
+        "fpIds": [
+          "cs9-cyberpunk-A",
+          "cs9-cyberpunk-B",
+          "cs9-malenia-step3",
+          "cs9-hornet-step3",
+          "cs9-integrated-anime-concept-A-mystery_reveal",
+          "cs9-integrated-anime-concept-B-transformation_scene",
+          "cs9-integrated-anime-maldicao-selo-concept-A-mystery_reveal",
+          "cs9-integrated-anime-maldicao-selo-concept-B-transformation_scene",
+          "cs9-integrated-anime-maldicao-selo-concept-C-action_moment",
+          "cs9-integrated-cyberpunk-2077-concept-A-object_focus",
+          "cs9-integrated-cyberpunk-2077-concept-B-before_after_comparison",
+          "cs9-integrated-cyberpunk-2077-concept-C-action_moment",
+          "cs9-integrated-documentary-concept-A-environmental_story",
+          "cs9-integrated-documentary-concept-B-object_focus",
+          "cs9-integrated-documentary-concept-C-before_after_comparison",
+          "cs9-integrated-documentary-telescopio-concept-A-environmental_story",
+          "cs9-integrated-documentary-telescopio-concept-B-object_focus",
+          "cs9-integrated-documentary-telescopio-concept-C-before_after_comparison",
+          "cs9-integrated-tier1-tech",
+          "cs9-typo-anime-jujutsu-kaisen-typo-condensed",
+          "cs9-typo-cyberpunk-2077-typo-A-condensed",
+          "cs9-typo-cyberpunk-2077-typo-B-editorial-split",
+          "cs9-typo-cyberpunk-2077-typo-C-vertical-spine"
+        ],
+        "fnIds": [],
+        "notEvaluable": 0,
+        "fpr": 0.92,
+        "fnr": 0
+      },
+      "newIdentityVsLabel": {
+        "tp": 0,
+        "fp": 0,
+        "tn": 4,
+        "fn": 0,
+        "n": 4,
+        "fpIds": [],
+        "fnIds": [],
+        "notEvaluable": 0
+      },
+      "newReleaseVsOverall": {
+        "tp": 0,
+        "fp": 0,
+        "tn": 26,
+        "fn": 6,
+        "n": 32,
+        "fpIds": [],
+        "fnIds": [
+          "cs8-cyberpunk-2077-concept-A-implante-secreto",
+          "cs8-cyberpunk-2077-concept-B-antes-e-depois",
+          "cs8-cyberpunk-2077-concept-C-poder-em-acao",
+          "cs7-cyberpunk-2077-thumb-A-impact",
+          "cs7-cyberpunk-2077-thumb-B-tech",
+          "cs7-cyberpunk-2077-thumb-C-cinematic"
+        ],
+        "notEvaluable": 0
+      },
+      "newTechnicalEvaluable": 0
+    },
+    "humanDocumentedOnly": {
+      "n": 6,
+      "historicalGateVsOverall": {
+        "tp": 0,
+        "fp": 0,
+        "tn": 0,
+        "fn": 0,
+        "n": 0,
+        "fpIds": [],
+        "fnIds": [],
+        "notEvaluable": 0
+      },
+      "cs9ScriptQualityVsTechnical": {
+        "tp": 6,
+        "fp": 0,
+        "tn": 0,
+        "fn": 0,
+        "n": 6,
+        "fpIds": [],
+        "fnIds": [],
+        "notEvaluable": 0,
+        "fpr": null,
+        "fnr": 0
+      },
+      "newIdentityVsLabel": {
+        "tp": 0,
+        "fp": 0,
+        "tn": 0,
+        "fn": 0,
+        "n": 0,
+        "fpIds": [],
+        "fnIds": [],
+        "notEvaluable": 0
+      },
+      "newReleaseVsOverall": {
+        "tp": 0,
+        "fp": 0,
+        "tn": 0,
+        "fn": 6,
+        "n": 6,
+        "fpIds": [],
+        "fnIds": [
+          "cs8-cyberpunk-2077-concept-A-implante-secreto",
+          "cs8-cyberpunk-2077-concept-B-antes-e-depois",
+          "cs8-cyberpunk-2077-concept-C-poder-em-acao",
+          "cs7-cyberpunk-2077-thumb-A-impact",
+          "cs7-cyberpunk-2077-thumb-B-tech",
+          "cs7-cyberpunk-2077-thumb-C-cinematic"
+        ],
+        "notEvaluable": 0
+      },
+      "newTechnicalEvaluable": 0
+    },
+    "provisionalOnly": {
+      "n": 26,
+      "historicalGateVsOverall": {
+        "tp": 0,
+        "fp": 2,
+        "tn": 3,
+        "fn": 0,
+        "n": 5,
+        "fpIds": [
+          "cs9-johnny-step2",
+          "cs9-malenia-step3"
+        ],
+        "fnIds": [],
+        "notEvaluable": 0
+      },
+      "cs9ScriptQualityVsTechnical": {
+        "tp": 1,
+        "fp": 23,
+        "tn": 2,
+        "fn": 0,
+        "n": 26,
+        "fpIds": [
+          "cs9-cyberpunk-A",
+          "cs9-cyberpunk-B",
+          "cs9-malenia-step3",
+          "cs9-hornet-step3",
+          "cs9-integrated-anime-concept-A-mystery_reveal",
+          "cs9-integrated-anime-concept-B-transformation_scene",
+          "cs9-integrated-anime-maldicao-selo-concept-A-mystery_reveal",
+          "cs9-integrated-anime-maldicao-selo-concept-B-transformation_scene",
+          "cs9-integrated-anime-maldicao-selo-concept-C-action_moment",
+          "cs9-integrated-cyberpunk-2077-concept-A-object_focus",
+          "cs9-integrated-cyberpunk-2077-concept-B-before_after_comparison",
+          "cs9-integrated-cyberpunk-2077-concept-C-action_moment",
+          "cs9-integrated-documentary-concept-A-environmental_story",
+          "cs9-integrated-documentary-concept-B-object_focus",
+          "cs9-integrated-documentary-concept-C-before_after_comparison",
+          "cs9-integrated-documentary-telescopio-concept-A-environmental_story",
+          "cs9-integrated-documentary-telescopio-concept-B-object_focus",
+          "cs9-integrated-documentary-telescopio-concept-C-before_after_comparison",
+          "cs9-integrated-tier1-tech",
+          "cs9-typo-anime-jujutsu-kaisen-typo-condensed",
+          "cs9-typo-cyberpunk-2077-typo-A-condensed",
+          "cs9-typo-cyberpunk-2077-typo-B-editorial-split",
+          "cs9-typo-cyberpunk-2077-typo-C-vertical-spine"
+        ],
+        "fnIds": [],
+        "notEvaluable": 0,
+        "fpr": 0.92,
+        "fnr": 0
+      },
+      "newIdentityVsLabel": {
+        "tp": 0,
+        "fp": 0,
+        "tn": 4,
+        "fn": 0,
+        "n": 4,
+        "fpIds": [],
+        "fnIds": [],
+        "notEvaluable": 0
+      },
+      "newReleaseVsOverall": {
+        "tp": 0,
+        "fp": 0,
+        "tn": 26,
+        "fn": 0,
+        "n": 26,
+        "fpIds": [],
+        "fnIds": [],
+        "notEvaluable": 0
+      },
+      "newTechnicalEvaluable": 0
+    }
+  },
+  "rows": [
+    {
+      "id": "cs9-cyberpunk-A",
+      "path": "artifacts/cs9-real-generation/cyberpunk-2077-concept-A-object_focus.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "title \"SPEED HACK IMPLANT\" over busy brass pipes (low local contrast)",
+          "kicker chip \"DETALHE\" overlaps a cyan disc",
+          "shows a brass pipe lattice, not an implant"
+        ]
+      },
+      "historicalGate": "rejected",
+      "cs9ScriptQuality": {
+        "overall": 87,
+        "passed": true,
+        "legibility": 68
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-cyberpunk-B",
+      "path": "artifacts/cs9-real-generation/cyberpunk-2077-concept-B-environmental_story.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_confirmed",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "seated samurai statue: no Johnny Silverhand traits (no person, no aviators, no chrome arm)",
+          "kicker chip \"ARQUIVO\" collides with a lantern"
+        ]
+      },
+      "historicalGate": "rejected",
+      "cs9ScriptQuality": {
+        "overall": 84,
+        "passed": true,
+        "legibility": 100
+      },
+      "identity": {
+        "status": "insufficient_references",
+        "evidence": "Referências insuficientes: 0/3 alvo autênticas e 0/3 distratores de estética semelhante."
+      },
+      "newSemanticConfirmed": false,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-johnny-step2",
+      "path": "artifacts/cs9-real-generation/cyberpunk-2077-johnny-silverhand-step2.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "acceptable",
+        "semantic": "unfaithful",
+        "identity": "not_confirmed",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "horned samurai armour on a throne: not Johnny Silverhand; aesthetic resemblance is not identity"
+        ]
+      },
+      "historicalGate": "approved",
+      "cs9ScriptQuality": {
+        "overall": 80,
+        "passed": true,
+        "legibility": 100
+      },
+      "identity": {
+        "status": "insufficient_references",
+        "evidence": "Referências insuficientes: 0/3 alvo autênticas e 0/3 distratores de estética semelhante."
+      },
+      "newSemanticConfirmed": false,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": true,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-malenia-step3",
+      "path": "artifacts/cs9-real-generation/elden-ring-malenia-step3.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_confirmed",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "golden coins on a circuit board: no character at all",
+          "hard-edged legibility scrim visible at y=320"
+        ]
+      },
+      "historicalGate": "approved",
+      "cs9ScriptQuality": {
+        "overall": 73,
+        "passed": true,
+        "legibility": 60
+      },
+      "identity": {
+        "status": "not_confirmed",
+        "evidence": "Similaridade com Malenia: 0.412 (mín. 0.8); melhor distrator \"Elden Ring (no Malenia) t=3900\": 0.496; margem -0.084 (mín. 0.05)."
+      },
+      "newSemanticConfirmed": false,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-hornet-step3",
+      "path": "artifacts/cs9-real-generation/silksong-hornet-step3.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_confirmed",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "brass mechanical object: no character",
+          "hard-edged legibility scrim visible at y=320"
+        ]
+      },
+      "historicalGate": "rejected",
+      "cs9ScriptQuality": {
+        "overall": 64,
+        "passed": true,
+        "legibility": 63
+      },
+      "identity": {
+        "status": "insufficient_references",
+        "evidence": "Referências insuficientes: 0/3 alvo autênticas e 0/3 distratores de estética semelhante."
+      },
+      "newSemanticConfirmed": false,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-anime-concept-A-mystery_reveal",
+      "path": "artifacts/creative-studio-cs9-integrated/anime-concept-A-mystery_reveal.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media",
+          "title overlaps the octagon"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 56,
+        "passed": true,
+        "legibility": 0
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-anime-concept-B-transformation_scene",
+      "path": "artifacts/creative-studio-cs9-integrated/anime-concept-B-transformation_scene.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media",
+          "kicker on the octagon"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 95,
+        "passed": true,
+        "legibility": 100
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-anime-concept-C-action_moment",
+      "path": "artifacts/creative-studio-cs9-integrated/anime-concept-C-action_moment.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media",
+          "vertical spine title not rendered; only an unreadable \"CLIMAX\" kicker (as committed at HEAD)"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 53,
+        "passed": false,
+        "legibility": 3
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-anime-maldicao-selo-concept-A-mystery_reveal",
+      "path": "artifacts/creative-studio-cs9-integrated/anime-maldicao-selo-concept-A-mystery_reveal.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media",
+          "title overlaps the circle"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 98,
+        "passed": true,
+        "legibility": 94
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-anime-maldicao-selo-concept-B-transformation_scene",
+      "path": "artifacts/creative-studio-cs9-integrated/anime-maldicao-selo-concept-B-transformation_scene.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media",
+          "title and kicker over the circle"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 100,
+        "passed": true,
+        "legibility": 100
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-anime-maldicao-selo-concept-C-action_moment",
+      "path": "artifacts/creative-studio-cs9-integrated/anime-maldicao-selo-concept-C-action_moment.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media",
+          "vertical spine title not rendered; only an unreadable \"CLIMAX\" kicker"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 92,
+        "passed": true,
+        "legibility": 79
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-cyberpunk-2077-concept-A-object_focus",
+      "path": "artifacts/creative-studio-cs9-integrated/cyberpunk-2077-concept-A-object_focus.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media",
+          "thin title \"NEON CITY DRIFT\" overlaps the panel; too small at 224x126"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 97,
+        "passed": true,
+        "legibility": 95
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-cyberpunk-2077-concept-B-before_after_comparison",
+      "path": "artifacts/creative-studio-cs9-integrated/cyberpunk-2077-concept-B-before_after_comparison.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 92,
+        "passed": true,
+        "legibility": 81
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-cyberpunk-2077-concept-C-action_moment",
+      "path": "artifacts/creative-studio-cs9-integrated/cyberpunk-2077-concept-C-action_moment.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 88,
+        "passed": true,
+        "legibility": 69
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-documentary-concept-A-environmental_story",
+      "path": "artifacts/creative-studio-cs9-integrated/documentary-concept-A-environmental_story.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 98,
+        "passed": true,
+        "legibility": 100
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-documentary-concept-B-object_focus",
+      "path": "artifacts/creative-studio-cs9-integrated/documentary-concept-B-object_focus.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 100,
+        "passed": true,
+        "legibility": 100
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-documentary-concept-C-before_after_comparison",
+      "path": "artifacts/creative-studio-cs9-integrated/documentary-concept-C-before_after_comparison.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media",
+          "split divider crosses the title"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 90,
+        "passed": true,
+        "legibility": 75
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-documentary-telescopio-concept-A-environmental_story",
+      "path": "artifacts/creative-studio-cs9-integrated/documentary-telescopio-concept-A-environmental_story.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 98,
+        "passed": true,
+        "legibility": 96
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-documentary-telescopio-concept-B-object_focus",
+      "path": "artifacts/creative-studio-cs9-integrated/documentary-telescopio-concept-B-object_focus.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 100,
+        "passed": true,
+        "legibility": 100
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-documentary-telescopio-concept-C-before_after_comparison",
+      "path": "artifacts/creative-studio-cs9-integrated/documentary-telescopio-concept-C-before_after_comparison.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "geometric placeholder instead of real media",
+          "split divider crosses the title"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 83,
+        "passed": true,
+        "legibility": 57
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-integrated-tier1-tech",
+      "path": "artifacts/creative-studio-cs9-integrated/tier1-tech.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "flat rectangle with the word TESTE"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 60,
+        "passed": true,
+        "legibility": 28
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-typo-anime-jujutsu-kaisen-typo-condensed",
+      "path": "artifacts/creative-studio-cs9/anime-jujutsu-kaisen-typo-condensed.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "faithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "no title visible"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 74,
+        "passed": true,
+        "legibility": 41
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-typo-cyberpunk-2077-typo-A-condensed",
+      "path": "artifacts/creative-studio-cs9/cyberpunk-2077-typo-A-condensed.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "unfaithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "garbled AI-generated pseudo-text, no real title"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 78,
+        "passed": true,
+        "legibility": 44
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-typo-cyberpunk-2077-typo-B-editorial-split",
+      "path": "artifacts/creative-studio-cs9/cyberpunk-2077-typo-B-editorial-split.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "faithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "no title visible"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 74,
+        "passed": true,
+        "legibility": 36
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-typo-cyberpunk-2077-typo-C-vertical-spine",
+      "path": "artifacts/creative-studio-cs9/cyberpunk-2077-typo-C-vertical-spine.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "faithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "vertical spine title not visible"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 72,
+        "passed": true,
+        "legibility": 51
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs9-typo-documentary-deep-sea-typo-minimal",
+      "path": "artifacts/creative-studio-cs9/documentary-deep-sea-typo-minimal.png",
+      "labelOrigin": "claude_provisional",
+      "label": {
+        "technical": "bad",
+        "semantic": "faithful",
+        "identity": "not_applicable",
+        "aesthetic": "bad",
+        "source": "claude_provisional_visual_review",
+        "defects": [
+          "no title visible"
+        ]
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 52,
+        "passed": false,
+        "legibility": 0
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": false,
+      "actualOverallOk": false
+    },
+    {
+      "id": "cs8-cyberpunk-2077-concept-A-implante-secreto",
+      "path": "artifacts/creative-studio-cs8/cyberpunk-2077-concept-A-implante-secreto.png",
+      "labelOrigin": "human_documented_set_level",
+      "label": {
+        "technical": "good",
+        "semantic": "faithful",
+        "identity": "not_applicable",
+        "aesthetic": "approved_with_reservations",
+        "source": "human_documented_set_level (aesthetic) + claude_provisional_visual_review (technical, semantic)",
+        "defects": []
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 72,
+        "passed": true,
+        "legibility": 31
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": true,
+      "actualOverallOk": true
+    },
+    {
+      "id": "cs8-cyberpunk-2077-concept-B-antes-e-depois",
+      "path": "artifacts/creative-studio-cs8/cyberpunk-2077-concept-B-antes-e-depois.png",
+      "labelOrigin": "human_documented_set_level",
+      "label": {
+        "technical": "good",
+        "semantic": "faithful",
+        "identity": "not_applicable",
+        "aesthetic": "approved_with_reservations",
+        "source": "human_documented_set_level (aesthetic) + claude_provisional_visual_review (technical, semantic)",
+        "defects": []
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 66,
+        "passed": true,
+        "legibility": 15
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": true,
+      "actualOverallOk": true
+    },
+    {
+      "id": "cs8-cyberpunk-2077-concept-C-poder-em-acao",
+      "path": "artifacts/creative-studio-cs8/cyberpunk-2077-concept-C-poder-em-acao.png",
+      "labelOrigin": "human_documented_set_level",
+      "label": {
+        "technical": "good",
+        "semantic": "faithful",
+        "identity": "not_applicable",
+        "aesthetic": "approved_with_reservations",
+        "source": "human_documented_set_level (aesthetic) + claude_provisional_visual_review (technical, semantic)",
+        "defects": []
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 88,
+        "passed": true,
+        "legibility": 69
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": true,
+      "actualOverallOk": true
+    },
+    {
+      "id": "cs7-cyberpunk-2077-thumb-A-impact",
+      "path": "artifacts/creative-studio-cs7/cyberpunk-2077-thumb-A-impact.png",
+      "labelOrigin": "human_documented_set_level",
+      "label": {
+        "technical": "good",
+        "semantic": "faithful",
+        "identity": "not_applicable",
+        "aesthetic": "pending",
+        "source": "human_documented_set_level (technical, aesthetic) + claude_provisional_visual_review (semantic)",
+        "defects": []
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 84,
+        "passed": true,
+        "legibility": 60
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": true,
+      "actualOverallOk": true
+    },
+    {
+      "id": "cs7-cyberpunk-2077-thumb-B-tech",
+      "path": "artifacts/creative-studio-cs7/cyberpunk-2077-thumb-B-tech.png",
+      "labelOrigin": "human_documented_set_level",
+      "label": {
+        "technical": "good",
+        "semantic": "faithful",
+        "identity": "not_applicable",
+        "aesthetic": "pending",
+        "source": "human_documented_set_level (technical, aesthetic) + claude_provisional_visual_review (semantic)",
+        "defects": []
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 81,
+        "passed": true,
+        "legibility": 53
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": true,
+      "actualOverallOk": true
+    },
+    {
+      "id": "cs7-cyberpunk-2077-thumb-C-cinematic",
+      "path": "artifacts/creative-studio-cs7/cyberpunk-2077-thumb-C-cinematic.png",
+      "labelOrigin": "human_documented_set_level",
+      "label": {
+        "technical": "good",
+        "semantic": "faithful",
+        "identity": "not_applicable",
+        "aesthetic": "pending",
+        "source": "human_documented_set_level (technical, aesthetic) + claude_provisional_visual_review (semantic)",
+        "defects": []
+      },
+      "historicalGate": null,
+      "cs9ScriptQuality": {
+        "overall": 97,
+        "passed": true,
+        "legibility": 92
+      },
+      "identity": null,
+      "newSemanticConfirmed": null,
+      "newTechnical": null,
+      "newReleaseReady": false,
+      "actualTechnicalOk": true,
+      "actualOverallOk": true
+    }
+  ]
+}

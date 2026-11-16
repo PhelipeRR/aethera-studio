@@ -14,3 +14,7 @@ export * from './persistent-ai-adapter.js';
 export * from './typography-director.js';
 export * from './concept-engine.js';
 export * from './visual-content-gate.js';
+export * from './typography-geometry-audit.js';
+export * from './approval-states.js';
+export * from './identity-verification.js';
+export * from './authentic-media-source.js';

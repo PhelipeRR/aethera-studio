@@ -12,7 +12,8 @@ import {
   type TypographyDirectionProposal,
   type TypographyLayoutStyle,
 } from './schemas.js';
-import { measureAlphaBounds, type SharpSvgCompositionEngine } from './image-generation-adapter.js';
+import { type SharpSvgCompositionEngine } from './image-generation-adapter.js';
+import { auditTypographyGeometry } from './typography-geometry-audit.js';
 import type { ReasoningEngineProvider } from './creative-orchestrator.js';
 
 export interface FontCatalogEntry {
@@ -396,7 +397,8 @@ export class TypographyArtDirector {
     if (direction.layoutStyle === 'vertical_spine') {
       // Adaptive vertical spine: column width ~17% of canvas, positioned at left margin
       const spineW = Math.round(cw * 0.172);
-      const spineX = Math.round(cw * 0.019);
+      // Inside the 5% title-safe inset (CS-9 geometry audit: TEXT_OUTSIDE_SAFE_AREA).
+      const spineX = Math.round(cw * 0.052);
       const spineY = Math.round(ch * 0.089);
       const spineH = Math.round(ch * 0.819);
       layers.push({
@@ -448,7 +450,9 @@ export class TypographyArtDirector {
         const desiredFontSize = Math.round(ch * 0.031);
         const requiredKickerH = Math.ceil(charCount * desiredFontSize * kickerLineHeight) + 16; // +16 padding
         // Determine available space and adjust spine if necessary
-        const availableBelowSpine = ch - (spineY + spineH) - kickerGap;
+        // Bottom bound is the 5% title-safe inset, not the canvas edge (CS-9 geometry audit).
+        const safeBottom = Math.round(ch * 0.95);
+        const availableBelowSpine = safeBottom - (spineY + spineH) - kickerGap;
         let adjustedSpineH = spineH;
         let kickerH: number;
         let kickerY: number;
@@ -470,7 +474,7 @@ export class TypographyArtDirector {
           kickerFontSize = 16;
           const internalPadV = 32;
           kickerH = Math.ceil(charCount * kickerFontSize * kickerLineHeight) + internalPadV;
-          adjustedSpineH = Math.max(100, ch - spineY - kickerGap - kickerH);
+          adjustedSpineH = Math.max(100, safeBottom - spineY - kickerGap - kickerH);
           kickerY = spineY + adjustedSpineH + kickerGap;
         }
         // Update headline transform with potentially reduced spine height
@@ -650,32 +654,17 @@ export class TypographyQualityCritic {
     const textLayers = doc.layers.filter((l) => l.type === 'text' && l.visible);
     const headlineLayer = textLayers.find((l) => l.type === 'text' && l.role === 'headline');
 
-    let glyphClipped = false;
+    // CS-9: clipping, collisions, occlusion and 224×126 readability come from the real rendered geometry of
+    // each layer (auditTypographyGeometry). The previous heuristic measured layers WITH drop shadows and treated
+    // shadow bleed as glyphs touching the box, and scored 224×126 legibility from global image stdev.
+    const geometry = await auditTypographyGeometry(this.compositionEngine, doc, renderedBuffer);
+    const glyphClipped = geometry.findings.some(
+      (f) => f.code === 'TEXT_CLIPPED_BY_BOX' || f.code === 'TEXT_CLIPPED_BY_CANVAS' || f.code === 'TEXT_NOT_RENDERED',
+    );
+    const criticalGeometry = geometry.findings.filter((f) => f.severity === 'critical');
+    for (const f of criticalGeometry) findings.push(f.message);
     let totalTextArea = 0;
-
-    for (const tl of textLayers) {
-      if (tl.type !== 'text') continue;
-      totalTextArea += tl.transform.width * tl.transform.height;
-      const layerBuf = await this.compositionEngine.renderSingleLayer(doc, tl);
-      if (layerBuf) {
-        const bounds = await measureAlphaBounds(layerBuf, 20);
-        // Glyph clipping detection: only flag when glyphs genuinely touch or exceed the box edge.
-        // Shadow/anti-aliasing pixels extending beyond the transform are expected artifacts of
-        // isolated layer rendering and do NOT constitute content loss. We use a tight 2px margin
-        // to catch real clipping while ignoring shadow bleed (which can extend 20+ pixels).
-        const clipMargin = 2;
-        if (
-          bounds &&
-          (bounds.left < clipMargin ||
-            bounds.top < clipMargin ||
-            bounds.left + bounds.width > tl.transform.width - clipMargin ||
-            bounds.top + bounds.height > tl.transform.height - clipMargin)
-        ) {
-          glyphClipped = true;
-          findings.push(`Glifos da camada "${tl.name}" encostam no limite da caixa tipográfica.`);
-        }
-      }
-    }
+    for (const tl of textLayers) totalTextArea += tl.transform.width * tl.transform.height;
 
     const canvasArea = doc.width * doc.height;
     const negativeSpaceRatio = Number(Math.max(0, Math.min(1, 1 - totalTextArea / Math.max(1, canvasArea))).toFixed(3));
@@ -702,20 +691,26 @@ export class TypographyQualityCritic {
       findings.push('Uso de fórmula genérica (Arial Black + contorno preto espesso).');
     }
 
-    // Legibility at 1280x720 and 224x126 mobile thumbnail size
+    // Legibility at 1280×720 keeps the global-contrast heuristic; 224×126 is MEASURED on the primary text:
+    // rendered line height (target 9px) and WCAG contrast against its immediate surround (target 4.5:1).
     const fullStats = await sharp(renderedBuffer).stats();
-    const smallBuf = await sharp(renderedBuffer).resize(224, 126, { fit: 'fill' }).png().toBuffer();
-    const smallStats = await sharp(smallBuf).stats();
     const fullStdev =
       ((fullStats.channels[0]?.stdev ?? 0) + (fullStats.channels[1]?.stdev ?? 0) + (fullStats.channels[2]?.stdev ?? 0)) / 3;
-    const smallStdev =
-      ((smallStats.channels[0]?.stdev ?? 0) + (smallStats.channels[1]?.stdev ?? 0) + (smallStats.channels[2]?.stdev ?? 0)) / 3;
-
     const legibility1280Score = Math.min(98, Math.max(45, Math.round(52 + fullStdev * 0.7)));
-    const legibility224Score = Math.min(96, Math.max(40, Math.round(48 + smallStdev * 0.75)));
+    const primary =
+      geometry.layers.find((g) => g.role === 'headline') ?? geometry.layers.find((g) => g.role === 'unspecified') ?? null;
+    let legibility224Score: number;
+    if (primary) {
+      const sizeScore = Math.min(100, (primary.lineGlyphHeightAt224 / 9) * 100);
+      const contrastScore = primary.contrastRatioAt224 === null ? 0 : Math.min(100, (primary.contrastRatioAt224 / 4.5) * 100);
+      legibility224Score = Math.round(Math.max(0, Math.min(sizeScore, contrastScore)));
+    } else {
+      legibility224Score = textLayers.length === 0 ? 70 : 0;
+    }
     const hierarchyScore = wordCount <= 4 && negativeSpaceRatio >= 0.58 ? 90 : 62;
     const isGenericOrRepetitive = Boolean(repeatedSibling || usesHeavyDefaultOutline);
-    const passed = !glyphClipped && !isGenericOrRepetitive && wordCount <= 5 && legibility224Score >= 60;
+    const passed =
+      !glyphClipped && !isGenericOrRepetitive && wordCount <= 5 && legibility224Score >= 60 && criticalGeometry.length === 0;
 
     return typographyCritiqueSchema.parse({
       passed,
