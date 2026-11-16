@@ -27,16 +27,16 @@ function AetheraPrismLogo({ className }: { className?: string }) {
     <svg viewBox="0 0 36 36" fill="none" className={className} aria-hidden="true">
       <defs>
         <linearGradient id="aetheraPrism" x1="4" y1="4" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#c084fc" />
-          <stop offset="55%" stopColor="#8b5cf6" />
-          <stop offset="100%" stopColor="#f59e0b" />
+          <stop offset="0%" stopColor="#b8a4f4" />
+          <stop offset="55%" stopColor="#8b6cf0" />
+          <stop offset="100%" stopColor="#f9a8d4" />
         </linearGradient>
       </defs>
       <path
         d="M18 3L32 30H24.5L18 17.5L11.5 30H4L18 3Z"
         fill="url(#aetheraPrism)"
       />
-      <path d="M18 19L23 28H13L18 19Z" fill="#0a0a12" />
+      <path d="M18 19L23 28H13L18 19Z" fill="#ffffff" />
     </svg>
   );
 }
@@ -96,18 +96,18 @@ export function AetheraShell({ routes }: AetheraShellProps) {
       <div
           data-studio-theme="aethera"
           className={cn(
-            'grid h-full grid-rows-[52px_1fr] overflow-hidden bg-background text-foreground transition-[grid-template-columns] duration-200',
-            collapsed ? 'grid-cols-[64px_minmax(0,1fr)]' : 'grid-cols-[232px_minmax(0,1fr)]',
+            'grid h-full grid-rows-[60px_1fr] overflow-hidden bg-background text-foreground transition-[grid-template-columns] duration-200',
+            collapsed ? 'grid-cols-[76px_minmax(0,1fr)]' : 'grid-cols-[236px_minmax(0,1fr)]',
           )}
         >
           {/* Top Studio Header — no Singularity MCP/RAG/Memories menus */}
-          <header className="app-drag col-span-2 flex min-w-0 items-center justify-between gap-4 border-b border-border/80 bg-[#0b0b14]/95 px-4 pr-36 backdrop-blur-md">
+          <header className="app-drag col-span-2 flex min-w-0 items-center justify-between gap-4 bg-background px-4 pr-36">
             <div className="app-no-drag flex items-center gap-3 min-w-0">
               <div className="flex items-center gap-2.5 pr-2">
-                <AetheraPrismLogo className="size-7 shrink-0" />
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-card shadow-[var(--elevation-1)]"><AetheraPrismLogo className="size-6" /></span>
                 <div className="flex flex-col leading-none">
                   <span className="text-sm font-semibold tracking-[0.18em] text-foreground">AETHERA</span>
-                  <span className="mt-0.5 text-[9px] tracking-[0.28em] text-amber-400/90 uppercase">Studio</span>
+                  <span className="mt-0.5 text-[9px] tracking-[0.28em] text-muted-foreground uppercase">Studio</span>
                 </div>
               </div>
 
@@ -115,7 +115,7 @@ export function AetheraShell({ routes }: AetheraShellProps) {
                 <button
                   type="button"
                   onClick={() => navigate(-1)}
-                  className="flex size-7 items-center justify-center rounded-md border border-border/70 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                  className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-card text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
                   aria-label="Voltar"
                 >
                   <ChevronLeft className="size-4" />
@@ -123,7 +123,7 @@ export function AetheraShell({ routes }: AetheraShellProps) {
                 <button
                   type="button"
                   onClick={() => navigate(1)}
-                  className="flex size-7 items-center justify-center rounded-md border border-border/70 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                  className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-card text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
                   aria-label="Avançar"
                 >
                   <ChevronRight className="size-4" />
@@ -140,19 +140,19 @@ export function AetheraShell({ routes }: AetheraShellProps) {
             <button
               type="button"
               onClick={() => setPaletteOpen(true)}
-              className="app-no-drag hidden h-8 max-w-md flex-1 items-center gap-2 rounded-lg border border-border/80 bg-[#121220] px-3 text-left text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground md:flex"
+              className="app-no-drag hidden h-11 max-w-md flex-1 cursor-pointer items-center gap-2.5 rounded-full bg-card px-4 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring md:flex"
               aria-label="Buscar projetos, cenas, mídias e comandos"
             >
-              <Search className="size-3.5 shrink-0" />
+              <Search className="size-4 shrink-0" />
               <span className="flex-1 truncate">Buscar projetos, mídias, cenas ou comandos...</span>
-              <kbd className="flex items-center gap-0.5 rounded border border-border px-1.5 py-0.5 font-mono text-[10px]">
+              <kbd className="flex items-center gap-0.5 rounded-md bg-secondary px-1.5 py-0.5 font-mono text-[10px]">
                 <Command className="size-2.5" />K
               </kbd>
             </button>
 
             <div className="app-no-drag flex items-center gap-2">
-              <div className="hidden items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-purple-300 sm:flex">
-                <Sparkles className="size-3 text-amber-400" /> Cinema IA
+              <div className="hidden items-center gap-1.5 rounded-full bg-card px-3 py-1.5 text-xs font-medium text-foreground sm:flex">
+                <span className="size-2 rounded-full bg-[var(--brand-lime)] ring-2 ring-[var(--brand-lime-soft)]" aria-hidden="true" /><Sparkles className="size-3.5" /> Cinema IA
               </div>
             </div>
           </header>
@@ -160,7 +160,7 @@ export function AetheraShell({ routes }: AetheraShellProps) {
           {/* Left Studio Navigation Sidebar */}
           <aside
             aria-label="Navegação do Aethera Studio"
-            className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border/80 bg-[#090910]"
+            className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background"
           >
             <nav className={cn('flex-1 overflow-x-hidden overflow-y-auto py-3', collapsed ? 'px-2' : 'px-3')}>
               <ul className="space-y-1">
@@ -175,17 +175,16 @@ export function AetheraShell({ routes }: AetheraShellProps) {
                           aria-label={collapsed ? route.label : undefined}
                           className={({ isActive }) =>
                             cn(
-                              'flex h-9 items-center rounded-lg border border-transparent text-[13px] text-muted-foreground transition-colors',
-                              'hover:bg-[#151526] hover:text-foreground',
-                              collapsed ? 'mx-auto w-9 justify-center px-0' : 'gap-2.5 px-2.5',
-                              isActive &&
-                                'border-primary/40 bg-gradient-to-r from-primary/20 via-primary/10 to-transparent font-medium text-foreground shadow-[0_0_18px_rgba(139,92,246,0.16)]',
+                              'flex h-10 cursor-pointer items-center rounded-2xl bg-card text-[13px] text-muted-foreground transition-colors duration-200',
+                              'hover:text-foreground hover:shadow-[var(--elevation-1)] focus-visible:outline-2 focus-visible:outline-ring',
+                              collapsed ? 'mx-auto w-10 justify-center px-0' : 'gap-3 px-3.5',
+                              isActive && 'bg-primary font-medium text-primary-foreground hover:text-primary-foreground',
                             )
                           }
                         >
                           {({ isActive }) => (
                             <>
-                              <Icon className={cn('size-4 shrink-0', isActive && 'text-purple-400')} aria-hidden="true" />
+                              <Icon className={cn('size-[18px] shrink-0', isActive && 'text-primary-foreground')} aria-hidden="true" />
                               {!collapsed && <span className="truncate">{route.label}</span>}
                             </>
                           )}
@@ -202,23 +201,23 @@ export function AetheraShell({ routes }: AetheraShellProps) {
                 <Tooltip label={`GPU: ${fmtPct(gpuPct)} · RAM: ${fmtPct(ramPct)} · CPU: ${fmtPct(cpuPct)}`}>
                   <div
                     aria-label="Monitoramento de hardware"
-                    className="flex flex-col items-center gap-1 rounded-lg border border-border/80 bg-[#10101d] px-1.5 py-2 text-[9px] font-mono tabular-nums text-muted-foreground"
+                    className="flex flex-col items-center gap-1 rounded-2xl bg-card px-1.5 py-2 text-[9px] font-mono tabular-nums text-muted-foreground"
                   >
-                    <span className="text-purple-300">G {fmtPct(gpuPct)}</span>
-                    <span className="text-sky-300">R {fmtPct(ramPct)}</span>
-                    <span className="text-emerald-300">C {fmtPct(cpuPct)}</span>
+                    <span className="text-foreground">G {fmtPct(gpuPct)}</span>
+                    <span className="text-foreground">R {fmtPct(ramPct)}</span>
+                    <span className="text-foreground">C {fmtPct(cpuPct)}</span>
                   </div>
                 </Tooltip>
               </div>
             ) : (
-              <div className="mx-3 mb-3 space-y-2.5 rounded-xl border border-border/80 bg-[#10101d] p-3 text-xs">
+              <div className="mx-3 mb-3 space-y-2.5 rounded-3xl bg-card p-4 text-xs">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold tracking-wide text-foreground">Aethera Cinema</span>
-                  <span className="rounded bg-primary/20 px-1.5 py-0.5 font-mono text-[10px] text-purple-300">
+                  <span className="rounded-full bg-[var(--brand-lavender-soft)] px-2 py-0.5 font-mono text-[10px] text-[var(--chip-violet-fg)]">
                     {appVersion ? `v${appVersion}` : 'v0.1'}
                   </span>
                 </div>
-                <div data-live-metric className="space-y-1.5 border-t border-border/60 pt-2">
+                <div data-live-metric className="space-y-1.5 border-t border-border pt-2">
                   <MeterBar
                     label={lastSample?.gpu.temperatureC != null ? `GPU (${Math.round(lastSample.gpu.temperatureC)}°C)` : 'GPU'}
                     value={gpuPct}
@@ -227,22 +226,22 @@ export function AetheraShell({ routes }: AetheraShellProps) {
                   <MeterBar label="RAM" value={ramPct} missingLabel={metricMissing} />
                   <MeterBar label="CPU" value={cpuPct} missingLabel={metricMissing} />
                 </div>
-                <div className="flex items-center justify-between border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
+                <div className="flex items-center justify-between border-t border-border pt-2 text-[11px] text-muted-foreground">
                   <span className="inline-flex items-center gap-1">
-                    <Cpu className="size-3 text-emerald-400" /> Local-first
+                    <Cpu className="size-3 text-success" /> Local-first
                   </span>
-                  <span className="text-emerald-400">Pronto</span>
+                  <span className="rounded-full bg-[var(--brand-lime)] px-2 py-0.5 font-medium text-[var(--brand-ink)]">Pronto</span>
                 </div>
               </div>
             )}
 
-            <div className={cn('border-t border-border/80 py-2.5', collapsed ? 'px-2' : 'px-3')}>
+            <div className={cn('py-2.5', collapsed ? 'px-2' : 'px-3')}>
               <button
                 type="button"
                 onClick={() => setCollapsed(!collapsed)}
                 aria-label={toggleLabel}
                 className={cn(
-                  'flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-xs text-muted-foreground hover:bg-[#151526] hover:text-foreground',
+                  'flex min-h-10 w-full cursor-pointer items-center gap-2 rounded-2xl px-3 text-xs text-muted-foreground transition-colors hover:bg-card hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring',
                   collapsed && 'justify-center px-0',
                 )}
               >
@@ -253,7 +252,7 @@ export function AetheraShell({ routes }: AetheraShellProps) {
           </aside>
 
           {/* Main Studio Viewport */}
-          <main className="relative min-h-0 min-w-0 overflow-y-auto bg-[var(--atmosphere)] bg-background">
+          <main className="relative min-h-0 min-w-0 overflow-y-auto bg-background">
             <DatabaseBanner />
             <Outlet />
           </main>

@@ -1,54 +1,116 @@
 /*
- * Aethera Studio Cinematic Theme
- * Deep obsidian/graphite surfaces, cinematic purple primary (#8b5cf6 / #a855f7),
- * warm amber/gold highlights (#f59e0b), crisp editorial hierarchy.
+ * Aethera Studio — Light Bento theme (docs/aethera/home-light-bento-plan.md).
+ * Soft gray canvas, white rounded blocks, near-black ink and primary action,
+ * three highlight blocks: lavender, lime and pink. Highlights are surfaces, never
+ * text colours on white (contrast < 3:1); text on them is always the ink colour.
  */
 :root[data-studio-theme='aethera'],
 [data-studio-theme='aethera'] {
-  color-scheme: dark;
-  --background: #07070c;
-  --sidebar: #0a0a12;
-  --card: #10101b;
-  --popover: #141422;
-  --secondary: #171728;
-  --muted: #161625;
-  --accent: #1e1836;
+  color-scheme: light;
+  --radius: 0.875rem;
 
-  --foreground: #f4f3f8;
-  --card-foreground: #f4f3f8;
-  --popover-foreground: #f4f3f8;
-  --secondary-foreground: #e5e3f0;
-  --muted-foreground: #9694aa;
-  --accent-foreground: #f5f0ff;
+  --background: #ececee;
+  --sidebar: #ececee;
+  --card: #ffffff;
+  --popover: #ffffff;
+  --secondary: #f4f4f6;
+  --muted: #f4f4f6;
+  --accent: #efe9fd;
 
-  --primary: #8b5cf6;
+  --foreground: #111111;
+  --card-foreground: #111111;
+  --popover-foreground: #111111;
+  --secondary-foreground: #1c1c22;
+  --muted-foreground: #62626c;
+  --accent-foreground: #2a1d5c;
+
+  --primary: #111111;
   --primary-foreground: #ffffff;
-  --ring: #a855f7;
-  --destructive: #f43f5e;
+  --ring: #8b6cf0;
+  --destructive: #d23c4f;
   --destructive-foreground: #ffffff;
-  --warning: #f59e0b;
-  --success: #10b981;
-  --info: #38bdf8;
+  --warning: #9a6200;
+  --success: #2f7d32;
+  --info: #2f5fd0;
 
-  --border: #232238;
-  --input: #343252;
+  --border: #e3e3e8;
+  --input: #cfcfd6;
 
-  --glass-bg: color-mix(in srgb, #0b0b15 80%, transparent);
-  --glass-bg-strong: color-mix(in srgb, #0e0e1b 92%, transparent);
-  --glass-border: color-mix(in srgb, #8b5cf6 20%, #232238);
-  --glass-border-strong: color-mix(in srgb, #a855f7 42%, #232238);
-  --glass-highlight: inset 0 1px 0 rgb(255 255 255 / 5%);
+  /* Highlight blocks from the reference. */
+  --brand-lavender: #b8a4f4;
+  --brand-lavender-soft: #efe9fd;
+  --brand-lime: #d8fb4f;
+  --brand-lime-soft: #f3fdd0;
+  --brand-pink: #f9a8d4;
+  --brand-pink-soft: #fde7f3;
+  --brand-ink: #111111;
+  --chip-blue-bg: #e2ecff;
+  --chip-blue-fg: #2f5fd0;
+  --chip-violet-bg: #efe8ff;
+  --chip-violet-fg: #6a46d8;
 
-  --glow-soft: 0 0 18px color-mix(in srgb, #8b5cf6 18%, transparent);
-  --glow-medium: 0 0 24px color-mix(in srgb, #8b5cf6 28%, transparent);
-  --glow-strong: 0 0 32px color-mix(in srgb, #a855f7 38%, transparent);
+  --glass-bg: color-mix(in srgb, #ffffff 86%, transparent);
+  --glass-bg-strong: #ffffff;
+  --glass-border: #e3e3e8;
+  --glass-border-strong: #cfcfd6;
+  --glass-highlight: inset 0 1px 0 rgb(255 255 255 / 60%);
 
-  --atmosphere:
-    radial-gradient(110% 70% at 50% 0%, color-mix(in srgb, #7c3aed 12%, transparent) 0%, transparent 58%),
-    radial-gradient(70% 50% at 92% 10%, color-mix(in srgb, #f59e0b 6%, transparent) 0%, transparent 55%);
+  --glow-soft: 0 1px 2px rgb(17 17 17 / 4%), 0 4px 14px rgb(17 17 17 / 5%);
+  --glow-medium: 0 2px 6px rgb(17 17 17 / 6%), 0 10px 24px rgb(17 17 17 / 7%);
+  --glow-strong: 0 0 0 3px color-mix(in srgb, #8b6cf0 35%, transparent);
+
+  --elevation-1: 0 1px 2px rgb(17 17 17 / 4%), 0 4px 12px rgb(17 17 17 / 5%);
+  --elevation-2: 0 2px 4px rgb(17 17 17 / 6%), 0 12px 28px rgb(17 17 17 / 8%);
+  --elevation-3: 0 4px 8px rgb(17 17 17 / 8%), 0 24px 56px rgb(17 17 17 / 12%);
+
+  --atmosphere: none;
 }
 
-[data-studio-theme='aethera'] body {
+[data-studio-theme='aethera'] body,
+body:has([data-studio-theme='aethera']) {
   background-color: var(--background);
   color: var(--foreground);
 }
+
+/*
+ * Legacy dark literals left in older Aethera screens. Remapped here so every
+ * screen follows the light palette until each one is migrated to tokens.
+ */
+[data-studio-theme='aethera'] :is(
+  .bg-\[\#0d0d17\], .bg-\[\#090910\], .bg-\[\#090912\], .bg-\[\#0b0b14\], .bg-\[\#0b0b14\]\/95,
+  .bg-\[\#0c0c16\], .bg-\[\#0d0d1a\], .bg-\[\#080810\], .bg-\[\#10101d\], .bg-\[\#11111e\],
+  .bg-\[\#121220\], .bg-\[\#12121e\], .bg-\[\#121222\], .bg-\[\#121224\], .bg-\[\#131324\],
+  .bg-\[\#141422\], .bg-\[\#141423\], .bg-\[\#151526\], .bg-\[\#161325\]
+) {
+  background-color: var(--secondary);
+}
+[data-studio-theme='aethera'] :is(.bg-\[\#131024\]\/95) { background-color: var(--brand-lavender-soft); }
+[data-studio-theme='aethera'] :is(.bg-\[\#1c160c\]\/95) { background-color: #fff4dc; }
+[data-studio-theme='aethera'] :is(.bg-\[\#1f0e13\]\/95) { background-color: #fde8ea; }
+[data-studio-theme='aethera'] :is(.bg-\[\#0c1a16\]\/95) { background-color: var(--brand-lime-soft); }
+
+/* Dark gradients (from/via/to dark literals) collapse to a soft lavender wash. */
+[data-studio-theme='aethera'] :is(
+  .from-\[\#231442\], .from-\[\#1f1435\], .from-\[\#1b1130\], .from-\[\#1a102d\],
+  .from-\[\#19102c\], .from-\[\#18102b\], .from-\[\#171128\]
+) {
+  --tw-gradient-from: var(--brand-lavender-soft);
+}
+[data-studio-theme='aethera'] :is(
+  .via-\[\#10101b\], .via-\[\#131324\], .via-\[\#121222\], .via-\[\#11111e\],
+  .via-\[\#110f1d\], .via-\[\#10101e\], .via-\[\#100e1b\]
+) {
+  --tw-gradient-via: #ffffff;
+}
+[data-studio-theme='aethera'] :is(
+  .to-\[\#1a130b\], .to-\[\#0c0c15\], .to-\[\#0d0d16\], .to-\[\#0a0a12\]
+) {
+  --tw-gradient-to: #ffffff;
+}
+
+/* Pale tints meant for a dark canvas become legible ink tones on light. */
+[data-studio-theme='aethera'] :is(.text-purple-200, .text-purple-300, .text-purple-400, .text-violet-200, .text-violet-300, .text-violet-400, .text-fuchsia-300) { color: #5b3cc4; }
+[data-studio-theme='aethera'] :is(.text-amber-100, .text-amber-200, .text-amber-300, .text-amber-400, .text-yellow-300, .text-yellow-400, .text-orange-300) { color: #8a5300; }
+[data-studio-theme='aethera'] :is(.text-emerald-200, .text-emerald-300, .text-emerald-400, .text-green-300, .text-green-400, .text-lime-300) { color: #23703a; }
+[data-studio-theme='aethera'] :is(.text-sky-200, .text-sky-300, .text-sky-400, .text-blue-300, .text-blue-400, .text-cyan-300) { color: #2f5fd0; }
+[data-studio-theme='aethera'] :is(.text-rose-200, .text-rose-300, .text-rose-400, .text-red-200, .text-red-300, .text-red-400, .text-pink-300) { color: #b42840; }

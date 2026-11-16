@@ -1,44 +1,122 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  ArrowRight,
-  Bot,
-  CheckCircle2,
-  Clapperboard,
-  Film,
-  FolderPlus,
-  Laugh,
-  LayoutTemplate,
-  Play,
-  Sparkles,
-  Upload,
-} from 'lucide-react';
+import * as React from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ArrowRight, FolderPlus, LayoutTemplate, Sparkles, Upload } from 'lucide-react';
 import { Link, useNavigate } from 'react-router';
+import type { ContentQueueItem } from '@neuralbridge/shared';
 import { healthOf, useAgents } from '@/app/useAgents';
+import { cn } from '@/lib/utils';
 
-const PIPELINE_STEPS = [
-  { key: 'planning', label: 'Planejamento', detail: 'Roteiro, direção e estilo' },
-  { key: 'production', label: 'Produção', detail: 'Edição, VFX e montagem' },
-  { key: 'review', label: 'Revisão', detail: 'Qualidade e ajustes' },
-  { key: 'publication', label: 'Publicação', detail: 'Render e distribuição' },
-] as const;
+const WEEKDAYS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'] as const;
+const MONTHS = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'] as const;
 
-const STUDIO_ROLES = [
-  { role: 'Diretor Narrativo', desc: 'Roteiro, estrutura e ritmo', badge: null },
-  { role: 'Diretor de Humor', desc: 'Timing, piadas e entretenimento', badge: '35%' },
-  { role: 'Diretor de Edição', desc: 'Montagem e ritmo', badge: null },
-  { role: 'Diretor de VFX', desc: 'Efeitos visuais e composição', badge: null },
-  { role: 'Diretor de Som', desc: 'Narração, música e SFX', badge: null },
-  { role: 'Supervisor de Qualidade', desc: 'Análise técnica e criativa', badge: null },
-] as const;
+const STATUS_LABEL: Record<string, string> = {
+  draft: 'Rascunho',
+  active: 'Em produção',
+  paused: 'Pausado',
+  completed: 'Concluído',
+  archived: 'Arquivado',
+};
+const AUTONOMY_LABEL: Record<string, string> = { manual: 'Manual', assisted: 'Assistido', autonomous: 'Autônomo' };
+const KIND_LABEL: Record<ContentQueueItem['nextAction']['kind'], string> = {
+  briefing: 'Briefing',
+  script: 'Roteiro',
+  production: 'Produção',
+  package: 'Pacote',
+  thumbnail: 'Thumb',
+  publication: 'Publicação',
+  analytics: 'Analytics',
+};
+const KIND_ORDER = Object.keys(KIND_LABEL) as ContentQueueItem['nextAction']['kind'][];
+
+const HIGHLIGHTS = ['bg-[var(--brand-lavender)]', 'bg-[var(--brand-lime)]'] as const;
+
+function isAwaitingApproval(item: ContentQueueItem): boolean {
+  return (
+    item.latestPackageStatus === 'awaiting_approval' ||
+    item.latestExecutionStatus === 'awaiting_approval' ||
+    item.nextAction.kind === 'package'
+  );
+}
+
+function isOpen(item: ContentQueueItem): boolean {
+  return item.project.status !== 'completed' && item.project.status !== 'archived';
+}
+
+function initials(title: string): string {
+  const words = title.trim().split(/\s+/).filter(Boolean);
+  const [first = '', second = ''] = words;
+  return (second ? `${first.charAt(0)}${second.charAt(0)}` : title.slice(0, 2)).toUpperCase();
+}
+
+function dayKey(date: Date): string {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function formatSlot(iso: string): string {
+  const date = new Date(iso);
+  const time = date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  return `${WEEKDAYS[date.getDay()]} ${date.getDate()} · ${time}`;
+}
+
+function Block({ className, children, ...rest }: React.ComponentProps<'section'>) {
+  return (
+    <section className={cn('rounded-[28px] bg-card p-6', className)} {...rest}>
+      {children}
+    </section>
+  );
+}
+
+function BlockHeader({ id, title, count, action }: { id: string; title: string; count?: React.ReactNode; action?: React.ReactNode }) {
+  return (
+    <div className="mb-5 flex items-center justify-between gap-3">
+      <h2 id={id} className="text-xl font-semibold tracking-tight text-foreground">
+        {title}
+      </h2>
+      <div className="flex items-center gap-2">
+        {action}
+        {count != null && (
+          <span className="rounded-full bg-secondary px-3.5 py-1.5 text-sm font-medium text-foreground">{count}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Avatar({ title, className }: { title: string; className?: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'flex size-12 shrink-0 items-center justify-center rounded-full bg-[var(--brand-ink)] text-xs font-bold tracking-wide text-white',
+        className,
+      )}
+    >
+      {initials(title)}
+    </span>
+  );
+}
+
+function MetaDots({ items }: { items: string[] }) {
+  return (
+    <ul className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm font-medium">
+      {items.map((label) => (
+        <li key={label} className="inline-flex items-center gap-2">
+          <span className="size-1.5 rounded-full bg-current" aria-hidden="true" />
+          {label}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 export function AetheraStudioHome() {
   const navigate = useNavigate();
   const client = useQueryClient();
   const { agents } = useAgents();
 
-  const projects = useQuery({
-    queryKey: ['aethera-content-projects', 'default'],
-    queryFn: () => window.neuralbridge.content.projects('default'),
+  const queue = useQuery({
+    queryKey: ['aethera-content-queue', 'default'],
+    queryFn: () => window.neuralbridge.content.queue('default'),
   });
   const channels = useQuery({
     queryKey: ['aethera-content-channels'],
@@ -47,12 +125,6 @@ export function AetheraStudioHome() {
   const videoSettings = useQuery({
     queryKey: ['video-settings'],
     queryFn: () => window.neuralbridge.video.settings(),
-  });
-  const dashboards = useQueries({
-    queries: (projects.data ?? []).map((p) => ({
-      queryKey: ['aethera-content-project-dashboard', p.id],
-      queryFn: () => window.neuralbridge.content.dashboard(p.id),
-    })),
   });
 
   const createProject = useMutation({
@@ -67,272 +139,341 @@ export function AetheraStudioHome() {
       }),
     onSuccess: (project) => {
       void client.invalidateQueries({ queryKey: ['aethera-content-projects', 'default'] });
+      void client.invalidateQueries({ queryKey: ['aethera-content-queue', 'default'] });
       navigate(`/aethera/projects/${project.id}`);
     },
   });
 
-  const projectList = projects.data ?? [];
-  const extraEnginesQuery = useQuery({
-    queryKey: ['aethera-extra-engines'],
-    queryFn: async () => {
-      const bridge = (window as unknown as {
-        aetheraBridge?: {
-          cinemaEvolutionSnapshot?: () => Promise<{
-            extraEngines?: Array<{ installed: boolean; authenticated?: boolean }>;
-          }>;
-        };
-      }).aetheraBridge;
-      return bridge?.cinemaEvolutionSnapshot ? bridge.cinemaEvolutionSnapshot() : { extraEngines: [] };
-    },
-  });
-  const readyExtraCount = (extraEnginesQuery.data?.extraEngines ?? []).filter(
-    (e) => e.installed && e.authenticated !== false,
-  ).length;
-  const activeCount = projectList.filter((p) => p.status !== 'completed' && p.status !== 'archived').length;
-  const reviewCount = dashboards.filter((d) => d.data?.nextAction.kind === 'package' || d.data?.nextAction.kind === 'script').length;
-  const readyAgentsCount = (agents ?? []).filter((a) => healthOf(a) === 'ready').length + readyExtraCount;
-  const activeStage = reviewCount > 0 ? 2 : activeCount > 0 ? 1 : 0;
+  const items = React.useMemo(() => queue.data ?? [], [queue.data]);
+  const openItems = items.filter(isOpen);
+  const approvals = openItems.filter(isAwaitingApproval);
+  const scheduled = React.useMemo(
+    () =>
+      items
+        .filter((i) => i.latestPublicationScheduledAt && i.latestPublicationStatus === 'scheduled')
+        .sort((a, b) => (a.latestPublicationScheduledAt ?? '').localeCompare(b.latestPublicationScheduledAt ?? '')),
+    [items],
+  );
+  const recent = React.useMemo(
+    () => [...items].sort((a, b) => b.project.updatedAt.localeCompare(a.project.updatedAt)).slice(0, 8),
+    [items],
+  );
+  const autonomousChannels = (channels.data ?? []).filter((c) => c.autonomy === 'autonomous').length;
+  const readyAgents = (agents ?? []).filter((a) => healthOf(a) === 'ready').length;
+
+  // Calendar state: current month, the selected day defaults to today.
+  const today = React.useMemo(() => new Date(), []);
+  const [selectedKey, setSelectedKey] = React.useState(() => dayKey(today));
+  const scheduledByDay = React.useMemo(() => {
+    const map = new Map<string, ContentQueueItem[]>();
+    for (const item of scheduled) {
+      const key = dayKey(new Date(item.latestPublicationScheduledAt as string));
+      map.set(key, [...(map.get(key) ?? []), item]);
+    }
+    return map;
+  }, [scheduled]);
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const selectedItems = scheduledByDay.get(selectedKey) ?? [];
+  const upcoming = selectedItems.length > 0 ? selectedItems : scheduled.filter((i) => new Date(i.latestPublicationScheduledAt as string) >= today).slice(0, 3);
+  const selectedDay = Number(selectedKey.split('-')[2]);
+
+  const mix = KIND_ORDER.map((kind) => ({ kind, count: openItems.filter((i) => i.nextAction.kind === kind).length }));
+  const mixMax = Math.max(1, ...mix.map((m) => m.count));
+  const mixTopKind = mix.reduce<{ kind: ContentQueueItem['nextAction']['kind'] | null; count: number }>((top, m) => (m.count > top.count ? m : top), { kind: null, count: 0 }).kind;
+
+  const summary = queue.isLoading ? (
+    <span className="text-muted-foreground">Carregando a fila do estúdio...</span>
+  ) : (
+    <>
+      <strong className="font-semibold">{approvals.length} pra aprovar</strong>
+      <span className="text-muted-foreground">
+        , {openItems.length} na fila
+        {scheduled.length > 0 ? `, ${scheduled.length} agendado(s).` : '.'}
+        {autonomousChannels > 0 ? ` Produção automática em ${autonomousChannels} canal(is).` : ' Produção assistida por IA.'}
+      </span>
+    </>
+  );
 
   return (
-    <div className="space-y-6 p-6 xl:p-8">
-      {/* Hero + Production Pipeline */}
-      <div className="grid gap-5 xl:grid-cols-12">
-        <section className="relative overflow-hidden rounded-2xl border border-primary/30 bg-gradient-to-br from-[#1b1130] via-[#110f1d] to-[#0a0a12] p-6 xl:col-span-8">
-          <div className="pointer-events-none absolute -right-10 -top-10 size-56 rounded-full bg-purple-600/15 blur-3xl" />
-          <div className="pointer-events-none absolute bottom-0 right-16 size-40 rounded-full bg-amber-500/10 blur-3xl" />
+    <div className="space-y-5 p-5 xl:p-6">
+      {/* Status + primary action */}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+        <p
+          role="status"
+          className="flex min-h-[72px] items-center gap-4 rounded-full bg-card px-7 text-base md:text-lg"
+        >
+          <span className="size-5 shrink-0 rounded-full bg-[var(--brand-lavender)]" aria-hidden="true" />
+          <span className="min-w-0">{summary}</span>
+        </p>
+        <Link
+          to="/aethera/cinema"
+          className="flex min-h-[72px] cursor-pointer items-center justify-center gap-3 rounded-full bg-primary px-8 text-base font-semibold text-primary-foreground transition-opacity duration-200 hover:opacity-90 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-ring md:text-lg"
+        >
+          <Sparkles className="size-5 text-[var(--brand-lime)]" aria-hidden="true" /> Gerar vídeo com IA
+        </Link>
+      </div>
 
-          <div className="relative space-y-4">
-            <div className="inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1 text-[11px] font-medium text-amber-300">
-              <Sparkles className="size-3.5" /> Centro de Produção Audiovisual
+      <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)]">
+        {/* Pra aprovar */}
+        <Block aria-labelledby="home-approvals" className="xl:row-span-2">
+          <BlockHeader
+            id="home-approvals"
+            title="Pra aprovar"
+            count={`${approvals.length} ${approvals.length === 1 ? 'vídeo' : 'vídeos'}`}
+          />
+          {approvals.length === 0 ? (
+            <div className="rounded-3xl bg-secondary p-6 text-sm text-muted-foreground">
+              <p className="font-medium text-foreground">Nada esperando aprovação.</p>
+              <p className="mt-1">Pacotes prontos para revisão aparecem aqui.</p>
+              <Link to="/aethera/review" className="mt-4 inline-flex items-center gap-1.5 font-medium text-foreground underline-offset-4 hover:underline">
+                Abrir Sala de Revisão <ArrowRight className="size-4" aria-hidden="true" />
+              </Link>
             </div>
+          ) : (
+            <ul className="space-y-3">
+              {approvals.slice(0, 6).map((item, index) => (
+                <li key={item.project.id}>
+                  <Link
+                    to={`/aethera/projects/${item.project.id}/package`}
+                    className={cn(
+                      'block cursor-pointer rounded-3xl p-5 text-[var(--brand-ink)] transition-shadow duration-200 hover:shadow-[var(--elevation-2)] focus-visible:outline-3 focus-visible:outline-ring',
+                      HIGHLIGHTS[index] ?? 'bg-card shadow-[var(--elevation-1)]',
+                    )}
+                  >
+                    <div className="flex items-center gap-4">
+                      <Avatar title={item.project.title} />
+                      <div className="min-w-0">
+                        <p className="truncate text-base font-semibold">{item.project.title}</p>
+                        <p className="truncate text-sm opacity-75">{item.nextAction.label}</p>
+                      </div>
+                    </div>
+                    <MetaDots
+                      items={[
+                        KIND_LABEL[item.nextAction.kind],
+                        STATUS_LABEL[item.project.status] ?? item.project.status,
+                        AUTONOMY_LABEL[item.project.autonomy] ?? item.project.autonomy,
+                      ]}
+                    />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Block>
+
+        {/* Agenda */}
+        <Block aria-labelledby="home-agenda" className="@container md:col-span-2 xl:col-span-1">
+          <BlockHeader
+            id="home-agenda"
+            title="Agenda"
+            count={`${MONTHS[month]} ${year}`}
+            action={
+              <Link to="/aethera/calendar" className="text-sm font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
+                Calendário
+              </Link>
+            }
+          />
+          <div className="grid gap-5 @md:grid-cols-[minmax(0,1fr)_minmax(0,14rem)]">
+            <div aria-label={`Agenda de ${MONTHS[month]} ${year}`} role="group">
+              <div aria-hidden="true" className="mb-2 grid grid-cols-7 text-center text-sm text-muted-foreground">
+                {WEEKDAYS.map((d) => (
+                  <span key={d}>{d}</span>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-1.5">
+                {Array.from({ length: firstWeekday }, (_, i) => (
+                  <span key={`pad-${i}`} aria-hidden="true" />
+                ))}
+                {Array.from({ length: daysInMonth }, (_, i) => {
+                  const day = i + 1;
+                  const date = new Date(year, month, day);
+                  const key = dayKey(date);
+                  const count = scheduledByDay.get(key)?.length ?? 0;
+                  const isToday = day === today.getDate();
+                  const isPast = date < new Date(year, month, today.getDate());
+                  const isSelected = key === selectedKey;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      aria-pressed={isSelected}
+                      aria-label={`${day} de ${MONTHS[month]}${isToday ? ', hoje' : ''}${count ? `, ${count} agendado(s)` : ''}`}
+                      onClick={() => setSelectedKey(key)}
+                      className={cn(
+                        'mx-auto flex aspect-square w-full max-w-12 cursor-pointer items-center justify-center rounded-full text-sm font-medium transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
+                        isToday
+                          ? 'bg-[var(--brand-lime)] text-[var(--brand-ink)]'
+                          : count > 0
+                            ? 'bg-[var(--brand-lavender)] text-[var(--brand-ink)]'
+                            : isPast
+                              ? 'bg-secondary/60 text-muted-foreground'
+                              : 'bg-secondary text-foreground hover:bg-[var(--brand-lavender-soft)]',
+                        isSelected && 'ring-2 ring-[var(--brand-ink)] ring-offset-2 ring-offset-card',
+                      )}
+                    >
+                      {day}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="rounded-3xl bg-secondary p-3">
+              <div className="flex items-center justify-between px-2 pb-3 pt-1 text-sm">
+                <span className="font-semibold">{selectedDay} {MONTHS[month]}</span>
+                <span className="text-muted-foreground">{openItems.length} na fila</span>
+              </div>
+              {upcoming.length === 0 ? (
+                <p className="rounded-2xl bg-card p-4 text-sm text-muted-foreground">
+                  Nenhuma publicação agendada. Aprove um pacote e agende na Publicação.
+                </p>
+              ) : (
+                <ul className="space-y-2.5">
+                  {upcoming.map((item) => (
+                    <li key={item.project.id}>
+                      <Link
+                        to={`/aethera/projects/${item.project.id}`}
+                        className="block cursor-pointer rounded-2xl bg-card p-3 transition-shadow duration-200 hover:shadow-[var(--elevation-1)] focus-visible:outline-2 focus-visible:outline-ring"
+                      >
+                        <div className="flex aspect-[16/7] items-center justify-center rounded-xl bg-[#f3efe6] px-3 text-center text-sm font-extrabold uppercase leading-tight text-[var(--brand-ink)]">
+                          <span className="line-clamp-2">{item.project.title}</span>
+                        </div>
+                        <p className="mt-2.5 text-xs text-muted-foreground">{formatSlot(item.latestPublicationScheduledAt as string)}</p>
+                        <span className="mt-2 inline-block rounded-lg bg-[var(--chip-blue-bg)] px-2.5 py-1 text-xs font-medium text-[var(--chip-blue-fg)]">
+                          Agendado
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </Block>
+
+        {/* Projetos recentes */}
+        <Block aria-labelledby="home-recent" className="md:col-span-2 xl:col-span-1 xl:row-span-2">
+          <BlockHeader
+            id="home-recent"
+            title="Recentes"
+            count={items.length}
+          />
+          {recent.length === 0 ? (
+            <div className="rounded-3xl bg-secondary p-6 text-sm text-muted-foreground">
+              <p className="font-medium text-foreground">Nenhum projeto ainda.</p>
+              <p className="mt-1">Gere um vídeo com IA ou crie um projeto manual.</p>
+            </div>
+          ) : (
+            <ul className="space-y-3">
+              {recent.map((item, index) => (
+                <li key={item.project.id}>
+                  <Link
+                    to={`/aethera/projects/${item.project.id}`}
+                    className="flex cursor-pointer items-center gap-4 rounded-3xl bg-secondary p-4 transition-colors duration-200 hover:bg-[var(--brand-lavender-soft)] focus-visible:outline-2 focus-visible:outline-ring"
+                  >
+                    <Avatar title={item.project.title} className="bg-card text-foreground" />
+                    <div className="min-w-0">
+                      <p className="truncate text-base font-semibold text-foreground">{item.project.title}</p>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2.5 text-sm">
+                        <span
+                          className={cn(
+                            'rounded-lg px-2.5 py-0.5 font-medium',
+                            index % 2 === 0
+                              ? 'bg-[var(--chip-violet-bg)] text-[var(--chip-violet-fg)]'
+                              : 'bg-[var(--chip-blue-bg)] text-[var(--chip-blue-fg)]',
+                          )}
+                        >
+                          {KIND_LABEL[item.nextAction.kind]}
+                        </span>
+                        <span className="text-muted-foreground">{STATUS_LABEL[item.project.status] ?? item.project.status}</span>
+                      </div>
+                    </div>
+                  </Link>
+                </li>
+              ))}
+              <li>
+                <Link to="/aethera/projects" className="inline-flex items-center gap-1.5 px-2 pt-1 text-sm font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
+                  Ver todos os projetos <ArrowRight className="size-4" aria-hidden="true" />
+                </Link>
+              </li>
+            </ul>
+          )}
+        </Block>
+
+        {/* Mix + Produção automática */}
+        <div className="grid gap-5 md:col-span-2 lg:grid-cols-2 xl:col-span-1 xl:col-start-2">
+          <Block aria-labelledby="home-mix">
+            <BlockHeader id="home-mix" title="Mix de etapas" count={openItems.length} />
+            <p className="-mt-4 mb-5 text-sm text-muted-foreground">projetos em andamento</p>
+            <ul className="flex h-40 items-end justify-between gap-1.5" aria-label="Projetos por próxima etapa">
+              {mix.map(({ kind, count }) => (
+                <li key={kind} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-2">
+                  <span
+                    title={`${KIND_LABEL[kind]}: ${count}`}
+                    className={cn(
+                      'w-full max-w-9 rounded-full transition-[height] duration-300',
+                      kind === mixTopKind ? 'bg-[var(--brand-lavender)]' : 'bg-[var(--brand-lime)]',
+                    )}
+                    style={{ height: `${Math.max(12, (count / mixMax) * 100)}%` }}
+                  />
+                  <span className="sr-only">{KIND_LABEL[kind]}: {count}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-4 text-sm text-muted-foreground">
+              {mixTopKind ? (
+                <>
+                  Mais projetos em <strong className="font-semibold text-foreground">{KIND_LABEL[mixTopKind]}</strong>
+                </>
+              ) : (
+                'Nenhum projeto em andamento.'
+              )}
+            </p>
+          </Block>
+
+          <section
+            aria-labelledby="home-auto"
+            className="flex flex-col justify-between gap-6 rounded-[28px] bg-[var(--brand-pink)] p-6 text-[var(--brand-ink)]"
+          >
             <div>
-              <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-                Aethera Studio
-              </h1>
-              <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-                Seu estúdio de produção audiovisual com IA. Do conceito à publicação, com direção cinematográfica,
-                edição multifaixa e avaliação de qualidade verificável.
+              <p className="inline-flex items-center gap-2 text-sm font-medium">
+                <span className="size-2.5 rounded-full bg-[var(--brand-lime)]" aria-hidden="true" /> Produção automática
+              </p>
+              <h2 id="home-auto" className="mt-4 text-3xl font-semibold leading-tight tracking-tight">
+                <em className="font-extrabold">Roteiro, voz</em> e render sem você pedir.
+              </h2>
+              <p className="mt-2 text-sm opacity-80">
+                {readyAgents > 0 ? `${readyAgents} motor(es) de IA prontos.` : 'Conecte um motor de IA em Agentes para começar.'}
               </p>
             </div>
-
-            <div className="flex flex-wrap gap-2.5 pt-2">
-              <Link
-                to="/aethera/cinema"
-                className="inline-flex h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-violet-600 px-5 text-sm font-semibold text-white shadow-[0_0_24px_rgba(139,92,246,0.35)] transition hover:brightness-110"
-              >
-                <Clapperboard className="size-4" /> Criar Vídeo com IA
-              </Link>
+            <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => createProject.mutate()}
                 disabled={createProject.isPending}
-                className="inline-flex h-10 items-center gap-2 rounded-xl border border-border bg-[#141423] px-4 text-sm font-medium text-foreground transition hover:border-primary/50"
+                className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-full bg-[var(--brand-ink)] px-4 text-sm font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand-ink)] disabled:cursor-wait disabled:opacity-60"
               >
-                <FolderPlus className="size-4 text-purple-400" />
-                {createProject.isPending ? 'Criando...' : 'Novo Projeto'}
+                <FolderPlus className="size-4" aria-hidden="true" />
+                {createProject.isPending ? 'Criando...' : 'Novo projeto'}
               </button>
               <Link
                 to="/aethera/library"
-                className="inline-flex h-10 items-center gap-2 rounded-xl border border-border bg-[#141423] px-4 text-sm font-medium text-foreground transition hover:border-primary/50"
+                className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-full bg-white/70 px-4 text-sm font-medium transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-[var(--brand-ink)]"
               >
-                <Upload className="size-4 text-amber-400" /> Importar Mídia
+                <Upload className="size-4" aria-hidden="true" /> Importar mídia
               </Link>
               <Link
                 to="/video"
-                className="inline-flex h-10 items-center gap-2 rounded-xl border border-border bg-[#141423] px-4 text-sm font-medium text-foreground transition hover:border-primary/50"
+                className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-full bg-white/70 px-4 text-sm font-medium transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-[var(--brand-ink)]"
               >
-                <LayoutTemplate className="size-4 text-muted-foreground" /> Abrir Editor
+                <LayoutTemplate className="size-4" aria-hidden="true" /> Editor
               </Link>
             </div>
-          </div>
-        </section>
-
-        <aside className="rounded-2xl border border-border bg-card/90 p-5 xl:col-span-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-foreground">Pipeline de Produção</h2>
-            <Link to="/aethera/queue" className="text-xs text-purple-400 hover:underline">
-              Ver fila
-            </Link>
-          </div>
-          <ol className="mt-4 space-y-3">
-            {PIPELINE_STEPS.map((step, index) => {
-              const completed = index < activeStage;
-              const current = index === activeStage;
-              return (
-                <li key={step.key} className="flex items-start gap-3">
-                  <div
-                    className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold ${
-                      completed
-                        ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-400'
-                        : current
-                          ? 'border-purple-400 bg-purple-500/25 text-purple-300 shadow-[0_0_12px_rgba(168,85,247,0.4)]'
-                          : 'border-border bg-background text-muted-foreground'
-                    }`}
-                  >
-                    {completed ? '✓' : index + 1}
-                  </div>
-                  <div className="min-w-0">
-                    <p className={`text-xs font-medium ${current ? 'text-foreground' : 'text-muted-foreground'}`}>
-                      {step.label}
-                    </p>
-                    <p className="text-[11px] text-muted-foreground/80">{step.detail}</p>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
-        </aside>
-      </div>
-
-      {/* Middle 3-column Studio Overview */}
-      <div className="grid gap-5 xl:grid-cols-12">
-        {/* Active Projects */}
-        <section className="space-y-4 rounded-2xl border border-border bg-card/90 p-5 xl:col-span-5">
-          <div className="flex items-center justify-between">
-            <h2 className="inline-flex items-center gap-2 text-sm font-semibold">
-              <Film className="size-4 text-purple-400" /> Projetos Ativos ({projectList.length})
-            </h2>
-            <Link to="/aethera/projects" className="inline-flex items-center gap-1 text-xs text-purple-400 hover:underline">
-              Ver todos <ArrowRight className="size-3" />
-            </Link>
-          </div>
-
-          {projects.isLoading ? (
-            <p className="text-xs text-muted-foreground">Carregando projetos do workspace...</p>
-          ) : projectList.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border p-6 text-center space-y-2">
-              <p className="text-sm font-medium text-foreground">Nenhum projeto ativo ainda</p>
-              <p className="text-xs text-muted-foreground">
-                Inicie uma direção cinematográfica por prompt ou crie um projeto para começar.
-              </p>
-              <Link
-                to="/aethera/cinema"
-                className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white"
-              >
-                <Sparkles className="size-3.5" /> Criar Vídeo com IA
-              </Link>
-            </div>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
-              {projectList.slice(0, 4).map((project) => {
-                const pct =
-                  project.status === 'completed'
-                    ? 100
-                    : project.status === 'active'
-                      ? 65
-                      : project.status === 'paused'
-                        ? 40
-                        : 25;
-                return (
-                  <Link
-                    key={project.id}
-                    to={`/aethera/projects/${project.id}`}
-                    className="group rounded-xl border border-border bg-[#0c0c16] p-3 transition hover:border-primary/50"
-                  >
-                    <div className="relative mb-2.5 flex aspect-video items-center justify-center overflow-hidden rounded-lg bg-gradient-to-br from-purple-950/60 via-[#121222] to-amber-950/30">
-                      <Play className="size-6 text-white/70 transition group-hover:scale-110 group-hover:text-amber-300" />
-                      <span className="absolute left-2 top-2 rounded bg-black/65 px-1.5 py-0.5 text-[10px] uppercase text-purple-300">
-                        {project.status}
-                      </span>
-                    </div>
-                    <p className="truncate text-xs font-semibold text-foreground">{project.title}</p>
-                    <div className="mt-2 flex items-center gap-2">
-                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary">
-                        <div className="h-full rounded-full bg-gradient-to-r from-purple-500 to-amber-400" style={{ width: `${pct}%` }} />
-                      </div>
-                      <span className="font-mono text-[10px] text-muted-foreground">{pct}%</span>
-                    </div>
-                  </Link>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        {/* Cinematographic AI Team */}
-        <section className="space-y-3 rounded-2xl border border-border bg-card/90 p-5 xl:col-span-4">
-          <div className="flex items-center justify-between">
-            <h2 className="inline-flex items-center gap-2 text-sm font-semibold">
-              <Bot className="size-4 text-amber-400" /> Agentes Cinematográficos
-            </h2>
-            <Link to="/agents" className="text-xs text-purple-400 hover:underline">
-              Equipe completa
-            </Link>
-          </div>
-          <p className="text-[11px] text-muted-foreground">
-            Motores ativos: {readyAgentsCount} provedor(es) CLI · fallback RF-07 automático
-          </p>
-          <ul className="space-y-2">
-            {STUDIO_ROLES.map((item) => (
-              <li
-                key={item.role}
-                className="flex items-center justify-between rounded-xl border border-border/70 bg-[#0d0d17] px-3 py-2 text-xs"
-              >
-                <div className="min-w-0">
-                  <p className="font-medium text-foreground">{item.role}</p>
-                  <p className="truncate text-[11px] text-muted-foreground">{item.desc}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {item.badge && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-purple-500/15 px-2 py-0.5 font-mono text-[10px] text-purple-300">
-                      <Laugh className="size-3" /> {item.badge}
-                    </span>
-                  )}
-                  <span
-                    className={`size-2 rounded-full ${readyAgentsCount > 0 ? 'bg-emerald-400' : 'bg-amber-400'}`}
-                    title={readyAgentsCount > 0 ? 'Operacional' : 'Aguardando CLI'}
-                  />
-                </div>
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        {/* Studio Quality & Pending Approvals */}
-        <section className="space-y-4 rounded-2xl border border-border bg-card/90 p-5 xl:col-span-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Qualidade & Aprovações</h2>
-            <Link to="/aethera/review" className="text-xs text-purple-400 hover:underline">
-              Sala de Revisão
-            </Link>
-          </div>
-
-          <div className="flex items-center gap-4 rounded-xl border border-border/70 bg-[#0d0d17] p-3.5">
-            <div className="flex size-16 shrink-0 items-center justify-center rounded-full border-4 border-purple-500/70 bg-purple-500/10 text-center">
-              <span className="font-mono text-sm font-bold text-foreground">
-                {projectList.length > 0 ? 'QC' : '—'}
-              </span>
-            </div>
-            <div className="min-w-0 text-xs space-y-1">
-              <p className="font-semibold text-foreground">
-                {reviewCount > 0
-                  ? `${reviewCount} pendência(s) para aprovação`
-                  : 'Nenhuma pendência crítica'}
-              </p>
-              <p className="text-[11px] text-muted-foreground">
-                Humor padrão 35% · Rec.709 · -14 LUFS
-              </p>
-            </div>
-          </div>
-
-          <div className="space-y-2 text-xs">
-            <p className="font-medium text-muted-foreground">Próxima ação recomendada</p>
-            {reviewCount > 0 ? (
-              <Link
-                to="/aethera/review"
-                className="flex items-center justify-between rounded-xl border border-amber-400/40 bg-amber-500/10 px-3 py-2.5 text-amber-200 hover:bg-amber-500/15"
-              >
-                <span>Revisar e aprovar pacote</span>
-                <ArrowRight className="size-3.5" />
-              </Link>
-            ) : (
-              <div className="flex items-center gap-2 rounded-xl border border-border/70 bg-[#0d0d17] px-3 py-2.5 text-muted-foreground">
-                <CheckCircle2 className="size-4 text-emerald-400" />
-                <span>Estúdio pronto para nova produção.</span>
-              </div>
-            )}
-          </div>
-        </section>
+          </section>
+        </div>
       </div>
     </div>
   );
