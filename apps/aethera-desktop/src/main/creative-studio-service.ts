@@ -6,6 +6,7 @@ import { TraceMoeProvenanceAdapter } from '@neuralbridge/cinema';
 import {
   AssetIngestionService,
   BrandKitManager,
+  ComfyUiImageAdapter,
   CompositionPlanner,
   ConceptDrivenEngine,
   CreativeOrchestrator,
@@ -23,6 +24,7 @@ import {
   type AiGenerationReport,
   type AlignTarget,
   type AuthenticMediaSource,
+  type ComfyUiStatus,
   type ApprovalStates,
   type ReleaseReadiness,
   defaultApprovalStates,
@@ -46,6 +48,7 @@ import {
   type ThumbnailLabVariant,
   type VideoSceneHint,
   type VisualConceptCritique,
+  discoverComfyUi,
 } from '@neuralbridge/creative-studio';
 import { AetheraCreativeStudioRepository, type Db } from '@neuralbridge/database';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
@@ -91,6 +94,8 @@ export interface CreativeStudioServiceOptions {
   productionConsole?: ProductionConsoleService;
   /** CS-9: authentic media from the existing Aethera sources (see creative-authentic-media.ts). */
   authenticMediaSource?: AuthenticMediaSource | null;
+  comfyUiEndpoint?: string;
+  comfyUiCheckpoint?: string;
 }
 
 /**
@@ -111,6 +116,8 @@ export class AetheraCreativeStudioService {
   readonly ingestion: AssetIngestionService;
   readonly brandKits: BrandKitManager;
   readonly imageAdapter: ProviderChainImageAdapter;
+  readonly comfyUiAdapter: ComfyUiImageAdapter;
+  private readonly localImageAdapter: LocalPythonAiAdapter;
   readonly engine: SharpSvgCompositionEngine;
   readonly exporter: ExportService;
   readonly frameAnalyzer: VideoFrameAnalyzer;
@@ -132,7 +139,13 @@ export class AetheraCreativeStudioService {
       ...(options.ffprobePath ? { ffprobePath: options.ffprobePath } : {}),
     });
     this.brandKits = new BrandKitManager(new SqliteBrandKitStore(this.repo));
-    this.imageAdapter = new ProviderChainImageAdapter([new LocalPythonAiAdapter()]);
+    this.comfyUiAdapter = new ComfyUiImageAdapter({
+      ...(options.comfyUiEndpoint ? { endpoint: options.comfyUiEndpoint } : {}),
+      ...(options.comfyUiCheckpoint ? { checkpoint: options.comfyUiCheckpoint } : {}),
+      requestTimeoutMs: 750,
+    });
+    this.localImageAdapter = new LocalPythonAiAdapter();
+    this.imageAdapter = new ProviderChainImageAdapter([this.comfyUiAdapter, this.localImageAdapter]);
     this.engine = new SharpSvgCompositionEngine(this.ingestion, this.imageAdapter);
     this.exporter = new ExportService(this.engine, {
       ...(options.ffmpegPath ? { ffmpegPath: options.ffmpegPath } : {}),
@@ -158,6 +171,22 @@ export class AetheraCreativeStudioService {
       providers,
       authenticMediaSource: options.authenticMediaSource ?? null,
     });
+  }
+
+  async imageEngineStatus(): Promise<{ comfyUi: ComfyUiStatus; localAvailable: boolean; activeProvider: string }> {
+    const [comfyUi, localAvailable] = await Promise.all([
+      discoverComfyUi({ requestTimeoutMs: 750 }),
+      this.localImageAdapter.isAvailable(),
+    ]);
+    return {
+      comfyUi,
+      localAvailable,
+      activeProvider: comfyUi.state === 'ready' ? this.comfyUiAdapter.id : localAvailable ? this.localImageAdapter.id : 'none',
+    };
+  }
+
+  async cancelImageGeneration(): Promise<boolean> {
+    return this.comfyUiAdapter.cancel();
   }
 
   /**
@@ -1011,4 +1040,7 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
       provider: service.imageAdapter.id,
     };
   });
+
+  ipcMain.handle('creative:image-engine-status', async () => service.imageEngineStatus());
+  ipcMain.handle('creative:cancel-generation', async () => service.cancelImageGeneration());
 }

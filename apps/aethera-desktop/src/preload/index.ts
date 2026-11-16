@@ -222,4 +222,6 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeApprovalStatus: (projectId: string) => ipcRenderer.invoke('creative:approval-status', projectId),
   creativeIngestFile: (input: { sourcePath: string; kind: string }) => ipcRenderer.invoke('creative:ingest-file', input),
   creativeAiStatus: () => ipcRenderer.invoke('creative:ai-status'),
+  creativeImageEngineStatus: () => ipcRenderer.invoke('creative:image-engine-status'),
+  creativeCancelGeneration: () => ipcRenderer.invoke('creative:cancel-generation'),
 });

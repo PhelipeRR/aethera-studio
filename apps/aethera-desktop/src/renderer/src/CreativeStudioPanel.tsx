@@ -27,6 +27,7 @@ interface CreativeBridge {
       status: 'generated' | 'disabled' | 'unavailable' | 'failed' | 'skipped_existing_background';
       engineId: string;
       message: string;
+      durationMs?: number;
       recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine' };
     };
   }>;
@@ -74,6 +75,18 @@ interface CreativeBridge {
     notes?: string;
   }) => Promise<{ document: CreativeProjectDocument; readiness: { ready: boolean; blockers: string[] } }>;
   creativeAiStatus?: () => Promise<{ available: boolean; provider: string }>;
+  creativeImageEngineStatus?: () => Promise<{
+    comfyUi: {
+      state: 'ready' | 'misconfigured' | 'offline' | 'not_installed';
+      endpoint?: string;
+      version?: string;
+      reason?: string;
+      models: { checkpoints: string[]; loras: string[]; controlnet: string[] };
+    };
+    localAvailable: boolean;
+    activeProvider: string;
+  }>;
+  creativeCancelGeneration?: () => Promise<boolean>;
 }
 
 function getBridge(): CreativeBridge | undefined {
@@ -128,20 +141,31 @@ export function CreativeStudioPanel() {
   const [statusMsg, setStatusMsg] = useState<string>('');
   /** CF-1: AI fallback is never silent — this warning explains why the art used only the palette. */
   const [generationWarning, setGenerationWarning] = useState<string>('');
+  const [generationReport, setGenerationReport] = useState<{
+    status: 'generated' | 'disabled' | 'unavailable' | 'failed' | 'skipped_existing_background';
+    engineId: string;
+    message: string;
+    durationMs?: number;
+    recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine' };
+  } | null>(null);
+  const [generationBusy, setGenerationBusy] = useState(false);
+  const [engineStatus, setEngineStatus] = useState<Awaited<ReturnType<NonNullable<CreativeBridge['creativeImageEngineStatus']>>> | null>(null);
 
   const refreshLists = async () => {
     const bridge = getBridge();
     if (!bridge) return;
-    const [eng, kits, projs, ai] = await Promise.all([
+    const [eng, kits, projs, ai, imageEngine] = await Promise.all([
       bridge.creativeEngines?.() ?? Promise.resolve([]),
       bridge.creativeListBrandKits?.() ?? Promise.resolve([]),
       bridge.creativeListProjects?.() ?? Promise.resolve([]),
       bridge.creativeAiStatus?.() ?? Promise.resolve({ available: false, provider: 'none' }),
+      bridge.creativeImageEngineStatus?.() ?? Promise.resolve(null),
     ]);
     setEngines(eng);
     setBrandKits(kits);
     setProjects(projs);
     setAiAvailable(ai.available);
+    if (imageEngine) setEngineStatus(imageEngine);
   };
 
   useEffect(() => {
@@ -153,6 +177,8 @@ export function CreativeStudioPanel() {
     if (!bridge?.creativeCreateFromPrompt || !prompt.trim()) return;
     setStatusMsg('Gerando composição editável...');
     setGenerationWarning('');
+    setGenerationReport(null);
+    setGenerationBusy(true);
     try {
       const res = await bridge.creativeCreateFromPrompt({
         artType,
@@ -167,6 +193,7 @@ export function CreativeStudioPanel() {
       setAudit(res.audit);
       setSelectedLayerId(res.document.layers[res.document.layers.length - 1]?.id ?? '');
       const gen = res.generation;
+      setGenerationReport(gen ?? null);
       setStatusMsg(
         `Projeto criado (${res.document.width}×${res.document.height}) e salvo automaticamente.` +
           (gen?.status === 'generated' && gen.recipe
@@ -179,7 +206,16 @@ export function CreativeStudioPanel() {
       await refreshLists();
     } catch (err) {
       setStatusMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerationBusy(false);
     }
+  };
+
+  const handleCancelGeneration = async () => {
+    const bridge = getBridge();
+    if (!bridge?.creativeCancelGeneration) return;
+    const cancelled = await bridge.creativeCancelGeneration();
+    setStatusMsg(cancelled ? 'Cancelamento solicitado ao motor de imagem.' : 'Nenhuma geração ComfyUI ativa para cancelar.');
   };
 
   const handleThumbnailLab = async () => {
@@ -261,6 +297,26 @@ export function CreativeStudioPanel() {
         </div>
       </div>
 
+      <div role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', padding: '10px 14px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, fontSize: 12 }}>
+        <div>
+          <strong>Engine de imagem</strong>{' '}
+          <span style={{ color: engineStatus?.comfyUi.state === 'ready' ? 'var(--success)' : 'var(--warning)' }}>
+            {engineStatus?.comfyUi.state ?? 'verificando'}
+          </span>
+          <span style={{ color: 'var(--muted-foreground)', marginLeft: 8 }}>
+            ativo: {engineStatus?.activeProvider ?? '—'}
+          </span>
+        </div>
+        {engineStatus?.comfyUi.reason && (
+          <span style={{ color: 'var(--muted-foreground)', maxWidth: 620 }}>{engineStatus.comfyUi.reason}</span>
+        )}
+        {engineStatus && (
+          <span style={{ color: 'var(--muted-foreground)' }}>
+            checkpoints: {engineStatus.comfyUi.models.checkpoints.length} · LoRAs: {engineStatus.comfyUi.models.loras.length}
+          </span>
+        )}
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24 }}>
           <textarea
@@ -298,9 +354,14 @@ export function CreativeStudioPanel() {
             )}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button onClick={handleCreate} style={{ padding: '8px 14px', background: 'var(--brand-lime)', color: 'var(--brand-ink)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}>
-              Gerar Arte Editável
+            <button disabled={generationBusy} onClick={handleCreate} style={{ padding: '8px 14px', background: generationBusy ? 'var(--muted)' : 'var(--brand-lime)', color: 'var(--brand-ink)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: generationBusy ? 'wait' : 'pointer' }}>
+              {generationBusy ? 'Gerando…' : 'Gerar Arte Editável'}
             </button>
+            {generationBusy && (
+              <button onClick={() => void handleCancelGeneration()} style={{ padding: '8px 12px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
+                Cancelar geração
+              </button>
+            )}
             {artType === 'thumbnail' && (
               <>
                 <select
@@ -342,7 +403,22 @@ export function CreativeStudioPanel() {
           {statusMsg && <div style={{ fontSize: 12, color: 'var(--success)' }}>{statusMsg}</div>}
           {generationWarning && (
             <div role="alert" style={{ fontSize: 12, color: 'var(--warning)' }}>
-              ⚠ {generationWarning}
+              Atenção: {generationWarning}
+            </div>
+          )}
+          {generationReport && (
+            <div style={{ fontSize: 12, padding: 10, background: 'var(--secondary)', border: '1px solid var(--border)', borderRadius: 8 }}>
+              <strong>Relatório de geração</strong>
+              <div style={{ marginTop: 4 }}>
+                {generationReport.status} · {generationReport.engineId}
+                {generationReport.durationMs !== undefined ? ` · ${generationReport.durationMs} ms` : ''}
+              </div>
+              <div style={{ color: 'var(--muted-foreground)', marginTop: 4 }}>{generationReport.message}</div>
+              {generationReport.recipe && (
+                <div style={{ color: 'var(--muted-foreground)', marginTop: 4 }}>
+                  preset {generationReport.recipe.preset} · seed {generationReport.recipe.seed} · origem {generationReport.recipe.source}
+                </div>
+              )}
             </div>
           )}
         </div>

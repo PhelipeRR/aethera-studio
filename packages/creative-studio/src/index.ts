@@ -20,3 +20,7 @@ export * from './identity-verification.js';
 export * from './authentic-media-source.js';
 export * from './visual-recipe.js';
 export * from './ai-background.js';
+export * from './comfyui-client.js';
+export * from './comfyui-workflow.js';
+export * from './comfyui-discovery.js';
+export * from './comfyui-image-adapter.js';
