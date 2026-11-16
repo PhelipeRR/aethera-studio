@@ -1,3 +1,4 @@
+import { canonicalQueryKey } from '../editorial/contextual-media-queries.js';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
@@ -561,6 +562,14 @@ export interface ApprovedMediaAuditDetail {
   coveredSegmentIds: string[];
   usefulIntervals: Array<{ segmentId: string; startSec: number; endSec: number }>;
   editorialJustification: string;
+  /**
+   * Rights situation, always explicit. `licensed`: known license allows the use. `official_promotional`: published
+   * by the rights holder's verified channel (promotional use, still subject to review before publishing).
+   * `unresolved_third_party`: identity verified, rights unknown — usable in the draft, blocks publication until a
+   * human decides.
+   */
+  rightsStatus: MediaRightsStatus;
+  rightsNote: string;
   /** Origin, author, license, attribution and restrictions — present for media from the provider registry. */
   provenance?: {
     provider: string;
@@ -588,6 +597,86 @@ export interface PendingLicenseReviewEntry {
   licenseId: string;
   reasons: string[];
   relevanceAccepted: boolean;
+  /** True when the draft assembly uses it (policy `assemble_with_rights_review`); publication stays blocked. */
+  usedInDraft?: boolean;
+}
+
+export type MediaRightsStatus = 'licensed' | 'official_promotional' | 'unresolved_third_party';
+
+/**
+ * What to do with media whose identity/relevance is verified but whose license needs a human decision.
+ * `block_pending`: keep it out of the assembly (legacy). `assemble_with_rights_review`: use it in the draft render,
+ * record it for rights review and block publication until a human decides.
+ */
+export type LicenseReviewPolicy = 'block_pending' | 'assemble_with_rights_review';
+
+/** Per-scene diagnostic for the production UI: the full funnel for one scene. */
+export interface SceneMediaDiagnostic {
+  segmentId: string;
+  subject: string;
+  queries: string[];
+  sourcesConsulted: string[];
+  candidatesFound: number;
+  acquired: number;
+  approved: Array<{ mediaId: string; title: string; origin: string; sourceUrl: string; rightsStatus: MediaRightsStatus }>;
+  rejected: Array<{
+    mediaId: string;
+    title: string;
+    origin: string;
+    url?: string;
+    thumbnailUrl?: string;
+    localPath?: string;
+    rejectionCode?: string;
+    reason: string;
+    evidence?: Array<{ timestampSec: number; description: string }>;
+  }>;
+  failedDownloads: Array<{ title: string; url: string; reasonCode: string; detail: string }>;
+  coveredSec: number;
+  expectedSec: number;
+  bestAlternative?: { kind: 'unused_verified_media' | 'pending_rights_media' | 'graphic_recovery' | 'manual_import'; detail: string };
+  pendingRights: number;
+}
+
+const OFFICIAL_CLASSES: ReadonlySet<MediaClassification> = new Set([
+  // anime_footage reaches ≥0.8 only when the channel is a known rights holder/distributor.
+  'anime_footage',
+  'official_game_trailer',
+  'official_screenshot',
+  'promotional_artwork',
+]);
+
+/** Explicit rights situation of an approved asset (never assumed "verified" just because it is relevant). */
+export function resolveRightsStatus(meta: {
+  origin: MediaProviderId;
+  providerItem?: ProviderMediaItem;
+  licenseDecision?: LicenseDecision;
+}): { rightsStatus: MediaRightsStatus; rightsNote: string } {
+  const status = meta.licenseDecision?.status;
+  if (status === 'allowed' || status === 'allowed_with_restrictions') {
+    const obligations = meta.licenseDecision?.obligations ?? [];
+    return {
+      rightsStatus: 'licensed',
+      rightsNote: `Licença ${meta.providerItem?.license.licenseName ?? meta.providerItem?.license.licenseId ?? 'conhecida'} permite o uso${obligations.length ? ` (obrigações: ${obligations.join(', ')})` : ''}.`,
+    };
+  }
+  if (meta.origin === 'local_library') {
+    return { rightsStatus: 'licensed', rightsNote: 'Arquivo da biblioteca local do usuário (direitos sob responsabilidade do usuário).' };
+  }
+  if (
+    meta.providerItem &&
+    OFFICIAL_CLASSES.has(meta.providerItem.classification) &&
+    meta.providerItem.classificationConfidence >= 0.8
+  ) {
+    return {
+      rightsStatus: 'official_promotional',
+      rightsNote: 'Material promocional publicado por canal oficial do detentor dos direitos; revisar termos antes de publicar.',
+    };
+  }
+  return {
+    rightsStatus: 'unresolved_third_party',
+    rightsNote:
+      'Identidade verificada por frames, mas direitos de uso não confirmados (upload de terceiros ou licença desconhecida). Uso apenas no rascunho; publicação exige revisão humana.',
+  };
 }
 
 /** Maps a registry item into the pipeline's candidate shape without losing provenance. */
@@ -737,6 +826,11 @@ export interface AutonomousAcquisitionAuditReport {
   autoResolvedGaps: Array<{ segmentId: string; subject: string; resolvedInRound: number; mediaId: string }>;
   /** Media the relevance gate approved but whose license needs a human decision (never auto-approved). */
   pendingLicenseReview?: PendingLicenseReviewEntry[];
+  /** Approved media whose rights are not resolved (draft use only; publication needs a human decision). */
+  rightsReview?: Array<{ mediaId: string; title: string; origin: string; sourceUrl: string; rightsStatus: MediaRightsStatus; note: string }>;
+  /** Equivalent queries (same canonical key) not re-run, per segment. */
+  equivalentQueriesSkipped?: number;
+  sceneDiagnostics?: SceneMediaDiagnostic[];
   unresolvedGapsForReview: Array<{ segmentId: string; subject: string; suggestedQuery: string; reason: string }>;
   providerStatuses: ProviderAttemptStatus[];
   segmentMetrics: SegmentAcquisitionMetrics[];
@@ -1014,6 +1108,11 @@ export async function runAutonomousMediaAcquisition(input: {
     maxDurationMs?: number;
     budgetMultiplier?: number;
     perOperationTimeoutMs?: number;
+    /**
+     * Timeout for ONE media download. Section downloads through yt-dlp re-encode with ffmpeg and routinely take
+     * 40–120s; capping them at the 35s search timeout aborted 12 of 13 downloads in production.
+     */
+    perDownloadTimeoutMs?: number;
     maxQueriesTotal?: number;
     maxCandidateDurationSec?: number;
     discoveryConcurrency?: number;
@@ -1025,6 +1124,7 @@ export async function runAutonomousMediaAcquisition(input: {
   };
   checkpointPath?: string | false;
   signal?: AbortSignal;
+  licensePolicy?: LicenseReviewPolicy;
 }): Promise<AutonomousAcquisitionAuditReport> {
   const startedAt = Date.now();
   const stageMode: AcquisitionStageMode = input.stageMode ?? 'full';
@@ -1036,6 +1136,8 @@ export async function runAutonomousMediaAcquisition(input: {
   const budgetMultiplier = Math.max(0.25, input.limits?.budgetMultiplier ?? 1);
   const maxDurationMs = Math.round(baseMaxDurationMs * budgetMultiplier);
   const perOperationTimeoutMs = Math.max(1_000, input.limits?.perOperationTimeoutMs ?? 35_000);
+  const perDownloadLimitMs = Math.max(perOperationTimeoutMs, input.limits?.perDownloadTimeoutMs ?? 150_000);
+  const licensePolicy: LicenseReviewPolicy = input.licensePolicy ?? 'block_pending';
   const maxQueriesTotal = Math.max(input.segments.length, input.limits?.maxQueriesTotal ?? Math.max(36, input.segments.length * 4));
   const maxCandidateDurationSec = input.limits?.maxCandidateDurationSec ?? 600;
   const maxSectionedCandidateDurationSec =
@@ -1054,8 +1156,8 @@ export async function runAutonomousMediaAcquisition(input: {
   }, maxDurationMs);
 
   const remainingMs = () => Math.max(0, maxDurationMs - (Date.now() - startedAt));
-  const createScopedSignal = (timeoutMs: number): AbortSignal => {
-    const rem = Math.max(250, Math.min(perOperationTimeoutMs, timeoutMs, remainingMs()));
+  const createScopedSignal = (timeoutMs: number, capMs = perOperationTimeoutMs): AbortSignal => {
+    const rem = Math.max(250, Math.min(capMs, timeoutMs, remainingMs()));
     const signals: AbortSignal[] = [deadlineController.signal, AbortSignal.timeout(rem)];
     if (input.signal) signals.push(input.signal);
     return AbortSignal.any(signals);
@@ -1066,6 +1168,12 @@ export async function runAutonomousMediaAcquisition(input: {
   const seenCandidateKeys = new Set<string>();
   const seenFileHashes = new Set<string>();
   const rejectedCandidates: AutonomousAcquisitionAuditReport['rejectedCandidates'] = [];
+  const rejectedSegmentByMediaId = new Map<string, string>();
+  const rejectedUrlByMediaId = new Map<string, string>();
+  const noteRejected = (mediaId: string, segmentId: string, url: string) => {
+    rejectedSegmentByMediaId.set(mediaId, segmentId);
+    rejectedUrlByMediaId.set(mediaId, url);
+  };
   const relevanceDecisions: MediaRelevanceDecision[] = [];
   const approvedAssets: AcquiredMediaAsset[] = [];
   const approvedMetaById = new Map<
@@ -1084,6 +1192,9 @@ export async function runAutonomousMediaAcquisition(input: {
     }
   >();
   const allStatuses: ProviderAttemptStatus[] = [];
+  const approvedSegmentByMediaId = new Map<string, string>();
+  /** Local file of every downloaded candidate (for diagnostics thumbnails/inspection). */
+  const localPathByMediaId = new Map<string, string>();
   const autoResolvedGaps: AutonomousAcquisitionAuditReport['autoResolvedGaps'] = [];
   const pendingLicenseReview: PendingLicenseReviewEntry[] = [];
 
@@ -1095,6 +1206,11 @@ export async function runAutonomousMediaAcquisition(input: {
   let stoppedReason: AutonomousAcquisitionAuditReport['stoppedReason'] = 'max_rounds';
   let resumedFromCheckpoint = false;
   const completedQueryKeys = new Set<string>();
+  /** Canonical keys of every query already run (any segment): equivalent queries are never re-run. */
+  const globalQueryKeys = new Set<string>();
+  const candKeysByQueryKey = new Map<string, string[]>();
+  const sharedQueryKeysBySegment = new Map<string, Set<string>>();
+  let equivalentQueriesSkipped = 0;
   const candidateStates = new Map<string, CandidateLifecycleState>();
   const discoveredPool = new Map<
     string,
@@ -1200,7 +1316,10 @@ export async function runAutonomousMediaAcquisition(input: {
           if (existsSync(p.filePath)) pendingVerificationAssets.set(k, p);
         }
         if (saved.failedDownloads) failedDownloads.push(...saved.failedDownloads);
-        if (saved.queriesExecuted) queriesExecuted.push(...saved.queriesExecuted);
+        if (saved.queriesExecuted) {
+          queriesExecuted.push(...saved.queriesExecuted);
+          for (const q of saved.queriesExecuted) globalQueryKeys.add(canonicalQueryKey(q.query));
+        }
         candidatesFoundCount = saved.candidatesFoundCount ?? 0;
         if (saved.candidatesByProvider) Object.assign(candidatesByProvider, saved.candidatesByProvider);
         acquiredFilesCount = saved.acquiredFilesCount ?? 0;
@@ -1332,44 +1451,57 @@ export async function runAutonomousMediaAcquisition(input: {
         break;
       }
 
-      const rawRoundQueries =
-        round === 1
-          ? targetSegments.map((s) => ({
-              segment: s,
-              query:
-                s.preferredQueries?.[0] ??
-                (`${s.subject} ${s.entities?.slice(0, 2).join(' ') ?? ''}`.trim() || input.prompt),
-            }))
-          : targetSegments.flatMap((s) => {
-              const out: Array<{ segment: ScriptCoverageSegment; query: string }> = [];
-              const preferred = s.preferredQueries?.[round - 1];
-              if (preferred) out.push({ segment: s, query: preferred });
-              const expanded = expandScriptOrientedQueries({
+      // Query strategy per segment: an ordered ladder (specific contextual queries first, broader expansions after).
+      // Each round takes the next rungs not yet run — by canonical key, across ALL segments — so a round never
+      // repeats an equivalent query that already ran (or failed), and scenes about the same work share results.
+      const perSegmentThisRound = round === 1 ? (targetSegments.length > 6 ? 1 : 2) : 2;
+      const rawRoundQueries: Array<{ segment: ScriptCoverageSegment; query: string }> = [];
+      const sharedFromEquivalent: Array<{ segment: ScriptCoverageSegment; queryKey: string }> = [];
+      const plannedThisRound = new Set<string>();
+      for (const s of targetSegments) {
+        const ladder = [
+          ...(s.preferredQueries ?? []),
+          ...(round > 1
+            ? expandScriptOrientedQueries({
                 prompt: input.prompt,
                 segments: [s],
                 ...(input.genre ? { genre: input.genre } : {}),
                 uncoveredSegmentIds: [s.segmentId],
-                maxQueries: 4,
-              });
-              for (const q of expanded) {
-                if (out.length >= 3) break;
-                const finalQ = round === 3 && input.genre === 'anime_essay' ? `${q} anime scene` : q;
-                if (!out.some((x) => x.query.toLowerCase() === finalQ.toLowerCase())) {
-                  out.push({ segment: s, query: finalQ });
-                }
-              }
-              return out;
-            });
+                maxQueries: 6,
+              })
+            : []),
+        ];
+        if (ladder.length === 0) {
+          ladder.push(`${s.subject} ${s.entities?.slice(0, 2).join(' ') ?? ''}`.trim() || input.prompt);
+        }
+        let taken = 0;
+        for (const q of ladder) {
+          if (taken >= perSegmentThisRound) break;
+          const key = canonicalQueryKey(q);
+          if (!key) continue;
+          if (completedQueryKeys.has(`${s.segmentId}:${q.toLowerCase()}`)) {
+            skippedQueriesFromCheckpoint += 1;
+            continue;
+          }
+          if (globalQueryKeys.has(key) || plannedThisRound.has(key)) {
+            // Same search already ran for another scene (or this one): reuse its candidates instead of re-querying.
+            if (!sharedQueryKeysBySegment.get(s.segmentId)?.has(key)) {
+              equivalentQueriesSkipped += 1;
+              sharedFromEquivalent.push({ segment: s, queryKey: key });
+              const set = sharedQueryKeysBySegment.get(s.segmentId) ?? new Set<string>();
+              set.add(key);
+              sharedQueryKeysBySegment.set(s.segmentId, set);
+            }
+            continue;
+          }
+          plannedThisRound.add(key);
+          rawRoundQueries.push({ segment: s, query: q });
+          taken += 1;
+        }
+      }
 
       const segmentById = new Map(input.segments.map((s) => [s.segmentId, s]));
-      const uncompletedQueries = rawRoundQueries.filter((item) => {
-        const key = `${item.segment.segmentId}:${item.query.toLowerCase()}`;
-        if (completedQueryKeys.has(key)) {
-          skippedQueriesFromCheckpoint += 1;
-          return false;
-        }
-        return true;
-      });
+      const uncompletedQueries = rawRoundQueries;
       const roundQueries =
         stageMode === 'verify_pending_only'
           ? []
@@ -1434,6 +1566,10 @@ export async function runAutonomousMediaAcquisition(input: {
             query: item.query,
           });
           completedQueryKeys.add(`${item.segment.segmentId}:${item.query.toLowerCase()}`);
+          const itemQueryKey = canonicalQueryKey(item.query);
+          globalQueryKeys.add(itemQueryKey);
+          const keysForQuery = candKeysByQueryKey.get(itemQueryKey) ?? [];
+          candKeysByQueryKey.set(itemQueryKey, keysForQuery);
 
           try {
             const searchRes = await searchResilientMediaSources(
@@ -1458,6 +1594,7 @@ export async function runAutonomousMediaAcquisition(input: {
             for (const cand of searchRes.candidates) {
               candidatesByProvider[cand.origin] = (candidatesByProvider[cand.origin] ?? 0) + 1;
               const candKey = `${cand.origin}:${cand.url}`;
+              if (!keysForQuery.includes(candKey)) keysForQuery.push(candKey);
               if (seenCandidateKeys.has(candKey)) continue;
               seenCandidateKeys.add(candKey);
               candidatesFoundCount += 1;
@@ -1471,6 +1608,7 @@ export async function runAutonomousMediaAcquisition(input: {
               if (cand.durationSec && cand.durationSec > effectiveMaxDurationSec) {
                 candidateStates.set(candKey, 'rejected');
                 sm.rejectedCount += 1;
+                noteRejected(`cand_${candidatesFoundCount}`, item.segment.segmentId, cand.url);
                 rejectedCandidates.push({
                   mediaId: `cand_${candidatesFoundCount}`,
                   title: cand.title ?? cand.url,
@@ -1486,6 +1624,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 triageEliminatedCount += 1;
                 candidateStates.set(candKey, 'rejected');
                 sm.rejectedCount += 1;
+                noteRejected(`cand_${candidatesFoundCount}`, item.segment.segmentId, cand.url);
                 rejectedCandidates.push({
                   mediaId: `cand_${candidatesFoundCount}`,
                   title: cand.title ?? cand.url,
@@ -1513,6 +1652,17 @@ export async function runAutonomousMediaAcquisition(input: {
           }
         });
       }
+      // Scenes whose query was equivalent to another scene's share that query's still-undownloaded candidates.
+      for (const shared of sharedFromEquivalent) {
+        for (const candKey of candKeysByQueryKey.get(shared.queryKey) ?? []) {
+          const entry = discoveredPool.get(candKey);
+          if (!entry || candidateStates.get(candKey) !== 'discovered') continue;
+          const list = discoveredBySegment.get(shared.segment.segmentId) ?? [];
+          if (list.some((x) => `${x.cand.origin}:${x.cand.url}` === candKey)) continue;
+          list.push({ segment: shared.segment, cand: entry.cand, priorityScore: entry.priorityScore * 0.9 });
+          discoveredBySegment.set(shared.segment.segmentId, list);
+        }
+      }
       stageTimingsMs.discoveryMs += Date.now() - discoveryStartedAt;
       saveCheckpoint();
 
@@ -1528,19 +1678,25 @@ export async function runAutonomousMediaAcquisition(input: {
         }
         const acquisitionQueue: Array<{ segment: ScriptCoverageSegment; cand: MediaSourceCandidate }> = [];
         const maxPerSegThisRound = round === 1 ? (targetSegments.length > 6 ? 1 : 2) : 2;
+        const queuedCandKeys = new Set<string>();
         for (let rank = 0; rank < maxPerSegThisRound; rank += 1) {
           for (const s of targetSegments) {
-            const entry = discoveredBySegment.get(s.segmentId)?.[rank];
-            if (entry) acquisitionQueue.push({ segment: entry.segment, cand: entry.cand });
+            const list = discoveredBySegment.get(s.segmentId) ?? [];
+            // Next candidate of this segment not already queued by another segment sharing the same results.
+            const entry = list.find((e, i) => i >= rank && !queuedCandKeys.has(`${e.cand.origin}:${e.cand.url}`));
+            if (entry) {
+              queuedCandKeys.add(`${entry.cand.origin}:${entry.cand.url}`);
+              acquisitionQueue.push({ segment: entry.segment, cand: entry.cand });
+            }
           }
         }
 
         const acqStartedAt = Date.now();
         let downloadAttemptSeq = acquiredFilesCount;
         const perDownloadTimeoutMs = Math.min(
-          perOperationTimeoutMs,
+          perDownloadLimitMs,
           Math.max(
-            Math.min(perOperationTimeoutMs, 75_000),
+            Math.min(perDownloadLimitMs, 75_000),
             Math.floor((acquisitionBudgetMs * acquisitionConcurrency) / Math.max(1, acquisitionQueue.length)),
           ),
         );
@@ -1562,7 +1718,18 @@ export async function runAutonomousMediaAcquisition(input: {
           const acqSeq = downloadAttemptSeq;
           downloadAttemptSeq += 1;
           candidateStates.set(candKey, 'downloading');
-          const opSig = createScopedSignal(perDownloadTimeoutMs);
+          const opSig = createScopedSignal(perDownloadTimeoutMs, perDownloadLimitMs);
+          // A download aborted by its own timeout or the stage deadline is a timeout, not a user cancellation.
+          const classifyOpFailure = (err: unknown) => {
+            const base = classifyDownloadFailure(err);
+            if (base.reasonCode === 'cancelled' && opSig.aborted && !input.signal?.aborted) {
+              return {
+                reasonCode: 'timeout' as const,
+                detail: `${deadlineController.signal.aborted ? 'Prazo total da aquisição esgotado' : `Download excedeu ${Math.round(perDownloadTimeoutMs / 1000)}s`} (${base.detail})`,
+              };
+            }
+            return base;
+          };
           let filePath: string | null = null;
           let downloadFailure: { reasonCode: DownloadFailureReasonCode; detail: string } | null = null;
           try {
@@ -1586,7 +1753,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 );
                 filePath = res.filePath;
               } catch (err) {
-                downloadFailure = classifyDownloadFailure(err);
+                downloadFailure = classifyOpFailure(err);
                 filePath = null;
               }
             } else if (cand.directDownloadable && /^https?:\/\//i.test(cand.url)) {
@@ -1637,7 +1804,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 if (candidateOutFile && existsSync(candidateOutFile)) {
                   try { unlinkSync(candidateOutFile); } catch { /* ignore */ }
                 }
-                downloadFailure = classifyDownloadFailure(err);
+                downloadFailure = classifyOpFailure(err);
                 filePath = null;
               }
             } else if (cand.origin === 'yt_dlp' && !ytDlpBlocked && input.deps.ytDlpAcquireFn) {
@@ -1651,7 +1818,7 @@ export async function runAutonomousMediaAcquisition(input: {
                   };
                 }
               } catch (err) {
-                downloadFailure = classifyDownloadFailure(err);
+                downloadFailure = classifyOpFailure(err);
                 if (downloadFailure.reasonCode === 'anti_bot') {
                   ytDlpBlocked = true;
                 }
@@ -1697,6 +1864,7 @@ export async function runAutonomousMediaAcquisition(input: {
               duplicateFilesSkipped += 1;
               candidateStates.set(candKey, 'rejected');
               sm.rejectedCount += 1;
+              noteRejected(`dup_${duplicateFilesSkipped}`, task.segment.segmentId, cand.url);
               rejectedCandidates.push({
                 mediaId: `dup_${duplicateFilesSkipped}`,
                 title: cand.title ?? filePath,
@@ -1720,6 +1888,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 durationSec = cand.durationSec ?? 12;
               }
             }
+            localPathByMediaId.set(mediaId, filePath);
             pendingVerificationAssets.set(candKey, {
               segmentId: task.segment.segmentId,
               cand,
@@ -1864,6 +2033,7 @@ export async function runAutonomousMediaAcquisition(input: {
           if (!decision.accepted) {
             candidateStates.set(candKey, 'rejected');
             sm.rejectedCount += 1;
+            noteRejected(item.mediaId, seg.segmentId, item.cand.url);
             rejectedCandidates.push({
               mediaId: item.mediaId,
               title: item.cand.title ?? item.filePath,
@@ -1874,7 +2044,22 @@ export async function runAutonomousMediaAcquisition(input: {
             return;
           }
 
-          if (item.cand.licenseDecision?.status === 'pending_human_review') {
+          if (item.cand.licenseDecision?.status === 'pending_human_review' && licensePolicy === 'assemble_with_rights_review') {
+            // Identity/relevance verified, rights unresolved: the draft may use it, publication stays blocked until a
+            // human decides. The rights situation is recorded, never hidden.
+            pendingLicenseReview.push({
+              mediaId: item.mediaId,
+              segmentId: seg.segmentId,
+              title: item.cand.title ?? item.filePath,
+              origin: item.cand.origin,
+              sourceUrl: item.cand.providerItem?.pageUrl ?? item.cand.url,
+              localPath: item.filePath,
+              licenseId: item.cand.providerItem?.license.licenseId ?? 'unknown',
+              reasons: item.cand.licenseDecision.reasons,
+              relevanceAccepted: true,
+              usedInDraft: true,
+            });
+          } else if (item.cand.licenseDecision?.status === 'pending_human_review') {
             // The relevance gate approved it, but the license is not known to allow this use: keep both results and
             // send the media to human review instead of approving it automatically.
             candidateStates.set(candKey, 'rejected');
@@ -1890,6 +2075,7 @@ export async function runAutonomousMediaAcquisition(input: {
               reasons: item.cand.licenseDecision.reasons,
               relevanceAccepted: true,
             });
+            noteRejected(item.mediaId, seg.segmentId, item.cand.url);
             rejectedCandidates.push({
               mediaId: item.mediaId,
               title: item.cand.title ?? item.filePath,
@@ -1902,6 +2088,7 @@ export async function runAutonomousMediaAcquisition(input: {
 
           candidateStates.set(candKey, 'verified');
           sm.approvedCount += 1;
+          approvedSegmentByMediaId.set(item.mediaId, seg.segmentId);
           approvedAssets.push({
             mediaId: item.mediaId,
             uri: item.filePath,
@@ -1974,7 +2161,7 @@ export async function runAutonomousMediaAcquisition(input: {
         break;
       }
     }
-    if (stoppedReason === 'max_rounds' && deadlineController.signal.aborted) {
+    if (stoppedReason === 'max_rounds' && (deadlineController.signal.aborted || remainingMs() <= 0)) {
       stoppedReason = 'deadline_exceeded';
     }
   } finally {
@@ -2015,6 +2202,7 @@ export async function runAutonomousMediaAcquisition(input: {
       coveredSegmentIds,
       usefulIntervals,
       editorialJustification: meta.decision.reason,
+      ...resolveRightsStatus(meta),
       ...(meta.providerItem
         ? {
             provenance: {
@@ -2082,6 +2270,76 @@ export async function runAutonomousMediaAcquisition(input: {
   const roundRate = (num: number, den: number): number =>
     den > 0 ? Number((num / den).toFixed(3)) : 0;
 
+  const rightsReview = approvedMediaDetails
+    .filter((d) => d.rightsStatus !== 'licensed')
+    .map((d) => ({ mediaId: d.mediaId, title: d.title, origin: d.origin, sourceUrl: d.sourceUrl, rightsStatus: d.rightsStatus, note: d.rightsNote }));
+
+  const youtubeThumb = (url: string): string | undefined => {
+    const id = /(?:v=|youtu\.be\/|shorts\/)([\w-]{11})/.exec(url)?.[1];
+    return id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : undefined;
+  };
+  const decisionById = new Map(relevanceDecisions.map((d) => [d.mediaId, d]));
+  const sceneDiagnostics: SceneMediaDiagnostic[] = latestCoverage.segments.map((cov) => {
+    const sm = segMetricsMap.get(cov.segmentId);
+    const segQueries = queriesExecuted.filter((q) => q.segmentId === cov.segmentId).map((q) => q.query);
+    const approved = approvedMediaDetails
+      .filter((d) => d.coveredSegmentIds.includes(cov.segmentId) || approvedSegmentByMediaId.get(d.mediaId) === cov.segmentId)
+      .map((d) => ({ mediaId: d.mediaId, title: d.title, origin: d.origin, sourceUrl: d.sourceUrl, rightsStatus: d.rightsStatus }));
+    const rejected = rejectedCandidates
+      .filter((r) => rejectedSegmentByMediaId.get(r.mediaId) === cov.segmentId)
+      .map((r) => {
+        const dec = decisionById.get(r.mediaId);
+        const url = rejectedUrlByMediaId.get(r.mediaId);
+        const thumb = url ? youtubeThumb(url) : undefined;
+        const local = localPathByMediaId.get(r.mediaId);
+        return {
+          mediaId: r.mediaId,
+          title: r.title,
+          origin: r.origin,
+          ...(url ? { url } : {}),
+          ...(thumb ? { thumbnailUrl: thumb } : {}),
+          ...(local ? { localPath: local } : {}),
+          ...(r.rejectionCode ? { rejectionCode: r.rejectionCode } : {}),
+          reason: r.reason,
+          ...(dec?.visualEvidence?.length
+            ? { evidence: dec.visualEvidence.slice(0, 6).map((e) => ({ timestampSec: e.timestampSec, description: e.description })) }
+            : {}),
+        };
+      });
+    const failed = failedDownloads
+      .filter((f) => f.segmentId === cov.segmentId)
+      .map((f) => ({ title: f.title, url: f.url, reasonCode: f.reasonCode, detail: f.detail }));
+    const pendingRights = approved.filter((a) => a.rightsStatus !== 'licensed').length;
+    const pendingForScene = pendingLicenseReview.filter((pl) => pl.segmentId === cov.segmentId && !pl.usedInDraft);
+    const unusedVerified = approvedMediaDetails.find(
+      (d) => !d.coveredSegmentIds.includes(cov.segmentId) && d.matchedEntities.some((e) => cov.entities.includes(e)),
+    );
+    const bestAlternative: SceneMediaDiagnostic['bestAlternative'] = cov.covered
+      ? undefined
+      : pendingForScene[0]
+        ? { kind: 'pending_rights_media', detail: `"${pendingForScene[0].title}" foi verificada mas aguarda decisão de licença.` }
+        : unusedVerified
+          ? { kind: 'unused_verified_media', detail: `"${unusedVerified.title}" (verificada para outra cena da mesma obra) pode completar esta cena.` }
+          : cov.usableDurationSec > 0
+            ? { kind: 'graphic_recovery', detail: `Completar ${Math.round(cov.coverageGapSec)}s com composição gráfica/tipografia identificada como gráfico (não como evidência da obra).` }
+            : { kind: 'manual_import', detail: `Nenhuma mídia verificada: importar trecho de "${cov.subject}" ou aprovar recuperação gráfica explícita.` };
+    return {
+      segmentId: cov.segmentId,
+      subject: cov.subject,
+      queries: segQueries,
+      sourcesConsulted: [...new Set(allStatuses.filter((st) => st.status !== 'skipped_disabled').map((st) => String(st.provider)))],
+      candidatesFound: sm?.candidatesFound ?? 0,
+      acquired: sm?.downloadsSucceeded ?? 0,
+      approved,
+      rejected,
+      failedDownloads: failed,
+      coveredSec: cov.usableDurationSec,
+      expectedSec: cov.expectedDurationSec,
+      ...(bestAlternative ? { bestAlternative } : {}),
+      pendingRights,
+    };
+  });
+
   return {
     roundsExecuted,
     elapsedMs: Date.now() - startedAt,
@@ -2105,6 +2363,9 @@ export async function runAutonomousMediaAcquisition(input: {
     rejectedCandidates,
     autoResolvedGaps,
     pendingLicenseReview,
+    rightsReview,
+    equivalentQueriesSkipped,
+    sceneDiagnostics,
     unresolvedGapsForReview,
     providerStatuses: allStatuses,
     segmentMetrics: [...segMetricsMap.values()],

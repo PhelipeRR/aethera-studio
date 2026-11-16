@@ -1840,7 +1840,9 @@ export function registerAetheraDomainIpc(options: {
     join(app.getPath('userData'), 'calendar', 'editorial-calendar-store.json'),
   );
   const AETHERA_VISION_CHAIN = ['local-vlm', 'claude-gateway', 'antigravity', 'claude', 'codex', 'local-siglip', 'ffmpeg-heuristics'] as const;
-  const buildAetheraVisionProviders = (rootDir: string, projectId: string) =>
+  // Scene frames are analysed as lean, project-less TaskEngine runs: the cinema scene/segment id is not a TaskEngine
+  // project, and using it as one failed every Claude/Codex vision call with a tasks→projects FOREIGN KEY error.
+  const buildAetheraVisionProviders = (rootDir: string, projectId: string | null) =>
     createVisionProviders([
       createOllamaLocalVlmProvider(),
       ...(taskEngine
@@ -2065,7 +2067,7 @@ export function registerAetheraDomainIpc(options: {
         atMs: Math.round((timestampsSec[idx] ?? 0) * 1000),
       }));
       const router = new VisionRouter(
-        buildAetheraVisionProviders(frameDir, segment.segmentId),
+        buildAetheraVisionProviders(frameDir, null),
         {
           get: (k) => visionCache.get(JSON.stringify(k)),
           put: (k, v) => {
@@ -2106,7 +2108,10 @@ export function registerAetheraDomainIpc(options: {
         const framesPayload = allFramesPayload.slice(offset, offset + 3);
         const analyzed = await router.analyze({
           frames: framesPayload,
-          context: `Segmento "${segment.segmentId}": ${segment.narrationText.slice(0, 220)}`,
+          // Expected work/characters are given as data so the model can say whether the frames are CONSISTENT
+          // with them; it must still cite visible evidence (character design, on-screen text) and mark identity
+          // as inferred, and the gate only counts names it reports from the frames.
+          context: `Segmento "${segment.segmentId}": ${segment.narrationText.slice(0, 220)}${segment.expectedEntities?.length ? ` | Obra/personagens esperados (confirme apenas se houver evidência visual; caso contrário diga que não é possível confirmar): ${segment.expectedEntities.slice(0, 6).join(', ')}` : ''}`,
           policy,
         });
         // Nunca inventar correspondência visual a partir de heurística FFmpeg sem visão semântica real
@@ -2374,6 +2379,15 @@ export function registerAetheraDomainIpc(options: {
         interpretation.requestedCount
           ? `Critérios de ranking: ${interpretation.rankingCriteria.join('; ')}. Inclua exatamente ${interpretation.requestedCount} entidades distintas.`
           : `Inclua as entidades principais relevantes ao tema.`,
+        ...(interpretation.multiWork
+          ? [
+              `Cada entidade é uma obra distinta: entityName e workTitle da entidade são o título oficial da obra (não o tema da lista).`,
+              ...(interpretation.referenceWorks?.length
+                ? [`Obra de referência citada pelo pedido (não entra no ranking): ${interpretation.referenceWorks.join(', ')}.`]
+                : []),
+            ]
+          : []),
+        `Em mechanicsOrEvents, cite nomes de personagens, técnicas e cenas marcantes que identifiquem visualmente a obra.`,
         `Para cada entidade: entityName, workTitle, role, rankPosition, verifiedFacts, mechanicsOrEvents, attackPatternsOrPhases, communityConsensus, uncertainties, sources.`,
         `Diferencie fatos verificáveis de opiniões. Não invente fatos.`,
         `Não escreva introdução, explicação, saudação ou texto adicional. Não use ferramentas.`,
@@ -2893,7 +2907,7 @@ export function registerAetheraDomainIpc(options: {
         const frameHash = createHash('sha256').update(frameBytes).digest('hex');
         const visionCache = new Map<string, unknown>();
         const router = new VisionRouter(
-          buildAetheraVisionProviders(frameDir, scene.sceneId),
+          buildAetheraVisionProviders(frameDir, null),
           {
             get: (k) => visionCache.get(JSON.stringify(k)),
             put: (k, v) => {

@@ -131,7 +131,7 @@ export interface AnimeMediaSourceAdapter {
 export function isAnimeSubjectOrGenre(text: string, genre?: string): boolean {
   if (genre === 'anime' || genre === 'anime_essay') return true;
   if (genre === 'gameplay_essay' || genre === 'gaming') return false;
-  return /\b(anime|manga|shonen|seinen|sakuga|dragon ball|dbz|naruto|one piece|bleach|jujutsu|attack on titan|shingeki|demon slayer|kimetsu|chainsaw man|evangelion|goku|vegeta|gohan|luffy|zoro|itachi|tanjiro|frieren|cowboy bebop|fullmetal)\b/i.test(
+  return /\b(animes?|mang[aá]s?|shonen|seinen|black clover|fairy tail|hunter x hunter|mashle|sakuga|dragon ball|dbz|naruto|one piece|bleach|jujutsu|attack on titan|shingeki|demon slayer|kimetsu|chainsaw man|evangelion|goku|vegeta|gohan|luffy|zoro|itachi|tanjiro|frieren|cowboy bebop|fullmetal)\b/i.test(
     text,
   );
 }

@@ -597,7 +597,10 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
       },
       {
         analyzeFrames: async () => [
-          { timestampSec: 5, visualCategory: 'anime_animation', detectedEntities: ['namek', 'dragon ball'], description: 'Paisagem de Namek com céu verde', confidence: 0.85 },
+          // Coverage counts only what frames prove: evidence spread across the clip proves its whole span.
+          { timestampSec: 2, visualCategory: 'anime_animation', detectedEntities: ['namek', 'dragon ball'], description: 'Paisagem de Namek com céu verde', confidence: 0.85 },
+          { timestampSec: 10, visualCategory: 'anime_animation', detectedEntities: ['namek', 'dragon ball'], description: 'Horizonte de Namek', confidence: 0.85 },
+          { timestampSec: 18, visualCategory: 'anime_animation', detectedEntities: ['namek', 'dragon ball'], description: 'Céu verde de Namek', confidence: 0.85 },
         ],
       },
     );
@@ -1103,7 +1106,9 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
 
     expect(audit.approvedAssets.length).toBe(2);
     expect(audit.coverageReport.segments[0]?.covered).toBe(true);
-    expect(audit.coverageReport.segments[0]?.usableDurationSec).toBe(60);
+    // Usable time is the span the sampled frames prove (first/last proving frame), not the raw file length.
+    expect(audit.coverageReport.segments[0]?.usableDurationSec).toBeGreaterThanOrEqual(59);
+    expect(audit.coverageReport.segments[0]?.usableDurationSec).toBeLessThanOrEqual(60);
     expect(audit.coverageReport.segments[0]?.relevantIntervals.length).toBe(2);
     expect(audit.unresolvedGapsForReview).toEqual([]);
   });

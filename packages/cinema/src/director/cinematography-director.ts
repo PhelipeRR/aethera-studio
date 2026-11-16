@@ -333,10 +333,14 @@ export function directNarrativeAndShots(input: {
 
   if (input.externalDirection?.beats && input.externalDirection.beats.length >= 6) {
     const extBeats = input.externalDirection.beats;
-    const pctEach = 1 / extBeats.length;
+    // Each beat's slot follows its spoken text (the voice-over it must carry), not an equal share of the target:
+    // equal slots left short narrations under long silent shots and starved long ones.
+    const wordCounts = extBeats.map((b) => b.summary.split(/\s+/).filter(Boolean).length);
+    const weighted = wordCounts.every((w) => w >= 6);
+    const totalWords = wordCounts.reduce((a, w) => a + w, 0);
     stages = extBeats.map((b, idx) => ({
       stage: b.stage ?? (idx === 0 ? 'hook' : idx === extBeats.length - 1 ? 'resolution' : 'progression'),
-      pct: pctEach,
+      pct: weighted ? (wordCounts[idx] ?? 0) / Math.max(1, totalWords) : 1 / extBeats.length,
       intensity: idx === extBeats.length - 2 ? 0.92 : 0.72,
       sensitive: /luto|tragédia|sensível/i.test(input.brief.prompt),
       summary: b.summary,

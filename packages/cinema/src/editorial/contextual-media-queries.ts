@@ -1,0 +1,252 @@
+/**
+ * Contextual media queries.
+ *
+ * Builds scene search queries from the work, character, ability, action and context a scene narrates, instead of
+ * generic templates ("<prompt title> Cena 9 scene clip"). Queries come in several languages and are deduplicated by a
+ * canonical key, so equivalent wordings ("Fairy Tail Natsu anime clip" / "anime clip Natsu Fairy Tail") run once.
+ */
+
+const STOPWORDS = new Set([
+  // pt-BR
+  'a', 'o', 'as', 'os', 'um', 'uma', 'uns', 'umas', 'de', 'do', 'da', 'dos', 'das', 'e', 'em', 'no', 'na', 'nos', 'nas',
+  'por', 'para', 'com', 'sem', 'que', 'se', 'ao', 'aos', 'mais', 'muito', 'como', 'seu', 'sua', 'ele', 'ela', 'isso',
+  'esse', 'essa', 'este', 'esta', 'aqui', 'ali', 'la', 'lá', 'sim', 'nao', 'não', 'quem', 'onde', 'quando', 'tem',
+  'ser', 'era', 'foi', 'sao', 'são', 'cena', 'cenas',
+  // en
+  'the', 'an', 'of', 'and', 'or', 'in', 'on', 'to', 'for', 'with', 'by', 'at', 'from', 'is', 'clip', 'clips', 'scene',
+  'scenes', 'video', 'official', 'hd', '4k', 'full',
+]);
+
+/** Common anime/game vocabulary written in Portuguese narration, with the term international uploads use. */
+const PT_EN_GLOSSARY: Array<[RegExp, string]> = [
+  [/expans[aã]o de dom[ií]nio/i, 'domain expansion'],
+  [/energia amaldi[cç]oada/i, 'cursed energy'],
+  [/t[eé]cnicas? inatas?/i, 'innate technique'],
+  [/feiticeiros?/i, 'sorcerer'],
+  [/maldi[cç][aã]o|maldi[cç][oõ]es/i, 'curse'],
+  [/alquimia|alquimista/i, 'alchemy'],
+  [/transmuta[cç][aã]o/i, 'transmutation'],
+  [/troca equivalente/i, 'equivalent exchange'],
+  [/c[ií]rculo de transmuta[cç][aã]o/i, 'transmutation circle'],
+  [/grim[oó]rios?/i, 'grimoire'],
+  [/anti[- ]?magia/i, 'anti magic'],
+  [/ca[cç]adores? de drag[oõ]es|dragon slayers?/i, 'dragon slayer'],
+  [/guildas?/i, 'guild'],
+  [/linhas? (?:faciais|no rosto)|marcas? no rosto/i, 'face marks'],
+  [/m[uú]sculos?/i, 'muscles'],
+  [/nen\b/i, 'nen'],
+  [/(?:hunter|ca[cç]ador)/i, 'hunter'],
+  [/transforma[cç][aã]o|transforma/i, 'transformation'],
+  [/lutas?|batalhas?|combate/i, 'fight'],
+  [/torneio|exame/i, 'exam'],
+  [/treinamento|treino/i, 'training'],
+  [/abertura/i, 'opening'],
+];
+
+export function normalizeQueryText(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Canonical key for query equivalence: accent/case/punctuation-insensitive, order-insensitive, stopword-free.
+ * "Fairy Tail Natsu anime clip" and "anime Natsu — Fairy Tail" share a key.
+ */
+export function canonicalQueryKey(query: string): string {
+  const tokens = normalizeQueryText(query)
+    .split(' ')
+    .filter((t) => t.length >= 2 && !STOPWORDS.has(t));
+  return [...new Set(tokens)].sort().join(' ');
+}
+
+/** Removes queries equivalent to an earlier one (same canonical key) or empty after normalisation. */
+export function dedupeEquivalentQueries(queries: readonly string[], alreadyRun?: ReadonlySet<string>): string[] {
+  const seen = new Set<string>(alreadyRun ?? []);
+  const out: string[] = [];
+  for (const raw of queries) {
+    const q = raw.replace(/\s+/g, ' ').trim();
+    const key = canonicalQueryKey(q);
+    if (!q || !key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(q);
+  }
+  return out;
+}
+
+/** Spoken-narration duration estimate: ~2.35 words/s in pt-BR, ~2.6 in English. */
+export function estimateNarrationSec(text: string, language = 'pt-BR'): number {
+  const words = text.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
+  const wps = /^en/i.test(language) ? 2.6 : 2.35;
+  // Sentence pauses add ~0.25s each
+  const pauses = (text.match(/[.!?…]+/g) ?? []).length * 0.25;
+  return Number((words / wps + pauses).toFixed(1));
+}
+
+const MULTI_WORK_PATTERN =
+  /\b(?:top\s*\d+\s+)?(?:\d+\s+)?(animes|mang[aá]s|jogos|games|filmes|s[eé]ries|doramas|webtoons)\b/i;
+
+/** A ranking/list of several works (e.g. "TOP 5 animes com sistemas de magia"), not one work's internals. */
+export function isMultiWorkPrompt(prompt: string): boolean {
+  return MULTI_WORK_PATTERN.test(prompt) && /\b(top\s*\d+|\d+\s+(?:animes|jogos|games|filmes|s[eé]ries|mang[aá]s)|ranking|melhores|lista)\b/i.test(prompt);
+}
+
+const REFERENCE_TRIGGER_PATTERN =
+  /\b(?:quem (?:gostou|curtiu|ama|adorou|curte|gosta) de|f[aã]s de|parecid[oa]s? com|similares? a|semelhantes? a|no estilo de|for fans of|if you liked)\s+/giu;
+const REFERENCE_NAME_PATTERN = /^([A-Z0-9][\p{L}\p{N}'’!?-]*(?:\s+(?:[A-Z0-9][\p{L}\p{N}'’!?:-]*|of|no|wo|x|the))*)/u;
+
+/** Works the prompt uses as a reference point ("para quem gostou de Black Clover" → "Black Clover"). */
+export function detectReferenceWorks(prompt: string): string[] {
+  const out: string[] = [];
+  for (const m of prompt.matchAll(REFERENCE_TRIGGER_PATTERN)) {
+    const rest = prompt.slice((m.index ?? 0) + m[0].length);
+    const raw = REFERENCE_NAME_PATTERN.exec(rest)?.[1] ?? '';
+    const name = raw.replace(/[\s:–—-]+$/u, '').replace(/\s+(?:of|no|wo|the|x)$/i, '').trim();
+    if (name.length >= 3 && name.split(/\s+/).length <= 6) out.push(name);
+  }
+  return [...new Set(out)];
+}
+
+const PROPER_NOUN_PATTERN = /\b([A-ZÀ-Ý][\p{L}'’-]+(?:\s+(?:[A-ZÀ-Ý][\p{L}'’-]+|x|no|de|of)){0,3})/gu;
+const NON_NAME_WORDS = new Set(
+  [
+    'Primeiro', 'Segundo', 'Terceiro', 'Quarto', 'Quinto', 'Sexto', 'Sétimo', 'Oitavo', 'Nono', 'Décimo', 'Lugar',
+    'Agora', 'Hoje', 'Aqui', 'Mas', 'Por', 'Nos', 'Nas', 'Sim', 'Lá', 'Em', 'No', 'Na', 'Os', 'As', 'O', 'A', 'E', 'É',
+    'Um', 'Uma', 'Se', 'Quem', 'Quando', 'Isso', 'Esse', 'Essa', 'Este', 'Esta', 'Então', 'Comparando', 'Ele', 'Ela',
+    'Criado', 'Sistema', 'Magia', 'Anime', 'Animes', 'Mangá', 'Manga', 'Você', 'Vamos', 'Até', 'Também', 'Todo',
+    'Toda', 'Cada', 'Com', 'Sem', 'Para', 'Pra', 'Que', 'Como', 'Weekly', 'Shonen', 'Jump', 'Magazine', 'The', 'And',
+    'Protagonista', 'Por', 'Trás', 'Quanto', 'Nesse', 'Nessa', 'Desse', 'Dessa', 'Dele', 'Dela', 'Seu', 'Sua', 'Só',
+    'Tudo', 'Nada', 'Mesmo', 'Ainda', 'Já', 'Depois', 'Antes', 'Enquanto', 'Muito', 'Pouco', 'Bem', 'Mal', 'Assim',
+  ].map((w) => w.toLowerCase()),
+);
+
+/**
+ * Proper names that matter visually (characters, techniques, places) from the scene narration and the entity facts.
+ * Only names also grounded in the research facts — or repeated in the narration — are kept, so a passing mention
+ * of another work does not become a search term.
+ */
+export function extractVisualKeywords(input: {
+  narrationText: string;
+  entityName?: string;
+  facts?: readonly string[];
+  excludeNames?: readonly string[];
+  max?: number;
+}): string[] {
+  const max = input.max ?? 4;
+  const entityNorm = normalizeQueryText(input.entityName ?? '');
+  const excluded = new Set((input.excludeNames ?? []).map((n) => normalizeQueryText(n)).filter(Boolean));
+  const factsNorm = normalizeQueryText((input.facts ?? []).join(' '));
+  const narrNorm = normalizeQueryText(input.narrationText);
+  const collect = (text: string): string[] => {
+    const names: string[] = [];
+    for (const m of text.matchAll(PROPER_NOUN_PATTERN)) {
+      const at = m.index ?? 0;
+      const before = text.slice(Math.max(0, at - 32), at);
+      // Authors and publishers are not visible on screen.
+      if (/\b(?:criad[oa]|escrit[oa]|desenhad[oa]|obra|mang[aá]|autor[a]?|dirigid[oa]|produzid[oa]|est[uú]dio)\s+(?:por|de|pel[oa])\s*$/i.test(before)) continue;
+      const words = (m[1] ?? '').split(/\s+/).filter((w) => !NON_NAME_WORDS.has(w.toLowerCase()));
+      const name = words.join(' ').replace(/^(?:de|of|no|x)\s+|\s+(?:de|of|no|x)$/gi, '').trim();
+      if (name.length < 3) continue;
+      // A single capitalised word opening a sentence is grammar, not a name.
+      const sentenceInitial = at === 0 || /[.!?…:;"“(\n]\s*$/.test(before);
+      if (sentenceInitial && name.split(/\s+/).length === 1 && words.length === (m[1] ?? '').split(/\s+/).length) continue;
+      names.push(name);
+    }
+    return names;
+  };
+  const scored = new Map<string, { name: string; score: number }>();
+  const add = (name: string, weight: number) => {
+    const norm = normalizeQueryText(name);
+    if (!norm || norm.length < 3) return;
+    if (entityNorm && (entityNorm.includes(norm) || norm.includes(entityNorm))) return;
+    if ([...excluded].some((ex) => ex.includes(norm) || norm.includes(ex))) return;
+    const prev = scored.get(norm);
+    scored.set(norm, { name: prev?.name ?? name, score: (prev?.score ?? 0) + weight });
+  };
+  for (const name of collect(input.narrationText)) {
+    const norm = normalizeQueryText(name);
+    const grounded = factsNorm.includes(norm) || norm.split(' ').some((t) => t.length >= 4 && factsNorm.includes(t));
+    // Narration-only names need repetition to count; names grounded in the research facts count at once.
+    add(name, grounded ? 3 : 0.6);
+  }
+  for (const name of collect((input.facts ?? []).join('. '))) {
+    const norm = normalizeQueryText(name);
+    add(name, narrNorm.includes(norm) ? 2 : 0.5);
+  }
+  return [...scored.values()]
+    .filter((s) => s.score >= 1)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, max)
+    .map((s) => s.name);
+}
+
+/** International (English) terms for Portuguese ability/action vocabulary found in the text. */
+export function translateVisualTerms(text: string, max = 3): string[] {
+  const out: string[] = [];
+  for (const [re, en] of PT_EN_GLOSSARY) {
+    if (re.test(text) && !out.includes(en)) out.push(en);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+export type ContextualQueryDomain = 'anime' | 'gaming' | 'technology' | 'documentary' | 'general';
+
+export interface ContextualQueryInput {
+  /** The work the scene must show (anime/game title). */
+  work: string;
+  /** Characters, techniques or places the scene narrates. */
+  keywords?: readonly string[];
+  /** English terms for abilities/actions (from the glossary). */
+  actionTerms?: readonly string[];
+  domain: ContextualQueryDomain;
+  /** Overview/montage scenes (hook, promise, outro) ask for trailers/openings rather than one event. */
+  overview?: boolean;
+  max?: number;
+}
+
+/**
+ * Search queries for one scene, most specific first, in English and Portuguese. The work title is always present:
+ * a query without the work would return lookalikes that can never prove identity.
+ */
+export function buildContextualSceneQueries(input: ContextualQueryInput): string[] {
+  const work = input.work.replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
+  if (!work) return [];
+  const kws = (input.keywords ?? []).filter(Boolean);
+  const acts = (input.actionTerms ?? []).filter(Boolean);
+  const char = kws[0];
+  const second = kws[1];
+  const act = acts[0];
+  const out: string[] = [];
+  if (input.domain === 'anime') {
+    if (input.overview) {
+      out.push(`${work} anime official trailer`, `${work} opening`, `${work} trailer oficial legendado`, `${work} PV`);
+      if (char) out.push(`${work} ${char} anime`);
+    } else {
+      if (char && act) out.push(`${work} ${char} ${act} anime`);
+      if (char) out.push(`${work} ${char} anime scene`);
+      if (act) out.push(`${work} ${act} anime`);
+      if (second) out.push(`${work} ${second} anime`);
+      if (char) out.push(`${work} ${char} cena dublado`);
+      out.push(`${work} anime official trailer`, `${work} anime fight scene`, `${work} cena anime`);
+    }
+  } else if (input.domain === 'gaming') {
+    if (input.overview) {
+      out.push(`${work} official trailer`, `${work} gameplay trailer`);
+    } else {
+      if (char && act) out.push(`${work} ${char} ${act} gameplay`);
+      if (char) out.push(`${work} ${char} gameplay`);
+      if (act) out.push(`${work} ${act} gameplay`);
+      out.push(`${work} gameplay no commentary`, `${work} official trailer`, `${work} gameplay pt-br`);
+    }
+  } else {
+    if (char) out.push(`${work} ${char}`);
+    if (act) out.push(`${work} ${act}`);
+    out.push(`${work} official footage`, `${work} documentary footage`, `${work} cenas`);
+  }
+  return dedupeEquivalentQueries(out).slice(0, input.max ?? 6);
+}

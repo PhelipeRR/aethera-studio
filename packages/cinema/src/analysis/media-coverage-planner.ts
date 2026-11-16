@@ -261,6 +261,49 @@ export function detectMediaRepetition(
 }
 
 /**
+ * Source intervals an approved asset can contribute. Without vision evidence (legacy/local assets) the whole file
+ * is usable; with vision, only proven intervals — or the first→last proving span when all sampled frames agree.
+ */
+export function usableSourceIntervals(
+  asset: AcquiredMediaAsset,
+  decision: MediaRelevanceDecision | undefined,
+): Array<{ startSec: number; endSec: number }> {
+  const full = [{ startSec: 0, endSec: Math.max(0, asset.durationSec) }];
+  if (!decision || decision.visualVerificationStatus !== 'visually_verified' || !decision.matchedIntervals?.length) {
+    return full;
+  }
+  const evidence = decision.visualEvidence ?? [];
+  const matched = decision.matchedEntities.map((m) => m.toLowerCase()).filter((m) => m.length >= 3);
+  const norm = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  // A frame proves identity only if it names one of the entities the gate matched (not just any entity).
+  const positive = evidence.filter(
+    (e) => e.confidence >= 0.4 && matched.some((m) => norm(`${e.description} ${e.detectedEntities.join(' ')}`).includes(norm(m))),
+  );
+  const consistentIdentity = evidence.length >= 3 && positive.length >= Math.ceil(evidence.length * 0.75);
+  if (consistentIdentity) {
+    const first = Math.min(...positive.map((e) => e.timestampSec));
+    const last = Math.max(...positive.map((e) => e.timestampSec));
+    return [
+      {
+        startSec: Math.max(0, first - 1.5),
+        endSec: Math.min(asset.durationSec, last + 2.5),
+      },
+    ];
+  }
+  const merged = decision.matchedIntervals
+    .map((iv) => ({ startSec: Math.max(0, iv.startSec), endSec: Math.min(asset.durationSec, iv.endSec) }))
+    .filter((iv) => iv.endSec - iv.startSec >= 1)
+    .sort((a, b) => a.startSec - b.startSec);
+  const out: Array<{ startSec: number; endSec: number }> = [];
+  for (const iv of merged) {
+    const last = out[out.length - 1];
+    if (last && iv.startSec <= last.endSec) last.endSec = Math.max(last.endSec, iv.endSec);
+    else out.push({ ...iv });
+  }
+  return out;
+}
+
+/**
  * Media Coverage Planner + Quality Gate: never mistakes raw file duration for editorial coverage.
  */
 export function planMediaCoverage(input: {
@@ -317,8 +360,17 @@ export function planMediaCoverage(input: {
 
   // Track unique non-overlapping usable time per asset (capped at 45s per asset if not segmented, so a single 90s clip cannot fake 600s coverage)
   const remainingUsableByAsset = new Map<string, number>();
+  // Source intervals each asset can still give. Visually verified media only offers the intervals the gate proved
+  // (or the span between its first and last proving frame when every sampled frame confirmed the identity), so a
+  // 90s upload with one matching frame no longer counts as 90s of coverage.
+  const remainingIntervalsByAsset = new Map<string, Array<{ startSec: number; endSec: number }>>();
   for (const asset of validAssets) {
-    remainingUsableByAsset.set(asset.mediaId, asset.durationSec);
+    const intervals = usableSourceIntervals(asset, decisionByMediaId.get(asset.mediaId));
+    remainingIntervalsByAsset.set(asset.mediaId, intervals);
+    remainingUsableByAsset.set(
+      asset.mediaId,
+      Number(intervals.reduce((acc, iv) => acc + (iv.endSec - iv.startSec), 0).toFixed(2)),
+    );
   }
 
   const segments: SegmentCoverageRecord[] = [];
@@ -350,6 +402,14 @@ export function planMediaCoverage(input: {
         if (decision.eligibleSegmentIds.includes(seg.segmentId)) {
           return true;
         }
+        // Reuse across compatible scenes: footage verified for one scene of the same work can illustrate another
+        // scene of that work, as long as this scene does not narrate a specific event the clip was never checked for.
+        // The unused-interval pool below keeps each source second from counting twice.
+        const sharesWork =
+          decision.correspondenceLevel === 'exact_match' &&
+          decision.visualVerificationStatus === 'visually_verified' &&
+          (asset.relevantToEntities ?? decision.matchedEntities).some((e) => entities.includes(e));
+        if (sharesWork && !expectation.requiresSpecificEventVisual) return true;
         return decision.correspondenceLevel === 'contextual_support' && !expectation.requiresSpecificEventVisual;
       }
       if (!asset.relevantToEntities || asset.relevantToEntities.length === 0) {
@@ -384,16 +444,40 @@ export function planMediaCoverage(input: {
         relevantIntervals.push({ mediaId: asset.mediaId, startSec: u.sourceStartSec, endSec: u.sourceEndSec });
       }
     } else {
-      for (const cand of candidates) {
-        const rem = remainingUsableByAsset.get(cand.mediaId) ?? 0;
-        if (rem <= 0) continue;
-        const take = Math.min(rem, Math.max(0, seg.expectedDurationSec - usableDurationSec));
-        if (take > 0) {
+      // Assets verified for THIS scene first, then compatible ones; a scene is a montage of several short
+      // intervals from several sources rather than one long clip.
+      const ordered = [...candidates].sort((a, b) => {
+        const own = (x: AcquiredMediaAsset) => (decisionByMediaId.get(x.mediaId)?.eligibleSegmentIds?.includes(seg.segmentId) ? 1 : 0);
+        return own(b) - own(a);
+      });
+      const perSourceCap = ordered.length > 1 ? Math.max(6, seg.expectedDurationSec * 0.6) : seg.expectedDurationSec;
+      for (const cand of ordered) {
+        const pool = remainingIntervalsByAsset.get(cand.mediaId) ?? [];
+        let takenFromSource = 0;
+        while (pool.length > 0 && usableDurationSec < seg.expectedDurationSec && takenFromSource < perSourceCap) {
+          const iv = pool[0]!;
+          const need = Math.min(seg.expectedDurationSec - usableDurationSec, perSourceCap - takenFromSource);
+          const span = iv.endSec - iv.startSec;
+          const take = Math.min(span, need);
+          if (take < 1) {
+            if (span < 1) pool.shift();
+            break;
+          }
+          relevantIntervals.push({
+            mediaId: cand.mediaId,
+            startSec: Number(iv.startSec.toFixed(2)),
+            endSec: Number((iv.startSec + take).toFixed(2)),
+          });
           usedSources.add(cand.mediaId);
-          remainingUsableByAsset.set(cand.mediaId, Math.max(0, rem - take));
           usableDurationSec += take;
-          relevantIntervals.push({ mediaId: cand.mediaId, startSec: 0, endSec: Number(take.toFixed(2)) });
+          takenFromSource += take;
+          if (take >= span - 0.01) pool.shift();
+          else iv.startSec += take;
         }
+        remainingUsableByAsset.set(
+          cand.mediaId,
+          Number(pool.reduce((acc, iv) => acc + (iv.endSec - iv.startSec), 0).toFixed(2)),
+        );
         if (usableDurationSec >= seg.expectedDurationSec) break;
       }
     }

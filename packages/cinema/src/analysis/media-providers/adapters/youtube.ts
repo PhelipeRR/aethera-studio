@@ -1,3 +1,4 @@
+import { isAnimeSubjectOrGenre } from '../../anime-source-adapters.js';
 import { classifyProviderItem } from '../classification.js';
 import { healthFromProbe, nowIso, requestJson } from '../http.js';
 import {
@@ -84,11 +85,13 @@ export class YouTubeAdapter implements MediaProviderAdapter {
     const vp = new URLSearchParams({ part: 'snippet,contentDetails,status', id: ids.join(','), key });
     const { data: videos } = await requestJson<VideosResponse>('youtube', `https://www.googleapis.com/youtube/v3/videos?${vp}`, common);
     const publishers = request.context?.knownPublishers ?? [];
+    // Anime scenes classify anime footage (episode clips, openings, PVs) instead of trailer/gameplay/stock.
+    const animeContext = isAnimeSubjectOrGenre(`${request.context?.prompt ?? ''} ${(request.context?.entities ?? []).join(' ')} ${request.query}`, request.context?.genre);
     const items: ProviderMediaItem[] = (videos.items ?? []).map((v) => {
       const sn = v.snippet ?? {};
       const title = sn.title ?? v.id;
-      const cls = classifyProviderItem({ provider: 'youtube', hint: 'youtube_video', kind: 'video', title, description: sn.description ?? '', tags: sn.tags ?? [], ...(sn.channelTitle ? { channelTitle: sn.channelTitle } : {}), officialPublishers: publishers });
-      const official = cls.confidence >= 0.8 && (cls.classification === 'official_game_trailer' || cls.classification === 'authentic_gameplay');
+      const cls = classifyProviderItem({ provider: 'youtube', hint: 'youtube_video', kind: 'video', title, description: sn.description ?? '', tags: sn.tags ?? [], ...(sn.channelTitle ? { channelTitle: sn.channelTitle } : {}), officialPublishers: publishers, animeContext });
+      const official = cls.confidence >= 0.8 && (cls.classification === 'official_game_trailer' || cls.classification === 'authentic_gameplay' || cls.classification === 'anime_footage');
       const cc = v.status?.license === 'creativeCommon';
       const license: LicenseInfo = cc
         ? { licenseId: 'cc-by-3.0', licenseName: 'Creative Commons BY (YouTube)', licenseUrl: 'https://creativecommons.org/licenses/by/3.0/', ...(sn.channelTitle ? { author: sn.channelTitle, attributionText: `"${title}" por ${sn.channelTitle} (CC BY) — YouTube` } : {}), commercialUse: 'allowed', automatedDownload: 'unknown', attributionRequired: true, restrictions: ['attribution_required'] }

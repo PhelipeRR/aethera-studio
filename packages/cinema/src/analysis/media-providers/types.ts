@@ -39,6 +39,8 @@ export type MediaClassification =
   | 'stock_video'
   | 'stock_image'
   | 'anime_image'
+  /** Video footage of an anime (episode clip, opening, PV/trailer, scene upload). */
+  | 'anime_footage'
   | 'anime_reaction_gif'
   | 'dataset_media'
   | 'ai_generated';
@@ -51,6 +53,7 @@ export const MEDIA_CLASSIFICATION_LABELS: Record<MediaClassification, string> = 
   stock_video: 'Stock Video',
   stock_image: 'Stock Image',
   anime_image: 'Anime Image',
+  anime_footage: 'Anime Footage',
   anime_reaction_gif: 'Anime Reaction GIF',
   dataset_media: 'Dataset Media',
   ai_generated: 'AI Generated',

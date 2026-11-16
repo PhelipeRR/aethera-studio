@@ -1,5 +1,15 @@
 import { createHash } from 'node:crypto';
 import type { EditorialScript, EditorialSegment } from './editorial-integrity.js';
+import {
+  buildContextualSceneQueries,
+  dedupeEquivalentQueries,
+  detectReferenceWorks,
+  estimateNarrationSec,
+  extractVisualKeywords,
+  isMultiWorkPrompt,
+  normalizeQueryText,
+  translateVisualTerms,
+} from './contextual-media-queries.js';
 
 export type PromptDomain = 'gaming' | 'anime' | 'technology' | 'documentary' | 'general';
 export type PromptFormatIntent = 'top_ranking' | 'narrative_essay' | 'documentary' | 'trailer';
@@ -38,6 +48,10 @@ export interface PromptInterpretation {
   tone: string;
   humorIntensity: number;
   language: string;
+  /** The prompt asks for several works (a ranking of animes/games), each ranked entity is its own work. */
+  multiWork?: boolean;
+  /** Works the prompt uses as a reference point ("para quem gostou de Black Clover"). */
+  referenceWorks?: string[];
 }
 
 export interface ResearchSourceRef {
@@ -105,6 +119,17 @@ export interface SemanticSceneCut {
     graphicsHints: string[];
   };
   dependencyHash: string;
+  /** Work(s) whose footage may illustrate this scene. Overview scenes accept any of the ranked works. */
+  works?: string[];
+  /** Characters, techniques or places the narration names (search + identity evidence). */
+  visualKeywords?: string[];
+  /**
+   * How the scene's subject was resolved: `entity` named in the narration, `inherited` from the previous scene
+   * (continuation of the same item), `reference` work cited by the prompt, `overview` montage of the ranked works.
+   */
+  subjectResolution?: 'entity' | 'inherited' | 'reference' | 'overview' | 'none';
+  /** Narration length estimate (s) the coverage must match. */
+  narrationSec?: number;
 }
 
 export interface EditorialRecoveryStep {
@@ -146,7 +171,7 @@ export function interpretProductionPrompt(
   const lower = cleaned.toLowerCase();
 
   // Detect requested item count (e.g., "10 chefes", "top 10", "10 melhores upgrades", "5 produtos")
-  const countMatch = /\b(?:top\s+)?(\d{1,2})\s+(?:melhores\s+|maiores\s+|principais\s+|piores\s+)?(?:chefes|bosses|upgrades|implantes|cyberwares|cibern[eé]tic[oa]s?|produtos|tecnologias|ferramentas|recursos|armas|builds|jogos|lutas|momentos|fatos|itens|personagens|batalhas|epis[oó]dios)\b/iu.exec(cleaned);
+  const countMatch = /\b(?:top\s+)?(\d{1,2})\s+(?:melhores\s+|maiores\s+|principais\s+|piores\s+)?(?:chefes|bosses|upgrades|implantes|cyberwares|cibern[eé]tic[oa]s?|produtos|tecnologias|ferramentas|recursos|armas|builds|jogos|lutas|momentos|fatos|itens|personagens|batalhas|epis[oó]dios|animes|mang[aá]s|filmes|s[eé]ries|obras|games)\b/iu.exec(cleaned);
   const requestedCount = countMatch?.[1] ? Math.max(1, Math.min(25, Number(countMatch[1]))) : undefined;
 
   // Detect duration in prompt if not explicitly provided
@@ -160,7 +185,7 @@ export function interpretProductionPrompt(
   let domain: PromptDomain = 'general';
   if (/\b(elden ring|cyberpunk\s*2077|cyberpunk|dark souls|sekiro|bloodborne|witcher|baldur|hollow knight|god of war|zelda|minecraft|gameplay|boss|chefe|cyberware|implante|cibern[eé]tica|jogo|game|soulslike)\b/i.test(lower)) {
     domain = 'gaming';
-  } else if (/\b(dragon ball|naruto|one piece|anime|manga|bleach|jujutsu|attack on titan)\b/i.test(lower)) {
+  } else if (/\b(dragon ball|naruto|one piece|animes?|mang[aá]s?|bleach|jujutsu|attack on titan|black clover|fairy tail|hunter x hunter)\b/i.test(lower)) {
     domain = 'anime';
   } else if (/\b(tecnologia|produto|hardware|software|smartphone|iphone|notebook|laptop|placa de v[ií]deo|gpu|rtx|nvidia|amd|intel|apple|samsung|review|benchmark)\b/i.test(lower)) {
     domain = 'technology';
@@ -187,7 +212,18 @@ export function interpretProductionPrompt(
       break;
     }
   }
-  if (!workTitle) {
+  const multiWork = isMultiWorkPrompt(cleaned);
+  const referenceWorks = detectReferenceWorks(cleaned);
+  if (multiWork) {
+    // A ranking of several works has no single "work": the label is the list's theme, never a search prefix.
+    const heading = (cleaned.split(/\r?\n/).find((l) => l.trim().length > 0) ?? cleaned)
+      .replace(/^[#\s*]+/, '')
+      .replace(/\*+/g, '')
+      .replace(/\btop\s*\d+\s*/i, '')
+      .replace(/\s*\b(?:para|pra)\s+(?:quem|f[aã]s)\b.*$/i, '')
+      .trim();
+    workTitle = heading.slice(0, 72) || cleaned.slice(0, 48);
+  } else if (!workTitle) {
     const deMatch = /\b(?:de|sobre|do|da|in|of)\s+([A-Z][\wÀ-ÿ]+(?:\s+[A-Z0-9][\wÀ-ÿ]+){0,3})/u.exec(cleaned);
     workTitle = deMatch?.[1]?.trim() || cleaned.slice(0, 48);
   }
@@ -252,7 +288,16 @@ export function interpretProductionPrompt(
     tone,
     humorIntensity,
     language,
+    ...(multiWork ? { multiWork: true } : {}),
+    ...(referenceWorks.length > 0 ? { referenceWorks } : {}),
   };
+}
+
+/** Multi-work production (ranking of several animes/games), including jobs interpreted before the flag existed. */
+export function isMultiWorkProduction(
+  interpretation: Pick<PromptInterpretation, 'multiWork' | 'formatIntent' | 'originalPrompt'>,
+): boolean {
+  return interpretation.multiWork === true || (interpretation.formatIntent === 'top_ranking' && isMultiWorkPrompt(interpretation.originalPrompt));
 }
 
 export function validateEditorialResearchDossier(
@@ -577,20 +622,67 @@ export function buildSemanticDecupagem(
   interpretation: PromptInterpretation,
 ): SemanticSceneCut[] {
   const beats = Array.isArray(script.segments) ? script.segments : [];
-  const rawTotalDur = beats.reduce((acc, b) => acc + Math.max(4, b.estimatedDurationSec), 0) || interpretation.targetDurationSec;
-  const scale = interpretation.targetDurationSec > 0 ? interpretation.targetDurationSec / rawTotalDur : 1;
+  const multiWork = isMultiWorkProduction(interpretation);
+  const referenceWorks = interpretation.referenceWorks ?? detectReferenceWorks(interpretation.originalPrompt);
+  // Narration time follows the words actually written, not targetDuration / beats: a 532s script split into
+  // 12 × 50s demanded coverage the voice-over never needed. Beats without real text keep their estimate.
+  const narrationDur = beats.map((b) => {
+    const words = b.spokenText.split(/\s+/).filter(Boolean).length;
+    return words >= 6
+      ? Math.max(4, Math.round(estimateNarrationSec(b.spokenText, interpretation.language)))
+      : Math.max(4, Math.round(b.estimatedDurationSec));
+  });
   let cursorSec = 0;
+  let previous: { entity: ResearchEntityFact; stage: EditorialSegment['stage'] } | undefined;
 
   return beats.map((beat, idx) => {
-    const matchedEntity = matchBeatToEntity(beat, dossier.entities, dossier.workTitle);
-    const entities = matchedEntity ? [matchedEntity.entityName] : [];
+    const resolved = resolveSceneSubject({
+      beat,
+      entities: dossier.entities,
+      workTitle: dossier.workTitle,
+      referenceWorks,
+      ...(previous ? { previous: previous.entity } : {}),
+    });
+    const matchedEntity = resolved.entity;
+    if (matchedEntity) previous = { entity: matchedEntity, stage: beat.stage };
+    // An overview in a ranking of several works shows those works; in a single-work production the overview is the
+    // work itself (its ranked items — bosses, implants — are not required on screen in an intro).
+    const overviewWorks =
+      resolved.resolution === 'overview' && multiWork ? dossier.entities.map((e) => cleanEntityForQuery(e.entityName)) : [];
+    const secondary = multiWork ? resolved.secondaryEntity : undefined;
+    const sceneWorks = matchedEntity
+      ? multiWork
+        ? [cleanEntityForQuery(matchedEntity.entityName), ...(secondary ? [cleanEntityForQuery(secondary.entityName)] : [])]
+        : [dossier.workTitle]
+      : resolved.referenceWork
+        ? [resolved.referenceWork]
+        : multiWork
+          ? overviewWorks
+          : [dossier.workTitle];
+    const entities = matchedEntity
+      ? [matchedEntity.entityName, ...(secondary ? [secondary.entityName] : [])]
+      : resolved.referenceWork
+        ? [resolved.referenceWork]
+        : overviewWorks;
+    const visualKeywords = extractVisualKeywords({
+      narrationText: beat.spokenText,
+      ...(matchedEntity ? { entityName: matchedEntity.entityName } : resolved.referenceWork ? { entityName: resolved.referenceWork } : {}),
+      facts: matchedEntity ? [...matchedEntity.verifiedFacts, ...matchedEntity.mechanicsOrEvents] : [],
+      excludeNames: [
+        ...dossier.entities.filter((e) => e !== matchedEntity && e !== secondary).map((e) => e.entityName),
+        ...referenceWorks.filter((w) => w !== resolved.referenceWork),
+      ],
+    });
+    const narrationEvent = summarizeNarrationEvent(beat.spokenText);
     const expectedEvent = matchedEntity
-      ? matchedEntity.mechanicsOrEvents[0] ?? matchedEntity.verifiedFacts[0] ?? `Demonstração de ${matchedEntity.entityName}`
-      : beat.stage === 'hook' || beat.stage === 'promise'
-        ? `Abertura temática de ${dossier.workTitle}`
-        : beat.stage === 'cta' || beat.stage === 'resolution'
-          ? `Conclusão e síntese de ${dossier.workTitle}`
-          : beat.title.trim() || `Contexto narrativo de ${dossier.workTitle}`;
+      ? narrationEvent || matchedEntity.mechanicsOrEvents[0] || matchedEntity.verifiedFacts[0] || `Demonstração de ${matchedEntity.entityName}`
+      : resolved.referenceWork
+        ? narrationEvent || `Referência a ${resolved.referenceWork}`
+        : beat.stage === 'hook' || beat.stage === 'promise'
+          ? `Abertura: panorama de ${sceneWorks.slice(0, 5).join(', ') || dossier.workTitle}`
+          : beat.stage === 'cta' || beat.stage === 'resolution'
+            ? `Conclusão: síntese de ${sceneWorks.slice(0, 5).join(', ') || dossier.workTitle}`
+            : narrationEvent || `Contexto narrativo de ${dossier.workTitle}`;
 
     const visualIntent = classifySceneVisualIntent({
       beat,
@@ -600,31 +692,61 @@ export function buildSemanticDecupagem(
       expectedEvent,
     });
 
-    const mediaQueries = buildSpecificMediaQueries(
-      dossier.workTitle,
-      matchedEntity,
-      expectedEvent,
-      interpretation.domain,
-      visualIntent,
-    ).filter((q) => q.toLowerCase() !== interpretation.originalPrompt.toLowerCase());
+    const contextualDomain = interpretation.domain === 'anime' || interpretation.domain === 'gaming' ? interpretation.domain : 'general';
+    const beatTerms = translateVisualTerms(beat.spokenText);
+    const actionTerms = beatTerms.length > 0 ? beatTerms : translateVisualTerms(matchedEntity?.mechanicsOrEvents.join(' ') ?? '');
+    const secondaryKeywords = secondary
+      ? extractVisualKeywords({
+          narrationText: beat.spokenText,
+          entityName: secondary.entityName,
+          facts: [...secondary.verifiedFacts, ...secondary.mechanicsOrEvents],
+          excludeNames: [matchedEntity?.entityName ?? '', ...referenceWorks],
+          max: 3,
+        })
+      : [];
+    const entityKeyword = matchedEntity && !multiWork ? [cleanEntityForQuery(matchedEntity.entityName)] : [];
+    const contextual =
+      multiWork || interpretation.domain === 'anime'
+        ? sceneWorks.slice(0, resolved.resolution === 'overview' ? 5 : 2).flatMap((work, wIdx) =>
+            buildContextualSceneQueries({
+              work,
+              keywords: wIdx === 0 ? [...entityKeyword, ...visualKeywords] : secondary ? secondaryKeywords : [],
+              actionTerms,
+              domain: contextualDomain,
+              overview: resolved.resolution === 'overview' || (!matchedEntity && Boolean(resolved.referenceWork) && visualKeywords.length === 0),
+              max: resolved.resolution === 'overview' ? 2 : wIdx === 0 ? 6 : 3,
+            }),
+          )
+        : [];
+    const legacy = multiWork
+      ? []
+      : buildSpecificMediaQueries(dossier.workTitle, matchedEntity, expectedEvent, interpretation.domain, visualIntent);
+    const mediaQueries = dedupeEquivalentQueries([...contextual, ...legacy]).filter(
+      (q) => q.toLowerCase() !== interpretation.originalPrompt.toLowerCase(),
+    );
 
-    const durationSec = Math.max(6, Math.round(beat.estimatedDurationSec * scale));
+    // Editorial slot = the script's estimate (in the staged pipeline it is itself derived from the narration words);
+    // `narrationSec` is the voice-over the scene must actually cover, which drives media acquisition.
+    const narrationSec = narrationDur[idx] ?? Math.max(4, Math.round(beat.estimatedDurationSec));
+    const durationSec = beat.estimatedDurationSec > 0 ? Math.max(4, Math.round(beat.estimatedDurationSec)) : narrationSec;
     const startSec = cursorSec;
     const endSec = cursorSec + durationSec;
     cursorSec = endSec;
 
-    const entityTokens = matchedEntity
-      ? [
-          ...new Set(
-            getEntityAliases(matchedEntity.entityName)
-              .flatMap((a) => a.split(/[\s,:-]+/))
-              .filter((w) => w.length >= 4 && !GENERIC_ENTITY_STOPWORDS.has(w)),
-          ),
-        ]
-      : dossier.workTitle
-          .toLowerCase()
-          .split(/\s+/)
-          .filter((w) => w.length >= 4);
+    const entityTokens =
+      sceneWorks.length > 0
+        ? [
+            ...new Set(
+              [...entities, ...visualKeywords.slice(0, 2)]
+                .flatMap((name) => getEntityAliases(name))
+                .flatMap((a) => [a, ...a.split(/[\s,:-]+/)])
+                .filter((w) => w.length >= 4 && !GENERIC_ENTITY_STOPWORDS.has(w)),
+            ),
+          ]
+        : dossier.workTitle
+            .toLowerCase()
+            .split(/\s+/)
+            .filter((w) => w.length >= 4);
 
     const expectedActions = matchedEntity?.mechanicsOrEvents.slice(0, 2) ?? [expectedEvent];
     const sceneId = matchedEntity
@@ -676,8 +798,141 @@ export function buildSemanticDecupagem(
       allowedAlternatives: ['alternate_query', 'alternate_interval', 'explanatory_graphic', 'localized_editorial_adjustment'],
       audioDependencies: { sfxCues, vfxEffects, graphicsHints },
       dependencyHash,
+      works: sceneWorks,
+      visualKeywords,
+      subjectResolution: resolved.resolution,
+      narrationSec,
     };
   });
+}
+
+/** First informative clause of the narration (≤ 90 chars), used as the scene's expected visual event. */
+function summarizeNarrationEvent(text: string): string {
+  const sentence =
+    text
+      .split(/(?<=[.!?…])\s+/)
+      .map((s) => s.trim())
+      .find((s) => s.split(/\s+/).length >= 4 && !/^(primeiro|segundo|terceiro|quarto|quinto|sexto|s[eé]timo|oitavo|nono|d[eé]cimo)\s+lugar/i.test(s)) ?? '';
+  return sentence.length > 90 ? `${sentence.slice(0, 87).replace(/\s+\S*$/, '')}…` : sentence;
+}
+
+const NAME_GENERIC_TOKENS = new Set([
+  'magic', 'magia', 'slayer', 'slayers', 'holder', 'caster', 'spells', 'ancient', 'energy', 'energia', 'tecnicas', 'tecnica',
+  'sistema', 'system', 'weekly', 'shonen', 'escola', 'academia', 'cavaleiros', 'esquadroes', 'lei', 'verdade',
+]);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function entityMentionIndex(originalText: string, entity: ResearchEntityFact, workTitle: string): number {
+  const textNorm = normalizeMatchText(originalText);
+  const workTokens = new Set(normalizeMatchText(workTitle).split(/[\s,:-]+/).filter((w) => w.length >= 3));
+  const aliases = getEntityAliases(entity.entityName).filter((a) => a.length >= 4);
+  let best = -1;
+  const consider = (needle: string) => {
+    if (!needle) return;
+    const re = new RegExp(`(^|[^a-z0-9])${escapeRegExp(needle)}([^a-z0-9]|$)`);
+    const m = re.exec(textNorm);
+    if (m) {
+      const pos = m.index + (m[1]?.length ?? 0);
+      if (best === -1 || pos < best) best = pos;
+    }
+  };
+  for (const a of aliases) consider(a);
+  const tokens = aliases
+    .flatMap((a) => a.split(/[\s,&:/-]+/))
+    .filter((w) => w.length >= 5 && !workTokens.has(w) && !GENERIC_ENTITY_STOPWORDS.has(w) && !['magic', 'magia', 'muscles'].includes(w));
+  for (const t of tokens) consider(t);
+  // Characters named in the research facts identify the work too ("Natsu" → Fairy Tail). Only capitalised
+  // occurrences count, so "recuperar energia" never matches "Energia Amaldiçoada".
+  const names = extractVisualKeywords({
+    narrationText: '',
+    entityName: entity.entityName,
+    facts: [...entity.verifiedFacts, ...entity.mechanicsOrEvents],
+    max: 8,
+  });
+  for (const n of names) {
+    const parts = n.split(/\s+/);
+    // Full name, or the first name of a two-word person name ("Natsu Dragneel" → "Natsu"); never generic words
+    // shared with other titles ("Dragon Slayer Magic" must not match "Mashle: Magic and Muscles").
+    const first = parts[0] ?? '';
+    const personLike = parts.length === 2 && first.length >= 4 && !NAME_GENERIC_TOKENS.has(normalizeMatchText(first)) && !GENERIC_ENTITY_STOPWORDS.has(normalizeMatchText(first));
+    const candidates = parts.length > 1 ? [n, ...(personLike ? [first] : [])] : [n];
+    for (const c of candidates) {
+      const re = new RegExp(`(^|[^\p{L}\p{N}])${escapeRegExp(c)}(?=[^\p{L}\p{N}]|$)`, 'u');
+      const m = re.exec(originalText);
+      if (m) {
+        const pos = normalizeMatchText(originalText.slice(0, m.index + (m[1]?.length ?? 0))).length;
+        if (best === -1 || pos < best) best = pos;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Which work/entity a scene shows. The narration's earliest named entity wins (rank announcements come first:
+ * "Primeiro lugar... Fullmetal Alchemist"), then a continuation inherits the previous item, then a reference work
+ * the prompt cites (hook about Black Clover), then — for opening/closing beats — an overview of all ranked works.
+ */
+export function resolveSceneSubject(input: {
+  beat: EditorialSegment;
+  entities: ResearchEntityFact[];
+  workTitle: string;
+  referenceWorks?: string[];
+  previous?: ResearchEntityFact;
+}): {
+  entity?: ResearchEntityFact;
+  /** A second item the same beat narrates at length (closing one ranking position and opening the next). */
+  secondaryEntity?: ResearchEntityFact;
+  referenceWork?: string;
+  resolution: NonNullable<SemanticSceneCut['subjectResolution']>;
+} {
+  const text = input.beat.spokenText;
+  const textNorm = normalizeMatchText(text);
+  const isFraming = ['hook', 'promise', 'cta', 'resolution'].includes(input.beat.stage);
+  const mentions = input.entities
+    .map((e) => ({ entity: e, pos: entityMentionIndex(text, e, input.workTitle) }))
+    .filter((m) => m.pos >= 0)
+    .sort((x, y) => x.pos - y.pos);
+  if (mentions.length === 0 && input.beat.title && !/^cena\s+\d+$/i.test(input.beat.title.trim())) {
+    const byTitle = matchBeatToEntity({ ...input.beat, spokenText: '' }, input.entities, input.workTitle);
+    if (byTitle) return { entity: byTitle, resolution: 'entity' };
+  }
+  if (mentions.length > 0) {
+    // Narration share: the text from one entity's first mention to the next belongs to it; text before the first
+    // mention continues the previous scene's item. A beat that closes item 3 and opens item 2 shows both.
+    const len = Math.max(1, textNorm.length);
+    const shares = new Map<ResearchEntityFact, number>();
+    const lead = mentions[0]!.pos;
+    if (input.previous && !isFraming && lead > 0) shares.set(input.previous, lead);
+    for (let i = 0; i < mentions.length; i += 1) {
+      const cur = mentions[i]!;
+      const end = mentions[i + 1]?.pos ?? len;
+      shares.set(cur.entity, (shares.get(cur.entity) ?? 0) + Math.max(0, end - cur.pos));
+    }
+    const ranked = [...shares.entries()].sort((x, y) => y[1] - x[1]);
+    const [primary] = ranked[0]!;
+    const secondary = ranked.find(([e, share]) => e !== primary && share / len >= 0.2)?.[0];
+    return {
+      entity: primary,
+      ...(secondary ? { secondaryEntity: secondary } : {}),
+      resolution: mentions.some((m) => m.entity === primary) ? 'entity' : 'inherited',
+    };
+  }
+  if (input.previous && !isFraming) return { entity: input.previous, resolution: 'inherited' };
+  // "Hoje vamos conhecer cinco animes..." presents the whole list: an overview of the ranked works.
+  const listOverview =
+    isFraming &&
+    input.entities.length > 1 &&
+    /\b(cinco|seis|sete|oito|nove|dez|\d+|lista|ranking|top)\b[^.]{0,40}\b(animes|jogos|games|obras|filmes|s[eé]ries|mang[aá]s)\b/i.test(text);
+  for (const ref of listOverview ? [] : input.referenceWorks ?? []) {
+    const refNorm = normalizeMatchText(ref);
+    if (refNorm.length >= 3 && textNorm.includes(refNorm)) return { referenceWork: ref, resolution: 'reference' };
+  }
+  if (input.entities.length > 0 && (isFraming || !input.previous)) return { resolution: 'overview' };
+  return { resolution: 'none' };
 }
 
 export function validateScriptAgainstDossier(

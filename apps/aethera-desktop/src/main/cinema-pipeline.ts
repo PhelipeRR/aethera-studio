@@ -42,6 +42,7 @@ import {
   type ScriptSegmentExpectation,
   type ScriptValidationReport,
   type SourceMediaRecord,
+  type TimelineClip,
   buildEditorialScript,
   type EditorialScript,
   interpretProductionPrompt,
@@ -64,6 +65,8 @@ import {
   type MediaCandidateRecord,
   type MediaQueryRecord,
   type TimelinePlacementRecord,
+  estimateNarrationSec,
+  isMultiWorkProduction,
 } from '@neuralbridge/cinema';
 import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
 import { createProductionJobId } from './production-console.js';
@@ -139,10 +142,186 @@ export interface StagedProductionJob {
   mediaRelevanceDecisions?: MediaRelevanceDecision[];
   coverageReport?: MediaCoverageReport;
   autonomousAudit?: AutonomousAcquisitionAuditReport;
+  /**
+   * Per-scene assembly outcome: seconds of verified real footage vs. labeled graphic recovery. Scenes listed with
+   * `status: 'graphic_recovery'` or `'partial'` were rendered, but stay pending for human media review.
+   */
+  sceneAssembly?: SceneAssemblyRecord[];
   isTechnicalSample?: boolean;
   error?: string;
   startedAt?: string;
   updatedAt: string;
+}
+
+export interface SceneAssemblyRecord {
+  sceneId: string;
+  clipId: string;
+  label: string;
+  timelineSec: number;
+  realFootageSec: number;
+  graphicRecoverySec: number;
+  mediaIds: string[];
+  status: 'real_footage' | 'partial' | 'graphic_recovery';
+  /** Why the scene is not fully covered by verified footage (empty when it is). */
+  pendingReason?: string;
+}
+
+/** Below this share of verified real footage across the whole video, the production pauses for human media review. */
+export const MIN_REAL_FOOTAGE_RATIO_TO_ASSEMBLE = 0.35;
+
+type V1Clip = TimelineClip;
+
+function graphicRecoveryEffects(clipId: string, reason: string): TimelineClip['effects'] {
+  return [
+    {
+      effectId: `allow_proc_${clipId}`,
+      kind: 'allow_procedural',
+      params: { authorized: true },
+      enabled: true,
+      estimatedCostMs: 0,
+      fallbackMode: 'skip',
+    },
+    {
+      // Explicit marker: this interval is a typographic/graphic composition, never footage of the work.
+      effectId: `graphic_recovery_${clipId}`,
+      kind: 'graphic_recovery',
+      params: { reason: reason.slice(0, 160), presentedAsEvidence: false },
+      enabled: true,
+      estimatedCostMs: 0,
+      fallbackMode: 'skip',
+    },
+  ];
+}
+
+/**
+ * Splits one scene clip into a montage of verified source intervals (each source second used once, each part no
+ * longer than its proven interval so the renderer never loops it). Whatever the verified footage cannot fill becomes
+ * one explicit, labeled graphic-recovery part — never a repeated clip and never unlabeled filler.
+ */
+export function buildSceneMontage(input: {
+  clip: V1Clip;
+  sceneId: string;
+  label: string;
+  intervals: Array<{ mediaId: string; startSec: number; endSec: number }>;
+  availableMediaIds: ReadonlySet<string>;
+  allowGraphicRecovery: boolean;
+}): { clips: V1Clip[]; record: SceneAssemblyRecord } {
+  const { clip } = input;
+  const rate = Math.max(1, clip.timelineRange.duration.rate);
+  const totalTicks = clip.timelineRange.duration.value;
+  const totalSec = totalTicks / rate;
+  const parts: V1Clip[] = [];
+  const usedMedia: string[] = [];
+  let cursorTicks = 0;
+  let realSec = 0;
+  const seen = new Set<string>();
+  for (const iv of input.intervals) {
+    if (!input.availableMediaIds.has(iv.mediaId)) continue;
+    const key = `${iv.mediaId}:${iv.startSec.toFixed(2)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const remainingSec = (totalTicks - cursorTicks) / rate;
+    if (remainingSec < 1) break;
+    const ivSec = iv.endSec - iv.startSec;
+    if (ivSec < 1) continue;
+    const takeSec = Math.min(ivSec, remainingSec);
+    const takeTicks = Math.max(1, Math.round(takeSec * rate));
+    const partId = parts.length === 0 ? clip.clipId : `${clip.clipId}_p${parts.length + 1}`;
+    parts.push({
+      ...clip,
+      clipId: partId,
+      mediaId: iv.mediaId,
+      label: input.label,
+      timelineRange: {
+        start: { value: clip.timelineRange.start.value + cursorTicks, rate },
+        duration: { value: takeTicks, rate },
+      },
+      sourceRange: {
+        start: { value: Math.round(iv.startSec * 30), rate: 30 },
+        duration: { value: Math.round(takeSec * 30), rate: 30 },
+      },
+      effects: clip.effects.filter((e) => e.kind !== 'allow_procedural'),
+    });
+    if (!usedMedia.includes(iv.mediaId)) usedMedia.push(iv.mediaId);
+    cursorTicks += takeTicks;
+    realSec += takeTicks / rate;
+  }
+  const leftoverTicks = totalTicks - cursorTicks;
+  let recoverySec = 0;
+  let pendingReason: string | undefined;
+  if (leftoverTicks > 0) {
+    const last = parts[parts.length - 1];
+    if (last && (leftoverTicks / rate < 1 || !input.allowGraphicRecovery)) {
+      // A sub-second remainder is absorbed by the previous verified part (it plays on in the same source file).
+      last.timelineRange = { ...last.timelineRange, duration: { value: last.timelineRange.duration.value + leftoverTicks, rate } };
+      realSec += leftoverTicks / rate;
+    } else if (input.allowGraphicRecovery) {
+      recoverySec = leftoverTicks / rate;
+      pendingReason =
+        realSec > 0
+          ? `Footage verificada cobre ${realSec.toFixed(1)}s de ${totalSec.toFixed(1)}s; o restante usa composição gráfica rotulada.`
+          : 'Nenhum intervalo verificado da obra para esta cena; usada composição gráfica rotulada (não é evidência visual da obra).';
+      const partId = parts.length === 0 ? clip.clipId : `${clip.clipId}_g`;
+      parts.push({
+        ...clip,
+        clipId: partId,
+        mediaId: `graphic_recovery_${input.sceneId}`,
+        label: input.label,
+        timelineRange: {
+          start: { value: clip.timelineRange.start.value + cursorTicks, rate },
+          duration: { value: leftoverTicks, rate },
+        },
+        sourceRange: { start: { value: 0, rate: 30 }, duration: { value: Math.round(recoverySec * 30), rate: 30 } },
+        effects: [...clip.effects.filter((e) => e.kind !== 'allow_procedural'), ...graphicRecoveryEffects(partId, pendingReason)],
+      });
+    } else {
+      parts.push(clip);
+    }
+  }
+  const status: SceneAssemblyRecord['status'] =
+    recoverySec <= 0.01 && realSec > 0 ? 'real_footage' : realSec > 0 ? 'partial' : 'graphic_recovery';
+  return {
+    clips: parts,
+    record: {
+      sceneId: input.sceneId,
+      clipId: clip.clipId,
+      label: input.label,
+      timelineSec: Number(totalSec.toFixed(2)),
+      realFootageSec: Number(realSec.toFixed(2)),
+      graphicRecoverySec: Number(recoverySec.toFixed(2)),
+      mediaIds: usedMedia,
+      status,
+      ...(pendingReason ? { pendingReason } : {}),
+    },
+  };
+}
+
+/** Completion message that never hides partial coverage or unresolved rights. */
+export function summarizeAssemblyOutcome(job: Pick<StagedProductionJob, 'sceneAssembly' | 'autonomousAudit'>): string {
+  const assembly = job.sceneAssembly ?? [];
+  const scenes = new Map<string, { real: number; total: number }>();
+  for (const r of assembly) {
+    const cur = scenes.get(r.sceneId) ?? { real: 0, total: 0 };
+    cur.real += r.realFootageSec;
+    cur.total += r.timelineSec;
+    scenes.set(r.sceneId, cur);
+  }
+  const rightsPending = job.autonomousAudit?.pendingLicenseReview?.filter((p) => p.usedInDraft).length ?? 0;
+  if (scenes.size === 0) {
+    return rightsPending > 0
+      ? `Montagem completa pronta no Editor. ${rightsPending} mídia(s) aguardam revisão de direitos antes da publicação.`
+      : 'Montagem completa pronta no Editor!';
+  }
+  const full = [...scenes.values()].filter((s) => s.total - s.real < 0.5).length;
+  const realSec = [...scenes.values()].reduce((a, s) => a + s.real, 0);
+  const totalSec = [...scenes.values()].reduce((a, s) => a + s.total, 0);
+  const pendingScenes = scenes.size - full;
+  const parts = [
+    `Montagem pronta no Editor: ${full}/${scenes.size} cenas com footage verificada completa (${Math.round(realSec)}s de ${Math.round(totalSec)}s).`,
+  ];
+  if (pendingScenes > 0) parts.push(`${pendingScenes} cena(s) usam composição gráfica rotulada e seguem pendentes de mídia.`);
+  if (rightsPending > 0) parts.push(`${rightsPending} mídia(s) aguardam revisão de direitos antes da publicação.`);
+  return parts.join(' ');
 }
 
 export interface SearchCandidate {
@@ -783,7 +962,9 @@ export class StagedCinemaPipeline {
         .map((m) => ({ memoryId: m.memoryId, rule: m.content, directorId: m.directorId }));
 
       const researchQueries =
-        job.researchDossier?.entities.map((e) => `${job.researchDossier!.workTitle} ${e.entityName}`) ??
+        job.researchDossier?.entities.map((e) =>
+          isMultiWorkProduction(nextInterpretation) ? e.entityName : `${job.researchDossier!.workTitle} ${e.entityName}`,
+        ) ??
         extractSceneQueriesFromPrompt(
           job.prompt,
           Math.max(4, Math.min(16, Math.ceil((job.targetDurationSec ?? 90) / 45))),
@@ -845,7 +1026,11 @@ export class StagedCinemaPipeline {
             stage: b.stage ?? 'progression',
             title: `Cena ${idx + 1}`,
             spokenText: b.summary,
-            estimatedDurationSec: beatDur,
+            // The voice-over length, not targetDuration / beats: coverage must match what the narration needs.
+            estimatedDurationSec:
+              b.summary.split(/\s+/).filter(Boolean).length >= 6
+                ? Math.max(4, Math.round(estimateNarrationSec(b.summary, job.language ?? 'pt-BR')))
+                : beatDur,
             approved: true,
           })),
         });
@@ -946,6 +1131,7 @@ export class StagedCinemaPipeline {
       this.saveJob(job);
 
       const scenesForAcquisition = job.sceneDecupagem ?? [];
+      const multiWorkProduction = isMultiWorkProduction(nextInterpretation);
       const queries =
         scenesForAcquisition.length > 0
           ? scenesForAcquisition.map((s) => s.mediaQueries[0] ?? `${s.workTitle} ${s.entities[0] ?? s.expectedEvent}`)
@@ -978,17 +1164,24 @@ export class StagedCinemaPipeline {
             scenesForAcquisition.length > 0
               ? scenesForAcquisition.map((s) => ({
                   segmentId: s.sceneId,
-                  subject: s.entities[0]
-                    ? `${s.workTitle} ${s.entities[0].replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim()}`
-                    : s.expectedEvent,
+                  // In a ranking of several works the list label ("Animes com Sistemas de Magia") is not a work:
+                  // prefixing it to every subject/entity made searches and the identity gate look for a title
+                  // that does not exist.
+                  subject: multiWorkProduction
+                    ? `${(s.works ?? s.entities).slice(0, 2).join(' / ') || s.expectedEvent}${s.visualKeywords?.[0] ? ` — ${s.visualKeywords[0]}` : ''}`
+                    : s.entities[0]
+                      ? `${s.workTitle} ${s.entities[0].replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim()}`
+                      : s.expectedEvent,
                   narrationText: s.narrationText,
                   expectedEvent: s.expectedEvent,
                   preferredQueries: s.mediaQueries,
                   entities: (() => {
                     const raw =
                       s.matchingCriteria.requiredEntities.length > 0
-                        ? [s.workTitle, ...s.matchingCriteria.requiredEntities]
-                        : extractTopicEntities(`${s.workTitle} ${s.entities.join(' ')} ${s.narrationText}`);
+                        ? multiWorkProduction
+                          ? [...(s.works ?? []), ...s.matchingCriteria.requiredEntities]
+                          : [s.workTitle, ...s.matchingCriteria.requiredEntities]
+                        : extractTopicEntities(`${multiWorkProduction ? '' : s.workTitle} ${s.entities.join(' ')} ${s.narrationText}`);
                     const expanded = new Set<string>();
                     for (const item of raw) {
                       const clean = item.replace(/\([^)]*\)/g, '').trim();
@@ -998,7 +1191,7 @@ export class StagedCinemaPipeline {
                     }
                     return [...expanded];
                   })(),
-                  expectedDurationSec: Math.max(8, s.durationSec),
+                  expectedDurationSec: Math.max(4, s.narrationSec ?? s.durationSec),
                 }))
               : queries.map((q, idx) => ({
                   segmentId: `slot_${idx + 1}`,
@@ -1151,9 +1344,15 @@ export class StagedCinemaPipeline {
             ...(this.deps.analyzeFrames ? { analyzeFrames: this.deps.analyzeFrames } : {}),
             requireVisualVerification: this.deps.requireVisualVerification ?? true,
             evolution: this.deps.evolutionCore,
-            ...(job.acquisitionBudgetMultiplier !== undefined
-              ? { limits: { budgetMultiplier: job.acquisitionBudgetMultiplier } }
-              : {}),
+            limits: {
+              ...(job.acquisitionBudgetMultiplier !== undefined ? { budgetMultiplier: job.acquisitionBudgetMultiplier } : {}),
+              // yt-dlp section downloads routinely exceed the 35 s per-operation limit; they were being cut and
+              // reported as "cancelled".
+              perDownloadTimeoutMs: 150_000,
+            },
+            // Identity-verified footage with unresolved rights is assembled into the draft and listed for rights
+            // review before publication, instead of silently blocking every scene.
+            licensePolicy: 'assemble_with_rights_review',
             signal,
           });
           job.autonomousAudit = audit;
@@ -1260,10 +1459,13 @@ export class StagedCinemaPipeline {
             const media = await buildSourceMediaFromFile(approved.uri, approved.mediaId);
             if (!media) continue;
             const detail = audit.approvedMediaDetails.find((d) => d.mediaId === approved.mediaId);
+            // Relevance verification says nothing about rights: carry the explicit rights status instead of "verified".
+            const rightsLicense = detail?.rightsStatus ? `rights:${detail.rightsStatus}` : 'rights:unresolved_third_party';
+            media.license = rightsLicense;
             this.cache.registerConsumer({
               url: detail?.sourceUrl ?? `local://${job.projectId}/${approved.mediaId}`,
               origin: approved.origin ?? 'autonomous_acquisition',
-              license: 'verified',
+              license: rightsLicense,
               topic: job.prompt,
               query: queries[idx] ?? job.prompt,
               sourceFilePath: media.uri,
@@ -1277,9 +1479,12 @@ export class StagedCinemaPipeline {
             }
           }
 
+          // Partial completion: uncovered scenes are assembled with labeled graphic recovery and reported as pending.
+          // Only when verified footage is too scarce to make a real video does the production stop for human review
+          // (with the concrete alternatives in `autonomousAudit.sceneDiagnostics`).
           if (
             audit.unresolvedGapsForReview.length > 0 &&
-            (job.acquiredMedia.length === 0 || (!audit.coverageReport.gatePassed && (job.targetDurationSec ?? 90) >= 180))
+            (job.acquiredMedia.length === 0 || audit.coverageReport.coverageRatio < MIN_REAL_FOOTAGE_RATIO_TO_ASSEMBLE)
           ) {
             for (let gIdx = 0; gIdx < audit.unresolvedGapsForReview.length; gIdx += 1) {
               const gap = audit.unresolvedGapsForReview[gIdx]!;
@@ -1545,7 +1750,67 @@ export class StagedCinemaPipeline {
 
       // Etapa B (Semantic Editing): correlacionar segmentos de narração às mídias adquiridas
       const clipSegmentMap = new Map<string, string>();
-      if (job.acquiredMedia.length > 0 && pkg.direction.narrativeBeats.length > 0) {
+      // Scene-driven montage: v1 clips follow the decupagem order, so clip i belongs to scene i. Each scene is filled
+      // with the verified intervals the acquisition coverage plan assigned to it (by sceneId), never by file name.
+      const acquisitionCoverage = job.autonomousAudit?.coverageReport;
+      const useSceneMontage = scenesForAcquisition.length > 0 && Boolean(acquisitionCoverage) && pkg.direction.narrativeBeats.length > 0;
+      const sceneIdByClipId = new Map<string, string>();
+      if (useSceneMontage && acquisitionCoverage) {
+        const covBySceneId = new Map(acquisitionCoverage.segments.map((s) => [s.segmentId, s]));
+        const availableMediaIds = new Set(job.acquiredMedia.map((m) => m.mediaId));
+        const remainingByScene = new Map(
+          scenesForAcquisition.map((s) => [
+            s.sceneId,
+            (covBySceneId.get(s.sceneId)?.relevantIntervals ?? []).map((iv) => ({ ...iv })),
+          ]),
+        );
+        const videoTrackClips = pkg.timeline.clips
+          .filter((c) => c.trackId === 'v1')
+          .sort((a, b) => a.timelineRange.start.value / a.timelineRange.start.rate - b.timelineRange.start.value / b.timelineRange.start.rate);
+        const montageByClipId = new Map<string, TimelineClip[]>();
+        const assembly: SceneAssemblyRecord[] = [];
+        videoTrackClips.forEach((clip, idx) => {
+          const sceneIdx =
+            videoTrackClips.length === scenesForAcquisition.length
+              ? idx
+              : Math.min(scenesForAcquisition.length - 1, Math.floor((idx * scenesForAcquisition.length) / videoTrackClips.length));
+          const scene = scenesForAcquisition[sceneIdx]!;
+          const remaining = remainingByScene.get(scene.sceneId) ?? [];
+          const subject = (scene.works ?? scene.entities).slice(0, 2).join(' / ') || scene.expectedEvent;
+          const label = scene.visualKeywords?.[0] ? `${subject} — ${scene.visualKeywords[0]}` : subject;
+          const { clips, record } = buildSceneMontage({
+            clip,
+            sceneId: scene.sceneId,
+            label,
+            intervals: remaining,
+            availableMediaIds,
+            allowGraphicRecovery: true,
+          });
+          // Consume what this clip used so a later clip of the same scene never repeats the same source seconds.
+          for (const part of clips) {
+            const iv = remaining.find(
+              (r) => r.mediaId === part.mediaId && Math.abs(r.startSec - part.sourceRange.start.value / part.sourceRange.start.rate) < 0.05,
+            );
+            if (!iv) continue;
+            iv.startSec += part.timelineRange.duration.value / Math.max(1, part.timelineRange.duration.rate);
+          }
+          remainingByScene.set(scene.sceneId, remaining.filter((r) => r.endSec - r.startSec >= 1));
+          for (const part of clips) {
+            sceneIdByClipId.set(part.clipId, scene.sceneId);
+            clipSegmentMap.set(part.clipId, scene.sceneId);
+          }
+          montageByClipId.set(clip.clipId, clips);
+          assembly.push(record);
+        });
+        const nextClips: TimelineClip[] = [];
+        for (const c of pkg.timeline.clips) {
+          const replaced = c.trackId === 'v1' ? montageByClipId.get(c.clipId) : undefined;
+          if (replaced) nextClips.push(...replaced);
+          else nextClips.push(c);
+        }
+        pkg = { ...pkg, timeline: { ...pkg.timeline, clips: nextClips } };
+        job.sceneAssembly = assembly;
+      } else if (job.acquiredMedia.length > 0 && pkg.direction.narrativeBeats.length > 0) {
         const videoTrackClips = pkg.timeline.clips.filter((c) => c.trackId === 'v1');
         const segments = pkg.direction.narrativeBeats.slice(0, videoTrackClips.length).map((beat, idx) => {
           const clip = videoTrackClips[idx];
@@ -1654,7 +1919,20 @@ export class StagedCinemaPipeline {
 
       // COVERAGE & ANTI-REPETITION QUALITY GATE (antes da renderização)
       const sceneBySegId = new Map(scenesForAcquisition.map((sc) => [sc.sceneId, sc]));
-      const coverageSegments = pkg.editorialScript
+      const sceneTimelineSec = new Map<string, number>();
+      for (const rec of job.sceneAssembly ?? []) {
+        sceneTimelineSec.set(rec.sceneId, (sceneTimelineSec.get(rec.sceneId) ?? 0) + rec.timelineSec);
+      }
+      const coverageSegments = useSceneMontage
+        ? scenesForAcquisition.map((sc) => ({
+            segmentId: sc.sceneId,
+            subject: (sc.works ?? sc.entities).slice(0, 2).join(' / ') || sc.expectedEvent,
+            narrationText: sc.narrationText,
+            entities: [...new Set([...(sc.works ?? []), ...sc.matchingCriteria.requiredEntities, ...sc.entities])],
+            // What the timeline actually gives the scene, not targetDuration ÷ scenes.
+            expectedDurationSec: Math.max(4, Math.round(sceneTimelineSec.get(sc.sceneId) ?? sc.narrationSec ?? sc.durationSec)),
+          }))
+        : pkg.editorialScript
         ? pkg.editorialScript.segments.map((s) => {
             const matchedScene = sceneBySegId.get(s.segmentId);
             return {
@@ -1698,7 +1976,7 @@ export class StagedCinemaPipeline {
         };
       });
       const coverageUsages = pkg.timeline.clips
-        .filter((c) => c.trackId === 'v1' && c.mediaId)
+        .filter((c) => c.trackId === 'v1' && c.mediaId && !c.effects.some((e) => e.kind === 'graphic_recovery' && e.enabled))
         .map((c, idx) => ({
           clipId: c.clipId,
           segmentId:
@@ -1721,7 +1999,9 @@ export class StagedCinemaPipeline {
         requireRelevanceApproval: true,
       });
       job.coverageReport = coverageReport;
-      if (!coverageReport.gatePassed && job.acquiredMedia.length > 0 && (job.targetDurationSec ?? 90) >= 180) {
+      // With the scene montage, gaps are already filled by labeled graphic recovery and repetition is prevented by
+      // construction; the decision to stop for human review was taken after acquisition (real-footage ratio).
+      if (!useSceneMontage && !coverageReport.gatePassed && job.acquiredMedia.length > 0 && (job.targetDurationSec ?? 90) >= 180) {
         const extraQueries = expandScriptOrientedQueries({
           prompt: job.prompt,
           segments: coverageSegments,
@@ -2010,7 +2290,7 @@ export class StagedCinemaPipeline {
       // EDITOR
       job.state = 'editor';
       job.progressPct = 100;
-      job.message = 'Montagem completa pronta no Editor!';
+      job.message = summarizeAssemblyOutcome(job);
       return this.saveJob(job);
     } catch (err) {
       if ((err instanceof Error && err.name === 'AbortError') || signal.aborted) {

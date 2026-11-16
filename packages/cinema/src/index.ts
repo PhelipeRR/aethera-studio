@@ -7,6 +7,7 @@ export * from './analysis/media-providers/index.js';
 export * from './director/cinematography-director.js';
 export * from './editorial/editorial-integrity.js';
 export * from './editorial/research-and-decupagem.js';
+export * from './editorial/contextual-media-queries.js';
 export * from './editorial/editorial-audit.js';
 export * from './comedy/comedy-director.js';
 export * from './edit/editorial-engine.js';

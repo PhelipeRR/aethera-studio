@@ -85,9 +85,10 @@ export function planSceneSources(context: SceneSourceContext & { query?: string 
         intent,
         providers: ['youtube'],
         researchProviders: [],
-        allowedClasses: ['official_game_trailer', 'authentic_gameplay', 'promotional_artwork', 'anime_image'],
+        allowedClasses: ['anime_footage', 'official_game_trailer', 'authentic_gameplay', 'promotional_artwork', 'anime_image'],
         requiresIdentity: true,
-        rationale: 'Identidade de obra/personagem de anime: somente fontes oficiais; GIFs de reação não provam identidade.',
+        rationale:
+          'Identidade de obra/personagem de anime: footage da obra (canal oficial aumenta a confiança; uploads de terceiros seguem para verificação por frames e revisão de direitos); GIFs de reação não provam identidade.',
       };
     case 'anime_reaction':
       return {
@@ -149,11 +150,13 @@ export function checkSourceFidelity(item: ProviderMediaItem, plan: SourcePlan, c
       reason: `Classe ${item.classification} não é adequada para cena "${plan.intent}".`,
     };
   }
-  if (plan.requiresIdentity && IDENTITY_GRADE_CLASSES.has(item.classification) && item.classificationConfidence < 0.6) {
+  // Official origin raises confidence but is not a condition of authenticity: identity is decided by frames in the
+  // Media Relevance Gate. Only near-certain non-authentic material (fan concept, AI) is dropped before download.
+  if (plan.requiresIdentity && IDENTITY_GRADE_CLASSES.has(item.classification) && item.classificationConfidence < 0.2) {
     return {
       pass: false,
       code: 'low_classification_confidence',
-      reason: `Origem oficial não comprovada (confiança ${item.classificationConfidence.toFixed(2)} < 0.60).`,
+      reason: `Indícios de material não autêntico (fã/conceito; confiança ${item.classificationConfidence.toFixed(2)} < 0.20).`,
     };
   }
   const asserted = item.provenance.subject?.gameTitle ?? item.provenance.subject?.animeTitle;

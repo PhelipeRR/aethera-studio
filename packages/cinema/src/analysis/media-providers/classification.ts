@@ -36,6 +36,8 @@ export interface ClassificationInput {
   channelTitle?: string;
   /** Companies known to own the game (IGDB/Steam publishers & developers). */
   officialPublishers?: string[];
+  /** The scene is about an anime: classify anime footage instead of forcing trailer/gameplay/stock. */
+  animeContext?: boolean;
 }
 
 export interface ClassificationResult {
@@ -51,6 +53,21 @@ const FAN_PATTERN = /\b(fan[- ]?made|fanmade|concept trailer|what if|reimagined|
 const TRAILER_PATTERN = /\b(trailer|teaser|announce(?:ment)?|reveal|launch|cinematic|official)\b/i;
 const GAMEPLAY_PATTERN = /\b(gameplay|walkthrough|playthrough|no commentary|longplay|let'?s play|boss fight|first \d+ minutes|demo)\b/i;
 const REACTION_PATTERN = /\b(reaction|reacts?|react|review|análise|analise|podcast|tier list|ranking)\b/i;
+const ANIME_FOOTAGE_PATTERN =
+  /\b(anime|episod(?:e|io)|epis[oó]dio|ep\.?\s*\d+|opening|op\s*\d+|ending|pv|promotional video|trailer|teaser|clip|clipe|scene|cena|fight|luta|batalha|dublado|legendado|sub(?:bed)?|dub(?:bed)?|sakuga|amv)\b/i;
+const AMV_EDIT_PATTERN = /\b(amv|edit|4k edit|twixtor|tiktok|shorts?)\b|#shorts/i;
+/** Channels of rights holders / licensed distributors that publish anime footage officially. */
+const OFFICIAL_ANIME_CHANNELS = [
+  'crunchyroll', 'muse asia', 'muse indonesia', 'ani-one', 'ani one', 'toho animation', 'aniplex', 'toei animation',
+  'mappa', 'netflix anime', 'netflix', 'funimation', 'viz media', 'bandai namco filmworks', 'kadokawa', 'pony canyon',
+  'tv tokyo', 'sentai', 'hidive', 'medialink', 'warner bros japan', 'tms entertainment', 'shueisha', 'kodansha',
+];
+
+function channelIsOfficialAnime(channel: string | undefined): boolean {
+  if (!channel) return false;
+  const c = norm(channel);
+  return OFFICIAL_ANIME_CHANNELS.some((o) => c.includes(norm(o)));
+}
 
 const norm = (value: string) =>
   value
@@ -121,6 +138,22 @@ export function classifyProviderItem(input: ClassificationInput): Classification
       if (fan) evidence.push('Título indica conteúdo de fã/conceito — não é material oficial.');
       if (official) evidence.push(`Canal "${input.channelTitle}" corresponde a desenvolvedora/publisher conhecida.`);
       else evidence.push('Canal não verificado como oficial.');
+      if (input.animeContext && (ANIME_FOOTAGE_PATTERN.test(text) || channelIsOfficialAnime(input.channelTitle))) {
+        // Anime footage: an official distributor channel raises confidence; a third-party upload is still candidate
+        // footage (identity is decided by frames, not by the uploader), with lower confidence and rights review.
+        const officialAnime = channelIsOfficialAnime(input.channelTitle);
+        if (officialAnime) evidence.push(`Canal "${input.channelTitle}" é distribuidor/detentor oficial de anime.`);
+        const amv = AMV_EDIT_PATTERN.test(text);
+        if (amv) evidence.push('Título indica edição/AMV/short (montagem de fã, possível música e cortes).');
+        const commentary = REACTION_PATTERN.test(text);
+        if (commentary) evidence.push('Título indica react/review/ranking (pode conter comentário ou webcam).');
+        return {
+          classification: 'anime_footage',
+          confidence: fan ? 0.15 : officialAnime ? 0.9 : amv ? 0.3 : commentary ? 0.35 : 0.55,
+          evidence: [...evidence, 'Título/canal indicam footage de anime.'],
+          aiGenerated: 'unknown',
+        };
+      }
       if (GAMEPLAY_PATTERN.test(text) && !REACTION_PATTERN.test(text)) {
         return {
           classification: 'authentic_gameplay',
@@ -157,6 +190,7 @@ export function classifyProviderItem(input: ClassificationInput): Classification
 
 /** Classes that can prove the identity of a specific game/character on screen. */
 export const IDENTITY_GRADE_CLASSES: ReadonlySet<MediaClassification> = new Set([
+  'anime_footage',
   'official_game_trailer',
   'authentic_gameplay',
   'official_screenshot',

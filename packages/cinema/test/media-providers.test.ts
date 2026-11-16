@@ -333,7 +333,10 @@ describe('scene source selection & source fidelity (Scene Grounding pre-gate)', 
     expect(checkSourceFidelity(item({}), plan, ctx)).toMatchObject({ pass: false, code: 'class_not_allowed_for_scene' });
     expect(checkSourceFidelity(item({ classification: 'official_screenshot', aiGenerated: true }), plan, ctx)).toMatchObject({ pass: false, code: 'ai_generated_for_identity_scene' });
     expect(checkSourceFidelity(item({ classification: 'official_screenshot', provenance: { provider: 'steam', providerItemId: '1', retrievedAt: '', apiEndpoint: '', subject: { gameTitle: 'The Witcher 3' } } }), plan, ctx)).toMatchObject({ pass: false, code: 'subject_mismatch' });
-    expect(checkSourceFidelity(item({ classification: 'official_game_trailer', classificationConfidence: 0.35 }), plan, ctx)).toMatchObject({ pass: false, code: 'low_classification_confidence' });
+    // Fan/concept material (near-certain non-authentic) is dropped before download...
+    expect(checkSourceFidelity(item({ classification: 'official_game_trailer', classificationConfidence: 0.05 }), plan, ctx)).toMatchObject({ pass: false, code: 'low_classification_confidence' });
+    // ...but an unverified channel is not proof of inauthenticity: official origin raises confidence, frames decide.
+    expect(checkSourceFidelity(item({ classification: 'official_game_trailer', classificationConfidence: 0.35 }), plan, ctx).pass).toBe(true);
     expect(checkSourceFidelity(item({ classification: 'official_screenshot', provenance: { provider: 'steam', providerItemId: '1', retrievedAt: '', apiEndpoint: '', subject: { gameTitle: 'Cyberpunk 2077' } } }), plan, ctx).pass).toBe(true);
   });
 });
