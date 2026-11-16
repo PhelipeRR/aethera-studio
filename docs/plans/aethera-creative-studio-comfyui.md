@@ -7,6 +7,8 @@
 
 ## 1. Diagnóstico do módulo atual (auditoria do código real)
 
+> **Nota de leitura:** esta seção congela o baseline auditado antes da CF-0/CF-1. As descrições de fluxo, causas e limitações abaixo são evidências do estado anterior; o estado entregue e sua validação estão em §15. Quando uma causa foi mitigada pela CF-1, isso é indicado explicitamente.
+
 ### 1.1 Mapa de componentes
 
 | Camada | Arquivo | Papel |
@@ -32,15 +34,19 @@
 4. `CompositionPlanner.buildDocument` monta camadas fixas por tipo; `CreativeDirectorAgent.directWithIterativeReview` faz até 3 iterações contra o Quality Gate.
 5. Salva no SQLite, cria o editor em memória, renderiza preview PNG (Sharp/SVG) e devolve como data URL.
 
-### 1.3 Como o SDXL-Turbo roda
+**Estado entregue na CF-1:** o serviço agora executa direção criativa → receita visual → geração (quando habilitada) → composição. A resposta estruturada da direção alimenta a receita; `orchestrateCreation` recebe o resultado pré-calculado e não chama os CLIs novamente.
+
+### 1.3 Como o SDXL-Turbo roda (baseline pré-CF-1)
 
 - `LocalPythonAiAdapter.generateImage` executa `python vision_worker.py generate` **por chamada** (recarrega o modelo a cada vez; timeout 180 s).
 - Modelo `stabilityai/sdxl-turbo` (no cache HF local), `steps=3`, `guidance_scale=0.0` (sem prompt negativo efetivo), sem seed (o campo existe no worker, mas o adapter nunca passa), lado máximo 1024, `enable_model_cpu_offload`.
 - Disponibilidade = `torch`, `diffusers`, `rembg`, `PIL` importáveis (verificado: torch 2.11+cu128, diffusers 0.38, CUDA ok).
 
+**Estado entregue na CF-1:** a receita pede prompt positivo em inglês, seed determinística, tamanho 1024 no lado maior e prompt negativo no contrato. `LocalPythonAiAdapter` repassa a seed; o negativo permanece documentado como inefetivo no SDXL-Turbo com `guidance_scale=0` e será efetivo no adapter ComfyUI da CF-4.
+
 ### 1.4 Integração com serviços locais de geração
 
-Nenhuma. Não há referência a ComfyUI no repositório. A única "cadeia de provedores" é `ProviderChainImageAdapter([new LocalPythonAiAdapter()])`.
+No código executável, nenhuma. A única cadeia de provedores implementada no baseline é `ProviderChainImageAdapter([new LocalPythonAiAdapter()])`; as referências a ComfyUI existentes neste documento são o desenho do roadmap, não uma integração pronta.
 
 Ambiente auditado: **ComfyUI Desktop instalado** em `%LOCALAPPDATA%\Programs\ComfyUI`, mas sem configuração de primeira execução (`%APPDATA%\ComfyUI` inexistente), pasta `models/` vazia (68 KB) e nada respondendo em `127.0.0.1:8000` (porta padrão do Desktop) ou `:8188` (porta padrão do portátil). Ou seja: o app existe, mas o ComfyUI não está pronto para uso.
 
@@ -64,16 +70,18 @@ Documento inteiro em `dataJson` + colunas de índice (`artType`, `brandKitId`, `
 
 `LayeredDocumentEditor.applyLocalizedPromptEdit` é **determinística, por regex**: troca de título, cor hex (texto ou fundo), ocultar marca/VFX/sujeito etc. Não usa IA e não altera pixels gerados. Por isso é rápida, previsível e reversível (undo).
 
-### 1.10 Erros, progresso e cancelamento
+### 1.10 Erros, progresso e cancelamento (baseline pré-CF-1)
 
 - Erros: exceções propagadas pelo IPC e exibidas em `statusMsg`; mensagens específicas para `[VisualContentGate]`. Falha/indisponibilidade da IA em "Gerar Arte Editável" **cai silenciosamente** para fundo de cor/gradiente.
 - Progresso: apenas `job_started`/`job_completed`/`job_failed` e execuções de CLIs no Console de Produção (`withConsoleJob`); a UI mostra um texto fixo ("Gerando composição editável...").
 - Cancelamento: **não existe** (nenhum `AbortSignal` no serviço, adapters ou worker).
 - GPU: **não existe lease/mutex de GPU** entre Creative Studio e o restante do Aethera, que também usa GPU (Qwen3-TTS, Chatterbox, ACE-Step, faster-whisper, SAM2 no cache HF; `h264_nvenc` no render). No momento da auditoria havia 5,3 GB de 8 GB de VRAM já ocupados por outros processos.
 
+**Estado entregue na CF-1:** o fallback da geração de imagem retorna `AiGenerationReport` (`generated`, `disabled`, `unavailable`, `failed` ou `skipped_existing_background`), é exposto pelo serviço e o painel mostra aviso quando a IA estava marcada e falhou/estava indisponível. Quando a etapa de geração é executada, o Console de Produção recebe preset, seed, prompt resumido ou o motivo do fallback. Cancelamento e coordenação exclusiva de GPU continuam fora da CF-1 (CF-3/CF-4).
+
 ---
 
-## 2. Causas dos resultados visuais ruins
+## 2. Causas dos resultados visuais ruins no baseline
 
 ### 2.1 Comprovadas pelo código
 
@@ -87,18 +95,20 @@ Documento inteiro em `dataJson` + colunas de índice (`artType`, `brandKitId`, `
 | C6 | No Lab, as 3 imagens de IA não têm seeds/composições controladas; a diversidade depende do template de camadas. | `concept-engine.ts:787-792`. |
 | C7 | O worker recarrega o modelo a cada chamada (≈15 s documentados no adapter persistente) e roda com CPU offload — lento, sujeito a timeout, o que reforça C1. | `vision_worker.py:28-41`; comentário em `persistent-ai-adapter.ts`. |
 
-### 2.2 Hipóteses (a medir na etapa CF-0)
+**Estado após a CF-1:** C1 deixou de ser silenciosa (o fallback é reportado), C2 foi mitigada pela receita EN, C3 foi corrigida no fluxo principal de `createFromPrompt`, C4 foi corrigida para fundos `ai_composed` com scrim local, e C5 foi parcialmente mitigada com seed, zona segura e prompt negativo no contrato. C5 ainda não tem blockout/ControlNet nem negativo efetivo no SDXL-Turbo. C6 permanece para CF-8, C7 para o worker persistente/CF-3, e H4 — o gate que aceita o fundo vazio — permanece deliberadamente para CF-10.
 
-- H1: SDXL-Turbo (treinado em 512×512, 1–4 passos) em 1024×576 gera estrutura fraca/duplicada e pouca profundidade — limitação do modelo, não só do prompt.
-- H2: Disputa de VRAM com TTS/música/outros apps provoca offload lento ou OOM → timeout → fallback de gradiente.
-- H3: Personagens gerados no mesmo plano do cenário perdem destaque após blur/vinheta; uma camada de personagem separada (geração + recorte BiRefNet) resolveria melhor.
-- H4: O "Quality Gate" aprova composições vazias porque não mede densidade/saliência fora da área de texto.
+### 2.2 Hipóteses — resultado da CF-0
+
+- H1: **não confirmada como formulada** — 768×432 não melhorou; 1024×576 teve CLIP maior nas duas seeds. A limitação observada foi mais sensível ao prompt e ao tratamento da composição.
+- H2: **plausível** — todo job chegou a 7,4–7,7 GB de 8 GB e uma execução levou 210 s sob ocupação de VRAM; a causa precisa do lease CF-3.
+- H3: **parcialmente mitigada pela CF-1** — o fundo `ai_composed` deixou de receber blur/escurecimento global; separação de personagem e recorte dedicado continuam fora do escopo.
+- H4: **confirmada** — o fallback vazio recebeu `78 ✓`; o gate de composição vazia permanece CF-10.
 
 **Conclusão:** aumentar o prompt não resolve C3–C6. A correção é (a) uma *receita visual* estruturada em inglês derivada do conceito, (b) controle de composição por blockout/seed, (c) geração em resolução nativa + upscale real, (d) parar de degradar o fundo, (e) um gate que reprove "fundo vazio".
 
 ---
 
-## 3. Arquitetura de integração proposta
+## 3. Arquitetura de integração proposta (alvo CF-2+; CF-1 entregue como etapa intermediária)
 
 ```
 CreativeStudioPanel (mesma tela)
@@ -121,28 +131,37 @@ Princípios:
 - **Saída do ComfyUI é dado não confiável**: valida dimensões/formato, ingere via `AssetIngestionService`.
 - Endpoint aceito só em loopback (`127.0.0.1`/`localhost`/`[::1]`).
 
+Na CF-1, somente a receita visual, a direção prévia, o relatório de geração e o tratamento de composição `ai_composed` foram entregues. O cliente/adapter ComfyUI, discovery, workflows versionados, lease de GPU e progressão/cancelamento permanecem no roadmap abaixo.
+
 ---
 
 ## 4. Arquivos existentes reutilizados
 
 `image-generation-adapter.ts` (contrato + engine de composição), `local-ai-adapter.ts` (`ProviderChainImageAdapter`, SDXL-Turbo, rembg/BiRefNet, CLIP), `persistent-ai-adapter.ts` (embeddings CLIP para medir diversidade), `composition-planner.ts`, `concept-engine.ts`, `creative-orchestrator.ts`, `layered-editor.ts`, `brand-kit-manager.ts`, `schemas.ts` (`ART_SPECIFICATIONS.safeArea`), `quality-gate.ts`, `typography-geometry-audit.ts`, `asset-ingestion.ts`, `creative-studio-service.ts`, `CreativeStudioPanel.tsx`, `ProductionConsoleAccordion` (progresso no console), `AetheraCreativeStudioRepository`.
 
-## 5. Arquivos a criar / modificar
+## 5. Arquivos a criar / modificar (inventário do alvo completo)
 
-**Criar** (`packages/creative-studio`):
+O inventário abaixo descreve o estado-alvo de CF-2 a CF-10, não uma alegação de que tudo já existe. O subconjunto entregue na CF-1 é: `packages/creative-studio/src/visual-recipe.ts`, `ai-background.ts`, extensão retrocompatível de `ImageGenerationRequest`, seed no adapter local, direção estruturada no orquestrador, composição por origem, relatório no serviço/painel e `scripts/cf-banner-acceptance.ts`.
+
+**Já entregue na CF-1** (`packages/creative-studio`):
+- `src/visual-recipe.ts` — `buildVisualRecipe`, direção estruturada e seeds determinísticas.
+- `src/ai-background.ts` — geração protegida por `AiGenerationReport`.
+
+**Criar nas etapas CF-2+:**
 - `src/comfyui/comfyui-client.ts` — HTTP + WebSocket (health, object_info, models, prompt, history, view, upload, interrupt, queue delete, free).
 - `src/comfyui/comfyui-image-adapter.ts` — `ExternalImageAdapter` sobre o client.
 - `src/comfyui/workflow-registry.ts` + `workflows/*.json` — presets versionados e injeção de parâmetros.
 - `src/comfyui/comfyui-discovery.ts` — detecção (portas 8000/8188, config do Desktop, endpoint manual).
-- `src/visual-recipe.ts` — `VisualRecipeBuilder` (conceito → `ImageGenerationPlan`).
 - `src/composition-blockout.ts` — gera imagem-guia (zonas de profundidade/luz/silhuetas) com Sharp.
 - `test/cf-*.test.ts` + `test/fixtures/fake-comfyui-server.ts`.
 
-**Criar** (`apps/aethera-desktop`): `src/main/gpu-lease.ts`; `src/main/creative-image-engine-settings.ts` (persistência da configuração); seção "Motor de imagem" na área de Configurações existente (local exato confirmado na CF-7).
+**Criar nas etapas CF-2+/CF-7** (`apps/aethera-desktop`): `src/main/gpu-lease.ts`; `src/main/creative-image-engine-settings.ts` (persistência da configuração); seção "Motor de imagem" na área de Configurações existente (local exato confirmado na CF-7).
 
-**Modificar**: `image-generation-adapter.ts` (campos opcionais), `local-ai-adapter.ts` (repassar seed/negativo/cancelamento; cadeia configurável), `vision_worker.py` (aceitar `--seed`/`--negative` já parcialmente presentes), `creative-studio-service.ts` (receita antes da geração, motor escolhido, progresso, cancelamento, lease), `creative-orchestrator.ts` (usar a direção estruturada em vez de descartar), `composition-planner.ts` (tratamento de fundo por origem: sem blur/escurecimento para fundo composto; *scrim* local atrás do texto), `concept-engine.ts` (plano por conceito com seed/blockout próprios), `layered-editor.ts` (classificador de intenção: determinístico × edição de região por IA), `quality-gate.ts` (métrica de "composição vazia"), `preload/index.ts`, `CreativeStudioPanel.tsx`, `cinema-pipeline.ts`/`tts-providers.ts` **apenas** para adquirir o lease de GPU (sem mudar lógica de vídeo).
+**Modificar ao longo do roadmap**: `image-generation-adapter.ts` (campos opcionais), `local-ai-adapter.ts` (repassar seed/negativo/cancelamento; cadeia configurável), `vision_worker.py` (aceitar `--seed`/`--negative` já parcialmente presentes), `creative-studio-service.ts` (motor escolhido, progresso, cancelamento, lease), `creative-orchestrator.ts` (direção estruturada já usada na CF-1), `composition-planner.ts` (tratamento de fundo por origem já entregue na CF-1), `concept-engine.ts` (plano por conceito com seed/blockout próprios), `layered-editor.ts` (classificador de intenção: determinístico × edição de região por IA), `quality-gate.ts` (métrica de "composição vazia"), `preload/index.ts`, `CreativeStudioPanel.tsx`, `cinema-pipeline.ts`/`tts-providers.ts` **apenas** para adquirir o lease de GPU (sem mudar lógica de vídeo).
 
-## 6. Contratos e interfaces
+## 6. Contratos e interfaces (alvo futuro, com extensão CF-1 já entregue)
+
+O contrato completo abaixo é o desenho para ComfyUI e jobs canceláveis. A CF-1 entregou apenas a extensão retrocompatível `negativePrompt?`/`seed?` em `ImageGenerationRequest` e o `VisualRecipe` determinístico; `preset`, `quality`, `signal`, `onProgress`, `ImageEngineStatus`, `ComfyUiClient` e `GpuLease` ainda não estão implementados.
 
 ```ts
 // image-generation-adapter.ts — extensão retrocompatível
@@ -253,7 +272,8 @@ Todos com `CheckpointLoaderSimple` → `LoraLoader` (opcional) → `CLIPTextEnco
 
 ## 11. Plano de testes
 
-- **Unidade**: `VisualRecipeBuilder` (inglês, negativo com "text", zonas seguras, seed determinística), `workflow-registry` (injeção por `_meta.title`, recusa de nó ausente), `composition-blockout`, `GpuLease` (ordem, cancelamento, liberação em erro), classificador de intenção do editor.
+- **Unidade (CF-1 entregue):** `buildVisualRecipe`/`parseCreativeDirectionNotes` (inglês, negativo com "text", zonas seguras, seed determinística), `generateAiBackground` (relatório de fallback), composição sem blur global e direção pré-computada. Validado em `packages/creative-studio/test/cf1-visual-recipe.test.ts` (12/12).
+- **Unidade (CF-2+):** `workflow-registry` (injeção por `_meta.title`, recusa de nó ausente), `composition-blockout`, `GpuLease` (ordem, cancelamento, liberação em erro), classificador de intenção do editor.
 - **Contrato**: `ComfyUiImageAdapter` contra `fake-comfyui-server` (HTTP + WS) — fila, progresso, `execution_error`, cancelamento (`/queue` delete × `/interrupt`), timeout, servidor caindo no meio.
 - **Integração**: `ProviderChainImageAdapter` com ComfyUI offline → SDXL-Turbo → sem IA com **aviso explícito** (fim do fallback silencioso); documento e camadas compatíveis com projetos antigos (schemaVersion).
 - **E2E (Playwright/Electron)**: seletor de motor, status, progresso, cancelar, gerar banner com fake server, editar por prompt, undo.
@@ -271,27 +291,40 @@ Todos com `CheckpointLoaderSimple` → `LoraLoader` (opcional) → `CLIPTextEnco
 7. Nenhuma execução simultânea com render de vídeo/TTS; sem OOM no benchmark com 5 GB ocupados (ou degradação controlada para rascunho).
 8. Projetos, Brand Kits e o fluxo SDXL-Turbo atuais continuam funcionando; testes existentes CS-1…CS-9 verdes.
 
+### Estado dos critérios no fechamento CF-1
+
+| Critério | Estado | Evidência / pendência |
+|---|---|---|
+| 1. Banner principal via ComfyUI | Pendente CF-4 | ComfyUI não está configurado nesta máquina; CF-1 validou o caminho local SDXL-Turbo com composição real. |
+| 2. Texto na área segura | Parcial, entregue sem ComfyUI | Receita registra `1546×423`; testes validam a camada e a renderização 2560×1440. Validação Desktop/Mobile/TV continua pendente. |
+| 3. Gate de composição vazia | Pendente CF-10 | Baseline comprovou que o fallback vazio recebe `78 ✓`; a métrica ainda não é bloqueante. |
+| 4. Edição posterior por região | Parcial | Edição determinística por regex e undo existem; inpaint/outpaint integrado fica para CF-9. |
+| 5. Lab com seeds/blockouts distintos | Pendente CF-8 | O Lab atual ainda não usa seeds/blockouts por conceito. |
+| 6. Offline/misconfigurado, progresso e cancelamento | Parcial | CF-1 expõe fallback e relatório; discovery ComfyUI, progresso e cancelamento ≤3 s ficam para CF-2/CF-4/CF-7. |
+| 7. Exclusão de concorrência/OOM | Pendente CF-3 | Baseline mediu picos até 7,7 GB; ainda não há `GpuLease`. |
+| 8. Compatibilidade e suíte completa CS-1…CS-9 | Parcial | CF-1 + CS-1/2/3 focados passaram 21/21; CS-7/CS-9 mantêm bloqueios previamente registrados. |
+
 ## 13. Roadmap em etapas pequenas
 
-| Etapa | Entrega | Depende de |
-|---|---|---|
-| CF-0 | Baseline: reproduzir o banner NextWorth com o fluxo atual; medir tempo/VRAM; confirmar H1–H4 | — |
-| CF-1 | Correções sem ComfyUI: receita EN + negativo + seed no SDXL-Turbo, direção das CLIs usada, fim do blur/escurecimento em fundo composto (scrim local), aviso de fallback | CF-0 |
-| CF-2 | `ComfyUiClient` + discovery + status (sem geração) + fake server | — |
-| CF-3 | `GpuLease` no main e adoção por cinema/TTS/música (só aquisição) | — |
-| CF-4 | `ComfyUiImageAdapter` + workflow `geek_banner` (txt2img + upscale) + progresso/cancelamento | CF-2, CF-3 |
-| CF-5 | Blockout de composição + zonas seguras por tipo de arte | CF-1, CF-4 |
-| CF-6 | Presets restantes (anime, game, cinematic, avatar, logo) + camada de personagem separada com recorte | CF-5 |
-| CF-7 | UI mínima: seletor de motor, status, preset, Rascunho/Final, progresso, cancelar; Configurações avançadas | CF-4 |
-| CF-8 | Lab com ComfyUI: seeds/blockouts por conceito, verificação de diversidade, "refinar variação" | CF-6 |
-| CF-9 | Edição de região por IA (inpaint) e outpaint, integrados ao undo do editor | CF-4 |
-| CF-10 | Gate de composição vazia, benchmark real e relatório de aceite; atualização de `docs/PLAN.md`/`STATUS.md` | todas |
+| Etapa | Entrega | Depende de | Estado em 2026-11-16 |
+|---|---|---|---|
+| CF-0 | Baseline: reproduzir o banner NextWorth com o fluxo atual; medir tempo/VRAM; confirmar H1–H4 | — | **CONCLUÍDA** |
+| CF-1 | Correções sem ComfyUI: receita EN + negativo + seed no SDXL-Turbo, direção das CLIs usada, fim do blur/escurecimento em fundo composto (scrim local), aviso de fallback | CF-0 | **IMPLEMENTADA E VALIDADA** |
+| CF-2 | `ComfyUiClient` + discovery + status (sem geração) + fake server | — | Pendente de pedido |
+| CF-3 | `GpuLease` no main e adoção por cinema/TTS/música (só aquisição) | — | Pendente de pedido |
+| CF-4 | `ComfyUiImageAdapter` + workflow `geek_banner` (txt2img + upscale) + progresso/cancelamento | CF-2, CF-3 | Pendente de pedido; ComfyUI não configurado |
+| CF-5 | Blockout de composição + zonas seguras por tipo de arte | CF-1, CF-4 | Pendente de pedido |
+| CF-6 | Presets restantes (anime, game, cinematic, avatar, logo) + camada de personagem separada com recorte | CF-5 | Pendente de pedido |
+| CF-7 | UI mínima: seletor de motor, status, preset, Rascunho/Final, progresso, cancelar; Configurações avançadas | CF-4 | Pendente de pedido |
+| CF-8 | Lab com ComfyUI: seeds/blockouts por conceito, verificação de diversidade, "refinar variação" | CF-6 | Pendente de pedido |
+| CF-9 | Edição de região por IA (inpaint) e outpaint, integrados ao undo do editor | CF-4 | Pendente de pedido |
+| CF-10 | Gate de composição vazia, benchmark real e relatório de aceite; atualização de `docs/PLAN.md`/`STATUS.md` | todas | Pendente de pedido |
 
 Instalação gerenciada do ComfyUI e ControlNet ficam como etapas opcionais, só com pedido explícito.
 
 ## 14. Riscos, limitações e dependências
 
-- **VRAM**: 8 GB com ~5 GB já usados por outros processos pode inviabilizar SDXL completo sem offload; mitigação: lease, `/free`, rascunho, aviso. Números reais só após CF-0.
+- **VRAM**: 8 GB com ~5 GB já usados por outros processos pode inviabilizar SDXL completo sem offload; CF-0 mediu picos de 7,4–7,7 GB e uma execução de 210 s. A mitigação por lease, `/free`, rascunho e aviso continua pendente da CF-3/CF-4.
 - **Licenças** de checkpoints anime/fine-tunes variam; recomendação final depende de verificação.
 - **Disco/download**: ~7 GB por checkpoint; downloads exigem confirmação.
 - **API do ComfyUI** não é estável/versionada formalmente; mitigação: client fino, validação via `object_info`, testes de contrato, versão mínima registrada.
@@ -341,3 +374,11 @@ Implementado:
 Fora do escopo da CF-1 (registrado): seeds/receitas por conceito no Thumbnail Lab (CF-8); prompt negativo efetivo (CF-4); gate de composição vazia (CF-10).
 
 Validação real da CF-1 (2026-11-16): `npx tsx scripts/cf-banner-acceptance.ts cf1` concluiu com 2/2 seeds, geração em 16,5–18,6 s, picos de 6560–6565 MiB, `luma σ` 58,40/59,48 e gates 86/87. As prévias confirmam a composição com personagens, skyline e energia, sem o gradiente vazio do fallback; o gate de composição vazia continua deliberadamente reservado à CF-10.
+
+## 16. Fechamento do escopo aprovado
+
+O escopo autorizado para este documento — CF-0 e CF-1, sem instalar/configurar ComfyUI e sem alterar o pipeline de vídeo — está encerrado. O baseline foi medido, a correção local foi implementada no fluxo real do Desktop, a evidência GPU foi capturada, o painel deixou de esconder o fallback e o progresso foi registrado em `docs/PLAN.md` e `docs/STATUS.md`.
+
+Não se deve marcar o plano completo como concluído: CF-2 a CF-10 são trabalho futuro e dependem de pedido explícito, configuração real do ComfyUI e decisões sobre lease de GPU, modelos/licenças e aprovação estética. A próxima execução, quando autorizada, deve começar pela CF-2 (client/discovery/status com fake server), preservando a compatibilidade do SDXL-Turbo e os contratos de projeto existentes.
+
+**Evidência canônica do fechamento:** commit `a591aca`, `artifacts/cf-banner/baseline/`, `artifacts/cf-banner/cf1/`, `packages/creative-studio/test/cf1-visual-recipe.test.ts` (12/12), suíte focada CF-1 + CS-1/2/3 (21/21), typecheck do pacote/renderer e `npm run build:aethera`. O typecheck do processo principal ainda tem o erro preexistente de JSX em `test/delete-prompt-dialog.test.ts`; isso não foi mascarado nem atribuído à CF-1.
