@@ -2087,7 +2087,10 @@ export function registerAetheraDomainIpc(options: {
         thresholds: null,
         version: 'aethera-scene-grounding-v1',
         budgetUsd: 0.25,
-        maxLatencyMs: 45_000,
+        // Measured in a real production: a structured multi-frame analysis through the Claude CLI/gateway takes
+        // 25-60 s. A 45 s cap timed it out, two timeouts put the provider in a 10-minute cooldown, and every later
+        // asset failed vision. The acquisition deadline still bounds the whole stage.
+        maxLatencyMs: 120_000,
       };
       const normalizeVisionText = (txt: string) =>
         txt

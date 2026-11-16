@@ -6,6 +6,7 @@ import {
   dedupeEquivalentQueries,
   detectReferenceWorks,
   estimateNarrationSec,
+  extractVisualKeywords,
   resolveRightsStatus,
   resolveSceneSubject,
   usableSourceIntervals,
@@ -53,6 +54,19 @@ describe('contextual media queries', () => {
     const text = Array.from({ length: 117 }, () => 'palavra').join(' ') + '.';
     expect(estimateNarrationSec(text, 'pt-BR')).toBeGreaterThan(45);
     expect(estimateNarrationSec(text, 'pt-BR')).toBeLessThan(56);
+  });
+
+  it('keeps characters and techniques as search keywords, never authors, studios or magazines', () => {
+    const kws = extractVisualKeywords({
+      narrationText:
+        'Segundo lugar: Frieren. O mangá de Kanehito Yamada e Tsukasa Abe ganhou anime pela Madhouse. Jujutsu Kaisen, de Gege Akutami, com anime do estúdio MAPPA, saiu na Weekly Shōnen Magazine. Itadori usa o Black Flash e Frieren lança o Zoltraak.',
+      facts: ['Itadori domina o Black Flash.', 'Zoltraak é a magia de matar pessoas.', 'Anime pela A-1 Pictures.'],
+      max: 6,
+    });
+    expect(kws).toEqual(expect.arrayContaining(['Black Flash', 'Zoltraak']));
+    for (const credit of ['Kanehito Yamada', 'Tsukasa Abe', 'Gege Akutami', 'Madhouse', 'MAPPA', 'Pictures', 'Shōnen']) {
+      expect(kws.some((k) => k.includes(credit))).toBe(false);
+    }
   });
 
   it('detects a reference work in "para quem gostou de" prompts', () => {

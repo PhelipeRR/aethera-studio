@@ -124,6 +124,19 @@ const NON_NAME_WORDS = new Set(
   ].map((w) => w.toLowerCase()),
 );
 
+const stripMarks = (w: string) => w.normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+const STUDIOS_AND_PUBLISHERS = [
+  'mappa', 'madhouse', 'a-1 pictures', 'pictures', 'bones', 'ufotable', 'pierrot', 'toei', 'sunrise', 'wit studio',
+  'cloverworks', 'j.c.staff', 'kyoto animation', 'production i.g', 'david production', 'trigger', 'satelight',
+  'studio deen', 'tms', 'shueisha', 'kodansha', 'shogakukan', 'square enix', 'crunchyroll', 'netflix',
+];
+
+function isStudioOrPublisher(name: string): boolean {
+  const n = stripMarks(name).toLowerCase().trim();
+  return STUDIOS_AND_PUBLISHERS.some((s) => n === s || n.endsWith(` ${s}`));
+}
+
 /**
  * Proper names that matter visually (characters, techniques, places) from the scene narration and the entity facts.
  * Only names also grounded in the research facts — or repeated in the narration — are kept, so a passing mention
@@ -143,12 +156,24 @@ export function extractVisualKeywords(input: {
   const narrNorm = normalizeQueryText(input.narrationText);
   const collect = (text: string): string[] => {
     const names: string[] = [];
+    let lastCreditEnd = -1;
     for (const m of text.matchAll(PROPER_NOUN_PATTERN)) {
       const at = m.index ?? 0;
       const before = text.slice(Math.max(0, at - 32), at);
-      // Authors and publishers are not visible on screen.
-      if (/\b(?:criad[oa]|escrit[oa]|desenhad[oa]|obra|mang[aá]|autor[a]?|dirigid[oa]|produzid[oa]|est[uú]dio)\s+(?:por|de|pel[oa])\s*$/i.test(before)) continue;
-      const words = (m[1] ?? '').split(/\s+/).filter((w) => !NON_NAME_WORDS.has(w.toLowerCase()));
+      // Authors, studios and publishers are not visible on screen: "mangá de X e Y", "Jujutsu Kaisen, de X",
+      // "anime pela A-1 Pictures", "do estúdio MAPPA".
+      const credit =
+        /\b(?:criad[oa]|escrit[oa]|desenhad[oa]|ilustrad[oa]|obra|mang[aá]|autor[a]?|dirigid[oa]|produzid[oa]|animad[oa]|est[uú]dio)\s+(?:por|de|pel[oa])\s*$/i.test(before) ||
+        /\b(?:anime|adapta[cç][aã]o|s[eé]rie)\s+(?:pel[oa]|d[oa])\s*$/i.test(before) ||
+        /\best[uú]dio\s*$/i.test(before) ||
+        /,\s*de\s*$/i.test(before) ||
+        (lastCreditEnd >= 0 && /^\s+e\s+$/i.test(text.slice(lastCreditEnd, at))) ||
+        isStudioOrPublisher(m[1] ?? '');
+      if (credit) {
+        lastCreditEnd = at + (m[0]?.length ?? 0);
+        continue;
+      }
+      const words = (m[1] ?? '').split(/\s+/).filter((w) => !NON_NAME_WORDS.has(stripMarks(w).toLowerCase()));
       const name = words.join(' ').replace(/^(?:de|of|no|x)\s+|\s+(?:de|of|no|x)$/gi, '').trim();
       if (name.length < 3) continue;
       // A single capitalised word opening a sentence is grammar, not a name.

@@ -1144,7 +1144,9 @@ export async function runAutonomousMediaAcquisition(input: {
     input.limits?.maxCandidateDurationSec ?? (input.deps.ytDlpAcquireFn ? 3600 : maxCandidateDurationSec);
   const discoveryConcurrency = Math.max(1, input.limits?.discoveryConcurrency ?? 3);
   const acquisitionConcurrency = Math.max(1, input.limits?.acquisitionConcurrency ?? 2);
-  const verificationConcurrency = Math.max(1, input.limits?.verificationConcurrency ?? 1);
+  // Vision is the slowest stage (tens of seconds per asset): two assets in parallel halve the wall time without
+  // flooding a single provider.
+  const verificationConcurrency = Math.max(1, input.limits?.verificationConcurrency ?? 2);
   const discoveryBudgetRatio = Math.min(0.6, Math.max(0.15, input.limits?.discoveryBudgetRatio ?? 0.3));
   const acquisitionBudgetRatio = Math.min(0.6, Math.max(0.2, input.limits?.acquisitionBudgetRatio ?? 0.4));
   const roundReserveRatio = Math.min(0.5, Math.max(0, input.limits?.roundReserveRatio ?? 0.25));
@@ -1995,7 +1997,7 @@ export async function runAutonomousMediaAcquisition(input: {
 
           if (decision.visualVerificationError) {
             if (!canUseCachedDecision && input.analyzeFrames) visionDiagnostics.callsFailed += 1;
-            visionDiagnostics.providerErrors.push(decision.visualVerificationError.slice(0, 200));
+            visionDiagnostics.providerErrors.push(decision.visualVerificationError.slice(0, 900));
             // Infra/provider failure during verification: keep file in pending_visual_verification to resume later!
             candidateStates.set(candKey, 'pending_visual_verification');
             return;
