@@ -24,7 +24,7 @@
     "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
     "dist:win": "node scripts/generate-icon.mjs && npm run build && electron-builder --projectDir apps/desktop --config electron-builder.yml --win nsis",
     "dist:win:orchestrator": "node scripts/generate-icon.mjs && npm run build:orchestrator && electron-builder --projectDir apps/orchestrator-desktop --config electron-builder.yml --win nsis",
-    "dist:win:aethera": "node scripts/generate-icon.mjs && npm run build:aethera && electron-builder --projectDir apps/aethera-desktop --config electron-builder.yml --win nsis",
+    "dist:win:aethera": "node apps/aethera-desktop/scripts/generate-icon.mjs && npm run build:aethera && electron-builder --projectDir apps/aethera-desktop --config electron-builder.yml --win nsis",
     "dist:win:void": "node scripts/generate-icon.mjs && npm run build:void && electron-builder --projectDir apps/void-desktop --config electron-builder.yml --win nsis",
     "build:motion": "node scripts/build-motion-bundle.mjs",
     "verify:dist": "node scripts/verify-distribution.mjs",
