@@ -219,7 +219,7 @@ export function CreativeStudioPanel() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20 }}>Aethera Creative Studio</h2>
-          <p style={{ margin: '4px 0 0', fontSize: 12, color: '#99f6e4' }}>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted-foreground)' }}>
             Motores ativos: {engines.length > 0 ? engines.join(' • ') : 'Planejador Determinístico Local'}
           </p>
         </div>
@@ -231,9 +231,9 @@ export function CreativeStudioPanel() {
               style={{
                 padding: '6px 12px',
                 borderRadius: 6,
-                border: '1px solid #134e4a',
-                background: artType === t ? '#0f766e' : '#091917',
-                color: '#ecfdf5',
+                border: '1px solid var(--border)',
+                background: artType === t ? 'var(--primary)' : 'var(--card)',
+                color: artType === t ? 'var(--primary-foreground)' : 'var(--foreground)',
                 cursor: 'pointer',
               }}
             >
@@ -244,34 +244,34 @@ export function CreativeStudioPanel() {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 14, background: '#091917', border: '1px solid #134e4a', borderRadius: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24 }}>
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder="Descreva a arte desejada (ex.: Thumbnail Cyberpunk 2077 upgrades cibernéticos com alto contraste)..."
             rows={2}
-            style={{ width: '100%', padding: 8, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 6 }}
+            style={{ width: '100%', padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
           />
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <input
               value={headline}
               onChange={(e) => setHeadline(e.target.value)}
               placeholder="Título / Monograma curto"
-              style={{ flex: 1, minWidth: 160, padding: 8, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 6 }}
+              style={{ flex: 1, minWidth: 160, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
             />
             {artType === 'thumbnail' && (
               <input
                 value={videoPath}
                 onChange={(e) => setVideoPath(e.target.value)}
                 placeholder="Caminho opcional do vídeo (.mp4) para extrair frames"
-                style={{ flex: 1.4, minWidth: 200, padding: 8, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 6 }}
+                style={{ flex: 1.4, minWidth: 200, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
               />
             )}
             {artType === 'avatar' && (
               <select
                 value={avatarBackdrop}
                 onChange={(e) => setAvatarBackdrop(e.target.value as 'dark' | 'light' | 'transparent')}
-                style={{ padding: 8, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 6 }}
+                style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
               >
                 <option value="dark">Versão Escura</option>
                 <option value="light">Versão Clara</option>
@@ -280,7 +280,7 @@ export function CreativeStudioPanel() {
             )}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button onClick={handleCreate} style={{ padding: '8px 14px', background: '#14b8a6', color: '#042f2e', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+            <button onClick={handleCreate} style={{ padding: '8px 14px', background: 'var(--brand-lime)', color: 'var(--brand-ink)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}>
               Gerar Arte Editável
             </button>
             {artType === 'thumbnail' && (
@@ -290,7 +290,7 @@ export function CreativeStudioPanel() {
                   onChange={(e) =>
                     setFidelityMode(e.target.value as 'conceptual_art' | 'content_faithful' | 'authentic_gameplay')
                   }
-                  style={{ padding: 8, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 6 }}
+                  style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
                   title="Modo de fidelidade da direção criativa"
                 >
                   <option value="conceptual_art">Fidelidade: Arte Conceitual (Liberdade IA)</option>
@@ -303,7 +303,7 @@ export function CreativeStudioPanel() {
                     onChange={(e) =>
                       setVideoSourceType(e.target.value as 'authentic_gameplay' | 'synthetic_ai_clip' | 'unknown')
                     }
-                    style={{ padding: 8, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 6 }}
+                    style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
                     title="Proveniência do arquivo de vídeo"
                   >
                     <option value="authentic_gameplay">Vídeo: Gameplay Autêntico</option>
@@ -311,25 +311,25 @@ export function CreativeStudioPanel() {
                     <option value="unknown">Vídeo: Origem Desconhecida</option>
                   </select>
                 )}
-                <button onClick={handleThumbnailLab} style={{ padding: '8px 14px', background: '#f59e0b', color: '#1f2937', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                <button onClick={handleThumbnailLab} style={{ padding: '8px 14px', background: 'var(--brand-lavender)', color: 'var(--brand-ink)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}>
                   Thumbnail Lab (3 Variações)
                 </button>
               </>
             )}
-            <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, color: aiAvailable ? '#5eead4' : '#94a3b8' }}>
+            <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, color: aiAvailable ? 'var(--success)' : 'var(--muted-foreground)' }}>
               <input type="checkbox" checked={useAiGeneration} onChange={(e) => setUseAiGeneration(e.target.checked)} />
               IA Local (SDXL-Turbo / rembg {aiAvailable ? 'Pronta' : 'Indisponível'})
             </label>
           </div>
-          {statusMsg && <div style={{ fontSize: 12, color: '#5eead4' }}>{statusMsg}</div>}
+          {statusMsg && <div style={{ fontSize: 12, color: 'var(--success)' }}>{statusMsg}</div>}
         </div>
 
-        <div style={{ padding: 14, background: '#091917', border: '1px solid #134e4a', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <strong style={{ fontSize: 13 }}>Brand Kit do Canal</strong>
           <select
             value={selectedBrandKitId}
             onChange={(e) => setSelectedBrandKitId(e.target.value)}
-            style={{ padding: 8, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 6 }}
+            style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
           >
             <option value="">Padrão Aethera</option>
             {brandKits.map((k) => (
@@ -341,9 +341,9 @@ export function CreativeStudioPanel() {
               value={newKitName}
               onChange={(e) => setNewKitName(e.target.value)}
               placeholder="Novo Brand Kit..."
-              style={{ flex: 1, padding: 6, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 6 }}
+              style={{ flex: 1, padding: 6, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
             />
-            <button onClick={handleCreateBrandKit} style={{ padding: '6px 10px', background: '#0f766e', color: '#ecfdf5', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+            <button onClick={handleCreateBrandKit} style={{ padding: '6px 10px', background: 'var(--primary)', color: 'var(--primary-foreground)', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
               Salvar
             </button>
           </div>
@@ -361,7 +361,7 @@ export function CreativeStudioPanel() {
                     setSelectedLayerId(loaded.document.layers[0]?.id ?? '');
                   }
                 }}
-                style={{ textAlign: 'left', padding: '4px 8px', background: activeDoc?.id === p.id ? '#115e59' : '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 4, fontSize: 12, cursor: 'pointer' }}
+                style={{ textAlign: 'left', padding: '4px 8px', background: activeDoc?.id === p.id ? 'var(--brand-lavender)' : 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 12, cursor: 'pointer' }}
               >
                 [{p.artType}] {p.title}
               </button>
@@ -371,18 +371,18 @@ export function CreativeStudioPanel() {
       </div>
 
       {labVariants.length > 0 && (
-        <div style={{ padding: 14, background: '#091917', border: '1px solid #134e4a', borderRadius: 8 }}>
+        <div style={{ padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24 }}>
           <strong style={{ fontSize: 14 }}>Thumbnail Lab — Conceitos Narrativos Independentes (CS-8)</strong>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 10 }}>
             {labVariants.map((v) => (
-              <div key={v.document.id} style={{ background: '#071110', border: '1px solid #134e4a', borderRadius: 6, padding: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div key={v.document.id} style={{ background: 'var(--secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <img src={v.previewDataUrl} alt={v.styleTitle} style={{ width: '100%', borderRadius: 4 }} />
                 <div style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between' }}>
                   <strong>{v.styleTitle}</strong>
                   <span>Score: {v.audit.scorecard.overall}/100</span>
                 </div>
                 {v.concept && (
-                  <div style={{ fontSize: 11, color: '#99f6e4' }}>
+                  <div style={{ fontSize: 11, color: 'var(--muted-foreground)' }}>
                     <span>
                       Arquétipo: {v.concept.archetype}
                       {v.concept.fidelityMode ? ` • ${v.concept.fidelityMode}` : ''}
@@ -394,7 +394,7 @@ export function CreativeStudioPanel() {
                   </div>
                 )}
                 {v.editorialRationale && (
-                  <div style={{ fontSize: 11, color: '#cbd5e1' }}>{v.editorialRationale}</div>
+                  <div style={{ fontSize: 11, color: 'var(--muted-foreground)' }}>{v.editorialRationale}</div>
                 )}
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button
@@ -403,7 +403,7 @@ export function CreativeStudioPanel() {
                       setPreviewUrl(v.previewDataUrl);
                       setAudit(v.audit);
                     }}
-                    style={{ flex: 1, padding: '6px 8px', background: '#0f766e', color: '#ecfdf5', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}
+                    style={{ flex: 1, padding: '6px 8px', background: 'var(--primary)', color: 'var(--primary-foreground)', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}
                   >
                     Editar no Canvas
                   </button>
@@ -422,7 +422,7 @@ export function CreativeStudioPanel() {
                           setStatusMsg(`Elementos de ${v.label} combinados no projeto ativo.`);
                         }
                       }}
-                      style={{ padding: '6px 8px', background: '#1e293b', color: '#99f6e4', border: '1px solid #134e4a', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
+                      style={{ padding: '6px 8px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
                     >
                       + Combinar
                     </button>
@@ -436,12 +436,12 @@ export function CreativeStudioPanel() {
 
       {activeDoc && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16 }}>
-          <div style={{ padding: 14, background: '#091917', border: '1px solid #134e4a', borderRadius: 8 }}>
+          <div style={{ padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
               <strong>{activeDoc.title} ({activeDoc.width}×{activeDoc.height})</strong>
               <div style={{ display: 'flex', gap: 6 }}>
                 {activeDoc.artType === 'banner' && (
-                  <select value={bannerPreviewMode} onChange={(e) => setBannerPreviewMode(e.target.value as 'desktop' | 'mobile' | 'tv')} style={{ background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 4, fontSize: 12 }}>
+                  <select value={bannerPreviewMode} onChange={(e) => setBannerPreviewMode(e.target.value as 'desktop' | 'mobile' | 'tv')} style={{ background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 12 }}>
                     <option value="desktop">Prévia Desktop</option>
                     <option value="mobile">Prévia Mobile (Área Segura)</option>
                     <option value="tv">Prévia TV (Full)</option>
@@ -451,7 +451,7 @@ export function CreativeStudioPanel() {
                 <button disabled={!canRedo} onClick={() => void handleEditAction({ kind: 'redo' })} style={{ padding: '4px 8px', fontSize: 12 }}>Refazer</button>
               </div>
             </div>
-            <div style={{ position: 'relative', background: 'repeating-conic-gradient(#1f2937 0% 25%, #111827 0% 50%) 50% / 20px 20px', borderRadius: 6, overflow: 'hidden', display: 'flex', justifyContent: 'center' }}>
+            <div style={{ position: 'relative', background: 'repeating-conic-gradient(#e4e4e8 0% 25%, #f4f4f6 0% 50%) 50% / 20px 20px', borderRadius: 6, overflow: 'hidden', display: 'flex', justifyContent: 'center' }}>
               {previewUrl && (
                 <img
                   src={previewUrl}
@@ -466,13 +466,13 @@ export function CreativeStudioPanel() {
               )}
             </div>
             {previewUrl && activeDoc.artType === 'thumbnail' && (
-              <div style={{ marginTop: 8, padding: 8, background: '#071110', border: '1px solid #134e4a', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ marginTop: 8, padding: 8, background: 'var(--secondary)', border: '1px solid var(--border)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 12 }}>
                 <img
                   src={previewUrl}
                   alt="Prévia Feed Mobile"
-                  style={{ width: 224, height: 126, objectFit: 'cover', borderRadius: 4, border: '1px solid #134e4a' }}
+                  style={{ width: 224, height: 126, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)' }}
                 />
-                <div style={{ fontSize: 12, color: '#99f6e4' }}>
+                <div style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>
                   <strong>Prévia em Tamanho de Celular (224×126)</strong>
                   <p style={{ margin: '4px 0 0', opacity: 0.85 }}>
                     Validação rápida de legibilidade do título, contraste do sujeito e ausência de cortes em feeds mobile.
@@ -485,21 +485,21 @@ export function CreativeStudioPanel() {
                 value={promptEditInput}
                 onChange={(e) => setPromptEditInput(e.target.value)}
                 placeholder='Edição localizada por prompt (ex.: Mude o título para "CYBERPUNK" na cor #00F0FF)'
-                style={{ flex: 1, padding: 8, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 6 }}
+                style={{ flex: 1, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
               />
               <button
                 onClick={() => {
                   void handleEditAction({ kind: 'promptEdit', instruction: promptEditInput });
                   setPromptEditInput('');
                 }}
-                style={{ padding: '8px 12px', background: '#0f766e', color: '#ecfdf5', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+                style={{ padding: '8px 12px', background: 'var(--primary)', color: 'var(--primary-foreground)', border: 'none', borderRadius: 6, cursor: 'pointer' }}
               >
                 Aplicar Edição
               </button>
             </div>
           </div>
 
-          <div style={{ padding: 14, background: '#091917', border: '1px solid #134e4a', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <strong style={{ fontSize: 13 }}>Camadas ({activeDoc.layers.length})</strong>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {[...activeDoc.layers].sort((a, b) => b.zIndex - a.zIndex).map((layer) => (
@@ -509,8 +509,8 @@ export function CreativeStudioPanel() {
                   style={{
                     padding: '6px 8px',
                     borderRadius: 4,
-                    background: selectedLayerId === layer.id ? '#115e59' : '#071110',
-                    border: '1px solid #134e4a',
+                    background: selectedLayerId === layer.id ? 'var(--brand-lavender)' : 'var(--secondary)',
+                    border: '1px solid var(--border)',
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
@@ -529,16 +529,16 @@ export function CreativeStudioPanel() {
             </div>
 
             {selectedLayer && selectedLayer.type === 'text' && (
-              <div style={{ borderTop: '1px solid #134e4a', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <strong style={{ fontSize: 12 }}>Texto Editável</strong>
                 <input
                   value={selectedLayer.text}
                   onChange={(e) => void handleEditAction({ kind: 'updateLayer', layerId: selectedLayer.id, patch: { text: e.target.value } })}
-                  style={{ padding: 6, background: '#071110', color: '#ecfdf5', border: '1px solid #134e4a', borderRadius: 4 }}
+                  style={{ padding: 6, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4 }}
                 />
                 <button
                   onClick={() => void handleEditAction({ kind: 'align', layerId: selectedLayer.id, align: 'safe-center' })}
-                  style={{ padding: 6, background: '#0f766e', color: '#ecfdf5', border: 'none', borderRadius: 4, fontSize: 12, cursor: 'pointer' }}
+                  style={{ padding: 6, background: 'var(--primary)', color: 'var(--primary-foreground)', border: 'none', borderRadius: 4, fontSize: 12, cursor: 'pointer' }}
                 >
                   Centralizar na Área Segura
                 </button>
@@ -546,11 +546,11 @@ export function CreativeStudioPanel() {
             )}
 
             {audit && (
-              <div style={{ borderTop: '1px solid #134e4a', paddingTop: 8, fontSize: 12 }}>
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, fontSize: 12 }}>
                 <strong>Quality Gate: {audit.passed ? 'APROVÁVEL' : 'BLOQUEADO'} ({audit.scorecard.overall}/100)</strong>
-                <div style={{ color: '#99f6e4', marginTop: 4 }}>{audit.scorecard.disclaimer}</div>
+                <div style={{ color: 'var(--muted-foreground)', marginTop: 4 }}>{audit.scorecard.disclaimer}</div>
                 {audit.findings.map((f, i) => (
-                  <div key={i} style={{ color: f.severity === 'critical' ? '#fca5a5' : '#fde68a', marginTop: 2 }}>
+                  <div key={i} style={{ color: f.severity === 'critical' ? 'var(--destructive)' : 'var(--warning)', marginTop: 2 }}>
                     [{f.severity}] {f.message}
                   </div>
                 ))}
@@ -574,7 +574,7 @@ export function CreativeStudioPanel() {
                           );
                         }
                       }}
-                      style={{ flex: 1, padding: '8px 10px', background: decision === 'approved' ? '#14b8a6' : '#7f1d1d', color: decision === 'approved' ? '#042f2e' : '#fee2e2', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}
+                      style={{ flex: 1, padding: '8px 10px', background: decision === 'approved' ? 'var(--brand-lime)' : 'var(--destructive)', color: decision === 'approved' ? 'var(--brand-ink)' : 'var(--destructive-foreground)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}
                     >
                       {decision === 'approved' ? 'Aprovar estética (humano)' : 'Rejeitar estética'}
                     </button>
@@ -620,7 +620,7 @@ function ApprovalStatesView({ doc }: { doc: CreativeProjectDocument }) {
     <dl aria-label="Estados de aprovação" style={{ margin: '8px 0 0', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 8px' }}>
       {rows.map(([label, status, detail]) => (
         <div key={label} style={{ display: 'contents' }}>
-          <dt style={{ color: '#99f6e4' }}>{label}</dt>
+          <dt style={{ color: 'var(--muted-foreground)' }}>{label}</dt>
           <dd style={{ margin: 0 }}>
             {APPROVAL_LABELS[status] ?? status}
             {detail ? ` — ${detail}` : ''}
