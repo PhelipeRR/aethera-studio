@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { discoverComfyUi, parseComfyUiVersion, type ComfyUiFileSystem } from '../src/comfyui-discovery.js';
 
 function fakeFileSystem(): ComfyUiFileSystem {
@@ -61,5 +65,20 @@ describe('ComfyUI discovery', () => {
       fetchImpl: async () => { throw new Error('connection refused'); },
     });
     expect(missing.state).toBe('not_installed');
+  });
+
+  it('keeps nested model subfolders in the inventory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'comfy-models-'));
+    try {
+      const resourceRoot = join(root, 'resources', 'ComfyUI');
+      const checkpoints = join(resourceRoot, 'models', 'checkpoints', 'anime');
+      mkdirSync(checkpoints, { recursive: true });
+      writeFileSync(join(resourceRoot, 'comfyui_version.py'), '__version__ = "0.20.1"');
+      writeFileSync(join(checkpoints, 'model.safetensors'), '');
+      const result = await discoverComfyUi({ endpoints: [], installRoots: [root] });
+      expect(result.models.checkpoints).toEqual(['anime/model.safetensors']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

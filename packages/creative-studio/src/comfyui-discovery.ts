@@ -60,7 +60,7 @@ const nativeFileSystem: ComfyUiFileSystem = {
   readFile: (path) => readFileSync(path, 'utf8'),
   listFiles: (path) => {
     const result: string[] = [];
-    const visit = (directory: string): void => {
+    const visit = (directory: string, relativePrefix: string): void => {
       let entries;
       try {
         entries = readdirSync(directory, { withFileTypes: true });
@@ -69,11 +69,11 @@ const nativeFileSystem: ComfyUiFileSystem = {
       }
       for (const entry of entries) {
         const child = join(directory, entry.name);
-        if (entry.isDirectory()) visit(child);
-        else if (MODEL_EXTENSIONS.test(entry.name)) result.push(child.slice(directory.length + 1));
+        if (entry.isDirectory()) visit(child, join(relativePrefix, entry.name));
+        else if (MODEL_EXTENSIONS.test(entry.name)) result.push(join(relativePrefix, entry.name).replaceAll('\\', '/'));
       }
     };
-    visit(path);
+    visit(path, '');
     return result.sort((a, b) => a.localeCompare(b));
   },
 };
