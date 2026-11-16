@@ -6,6 +6,15 @@ Audit date: 2026-11-16. Host: Windows, RTX 4060 Ti 8 GB. Command:
 npx tsx scripts/comfyui-audit.ts
 ```
 
+The six-case harness is:
+
+```powershell
+npx tsx scripts/comfyui-acceptance.ts
+npx tsx scripts/comfyui-acceptance.ts --reference C:\path\to\reference.png
+```
+
+When the runtime is offline or has no checkpoint, the harness exits as blocked and prints the exact discovery result. When it is ready, it writes per-case PNGs and `artifacts/comfyui-acceptance/report.json` with duration, VRAM samples, image dimensions and the structural audit.
+
 ## Evidence from this machine
 
 The audit found:
