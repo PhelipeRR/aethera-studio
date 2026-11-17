@@ -75,14 +75,14 @@ Report: `artifacts/comfyui-advanced-acceptance/report.json`; images: `artifacts/
 
 The real advanced pass used the installed Animagine checkpoint and the Aethera FaceDetailer image as reference. Both preprocessors executed through ComfyUI and all four generation cases passed the structural audit:
 
-| Case | Seed | Time | Peak VRAM | Human review |
+| Case | Seed | Time | Peak VRAM | Visual review in this run |
 | --- | ---: | ---: | ---: | --- |
 | ControlNet Depth | 21001 | 18,478 ms | 7,396 MiB | coherent neon tech character; high contrast but visually usable |
 | ControlNet OpenPose | 21004 | 20,184 ms | 7,468 MiB | coherent anime portrait with pose conditioning; crop is tight |
 | IP-Adapter Plus, weight 0.80 | 21002 | 12,484 ms | 7,237 MiB | rejected: near-white overexposed output despite structural pass |
-| IP-Adapter Plus, weight 0.35 | 21003 | 10,543 ms | 7,545 MiB | accepted as the safer observed default: coherent face, anatomy, and reference styling |
+| IP-Adapter Plus, weight 0.35 | 21003 | 10,543 ms | 7,545 MiB | safer observed candidate: coherent face, anatomy, and reference styling |
 
-The panel therefore defaults IP-Adapter weight to `0.35`. This is an evidence-based starting point, not a guarantee of identity fidelity for arbitrary references. The structural audit still does not replace human semantic review.
+The panel therefore defaults IP-Adapter weight to `0.35`. This is an evidence-based starting point, not a guarantee of identity fidelity for arbitrary references, and the visual review in this run is not a human production approval. The structural audit still does not replace human semantic review.
 
 ## Remaining work / blockers
 
