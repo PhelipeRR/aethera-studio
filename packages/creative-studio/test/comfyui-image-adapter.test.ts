@@ -65,6 +65,37 @@ describe('ComfyUiImageAdapter', () => {
     expect(gateway.queued?.['5']).toMatchObject({ inputs: { model: ['10', 0] } });
   });
 
+  it('uploads a conditioning image and queues the discovered ControlNet graph', async () => {
+    const gateway = fakeGateway();
+    const uploads: string[] = [];
+    gateway.getObjectInfo = async () => ({
+      ...readyObjectInfo(),
+      ControlNetLoader: { input: { required: { control_net_name: [['control-lora-canny.safetensors']] } } },
+      ControlNetApplyAdvanced: {},
+    });
+    gateway.uploadImage = async (_buffer, filename) => {
+      uploads.push(filename);
+      return { name: filename, subfolder: 'aethera', type: 'input' };
+    };
+    const root = mkdtempSync(join(tmpdir(), 'comfy-control-'));
+    const controlPath = join(root, 'canny.png');
+    writeFileSync(controlPath, Buffer.from('control bytes'));
+    try {
+      const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
+      await adapter.generateImage({
+        prompt: 'controlled pose',
+        width: 768,
+        height: 768,
+        controlNet: { model: 'control-lora-canny.safetensors', imagePath: controlPath, strength: 0.8 },
+      });
+      expect(uploads).toEqual(['canny.png']);
+      expect(gateway.queued?.['11']).toMatchObject({ class_type: 'ControlNetLoader' });
+      expect(gateway.queued?.['13']).toMatchObject({ class_type: 'ControlNetApplyAdvanced', inputs: { image: ['12', 0], strength: 0.8 } });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('is unavailable and gives an actionable error when the selected checkpoint is absent', async () => {
     const gateway = fakeGateway();
     gateway.getObjectInfo = async () => ({

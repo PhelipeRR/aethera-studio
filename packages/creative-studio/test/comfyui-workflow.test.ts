@@ -121,6 +121,42 @@ describe('ComfyUI workflow registry', () => {
     expect(workflow['8']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['7', 0] } });
   });
 
+  it('adds a discovered ControlNet apply path and validates the conditioning model', () => {
+    const workflow = buildComfyUiTxt2ImgWorkflow({
+      checkpoint: 'sdxl.safetensors',
+      positivePrompt: 'cinematic pose',
+      negativePrompt: 'text',
+      width: 768,
+      height: 768,
+      seed: 3,
+      steps: 8,
+      cfg: 5,
+      samplerName: 'euler',
+      scheduler: 'normal',
+      filenamePrefix: 'Aethera/controlnet',
+      controlNet: {
+        model: 'control-lora-canny.safetensors',
+        image: { filename: 'canny.png', subfolder: 'aethera', type: 'input' },
+        strength: 0.8,
+        nodeType: 'ControlNetApplyAdvanced',
+      },
+    });
+
+    expect(workflow['11']).toMatchObject({ class_type: 'ControlNetLoader', inputs: { control_net_name: 'control-lora-canny.safetensors' } });
+    expect(workflow['12']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/canny.png' } });
+    expect(workflow['13']).toMatchObject({ class_type: 'ControlNetApplyAdvanced', inputs: { strength: 0.8, positive: ['2', 0], negative: ['3', 0] } });
+    expect(workflow['5']?.inputs['positive']).toEqual(['13', 0]);
+    expect(workflow['5']?.inputs['negative']).toEqual(['13', 1]);
+    expect(
+      validateComfyUiWorkflow(workflow, {
+        CheckpointLoaderSimple: { input: { required: { ckpt_name: [['sdxl.safetensors']] } } },
+        CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {},
+        ControlNetLoader: { input: { required: { control_net_name: [['control-lora-canny.safetensors']] } } },
+        ControlNetApplyAdvanced: {},
+      }),
+    ).toEqual({ ok: true, errors: [] });
+  });
+
   it('extracts generated image references from history outputs', () => {
     const history: ComfyUiHistoryEntry = {
       outputs: {

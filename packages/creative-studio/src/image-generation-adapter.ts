@@ -31,6 +31,8 @@ export interface ImageGenerationRequest {
   scheduler?: string;
   /** Optional native ComfyUI LoRA applied to the model and, when supported, the text encoder. */
   lora?: { model: string; strengthModel?: number; strengthClip?: number };
+  /** Optional ControlNet model plus a local conditioning image. */
+  controlNet?: { model: string; imagePath: string; strength?: number; startPercent?: number; endPercent?: number };
   batchSize?: number;
   preset?: string;
   characterCount?: number;

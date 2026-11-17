@@ -4,7 +4,7 @@ import { inspectComfyUiCapabilities } from '../src/comfyui-capabilities.js';
 describe('ComfyUI capability inspection', () => {
   it('reports only capabilities backed by nodes and model inventory', () => {
     const capabilities = inspectComfyUiCapabilities(
-      { CheckpointLoaderSimple: {}, CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {}, VAEEncodeForInpaint: {}, ControlNetApplyAdvanced: {}, IPAdapterAdvanced: {}, FaceDetailer: {}, ImageUpscaleWithModel: {}, LoraLoader: {} },
+      { CheckpointLoaderSimple: {}, CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {}, VAEEncodeForInpaint: {}, ControlNetLoader: {}, ControlNetApplyAdvanced: {}, IPAdapterAdvanced: {}, FaceDetailer: {}, ImageUpscaleWithModel: {}, LoraLoader: {} },
       { checkpoints: ['sdxl.safetensors'], controlnet: ['canny.safetensors'], diffusion_models: [], loras: ['style.safetensors'], vae: [], upscale_models: ['4x.pth'], embeddings: [] },
     );
     expect(capabilities).toEqual({

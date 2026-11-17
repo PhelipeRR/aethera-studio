@@ -21,6 +21,16 @@ export interface ComfyUiTxt2ImgInput {
   scheduler: string;
   filenamePrefix: string;
   lora?: { model: string; strengthModel?: number; strengthClip?: number; nodeType?: 'LoraLoader' | 'LoraLoaderModelOnly' };
+  controlNet?: ComfyUiControlNetInput;
+}
+
+export interface ComfyUiControlNetInput {
+  model: string;
+  image: ComfyUiImageRef;
+  strength?: number;
+  startPercent?: number;
+  endPercent?: number;
+  nodeType?: 'ControlNetApplyAdvanced' | 'ControlNetApply';
 }
 
 export interface ComfyUiWorkflowValidation {
@@ -59,6 +69,9 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
   const loraNodeType = input.lora?.nodeType ?? 'LoraLoader';
   const modelRef: [string, number] = input.lora ? ['10', 0] : ['1', 0];
   const clipRef: [string, number] = input.lora && loraNodeType === 'LoraLoader' ? ['10', 1] : ['1', 1];
+  const controlNetNodeType = input.controlNet?.nodeType ?? 'ControlNetApply';
+  const conditioningRef: [string, number] = input.controlNet ? ['13', 0] : ['2', 0];
+  const negativeConditioningRef: [string, number] = input.controlNet ? ['13', 1] : ['3', 0];
   const workflow: ComfyUiWorkflow = {
     '1': {
       class_type: 'CheckpointLoaderSimple',
@@ -90,8 +103,8 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
         scheduler: input.scheduler,
         denoise: 1,
         model: modelRef,
-        positive: ['2', 0],
-        negative: ['3', 0],
+        positive: conditioningRef,
+        negative: negativeConditioningRef,
         latent_image: ['4', 0],
       },
       _meta: { title: 'Aethera sampler' },
@@ -124,6 +137,42 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
             strength_model: Math.max(-5, Math.min(5, input.lora.strengthModel ?? 1)),
           },
       _meta: { title: 'Aethera LoRA' },
+    };
+  }
+  if (input.controlNet) {
+    const imageName = input.controlNet.image.subfolder
+      ? `${input.controlNet.image.subfolder}/${input.controlNet.image.filename}`
+      : input.controlNet.image.filename;
+    workflow['11'] = {
+      class_type: 'ControlNetLoader',
+      inputs: { control_net_name: input.controlNet.model },
+      _meta: { title: 'Aethera ControlNet model' },
+    };
+    workflow['12'] = {
+      class_type: 'LoadImage',
+      inputs: { image: imageName },
+      _meta: { title: 'Aethera ControlNet conditioning image' },
+    };
+    workflow['13'] = {
+      class_type: controlNetNodeType,
+      inputs: controlNetNodeType === 'ControlNetApplyAdvanced'
+        ? {
+            positive: ['2', 0],
+            negative: ['3', 0],
+            control_net: ['11', 0],
+            image: ['12', 0],
+            strength: Math.max(0, Math.min(5, input.controlNet.strength ?? 0.65)),
+            start_percent: Math.max(0, Math.min(1, input.controlNet.startPercent ?? 0)),
+            end_percent: Math.max(0, Math.min(1, input.controlNet.endPercent ?? 1)),
+          }
+        : {
+            positive: ['2', 0],
+            negative: ['3', 0],
+            control_net: ['11', 0],
+            image: ['12', 0],
+            strength: Math.max(0, Math.min(5, input.controlNet.strength ?? 0.65)),
+          },
+      _meta: { title: 'Aethera ControlNet conditioning' },
     };
   }
   return workflow;
@@ -225,6 +274,16 @@ function checkpointNames(objectInfo: Record<string, unknown>): string[] {
   return values[0].filter((value): value is string => typeof value === 'string');
 }
 
+function controlNetNames(objectInfo: Record<string, unknown>): string[] {
+  const loader = objectInfo['ControlNetLoader'];
+  if (!loader || typeof loader !== 'object') return [];
+  const input = (loader as Record<string, unknown>)['input'];
+  const required = input && typeof input === 'object' ? (input as Record<string, unknown>)['required'] : undefined;
+  const values = required && typeof required === 'object' ? (required as Record<string, unknown>)['control_net_name'] : undefined;
+  if (!Array.isArray(values) || !Array.isArray(values[0])) return [];
+  return values[0].filter((value): value is string => typeof value === 'string');
+}
+
 function loraNames(objectInfo: Record<string, unknown>): string[] {
   for (const nodeType of ['LoraLoader', 'LoraLoaderModelOnly']) {
     const loader = objectInfo[nodeType];
@@ -266,6 +325,15 @@ export function validateComfyUiWorkflow(workflow: ComfyUiWorkflow, objectInfo: R
       errors.push(`LoRA "${node.inputs['lora_name']}" is not reported by ComfyUI as installed.`);
     }
     if (installed.length === 0) errors.push('ComfyUI reports no LoRA models for the selected loader.');
+  }
+  for (const node of Object.values(workflow)) {
+    if (node.class_type !== 'ControlNetLoader' || typeof node.inputs['control_net_name'] !== 'string') continue;
+    if (!availableTypes.has('ControlNetLoader')) continue;
+    const installed = controlNetNames(objectInfo);
+    if (installed.length > 0 && !installed.includes(node.inputs['control_net_name'])) {
+      errors.push(`ControlNet "${node.inputs['control_net_name']}" is not reported by ComfyUI as installed.`);
+    }
+    if (installed.length === 0) errors.push('ComfyUI reports no ControlNet models for ControlNetLoader.');
   }
   for (const [nodeId, node] of Object.entries(workflow)) {
     if (!node.class_type || !node.inputs) errors.push(`Workflow node ${nodeId} is missing class_type or inputs.`);

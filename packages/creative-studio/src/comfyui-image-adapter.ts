@@ -10,6 +10,7 @@ import {
   buildComfyUiTxt2ImgWorkflow,
   validateComfyUiWorkflow,
   type ComfyUiWorkflow,
+  type ComfyUiControlNetInput,
 } from './comfyui-workflow.js';
 import type {
   ExternalImageAdapter,
@@ -130,6 +131,19 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     const objectInfo = await this.gateway.getObjectInfo();
     const referencePath = request.referenceImagePaths?.[0];
     const uploadedReference = referencePath ? await this.uploadReference(referencePath) : null;
+    const uploadedControlNet = request.controlNet ? await this.uploadReference(request.controlNet.imagePath) : null;
+    const controlNet: ComfyUiControlNetInput | undefined = request.controlNet && uploadedControlNet
+      ? {
+          model: request.controlNet.model,
+          image: uploadedControlNet,
+          ...(request.controlNet.strength !== undefined ? { strength: request.controlNet.strength } : {}),
+          ...(request.controlNet.startPercent !== undefined ? { startPercent: request.controlNet.startPercent } : {}),
+          ...(request.controlNet.endPercent !== undefined ? { endPercent: request.controlNet.endPercent } : {}),
+          nodeType: Object.prototype.hasOwnProperty.call(objectInfo, 'ControlNetApplyAdvanced')
+            ? 'ControlNetApplyAdvanced' as const
+            : 'ControlNetApply' as const,
+        }
+      : undefined;
     const regions = request.characterRegions?.slice(0, 8) ?? [];
     const regionalComposition = regions.length > 1 && !uploadedReference;
     const workflowRequest = regionalComposition
@@ -139,7 +153,9 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
           negativePrompt: `${request.negativePrompt ?? ''}, people, characters, bodies, faces`,
         }
       : request;
-    const workflow = uploadedReference ? this.img2imgWorkflowFor(request, uploadedReference) : this.workflowFor(workflowRequest);
+    const workflow = uploadedReference
+      ? this.img2imgWorkflowFor(request, uploadedReference, controlNet)
+      : this.workflowFor(workflowRequest, controlNet);
     const validation = validateComfyUiWorkflow(workflow, objectInfo);
     if (!validation.ok) {
       this.availabilityError = validation.errors.join(' ');
@@ -254,7 +270,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     return true;
   }
 
-  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora'>): ComfyUiWorkflow {
+  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora'>, controlNet?: ComfyUiControlNetInput): ComfyUiWorkflow {
     return buildComfyUiTxt2ImgWorkflow({
       checkpoint: request.model ?? this.checkpoint,
       positivePrompt: request.prompt,
@@ -267,6 +283,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       samplerName: request.samplerName ?? this.samplerName,
       scheduler: request.scheduler ?? this.scheduler,
       ...(request.lora ? { lora: request.lora } : {}),
+      ...(controlNet ? { controlNet } : {}),
       filenamePrefix: this.filenamePrefix,
     });
   }
@@ -274,6 +291,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
   private img2imgWorkflowFor(
     request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'strength' | 'lora'>,
     inputImage: ComfyUiImageRef,
+    controlNet?: ComfyUiControlNetInput,
   ): ComfyUiWorkflow {
     return buildComfyUiImg2ImgWorkflow({
       checkpoint: request.model ?? this.checkpoint,
@@ -287,6 +305,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       samplerName: request.samplerName ?? this.samplerName,
       scheduler: request.scheduler ?? this.scheduler,
       ...(request.lora ? { lora: request.lora } : {}),
+      ...(controlNet ? { controlNet } : {}),
       denoise: request.strength ?? 0.55,
       inputImage,
       filenamePrefix: this.filenamePrefix,

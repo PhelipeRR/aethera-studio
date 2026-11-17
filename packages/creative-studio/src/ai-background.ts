@@ -20,6 +20,7 @@ export interface AiGenerationReport {
   /** Number of bounded generation attempts, including the first attempt. */
   attempts?: number;
   lora?: { model: string; strengthModel: number; strengthClip: number };
+  controlNet?: { model: string; strength: number; imagePath: string };
   qualityAudit?: GeneratedImageQualityAudit;
 }
 
@@ -40,6 +41,7 @@ export interface GenerateAiBackgroundInput {
   referenceStrength?: number;
   maxAttempts?: number;
   lora?: { model: string; strengthModel?: number; strengthClip?: number };
+  controlNet?: { model: string; imagePath: string; strength?: number; startPercent?: number; endPercent?: number };
   characterCount?: number;
 }
 
@@ -82,6 +84,15 @@ export async function generateAiBackground(
     const attempt = attemptIndex + 1;
     const attemptRecipe = attemptIndex === 0 ? recipe : { ...recipe, seed: (recipe.seed + attemptIndex) % 0x80000000 };
     lastRecipe = attemptRecipe;
+    const controlNetPayload = input.controlNet
+      ? {
+          model: input.controlNet.model,
+          imagePath: input.controlNet.imagePath,
+          ...(typeof input.controlNet.strength === 'number' ? { strength: input.controlNet.strength } : {}),
+          ...(typeof input.controlNet.startPercent === 'number' ? { startPercent: input.controlNet.startPercent } : {}),
+          ...(typeof input.controlNet.endPercent === 'number' ? { endPercent: input.controlNet.endPercent } : {}),
+        }
+      : undefined;
     try {
       const buffer = await input.imageAdapter.generateImage({
         prompt: attemptRecipe.positivePrompt,
@@ -107,6 +118,7 @@ export async function generateAiBackground(
               },
             }
           : {}),
+        ...(controlNetPayload ? { controlNet: controlNetPayload } : {}),
         ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
         ...(attemptRecipe.characterRegions.length > 1 ? { characterRegions: attemptRecipe.characterRegions } : {}),
       });
@@ -131,6 +143,7 @@ export async function generateAiBackground(
           ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),
           attempts: attempt,
           ...(input.lora ? { lora: { model: input.lora.model, strengthModel: input.lora.strengthModel ?? 1, strengthClip: input.lora.strengthClip ?? input.lora.strengthModel ?? 1 } } : {}),
+          ...(input.controlNet ? { controlNet: { model: input.controlNet.model, strength: input.controlNet.strength ?? 0.65, imagePath: input.controlNet.imagePath } } : {}),
           qualityAudit,
         },
       };
@@ -153,6 +166,7 @@ export async function generateAiBackground(
       ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),
       attempts: maxAttempts,
       ...(input.lora ? { lora: { model: input.lora.model, strengthModel: input.lora.strengthModel ?? 1, strengthClip: input.lora.strengthClip ?? input.lora.strengthModel ?? 1 } } : {}),
+      ...(input.controlNet ? { controlNet: { model: input.controlNet.model, strength: input.controlNet.strength ?? 0.65, imagePath: input.controlNet.imagePath } } : {}),
       ...(lastAudit ? { qualityAudit: lastAudit } : {}),
     },
   };

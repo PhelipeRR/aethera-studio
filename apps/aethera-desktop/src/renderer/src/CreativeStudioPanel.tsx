@@ -33,6 +33,7 @@ interface CreativeBridge {
       referenceStrength?: number;
       attempts?: number;
       lora?: { model: string; strengthModel: number; strengthClip: number };
+      controlNet?: { model: string; strength: number; imagePath: string };
       qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
       generationRunId?: string;
     };
@@ -50,6 +51,7 @@ interface CreativeBridge {
       referenceStrength?: number;
       attempts?: number;
       lora?: { model: string; strengthModel: number; strengthClip: number };
+      controlNet?: { model: string; strength: number; imagePath: string };
       qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
       generationRunId?: string;
     };
@@ -177,6 +179,9 @@ export function CreativeStudioPanel() {
   const [selectedCheckpoint, setSelectedCheckpoint] = useState('');
   const [selectedLora, setSelectedLora] = useState('');
   const [loraStrength, setLoraStrength] = useState(0.8);
+  const [selectedControlNet, setSelectedControlNet] = useState('');
+  const [controlNetImagePath, setControlNetImagePath] = useState('');
+  const [controlNetStrength, setControlNetStrength] = useState(0.65);
   const [selectedUpscaleModel, setSelectedUpscaleModel] = useState('');
   const [releaseMemoryAfterGeneration, setReleaseMemoryAfterGeneration] = useState(false);
   const [fidelityMode, setFidelityMode] = useState<'conceptual_art' | 'content_faithful' | 'authentic_gameplay'>(
@@ -216,6 +221,7 @@ export function CreativeStudioPanel() {
     referenceStrength?: number;
     attempts?: number;
     lora?: { model: string; strengthModel: number; strengthClip: number };
+    controlNet?: { model: string; strength: number; imagePath: string };
     qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
   } | null>(null);
   const [generationBusy, setGenerationBusy] = useState(false);
@@ -275,6 +281,9 @@ export function CreativeStudioPanel() {
         ...(referencePath.trim() ? { referenceImagePaths: [referencePath.trim()] } : {}),
         ...(referencePath.trim() ? { referenceStrength } : {}),
         ...(selectedLora ? { lora: { model: selectedLora, strengthModel: loraStrength, strengthClip: loraStrength } } : {}),
+        ...(selectedControlNet && controlNetImagePath.trim()
+          ? { controlNet: { model: selectedControlNet, imagePath: controlNetImagePath.trim(), strength: controlNetStrength } }
+          : {}),
         maxAttempts,
         characterCount,
         maxSide,
@@ -505,6 +514,17 @@ export function CreativeStudioPanel() {
                 </label>
               </>
             )}
+            {engineStatus.comfyUi.models.controlnet.length > 0 && (
+              <select
+                aria-label="Modelo ControlNet ComfyUI"
+                value={selectedControlNet}
+                onChange={(e) => setSelectedControlNet(e.target.value)}
+                style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
+              >
+                <option value="">Sem ControlNet</option>
+                {engineStatus.comfyUi.models.controlnet.map((model) => <option key={model} value={model}>{model}</option>)}
+              </select>
+            )}
             {engineStatus.comfyUi.models.upscale_models.length > 0 && (
               <select
                 aria-label="Modelo de upscale ComfyUI"
@@ -580,6 +600,21 @@ export function CreativeStudioPanel() {
               aria-label="Caminho da imagem de referência"
               style={{ flex: 1.2, minWidth: 220, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
             />
+            {engineStatus?.comfyUi.models.controlnet.length && selectedControlNet ? (
+              <>
+                <input
+                  aria-label="Imagem de condicionamento ControlNet"
+                  value={controlNetImagePath}
+                  onChange={(e) => setControlNetImagePath(e.target.value)}
+                  placeholder="Imagem de controle (canny/pose/depth)"
+                  style={{ flex: 1.2, minWidth: 220, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+                />
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }} title="Força da condição ControlNet">
+                  força CN
+                  <input aria-label="Força do ControlNet" type="number" min={0} max={2} step={0.05} value={controlNetStrength} onChange={(e) => setControlNetStrength(Number(e.target.value))} style={{ width: 52, padding: '3px 4px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11 }} />
+                </label>
+              </>
+            ) : null}
             {referencePath.trim() && (
               <select
                 aria-label="Preservação da referência"
@@ -734,6 +769,7 @@ export function CreativeStudioPanel() {
                   {generationReport.referenceStrength !== undefined ? ` · referência ${Math.round((1 - generationReport.referenceStrength) * 100)}% preservada` : ''}
                   {generationReport.attempts !== undefined ? ` · ${generationReport.attempts} tentativa${generationReport.attempts === 1 ? '' : 's'}` : ''}
                   {generationReport.lora ? ` · LoRA ${generationReport.lora.model} (${generationReport.lora.strengthModel})` : ''}
+                  {generationReport.controlNet ? ` · ControlNet ${generationReport.controlNet.model} (${generationReport.controlNet.strength})` : ''}
                 </div>
               )}
               {generationReport.qualityAudit && (

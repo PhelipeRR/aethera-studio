@@ -566,6 +566,7 @@ export class AetheraCreativeStudioService {
     referenceStrength?: number;
     maxAttempts?: number;
     lora?: { model: string; strengthModel?: number; strengthClip?: number };
+    controlNet?: { model: string; imagePath: string; strength?: number; startPercent?: number; endPercent?: number };
     characterCount?: number;
     assetManifest?: Record<string, ManagedAssetRef>;
   }): Promise<{
@@ -615,6 +616,7 @@ export class AetheraCreativeStudioService {
         ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),
         ...(input.maxAttempts !== undefined ? { maxAttempts: input.maxAttempts } : {}),
         ...(input.lora ? { lora: input.lora } : {}),
+        ...(input.controlNet ? { controlNet: input.controlNet } : {}),
         ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
         ...(input.seed !== undefined ? { seed: input.seed } : {}),
         ...(input.maxSide !== undefined ? { maxSide: input.maxSide } : {}),
@@ -699,6 +701,7 @@ export class AetheraCreativeStudioService {
       ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),
       ...(input.maxAttempts !== undefined ? { maxAttempts: input.maxAttempts } : {}),
       ...(input.lora ? { lora: input.lora } : {}),
+      ...(input.controlNet ? { controlNet: input.controlNet } : {}),
       ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
     };
     this.repo.saveGenerationRun({
