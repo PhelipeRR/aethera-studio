@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AetheraStudioRepository, openDatabase, velixLocalAssets, videoProjects, VelixProductionRepository } from '@neuralbridge/database';
@@ -49,6 +49,11 @@ it('indexes real synthetic media through ProductionRunService and reindexes afte
   const segments = repository.listSegments('asset');
   expect(segments.length).toBeGreaterThan(0);
   expect(segments.every((segment) => segment.frameHashes.length >= 1 && segment.frameHashes.length <= 3 && segment.description.includes('Synthetic') && segment.embeddingRefs.length >= 2)).toBe(true);
+  const brollIndex = repository.brollIndex('asset');
+  expect(brollIndex).toMatchObject({ indexVersion: 'p2.1', assetId: 'asset', sourceHash: 'a'.repeat(64), status: 'complete', contactSheetPath: expect.any(String) });
+  expect(brollIndex?.contactSheetPath && existsSync(join(root, brollIndex.contactSheetPath))).toBe(true);
+  expect(brollIndex?.segments).toHaveLength(segments.length);
+  expect(segments.every((segment) => segment.broll?.indexVersion === 'p2.1' && segment.broll?.keyframes.length === segment.frameHashes.length)).toBe(true);
   expect(repository.listIdentities('game').every((identity) => identity.status === 'review_required')).toBe(true);
   expect(calls).toBeGreaterThan(0);
   handles.pop(); handle.close();

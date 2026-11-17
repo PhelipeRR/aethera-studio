@@ -71,6 +71,17 @@ export type VisionTask = (typeof visionTasks)[number];
 export type SegmentKind = (typeof segmentKinds)[number];
 
 export const segmentQualitySchema = z.strictObject({ blur: z.number().min(0).max(1), motion: z.number().min(0).max(1), overlayText: z.boolean(), watermark: z.boolean(), black: z.boolean(), frozen: z.boolean() });
+export const brollTechnicalStatuses = ['technical_valid', 'technical_blocked', 'media_unavailable'] as const;
+export const brollSemanticStatuses = ['not_evaluated', 'semantic_adequate', 'needs_review', 'editorial_rejected'] as const;
+export const brollIndexStatuses = ['indexing', 'complete', 'technical_blocked', 'error'] as const;
+export type BrollTechnicalStatus = (typeof brollTechnicalStatuses)[number];
+export type BrollSemanticStatus = (typeof brollSemanticStatuses)[number];
+export type BrollIndexStatus = (typeof brollIndexStatuses)[number];
+export const brollKeyframeSchema = z.strictObject({ atMs: z.number().int().nonnegative(), hash: z.string().min(1), relativePath: z.string().min(1) });
+export const brollSegmentMetaSchema = z.strictObject({
+  indexVersion: z.string().min(1), sourceHash: z.string().min(1), keyframes: z.array(brollKeyframeSchema), technicalStatus: z.enum(brollTechnicalStatuses), semanticStatus: z.enum(brollSemanticStatuses),
+  flashFrameTimesMs: z.array(z.number().int().nonnegative()), continuity: z.strictObject({ valid: z.boolean(), gapsMs: z.array(z.number().int().nonnegative()) }), diagnostics: z.array(z.string()),
+});
 export const mediaSegmentSchema = z.strictObject({
   schemaVersion: z.literal(1), id: z.string().min(1), assetId: z.string().min(1), startMs: z.number().int().nonnegative(), endMs: z.number().int().positive(),
   frameHashes: z.array(z.string().min(1)), kind: z.enum(segmentKinds), description: z.string(), tags: z.array(z.string().min(1)),
@@ -78,9 +89,14 @@ export const mediaSegmentSchema = z.strictObject({
   quality: segmentQualitySchema, analyzedBy: z.strictObject({ provider: z.string().min(1), model: z.string().min(1), confidence: z.number().min(0).max(1) }),
   analysis: z.strictObject({ version: z.string().min(1), band: z.enum(['automatic', 'review', 'reject']), calibratedConfidence: z.number().min(0).max(1).nullable(), limitations: z.array(z.string()),
     attempts: z.array(z.strictObject({ task: z.string(), provider: z.string(), outcome: z.string(), detail: z.string().optional() })),
-  }).optional(),
+  }).optional(), broll: brollSegmentMetaSchema.optional(),
 }).refine((value) => value.endMs > value.startMs, { message: 'O segmento precisa terminar depois de começar.', path: ['endMs'] });
 export type MediaSegment = z.infer<typeof mediaSegmentSchema>;
+export const brollIndexSchema = z.strictObject({
+  schemaVersion: z.literal(1), indexVersion: z.string().min(1), assetId: z.string().min(1), sourceHash: z.string().min(1), sourcePath: z.string().min(1), durationMs: z.number().int().positive(), cutsSeconds: z.array(z.number().nonnegative()), contactSheetPath: z.string().min(1).nullable(), segments: z.array(mediaSegmentSchema), status: z.enum(brollIndexStatuses), diagnostics: z.array(z.string()),
+});
+export type BrollKeyframe = z.infer<typeof brollKeyframeSchema>;
+export type BrollIndex = z.infer<typeof brollIndexSchema>;
 
 /** Calibrated thresholds of one decision (§4.6). `null` means "not calibrated": everything goes to review. */
 export type ConfidenceThresholds = { autoAt: number; reviewAt: number } | null;

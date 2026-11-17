@@ -1,6 +1,7 @@
 import type { AetheraStudioRepository } from '@neuralbridge/database';
 import { normalizeGameTitle, segmentKinds, type IdentitySignal, type MediaSegment, type VerifiedSubject, type VisionPolicy } from '@neuralbridge/shared';
-import { detectSegmentCuts, extractSegmentFrames, probeSegmentQuality, segmentsFromCuts, selectVisualAnalysisFfmpeg, windowCuts } from '@neuralbridge/workspace';
+import { BROLL_INDEX_VERSION, canReuseBrollIndex, detectSegmentCuts, extractSegmentFrames, makeBrollContactSheet, probeSegmentQuality, segmentsFromCuts, selectVisualAnalysisFfmpeg, stableBrollSegmentId, windowCuts } from '@neuralbridge/workspace';
+import { join, relative } from 'node:path';
 import type { ProductionStageAdapter } from '../velix-production.js';
 import { runCheckpointedItems } from './item-checkpoint.js';
 import { SubjectIdentityVerifier } from './subject-identity-verifier.js';
@@ -65,10 +66,19 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
           const provenance = deps.repository.provenance(result.assetId);
           if (!asset || !provenance || provenance.usage === 'blocked') return { status: 'skipped', reason: 'Missing local asset/provenance or blocked media.' };
           if (asset.sha256 !== result.contentHash) throw new Error('invalid: acquired asset hash changed; reacquire before indexing.');
+          const previousIndex = deps.repository.brollIndex(result.assetId);
+          if (previousIndex && canReuseBrollIndex(previousIndex, { sourceHash: asset.sha256, indexVersion: BROLL_INDEX_VERSION }) && previousIndex.segments.length > 0) {
+            deps.repository.replaceSegments(result.assetId, previousIndex.segments);
+            return { status: 'done', result: { assetId: result.assetId, segments: previousIndex.segments.length, reusedBrollIndex: true } };
+          }
           const cuts = await detectSegmentCuts({ ffmpeg: analysisFfmpeg, root, relativePath: asset.path, durationMs: result.durationMs, signal: context.signal });
           // Windows of at most 20 s inside long uncut spans, so a scene can match a precise moment of a continuous gameplay.
           const base = segmentsFromCuts(result.assetId, windowCuts(cuts), () => ({ frames: 0, meanLuma: 0, meanDiff: 0, black: false, frozen: false, motion: 0 }));
           const segments: MediaSegment[] = [];
+          let indexedSegments: MediaSegment[] = [];
+          const contactSheetName = stableBrollSegmentId({ sourceHash: asset.sha256, startMs: 0, endMs: Math.max(1, result.durationMs), indexVersion: BROLL_INDEX_VERSION });
+          const contactSheetRelativePath = `artifacts/aethera/broll/${contactSheetName}.jpg`;
+          deps.repository.saveBrollIndex({ schemaVersion: 1, indexVersion: BROLL_INDEX_VERSION, assetId: result.assetId, sourceHash: asset.sha256, sourcePath: asset.path, durationMs: result.durationMs, cutsSeconds: windowCuts(cuts), contactSheetPath: null, segments: [], status: 'indexing', diagnostics: [] });
           const identities = [];
           const subject = subjects.find((subject) => subject.id === job.subjectId);
           const candidates = deps.repository.listCandidates(context.runId).filter((candidate) => candidate.referenceId === job.referenceId);
@@ -77,6 +87,7 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
           const compilation = titles.length > 1 || /\b(top\s*\d+|compilation|showcase|gamescom|game awards|multi.game)\b/i.test(metadata);
           for (const segment of base) {
             context.signal.throwIfAborted();
+            const segmentId = stableBrollSegmentId({ sourceHash: asset.sha256, startMs: segment.startMs, endMs: segment.endMs, indexVersion: BROLL_INDEX_VERSION });
             const frames = await extractSegmentFrames({ root, relativePath: asset.path, startMs: segment.startMs, endMs: segment.endMs, ffmpeg: analysisFfmpeg, signal: context.signal });
             const request = { frames, policy: deps.policy, budgetKey: context.runId, signal: context.signal };
             const classified = await router.classify({ ...request, labels: segmentKinds });
@@ -88,7 +99,7 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
             const capabilities = [['classify', classified], ['describe', described], ['embed_image', image], ['embed_text', text], ['ocr', ocr]] as const;
             const limitations = capabilities.filter(([, value]) => !value || value.provider === null).map(([task]) => `${task}: no available provider`);
             limitations.push('blur/overlayText/watermark not measured; defaults are not clearance.');
-            const analyzed: MediaSegment = { ...segment, frameHashes: frames.map((frame) => frame.hash), kind: classified.kind, description: described.value?.description ?? '', tags: described.value?.tags ?? [],
+            const analyzed: MediaSegment = { ...segment, id: segmentId, frameHashes: frames.map((frame) => frame.hash), kind: classified.kind, description: described.value?.description ?? '', tags: described.value?.tags ?? [],
               embeddingRefs: [image, text].flatMap((value) => {
                 const provider = value?.provider;
                 const model = value?.model;
@@ -96,13 +107,16 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
               }),
               quality: { ...segment.quality, motion: quality.motion, black: quality.black, frozen: quality.frozen, overlayText: ocr.value?.some((text) => text.trim().length > 0) ?? false },
               analyzedBy: { provider: classified.provider ?? 'ffmpeg-heuristics', model: classified.model ?? 'ffmpeg-signalstats', confidence: classified.confidence },
+              broll: { indexVersion: BROLL_INDEX_VERSION, sourceHash: asset.sha256, keyframes: frames.map((frame, index) => ({ atMs: Math.floor(segment.startMs + ((segment.endMs - segment.startMs) * (index + 0.5)) / frames.length), hash: frame.hash, relativePath: relative(root, frame.path).replaceAll('\\', '/') })), technicalStatus: quality.black || quality.frozen ? 'technical_blocked' : 'technical_valid', semanticStatus: 'not_evaluated', flashFrameTimesMs: [], continuity: { valid: true, gapsMs: [] }, diagnostics: [`quality_frames=${quality.frames}`, `mean_luma=${quality.meanLuma.toFixed(2)}`, `mean_diff=${quality.meanDiff.toFixed(2)}`] },
               analysis: { version: deps.policy.version, band: classified.band, calibratedConfidence: classified.calibratedConfidence, limitations,
-                attempts: capabilities.flatMap(([task, value]) => value?.attempts.map((attempt) => ({ task, ...attempt })) ?? []),
+                attempts: capabilities.flatMap(([task, value]) => value?.attempts.map((attempt) => ({ task, provider: attempt.provider, outcome: attempt.outcome, ...(attempt.detail ? { detail: attempt.detail } : {}) })) ?? []),
               },
             };
             // Cache-vs-call is operational telemetry, not a change in segment content/identity evidence.
             if (analyzed.analysis) analyzed.analysis.attempts = analyzed.analysis.attempts.map((attempt) => ({ ...attempt, outcome: attempt.outcome === 'cached' ? 'ok' : attempt.outcome }));
             segments.push(analyzed);
+            indexedSegments = [...segments];
+            deps.repository.saveBrollIndex({ schemaVersion: 1, indexVersion: BROLL_INDEX_VERSION, assetId: result.assetId, sourceHash: asset.sha256, sourcePath: asset.path, durationMs: result.durationMs, cutsSeconds: windowCuts(cuts), contactSheetPath: null, segments: indexedSegments, status: 'indexing', diagnostics: [] });
             if (subject) {
               const signals: IdentitySignal[] = [];
               if (provenance.official) signals.push({ source: 'provenance', verdict: 'match', score: 0.9, evidence: provenance.url });
@@ -115,7 +129,14 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
               identities.push(verifier.verify({ assetId: result.assetId, segmentId: analyzed.id, subjectId: subject.id, compilation, signals }));
             }
           }
+          const keyframes = indexedSegments.flatMap((segment) => segment.broll?.keyframes ?? []).map((frame) => ({ path: join(root, frame.relativePath), label: `${frame.atMs}ms` }));
+          let contactSheetPath: string | null = null;
+          if (keyframes.length > 0) {
+            await makeBrollContactSheet({ ffmpeg: analysisFfmpeg, framePaths: keyframes.map((frame) => frame.path), outputPath: join(root, contactSheetRelativePath), labels: keyframes.map((frame) => frame.label) });
+            contactSheetPath = contactSheetRelativePath;
+          }
           deps.repository.replaceSegments(result.assetId, segments);
+          deps.repository.saveBrollIndex({ schemaVersion: 1, indexVersion: BROLL_INDEX_VERSION, assetId: result.assetId, sourceHash: asset.sha256, sourcePath: asset.path, durationMs: result.durationMs, cutsSeconds: windowCuts(cuts), contactSheetPath, segments: indexedSegments, status: indexedSegments.some((segment) => segment.broll?.technicalStatus === 'technical_valid') ? 'complete' : 'technical_blocked', diagnostics: [] });
           for (const identity of identities) {
             const previous = deps.repository.listIdentities(identity.subjectId).filter((item) => item.segmentId === identity.segmentId).at(-1);
             if (!previous || JSON.stringify({ ...previous, id: '' }) !== JSON.stringify({ ...identity, id: '' })) deps.repository.recordIdentity(identity);

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import {
+  brollIndexSchema,
   isSafeProductionPath,
   sourceCandidateSchema,
   mediaAcquisitionJobSchema,
@@ -24,13 +25,14 @@ import {
   type MediaAcquisitionJob,
   type SourceCandidate,
   type MediaProvenance,
+  type BrollIndex,
   type MediaSegment,
   type SubjectIdentity,
   type VerifiedSubject,
   type VisionTask,
 } from '@neuralbridge/shared';
 import type { Db } from './open.js';
-import { aetheraNarrationDirections, aetheraVoiceAuthorizations, aetheraVoicePresets, aetheraEditorialPolicies, aetheraMediaEditorialDecisions, aetheraMediaAcquisitions, aetheraMediaCandidates, aetheraMediaProvenance, aetheraMediaSegments, aetheraMediaUsageEvents, aetheraSubjectIdentities, aetheraSubjects, aetheraVisionCache, aetheraVisionBenchmarks, aetheraVisionSpend, velixLocalAssets, velixProductionRuns } from './schema.js';
+import { aetheraBrollIndexes, aetheraNarrationDirections, aetheraVoiceAuthorizations, aetheraVoicePresets, aetheraEditorialPolicies, aetheraMediaEditorialDecisions, aetheraMediaAcquisitions, aetheraMediaCandidates, aetheraMediaProvenance, aetheraMediaSegments, aetheraMediaUsageEvents, aetheraSubjectIdentities, aetheraSubjects, aetheraVisionCache, aetheraVisionBenchmarks, aetheraVisionSpend, velixLocalAssets, velixProductionRuns } from './schema.js';
 
 const now = () => new Date().toISOString();
 
@@ -111,6 +113,21 @@ export class AetheraStudioRepository {
 
   listSegments(assetId: string): MediaSegment[] {
     return this.db.select().from(aetheraMediaSegments).where(eq(aetheraMediaSegments.assetId, assetId)).orderBy(asc(aetheraMediaSegments.startMs), asc(aetheraMediaSegments.id)).all().map((row) => mediaSegmentSchema.parse(JSON.parse(row.dataJson)));
+  }
+
+  saveBrollIndex(input: BrollIndex): BrollIndex {
+    const index = brollIndexSchema.parse(input);
+    const timestamp = now();
+    const existing = this.db.select().from(aetheraBrollIndexes).where(eq(aetheraBrollIndexes.assetId, index.assetId)).get();
+    const values = { indexVersion: index.indexVersion, sourceHash: index.sourceHash, status: index.status, dataJson: JSON.stringify(index), updatedAt: timestamp };
+    if (existing) this.db.update(aetheraBrollIndexes).set(values).where(eq(aetheraBrollIndexes.assetId, index.assetId)).run();
+    else this.db.insert(aetheraBrollIndexes).values({ assetId: index.assetId, ...values, createdAt: timestamp }).run();
+    return index;
+  }
+
+  brollIndex(assetId: string): BrollIndex | null {
+    const row = this.db.select().from(aetheraBrollIndexes).where(eq(aetheraBrollIndexes.assetId, assetId)).get();
+    return row ? brollIndexSchema.parse(JSON.parse(row.dataJson)) : null;
   }
 
   recordIdentity(input: SubjectIdentity): SubjectIdentity {

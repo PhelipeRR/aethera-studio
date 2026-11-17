@@ -251,5 +251,6 @@
     ,{ "idx": 120, "version": "7", "when": 1793299000101, "tag": "0120_aethera_editorial_plans", "breakpoints": true }
     ,{ "idx": 121, "version": "7", "when": 1793299000102, "tag": "0121_aethera_creative_studio", "breakpoints": true }
     ,{ "idx": 122, "version": "7", "when": 1793299000103, "tag": "0122_aethera_creative_generation_runs", "breakpoints": true }
+    ,{ "idx": 123, "version": "7", "when": 1793299000104, "tag": "0123_aethera_broll_indexes", "breakpoints": true }
   ]
 }

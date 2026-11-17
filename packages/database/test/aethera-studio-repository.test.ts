@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { acquisitionIdempotencyKey, assembleTimeline, applyTimelineOps, type MediaSegment, type Storyboard, type VerifiedSubject, type VisionBenchmark } from '@neuralbridge/shared';
+import { acquisitionIdempotencyKey, assembleTimeline, applyTimelineOps, type BrollIndex, type MediaSegment, type Storyboard, type VerifiedSubject, type VisionBenchmark } from '@neuralbridge/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AetheraAudioLibraryRepository, AetheraDirectorRepository, AetheraMediaProxyRepository, AetheraReviewRepository, AetheraStudioRepository, AetheraTimelineRepository, openDatabase, velixLocalAssets, VelixProductionRepository, videoProjects, type DatabaseHandle } from '../src/index.js';
 import { applyDirectorRules, defaultAetheraPresets } from '@neuralbridge/shared';
@@ -23,6 +23,16 @@ beforeEach(() => {
 afterEach(() => handle.close());
 
 describe('AetheraStudioRepository', () => {
+  it('persists a versioned B-roll index and resumes it after database reopen', () => {
+    const index: BrollIndex = { schemaVersion: 1, indexVersion: 'p2.1', assetId: 'asset-1', sourceHash: 'b'.repeat(64), sourcePath: 'media/trailer.mp4', durationMs: 5_000, cutsSeconds: [0, 5], contactSheetPath: 'artifacts/broll/asset-1.jpg', segments: [segment('s1', 0)], status: 'complete', diagnostics: ['cache_miss'] };
+    const repository = new AetheraStudioRepository(handle.db);
+    expect(repository.saveBrollIndex(index)).toEqual(index);
+    const file = handle.file;
+    handle.close();
+    handle = openDatabase(file, { migrationsFolder: MIGRATIONS });
+    expect(new AetheraStudioRepository(handle.db).brollIndex('asset-1')).toEqual(index);
+  });
+
   it('preserves identity evidence for unchanged segments on reindex and drops stale evidence on changed content', () => {
     const repository = new AetheraStudioRepository(handle.db);
     repository.saveSubject(runId, subject('g1'));

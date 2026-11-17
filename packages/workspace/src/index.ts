@@ -33,6 +33,7 @@ export * from './validation.js';
 export * from './velix-audio.js';
 export * from './velix-production-render.js';
 export * from './aethera-segment-quality.js';
+export * from './aethera-broll-index.js';
 export * from './aethera-acquisition.js';
 export * from './aethera-visual-frames.js';
 export * from './aethera-visual-scheduler.js';

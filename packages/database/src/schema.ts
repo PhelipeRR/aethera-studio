@@ -846,6 +846,9 @@ export const aetheraMediaProvenance = sqliteTable('aethera_media_provenance', {
 export const aetheraMediaSegments = sqliteTable('aethera_media_segments', {
   id: text('id').primaryKey(), assetId: text('asset_id').notNull().references(() => velixLocalAssets.id, { onDelete: 'cascade' }), startMs: integer('start_ms').notNull(), endMs: integer('end_ms').notNull(), kind: text('kind').notNull(), dataJson: text('data_json').notNull(), createdAt: text('created_at').notNull(),
 }, (t) => [index('aethera_media_segments_asset_idx').on(t.assetId, t.startMs)]);
+export const aetheraBrollIndexes = sqliteTable('aethera_broll_indexes', {
+  assetId: text('asset_id').primaryKey().references(() => velixLocalAssets.id, { onDelete: 'cascade' }), indexVersion: text('index_version').notNull(), sourceHash: text('source_hash').notNull(), status: text('status').notNull(), dataJson: text('data_json').notNull(), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+}, (t) => [index('aethera_broll_indexes_status_idx').on(t.status, t.updatedAt)]);
 export const aetheraSubjectIdentities = sqliteTable('aethera_subject_identities', {
   id: text('id').primaryKey(), assetId: text('asset_id').notNull().references(() => velixLocalAssets.id, { onDelete: 'cascade' }), segmentId: text('segment_id').references(() => aetheraMediaSegments.id, { onDelete: 'cascade' }), subjectId: text('subject_id').notNull().references(() => aetheraSubjects.id, { onDelete: 'cascade' }), status: text('status').notNull(), dataJson: text('data_json').notNull(), createdAt: text('created_at').notNull(),
 }, (t) => [index('aethera_subject_identities_subject_idx').on(t.subjectId, t.createdAt)]);
