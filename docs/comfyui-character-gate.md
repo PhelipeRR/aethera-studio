@@ -283,3 +283,53 @@ ocupar a profundidade planejada, integrado ao cenário, sem painel e com a mesma
 identidade; o personagem 2 ficou intacto. Continua `needs_review` porque as
 armas exigidas (katana/espada, lança) não aparecem e a semântica segue sem
 evidência; o gate não as confirma, corretamente. `humanReview.status` = `pending`.
+
+### CS10 — investigação: inserir katana/lança por reparo regional
+
+Investigação sem mudança de código de produto. Base: `duo-after.png` do
+`run-2026-11-17T1837` (escala já corrigida). Evidências, contact sheets e
+`probe.json` estão em
+`artifacts/cs10-object-repair-investigation/2026-11-17T1901/`. Thresholds
+inalterados; o duo continua `needs_review` e `humanReview.status=pending`.
+
+**Por que os reparos de objeto sempre falham hoje — duas causas independentes:**
+
+1. **Geração: o prompt de reparo não tem contexto.** O gate pede
+   `Repair only this region so it clearly shows: katana`. Com esse prompt e
+   força 0,48, nenhuma arma aparece (variante `c1-a`). O mesmo bbox e a mesma
+   força, com o prompt do personagem em tags
+   (`1girl, …, holding katana, katana raised, drawn sword`), colocam a espada
+   na mão em **3/3 seeds** (`r2-c1-gate-0.48-rich-*`) e preservam rosto,
+   cachecol e vestido. A pose "katana erguida" não foi obtida.
+   - A lança exige mais força. Com 0,48–0,55 em toda a região, 0/3. Com 0,70
+     em toda a região, a lança aparece, mas o personagem é recriado, de costas
+     (`c1-d/e`, `c2-c`).
+   - Com uma **máscara de corpo que exclui a cabeça** (a partir de ~18% da
+     altura da figura) e força 0,60–0,70, a lança aparece em **3/4 seeds**
+     com a identidade preservada (`r2-c2-body-*`).
+2. **Verificação: o avaliador local não distingue armas finas.** O CLIP
+   ViT-B/32 (`vision_worker.py evaluate-semantic`) erra nos dois sentidos:
+   - `sword` com espadas **visíveis**: `0,7357 / margem 0,0463`, não confirma.
+   - `anime girl holding a sword` na imagem **sem** espadas:
+     `0,7131 / 0,063`, **confirma (falso positivo)**.
+   - Espada adicionada de fato em `c1-b`: o score muda só `+0,005`.
+   - Atributos visíveis também ficam `uncertain` no recorte grande do gate:
+     cachecol `0,6409 / −0,049` e armadura do personagem 2
+     `0,5945 / −0,073`.
+   - O `CLIP-ViT-H-14` local é só o encoder visual (IP-Adapter), sem a torre
+     de texto, então não serve para verificar.
+   - Conclusão: hoje um reparo de objeto bem-sucedido é sempre descartado como
+     `target_attribute_not_confirmed`. Reduzir thresholds não resolve, porque
+     o mesmo avaliador também confirma objetos ausentes.
+
+**Recomendações (pendentes de decisão):**
+
+- Reparo de objeto: usar o prompt do personagem em tags com `holding <objeto>`,
+  negativo `from behind, back view`, máscara de corpo sem a cabeça e escada de
+  força 0,48 → 0,60 → 0,70.
+- Verificação, sem baixar thresholds. Há duas opções:
+  - (a) adicionar um detector local de vocabulário aberto (por exemplo, OWLv2
+    ou Grounding DINO). Exige baixar um modelo novo.
+  - (b) manter o reparo como **alternativa proposta**, com máscara, seed,
+    prompt e diff, para escolha humana. Nesse caso o veredicto continua
+    `needs_review` e a imagem escolhida pelo gate não muda sem aprovação.
