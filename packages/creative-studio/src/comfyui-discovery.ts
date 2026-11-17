@@ -1,13 +1,16 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { ComfyUiClient, type ComfyUiSystemStats } from './comfyui-client.js';
 import { inspectComfyUiCapabilities, type ComfyUiCapabilities } from './comfyui-capabilities.js';
+import { parseSafetensorsLoraMetadata, type LoraMetadata } from './lora-catalog.js';
 
 export type ComfyUiRuntimeState = 'ready' | 'misconfigured' | 'offline' | 'not_installed';
 
 export interface ComfyUiFileSystem {
   exists: (path: string) => boolean;
   readFile: (path: string) => string;
+  /** Reads a bounded prefix; safetensors discovery only needs the header, never model weights. */
+  readBinary?: (path: string, maxBytes?: number) => Uint8Array;
   listFiles: (path: string) => string[];
 }
 
@@ -21,7 +24,9 @@ export interface ComfyUiModelInventory {
   vae: string[];
   upscale_models: string[];
   embeddings: string[];
+  loraMetadata?: Record<string, LoraMetadata>;
 }
+type ComfyUiModelCategory = Exclude<keyof ComfyUiModelInventory, 'loraMetadata'>;
 
 export interface ComfyUiStatus {
   state: ComfyUiRuntimeState;
@@ -48,7 +53,7 @@ export interface ComfyUiDiscoveryOptions {
   requestTimeoutMs?: number;
 }
 
-const MODEL_CATEGORIES: Array<keyof ComfyUiModelInventory> = [
+const MODEL_CATEGORIES: ComfyUiModelCategory[] = [
   'checkpoints',
   'controlnet',
   'ipadapter',
@@ -65,6 +70,22 @@ const MODEL_EXTENSIONS = /\.(?:safetensors|ckpt|pt|pth|bin|gguf|onnx)$/i;
 const nativeFileSystem: ComfyUiFileSystem = {
   exists: existsSync,
   readFile: (path) => readFileSync(path, 'utf8'),
+  readBinary: (path, maxBytes = 16 * 1024 * 1024) => {
+    const fd = openSync(path, 'r');
+    try {
+      const prefix = Buffer.alloc(8);
+      const prefixRead = readSync(fd, prefix, 0, prefix.byteLength, 0);
+      if (prefixRead < prefix.byteLength) return prefix.subarray(0, prefixRead);
+      const headerLength = Number(prefix.readBigUInt64LE(0));
+      if (!Number.isSafeInteger(headerLength) || headerLength <= 0 || headerLength > maxBytes - 8) return prefix;
+      const bytes = Buffer.alloc(8 + headerLength);
+      prefix.copy(bytes, 0);
+      const headerRead = readSync(fd, bytes, 8, headerLength, 8);
+      return headerRead === headerLength ? bytes : bytes.subarray(0, 8 + Math.max(0, headerRead));
+    } finally {
+      closeSync(fd);
+    }
+  },
   listFiles: (path) => {
     const result: string[] = [];
     const visit = (directory: string, relativePrefix: string): void => {
@@ -178,19 +199,43 @@ function modelRootsFor(
   return uniquePaths(roots);
 }
 
+function safetensorsMetadata(filePath: string, fileSystem: ComfyUiFileSystem): LoraMetadata | undefined {
+  if (!fileSystem.readBinary || !/\.safetensors$/iu.test(filePath)) return undefined;
+  try {
+    const bytes = fileSystem.readBinary(filePath);
+    if (bytes.byteLength < 8) return undefined;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const headerLength = Number(view.getBigUint64(0, true));
+    if (!Number.isSafeInteger(headerLength) || headerLength <= 0 || headerLength > bytes.byteLength - 8) return undefined;
+    const header = bytes.slice(8, 8 + headerLength);
+    const parsed = parseSafetensorsLoraMetadata(header);
+    return parsed.metadataVerified || (parsed.triggerWords?.length ?? 0) > 0 ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function inventoryFor(resourceRoots: string[], fileSystem: ComfyUiFileSystem): ComfyUiModelInventory {
   const inventory = emptyInventory();
+  const loraMetadata: Record<string, LoraMetadata> = {};
   for (const resourceRoot of resourceRoots) {
     for (const category of MODEL_CATEGORIES) {
       const directory = join(resourceRoot, 'models', category);
       if (!fileSystem.exists(directory)) continue;
-      inventory[category].push(...fileSystem.listFiles(directory).filter((path) => MODEL_EXTENSIONS.test(path)));
+      const files = fileSystem.listFiles(directory).filter((path) => MODEL_EXTENSIONS.test(path));
+      inventory[category].push(...files);
+      if (category === 'loras') {
+        for (const relativePath of files) {
+          const metadata = safetensorsMetadata(join(directory, relativePath), fileSystem);
+          if (metadata) loraMetadata[relativePath.replaceAll('\\', '/')] = metadata;
+        }
+      }
     }
   }
   for (const category of MODEL_CATEGORIES) {
     inventory[category] = [...new Set(inventory[category])].sort((a, b) => a.localeCompare(b));
   }
-  return inventory;
+  return Object.keys(loraMetadata).length > 0 ? { ...inventory, loraMetadata } : inventory;
 }
 
 function checkpointNamesFromObjectInfo(objectInfo: Record<string, unknown>): string[] {

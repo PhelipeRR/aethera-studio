@@ -186,6 +186,36 @@ describe('CF-1 orchestration order and AI background report', () => {
     expect(res.report.faceDetailer).toEqual({ detectorModel: 'bbox/face_yolov8m.pt', guideSize: 512, denoise: 0.35 });
   });
 
+  it('sends and reports an ordered multi-LoRA stack', async () => {
+    let seen: ImageGenerationRequest | undefined;
+    const fake: ExternalImageAdapter = {
+      id: 'lora-fake',
+      isAvailable: async () => true,
+      generateImage: async (req) => {
+        seen = req;
+        return richPng(req.width, req.height);
+      },
+    };
+    const res = await generateAiBackground({
+      artType: 'thumbnail',
+      prompt: 'character manga aura',
+      imageAdapter: fake,
+      ingestion,
+      loras: [
+        { model: 'character/goku.safetensors', strengthModel: 0.65, strengthClip: 0.55 },
+        { model: 'style/manga.safetensors', strengthModel: 0.35, strengthClip: 0.25, nodeType: 'LoraLoaderModelOnly' },
+      ],
+      loraSelection: { mode: 'manual', explanation: 'seleção de teste', warnings: [] },
+    });
+
+    expect(seen?.loras).toEqual([
+      { model: 'character/goku.safetensors', strengthModel: 0.65, strengthClip: 0.55 },
+      { model: 'style/manga.safetensors', strengthModel: 0.35, strengthClip: 0.25, nodeType: 'LoraLoaderModelOnly' },
+    ]);
+    expect(res.report.loras).toEqual(seen?.loras);
+    expect(res.report.loraSelection).toEqual({ mode: 'manual', explanation: 'seleção de teste', warnings: [] });
+  });
+
   it('retries a structurally rejected image with a bounded seed change', async () => {
     const seeds: number[] = [];
     let calls = 0;

@@ -317,7 +317,8 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     return true;
   }
 
-  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora' | 'faceDetailer'>, controlNet?: ComfyUiControlNetInput, ipAdapter?: ComfyUiIpAdapterInput): ComfyUiWorkflow {
+  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora' | 'loras' | 'faceDetailer'>, controlNet?: ComfyUiControlNetInput, ipAdapter?: ComfyUiIpAdapterInput): ComfyUiWorkflow {
+    const loras = request.loras?.length ? request.loras : request.lora ? [request.lora] : undefined;
     const input = {
       checkpoint: request.model ?? this.checkpoint,
       positivePrompt: request.prompt,
@@ -329,7 +330,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       cfg: request.cfg ?? this.cfg,
       samplerName: request.samplerName ?? this.samplerName,
       scheduler: request.scheduler ?? this.scheduler,
-      ...(request.lora ? { lora: request.lora } : {}),
+      ...(loras ? { loras } : {}),
       ...(controlNet ? { controlNet } : {}),
       ...(ipAdapter ? { ipAdapter } : {}),
       ...(request.faceDetailer ? { faceDetailer: request.faceDetailer } : {}),
@@ -339,11 +340,12 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
   }
 
   private img2imgWorkflowFor(
-    request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'strength' | 'lora'>,
+    request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'strength' | 'lora' | 'loras'>,
     inputImage: ComfyUiImageRef,
     controlNet?: ComfyUiControlNetInput,
     ipAdapter?: ComfyUiIpAdapterInput,
   ): ComfyUiWorkflow {
+    const loras = request.loras?.length ? request.loras : request.lora ? [request.lora] : undefined;
     return buildComfyUiImg2ImgWorkflow({
       checkpoint: request.model ?? this.checkpoint,
       positivePrompt: request.prompt,
@@ -355,7 +357,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       cfg: request.cfg ?? this.cfg,
       samplerName: request.samplerName ?? this.samplerName,
       scheduler: request.scheduler ?? this.scheduler,
-      ...(request.lora ? { lora: request.lora } : {}),
+      ...(loras ? { loras } : {}),
       ...(controlNet ? { controlNet } : {}),
       ...(ipAdapter ? { ipAdapter } : {}),
       denoise: request.strength ?? 0.55,

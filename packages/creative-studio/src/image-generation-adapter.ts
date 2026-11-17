@@ -10,6 +10,7 @@ import type {
   LocalizedDefect,
   ManagedAssetRef,
 } from './schemas.js';
+import type { LoraStackItem } from './lora-catalog.js';
 
 export interface ImageGenerationRequest {
   prompt: string;
@@ -31,6 +32,8 @@ export interface ImageGenerationRequest {
   scheduler?: string;
   /** Optional native ComfyUI LoRA applied to the model and, when supported, the text encoder. */
   lora?: { model: string; strengthModel?: number; strengthClip?: number };
+  /** Optional ordered native ComfyUI LoRA stack. The legacy `lora` field remains supported. */
+  loras?: LoraStackItem[];
   /** Optional ControlNet model plus a local conditioning image. */
   controlNet?: { model: string; imagePath: string; strength?: number; startPercent?: number; endPercent?: number };
   /** Optional IP-Adapter stack; referenceImagePath defaults to referenceImagePaths[0]. */

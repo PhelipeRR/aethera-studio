@@ -127,4 +127,37 @@ describe('ComfyUI discovery', () => {
     expect(result.state).toBe('ready');
     expect(result.models.checkpoints).toEqual(['animagine-xl-3.1.safetensors', 'sdxl.safetensors']);
   });
+
+  it('reads verified LoRA architecture and trigger words from a safetensors header', async () => {
+    const header = new TextEncoder().encode(JSON.stringify({ __metadata__: {
+      ss_base_model_version: 'sdxl_base_v1-0',
+      ss_trigger_words: 'goku, golden aura',
+    } }));
+    const bytes = new Uint8Array(8 + header.length);
+    new DataView(bytes.buffer).setBigUint64(0, BigInt(header.length), true);
+    bytes.set(header, 8);
+    const result = await discoverComfyUi({
+      endpoints: ['http://127.0.0.1:8188'],
+      installRoots: ['C:/ComfyUI'],
+      fileSystem: {
+        exists: (path) => path.endsWith('comfyui_version.py') || path.endsWith('checkpoints') || path.endsWith('loras'),
+        readFile: () => '__version__ = "0.20.1"',
+        readBinary: () => bytes,
+        listFiles: (path) => path.endsWith('checkpoints') ? ['animagine-xl-3.1.safetensors'] : ['characters/goku.safetensors'],
+      },
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/system_stats')) return new Response(JSON.stringify({ devices: [{ name: 'RTX 4060 Ti', vram_total: 8_188_000_000 }] }));
+        if (url.endsWith('/object_info')) return new Response(JSON.stringify({
+          CheckpointLoaderSimple: { input: { required: { ckpt_name: [['animagine-xl-3.1.safetensors']] } } },
+          CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {},
+        }));
+        return new Response('{}');
+      },
+    });
+
+    expect(result.models.loraMetadata).toEqual({
+      'characters/goku.safetensors': expect.objectContaining({ architecture: 'sdxl', triggerWords: ['goku', 'golden', 'aura'], metadataVerified: true }),
+    });
+  });
 });

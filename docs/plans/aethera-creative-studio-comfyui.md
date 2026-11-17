@@ -391,3 +391,9 @@ O escopo operacional foi ampliado posteriormente pelo pedido de bootstrap/integr
 - `scripts/comfyui-advanced-acceptance.ts` executou preprocessadores Depth/OpenPose e quatro casos reais com seed/tempo/pico de VRAM; os PNGs e `report.json` ficam em `artifacts/comfyui-advanced-acceptance/`. A revisão visual rejeitou IP-Adapter `0.80` por superexposição e aceitou `0.35` como default observado.
 - O serviço Aethera ganhou auto-start opt-in, com estado visível no painel e fallback de checkpoint para modelos descobertos. `scripts/comfyui-autostart-acceptance.ts` parou os processos ComfyUI verificados e confirmou recuperação real via `Start-ComfyUI.ps1`; evidência em `artifacts/comfyui-autostart-acceptance/report.json`.
 - Permanecem fora de aceite final: revisão comercial da licença `other` do OpenPose, eventual escolha de um LoRA com requisito de estilo concreto, e revisão humana semântica completa dos seis casos baseline (contagem, anatomia, foco e área segura). O gate estrutural não é suficiente para esses critérios.
+
+## 18. Addendum — catálogo e seleção de LoRA (2026-11-17)
+
+Foi implementada a integração nativa de LoRA sem presumir compatibilidade: o discovery inspeciona o cabeçalho safetensors, o catálogo associa arquitetura/trigger words/categoria/prioridade/finalidade, e nomes sem metadados continuam não verificados. O workflow aceita uma pilha ordenada de até três entradas e encadeia `LoraLoader`/`LoraLoaderModelOnly` sem colidir com ControlNet ou IP-Adapter.
+
+A seleção fornecida pelo produto fica registrada como: Animagine XL 3.1 essencial; Illustrious XL alta; LoRA de personagem alta; cinematográfico médio; mangá médio; efeitos opcional; games conforme necessidade. O serviço oferece seleção manual ou automática antes da geração, o painel exibe evidência/avisos, o projeto salva `generationSettings` e o relatório informa a decisão. Nenhum LoRA foi baixado nesta etapa: candidato, licença e confirmação de instalação continuam pendentes.

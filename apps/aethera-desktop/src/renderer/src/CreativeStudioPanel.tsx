@@ -33,6 +33,8 @@ interface CreativeBridge {
       referenceStrength?: number;
       attempts?: number;
       lora?: { model: string; strengthModel: number; strengthClip: number };
+      loras?: Array<{ model: string; strengthModel: number; strengthClip: number; nodeType?: 'LoraLoader' | 'LoraLoaderModelOnly' }>;
+      loraSelection?: { mode: 'off' | 'manual' | 'automatic'; explanation?: string; warnings: string[] };
       controlNet?: { model: string; strength: number; imagePath: string };
       ipAdapter?: { model: string; clipVisionModel: string; weight: number; referenceImagePath?: string };
       faceDetailer?: { detectorModel: string; denoise?: number; guideSize?: number; maxSize?: number };
@@ -53,6 +55,8 @@ interface CreativeBridge {
       referenceStrength?: number;
       attempts?: number;
       lora?: { model: string; strengthModel: number; strengthClip: number };
+      loras?: Array<{ model: string; strengthModel: number; strengthClip: number; nodeType?: 'LoraLoader' | 'LoraLoaderModelOnly' }>;
+      loraSelection?: { mode: 'off' | 'manual' | 'automatic'; explanation?: string; warnings: string[] };
       controlNet?: { model: string; strength: number; imagePath: string };
       ipAdapter?: { model: string; clipVisionModel: string; weight: number; referenceImagePath?: string };
       faceDetailer?: { detectorModel: string; denoise?: number; guideSize?: number; maxSize?: number };
@@ -123,6 +127,7 @@ interface CreativeBridge {
       models: { checkpoints: string[]; loras: string[]; controlnet: string[]; ipadapter: string[]; clip_vision: string[]; upscale_models: string[]; faceDetectors: string[] };
       capabilities: { nativeTxt2Img: boolean; nativeImg2Img: boolean; inpaint: boolean; controlNet: boolean; ipAdapter: boolean; faceDetailer: boolean; upscale: boolean; lora: boolean };
     };
+    loraCatalog: Array<{ model: string; label: string; architecture: 'sd15' | 'sdxl' | 'flux' | 'unknown'; compatibility: 'compatible' | 'incompatible' | 'unknown'; category: 'character' | 'style' | 'lighting' | 'effects' | 'identity' | 'games' | 'unknown'; priority: 'essential' | 'high' | 'medium' | 'optional' | 'as_needed'; purpose: string; triggerWords: string[]; tags: string[]; metadataVerified: boolean; reason: string }>;
     localAvailable: boolean;
     activeProvider: string;
     startup: { enabled: boolean; state: 'disabled' | 'idle' | 'starting' | 'started' | 'ready' | 'missing' | 'failed'; scriptPath: string; message?: string };
@@ -182,8 +187,9 @@ export function CreativeStudioPanel() {
   const [useAiGeneration, setUseAiGeneration] = useState<boolean>(true);
   const [professionalPreset, setProfessionalPreset] = useState<ProfessionalPresetId>('youtube_thumbnail_1280x720');
   const [selectedCheckpoint, setSelectedCheckpoint] = useState('');
-  const [selectedLora, setSelectedLora] = useState('');
-  const [loraStrength, setLoraStrength] = useState(0.8);
+  const [loraMode, setLoraMode] = useState<'off' | 'manual' | 'automatic'>('off');
+  const [loraSearch, setLoraSearch] = useState('');
+  const [selectedLoras, setSelectedLoras] = useState<Array<{ model: string; strengthModel: number; strengthClip: number; nodeType?: 'LoraLoader' | 'LoraLoaderModelOnly' }>>([]);
   const [selectedControlNet, setSelectedControlNet] = useState('');
   const [controlNetImagePath, setControlNetImagePath] = useState('');
   const [controlNetStrength, setControlNetStrength] = useState(0.65);
@@ -231,6 +237,8 @@ export function CreativeStudioPanel() {
     referenceStrength?: number;
     attempts?: number;
     lora?: { model: string; strengthModel: number; strengthClip: number };
+    loras?: Array<{ model: string; strengthModel: number; strengthClip: number; nodeType?: 'LoraLoader' | 'LoraLoaderModelOnly' }>;
+    loraSelection?: { mode: 'off' | 'manual' | 'automatic'; explanation?: string; warnings: string[] };
     controlNet?: { model: string; strength: number; imagePath: string };
     ipAdapter?: { model: string; clipVisionModel: string; weight: number; referenceImagePath?: string };
     faceDetailer?: { detectorModel: string; denoise?: number; guideSize?: number; maxSize?: number };
@@ -277,6 +285,12 @@ export function CreativeStudioPanel() {
     void refreshLists();
   }, []);
 
+  const visibleLoraCatalog = (engineStatus?.loraCatalog ?? []).filter((entry) => {
+    const needle = loraSearch.trim().toLowerCase();
+    if (!needle) return true;
+    return [entry.model, entry.label, entry.category, ...entry.tags, ...entry.triggerWords].join(' ').toLowerCase().includes(needle);
+  });
+
   const handleCreate = async () => {
     const bridge = getBridge();
     if (!bridge?.creativeCreateFromPrompt || !prompt.trim()) return;
@@ -296,7 +310,8 @@ export function CreativeStudioPanel() {
         professionalPreset,
         ...(referencePath.trim() ? { referenceImagePaths: [referencePath.trim()] } : {}),
         ...(referencePath.trim() ? { referenceStrength } : {}),
-        ...(selectedLora ? { lora: { model: selectedLora, strengthModel: loraStrength, strengthClip: loraStrength } } : {}),
+        loraMode,
+        ...(loraMode === 'manual' && selectedLoras.length ? { loras: selectedLoras } : {}),
         ...(selectedControlNet && controlNetImagePath.trim()
           ? { controlNet: { model: selectedControlNet, imagePath: controlNetImagePath.trim(), strength: controlNetStrength } }
           : {}),
@@ -528,22 +543,54 @@ export function CreativeStudioPanel() {
                 {engineStatus.comfyUi.models.checkpoints.map((checkpoint) => <option key={checkpoint} value={checkpoint}>{checkpoint}</option>)}
               </select>
             )}
-            {engineStatus.comfyUi.models.loras.length > 0 && (
-              <>
-                <select
-                  aria-label="LoRA ComfyUI"
-                  value={selectedLora}
-                  onChange={(e) => setSelectedLora(e.target.value)}
-                  style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
-                >
-                  <option value="">Sem LoRA</option>
-                  {engineStatus.comfyUi.models.loras.map((model) => <option key={model} value={model}>{model}</option>)}
-                </select>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }} title="Força aplicada ao modelo e ao CLIP">
-                  força LoRA
-                  <input aria-label="Força da LoRA" type="number" min={-1} max={2} step={0.05} value={loraStrength} onChange={(e) => setLoraStrength(Number(e.target.value))} style={{ width: 52, padding: '3px 4px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11 }} />
-                </label>
-              </>
+            <select
+              aria-label="Modo de LoRA"
+              value={loraMode}
+              onChange={(e) => setLoraMode(e.target.value as 'off' | 'manual' | 'automatic')}
+              style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 190 }}
+            >
+              <option value="off">LoRA: desligado</option>
+              <option value="manual">LoRA: manual</option>
+              <option value="automatic">LoRA: automático</option>
+            </select>
+            {loraMode !== 'off' && (
+              <div style={{ flexBasis: '100%', display: 'grid', gap: 6, padding: '6px 0 0' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <input aria-label="Buscar LoRA" value={loraSearch} onChange={(e) => setLoraSearch(e.target.value)} placeholder="buscar personagem, estilo, efeito..." style={{ flex: '1 1 220px', minWidth: 180, padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11 }} />
+                  <span style={{ color: 'var(--muted-foreground)', fontSize: 11 }}>até 3 LoRAs · catálogo baseado nos arquivos instalados</span>
+                </div>
+                {visibleLoraCatalog.length === 0 ? (
+                  <span style={{ color: 'var(--muted-foreground)', fontSize: 11 }}>
+                    Nenhum LoRA instalado ou verificado. A seleção automática permanece sem LoRA até existir um arquivo compatível com metadados.
+                  </span>
+                ) : (
+                  <div style={{ display: 'grid', gap: 4, maxHeight: 150, overflowY: 'auto' }}>
+                    {visibleLoraCatalog.map((entry) => {
+                      const selected = selectedLoras.some((lora) => lora.model === entry.model);
+                      const selectedItem = selectedLoras.find((lora) => lora.model === entry.model);
+                      const compatible = entry.compatibility === 'compatible';
+                      return (
+                        <label key={entry.model} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: compatible ? 'var(--foreground)' : 'var(--muted-foreground)' }} title={`${entry.reason} ${entry.purpose}`}>
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            disabled={loraMode === 'automatic' || !compatible || (!selected && selectedLoras.length >= 3)}
+                            onChange={(e) => setSelectedLoras((current) => e.target.checked
+                              ? [...current, { model: entry.model, strengthModel: entry.category === 'character' ? 0.65 : 0.45, strengthClip: entry.category === 'character' ? 0.55 : 0.35 }].slice(0, 3)
+                              : current.filter((lora) => lora.model !== entry.model))}
+                          />
+                          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.label}</span>
+                          <span style={{ color: 'var(--muted-foreground)' }}>{entry.category} · {entry.architecture}</span>
+                          <span style={{ color: compatible ? 'var(--success)' : 'var(--warning)' }}>{entry.metadataVerified ? (compatible ? 'compatível' : entry.compatibility) : 'não verificado'}</span>
+                          {selected && loraMode === 'manual' && selectedItem && (
+                            <input aria-label={`Força da LoRA ${entry.label}`} type="number" min={-1} max={2} step={0.05} value={selectedItem.strengthModel} onChange={(e) => setSelectedLoras((current) => current.map((lora) => lora.model === entry.model ? { ...lora, strengthModel: Number(e.target.value), strengthClip: Number(e.target.value) } : lora))} style={{ width: 52, padding: '3px 4px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11 }} />
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             )}
             {engineStatus.comfyUi.models.controlnet.length > 0 && (
               <select
@@ -848,6 +895,13 @@ export function CreativeStudioPanel() {
                   {generationReport.controlNet ? ` · ControlNet ${generationReport.controlNet.model} (${generationReport.controlNet.strength})` : ''}
                   {generationReport.ipAdapter ? ` · IP-Adapter ${generationReport.ipAdapter.model} (${generationReport.ipAdapter.weight})` : ''}
                   {generationReport.faceDetailer ? ` · FaceDetailer ${generationReport.faceDetailer.detectorModel}` : ''}
+                </div>
+              )}
+              {generationReport.loraSelection && (
+                <div style={{ color: 'var(--muted-foreground)', marginTop: 4 }}>
+                  LoRA {generationReport.loraSelection.mode}: {generationReport.loraSelection.explanation ?? 'sem seleção'}
+                  {generationReport.loras?.length ? ` · ${generationReport.loras.map((lora) => `${lora.model} (${lora.strengthModel})`).join(' + ')}` : ''}
+                  {generationReport.loraSelection.warnings.length ? ` · ${generationReport.loraSelection.warnings.join(' ')}` : ''}
                 </div>
               )}
               {generationReport.qualityAudit && (

@@ -1,0 +1,109 @@
+{
+  "generatedAt": "2026-11-17T02:45:41.589Z",
+  "projectId": "creative-banner-fea77928-9",
+  "document": {
+    "width": 2560,
+    "height": 1440,
+    "artType": "banner"
+  },
+  "generation": {
+    "status": "generated",
+    "engineId": "provider-chain",
+    "message": "Fundo gerado por provider-chain (preset geek_banner, seed 21005).",
+    "durationMs": 40095,
+    "recipe": {
+      "preset": "geek_banner",
+      "professionalPreset": "banner_2560x1440",
+      "positivePrompt": "professional cinematic channel banner, wide panoramic composition, balanced edge subjects, calm c safe area, layered depth, High-detail cinematic digital painting, cyberpunk concept art, sharp focus, rich contrast, clean negative space, no text, Two original cyberpunk tech heroes at opposite edges, armored hacker left, cybernetic engineer right, confident three-quarter stances facing inward, ultra wide panoramic shot, heroes at far left and far right",
+      "negativePrompt": "text, letters, words, typography, title, caption, watermark, logo, signature, blurry, lowres, jpeg artifacts, deformed, bad anatomy, extra limbs, flat empty background, plain gradient, text, letters, signage, logo, watermark, busy center, flat gradient, cropped subjects, malformed anatomy",
+      "seed": 21005,
+      "width": 1024,
+      "height": 576,
+      "textSafeZones": [
+        {
+          "x": 507,
+          "y": 509,
+          "width": 1546,
+          "height": 423
+        }
+      ],
+      "source": "reasoning_engine",
+      "recognisedTerms": [
+        "cyberpunk",
+        "heroes",
+        "high technology"
+      ],
+      "steps": 12,
+      "cfg": 5.5,
+      "samplerName": "dpmpp_2m",
+      "scheduler": "karras",
+      "stylization": 0.7,
+      "characterCount": 2,
+      "characterRegions": [
+        {
+          "id": "character-region-1",
+          "index": 0,
+          "role": "primary",
+          "anchor": "left",
+          "x": 51,
+          "y": 46,
+          "width": 443,
+          "height": 484
+        },
+        {
+          "id": "character-region-2",
+          "index": 1,
+          "role": "supporting",
+          "anchor": "right",
+          "x": 530,
+          "y": 46,
+          "width": 443,
+          "height": 484
+        }
+      ]
+    },
+    "attempts": 1,
+    "loraSelection": {
+      "mode": "off",
+      "explanation": "LoRA desativado para esta geração.",
+      "warnings": []
+    },
+    "qualityAudit": {
+      "evaluatorId": "sharp-image-structure-audit",
+      "passed": true,
+      "metrics": {
+        "width": 1024,
+        "height": 576,
+        "channels": 3,
+        "format": "png",
+        "lumaStdDev": 47.14955021880697
+      },
+      "findings": []
+    },
+    "generationRunId": "6708be83-141f-4243-ab4e-4485d74d416a"
+  },
+  "audit": {
+    "projectId": "creative-banner-fea77928-9",
+    "artType": "banner",
+    "passed": true,
+    "autoApprovable": true,
+    "criticalCount": 0,
+    "warningCount": 0,
+    "findings": [],
+    "scorecard": {
+      "legibility": 88,
+      "contrast": 70,
+      "composition": 94,
+      "brandConsistency": 85,
+      "overall": 85,
+      "disclaimer": "Heuristic visual quality score only; does not predict actual CTR."
+    },
+    "checkedAt": "2026-11-17T02:45:40.969Z"
+  },
+  "generatedAsset": {
+    "id": "asset-2a511322-0a5",
+    "relativePath": "assets/image/asset-2a511322-0a5.png",
+    "originalName": "ai-gen-geek_banner-21005.png"
+  },
+  "previewDataUrlBytes": 8527286
+}

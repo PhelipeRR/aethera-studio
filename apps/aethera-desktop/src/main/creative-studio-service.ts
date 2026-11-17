@@ -55,6 +55,10 @@ import {
   type VideoSceneHint,
   type VisualConceptCritique,
   discoverComfyUi,
+  buildLoraCatalog,
+  normalizeLoraStack,
+  selectLorasForPrompt,
+  type LoraStackItem,
 } from '@neuralbridge/creative-studio';
 import { AetheraCreativeStudioRepository, type Db } from '@neuralbridge/database';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
@@ -258,7 +262,13 @@ export class AetheraCreativeStudioService {
     return { enabled: true, ...this.comfyUiStartupStatus };
   }
 
-  async imageEngineStatus(): Promise<{ comfyUi: ComfyUiStatus; localAvailable: boolean; activeProvider: string; startup: CreativeImageEngineStartupStatus }> {
+  async imageEngineStatus(): Promise<{
+    comfyUi: ComfyUiStatus;
+    loraCatalog: ReturnType<typeof buildLoraCatalog>;
+    localAvailable: boolean;
+    activeProvider: string;
+    startup: CreativeImageEngineStartupStatus;
+  }> {
     const imageEngineSettings = this.imageEngineSettingsStore.load();
     const endpoints = [...new Set([
       this.comfyUiEndpoint,
@@ -298,8 +308,14 @@ export class AetheraCreativeStudioService {
       this.localImageAdapter.isAvailable(),
       this.comfyUiAdapter.isAvailable(),
     ]);
+    const loraCatalog = buildLoraCatalog(
+      comfyUi.models.loras,
+      compatibleCheckpoint ?? this.comfyUiAdapter.checkpoint,
+      comfyUi.models.loraMetadata,
+    );
     return {
       comfyUi,
+      loraCatalog,
       localAvailable,
       activeProvider: comfyAvailable ? this.comfyUiAdapter.id : localAvailable ? this.localImageAdapter.id : 'none',
       startup,
@@ -680,6 +696,8 @@ export class AetheraCreativeStudioService {
     referenceStrength?: number;
     maxAttempts?: number;
     lora?: { model: string; strengthModel?: number; strengthClip?: number };
+    loras?: LoraStackItem[];
+    loraMode?: 'off' | 'manual' | 'automatic';
     controlNet?: { model: string; imagePath: string; strength?: number; startPercent?: number; endPercent?: number };
     ipAdapter?: { model: string; clipVisionModel: string; referenceImagePath?: string; weight?: number };
     faceDetailer?: { detectorModel: string; guideSize?: number; maxSize?: number; denoise?: number };
@@ -704,6 +722,30 @@ export class AetheraCreativeStudioService {
       prompt: input.prompt,
       ...(input.headline ? { headline: input.headline } : {}),
     });
+
+    const loraMode = input.loraMode ?? (input.loras?.length || input.lora ? 'manual' : 'off');
+    let selectedLoras: LoraStackItem[] = [];
+    let loraSelection: { mode: 'off' | 'manual' | 'automatic'; explanation?: string; warnings: string[] } = {
+      mode: loraMode,
+      ...(loraMode === 'off' ? { explanation: 'LoRA desativado para esta geração.' } : {}),
+      warnings: [],
+    };
+    if (loraMode === 'manual') {
+      selectedLoras = normalizeLoraStack(input.loras?.length ? input.loras : input.lora ? [input.lora] : []);
+      loraSelection = {
+        mode: 'manual',
+        explanation: selectedLoras.length > 0 ? `${selectedLoras.length} LoRA(s) selecionado(s) manualmente.` : 'Nenhum LoRA manual foi selecionado.',
+        warnings: [],
+      };
+    } else if (loraMode === 'automatic') {
+      const engineStatus = await this.imageEngineStatus();
+      const automatic = selectLorasForPrompt(
+        `${input.prompt} ${direction.direction?.subject ?? ''} ${direction.direction?.style ?? ''} ${direction.direction?.effects ?? ''}`,
+        engineStatus.loraCatalog,
+      );
+      selectedLoras = automatic.selected.map(({ model, strengthModel, strengthClip }) => ({ model, strengthModel, strengthClip }));
+      loraSelection = { mode: 'automatic', explanation: automatic.explanation, warnings: automatic.warnings };
+    }
 
     let generation: AiGenerationReport;
     if (!input.useAiGeneration) {
@@ -731,7 +773,8 @@ export class AetheraCreativeStudioService {
         ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths } : {}),
         ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),
         ...(input.maxAttempts !== undefined ? { maxAttempts: input.maxAttempts } : {}),
-        ...(input.lora ? { lora: input.lora } : {}),
+        ...(selectedLoras.length ? { loras: selectedLoras } : {}),
+        loraSelection,
         ...(input.controlNet ? { controlNet: input.controlNet } : {}),
         ...(input.ipAdapter ? { ipAdapter: input.ipAdapter } : {}),
         ...(input.faceDetailer ? { faceDetailer: input.faceDetailer } : {}),
@@ -766,6 +809,8 @@ export class AetheraCreativeStudioService {
       }
     }
 
+    generation = { ...generation, loraSelection };
+
     const activeBrandKit = input.brandKitId ? this.brandKits.get(input.brandKitId) : brandKit;
     const result = await this.orchestrator.orchestrateCreation(
       {
@@ -784,7 +829,10 @@ export class AetheraCreativeStudioService {
       direction,
     );
 
-    const saved = this.saveDocument(result.document);
+    const saved = this.saveDocument({
+      ...result.document,
+      generationSettings: { loraMode, loras: selectedLoras },
+    });
     this.editors.set(saved.id, new LayeredDocumentEditor(saved));
     if (activeBrandKit && (input.artType === 'avatar' || input.artType === 'watermark')) {
       const renderedPng = await this.engine.renderDocumentToBuffer(saved, 'png');
@@ -818,7 +866,8 @@ export class AetheraCreativeStudioService {
       ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths.slice(0, 4) } : {}),
       ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),
       ...(input.maxAttempts !== undefined ? { maxAttempts: input.maxAttempts } : {}),
-      ...(input.lora ? { lora: input.lora } : {}),
+      ...(input.loraMode ? { loraMode: input.loraMode } : {}),
+      ...(selectedLoras.length ? { loras: selectedLoras } : {}),
       ...(input.controlNet ? { controlNet: input.controlNet } : {}),
       ...(input.ipAdapter ? { ipAdapter: input.ipAdapter } : {}),
       ...(input.faceDetailer ? { faceDetailer: input.faceDetailer } : {}),

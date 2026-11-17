@@ -30,6 +30,17 @@ The Aethera discovery path now probes both 8000 and 8188, then retargets the nat
 
 Both checkpoints are recognized by `/object_info`; no duplicate checkpoint name was found in the discovered model roots.
 
+### Model selection matrix
+
+| Use case | Selected model | Decision and evidence |
+| --- | --- | --- |
+| Anime characters, key art, groups | Animagine XL 3.1 | Primary choice: anime-focused SDXL fine-tune, real generation passed on the 8 GB GPU, and the official card documents CreativeML OpenRAIL++-M terms including commercial use with restrictions. [official card](https://huggingface.co/cagliostrolab/animagine-xl-3.1) |
+| Anime alternative / comparison | Illustrious XL v2.0 | Installed and generated successfully; the official card describes it as an SDXL anime model, but its CreativeML OpenRAIL-M terms deserve separate legal review before commercial distribution. [official card](https://huggingface.co/OnomaAIResearch/Illustrious-XL-v2.0) |
+| Photorealistic gaming/cinematic | Juggernaut XL v9 | Evaluated but not downloaded: it is a photorealistic SDXL workhorse rather than an anime-first model, and the official card calls out separate restrictions for paid API deployment. It would add another ~7 GB checkpoint without a current production requirement. [official card](https://huggingface.co/RunDiffusion/Juggernaut-XL-v9) |
+| Newer general-purpose candidate | FLUX.1 schnell | Evaluated but not downloaded: the official card identifies a 12B rectified-flow model and its ComfyUI/Diffusers path, with CPU offload suggested to save VRAM. That architecture and memory risk are not justified for this 8 GB SDXL pipeline until a dedicated benchmark is requested. [official card](https://huggingface.co/black-forest-labs/FLUX.1-schnell) |
+
+No additional checkpoint was downloaded merely to enlarge the inventory. The current selection is Animagine for anime/NextWorth experiments and Illustrious as the controlled alternative; gaming realism remains a documented future benchmark rather than an unverified claim.
+
 ## Custom nodes and capabilities
 
 - [ComfyUI Manager](https://github.com/Comfy-Org/ComfyUI-Manager), commit `c8bf0d48f33382ba621a5b44820cc636d32e38ce`.
@@ -90,3 +101,19 @@ The panel therefore defaults IP-Adapter weight to `0.35`. This is an evidence-ba
 2. Improve multi-character and banner quality with regional composition/conditioning; do not mark the structural baseline as visually accepted.
 3. Evaluate production-safe OpenPose licensing before shipping that model in a commercial distribution, and install/validate a LoRA only if a concrete style requirement needs it.
 4. Decide whether the duplicate dependency installation in the unused Comfy Desktop venv should be cleaned up. The live server uses the Documents venv and is not affected.
+
+### LoRA catalog and requested selection (2026-11-17)
+
+The native integration now discovers LoRAs from `models/loras`, reads the bounded safetensors header when available, and records architecture, trigger words, category, compatibility, priority, and purpose. Filename-only entries remain `unknown`/unverified and are excluded from automatic selection. Manual stacks are limited to three deduplicated relative model names; native workflows chain `LoraLoader` and `LoraLoaderModelOnly` before ControlNet/IP-Adapter nodes.
+
+| Selection | Priority | Purpose | Current state |
+| --- | --- | --- | --- |
+| Animagine XL 3.1 checkpoint | Essential | Anime characters and illustrations | Installed and selected for anime/NextWorth |
+| Illustrious XL checkpoint | High | Alternative anime styles and characters | Installed and available as alternative |
+| Character LoRA | High | Fidelity for named characters such as Goku, Frieren, or Guts | Catalog category supported; no file installed |
+| Cinematic style LoRA | Medium | Dramatic lighting and atmosphere | Catalog category supported; no file installed |
+| Manga style LoRA | Medium | Black-and-white linework and hatching | Catalog category supported; no file installed |
+| Visual-effects LoRA | Optional | Energy, aura, and stylized effects | Catalog category supported; no file installed |
+| Games LoRA | As needed | Game-specific styles | Catalog category supported; no file installed |
+
+The desktop flow now exposes `off`, `manual`, and `automatic` modes, shows compatibility evidence and warnings, persists the effective stack per project, and includes the selection explanation in the generation report. No LoRA was downloaded in this pass: installation remains gated on a concrete candidate, license review, and explicit confirmation because the current runtime has no verified LoRA file to benchmark.

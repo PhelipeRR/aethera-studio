@@ -349,6 +349,19 @@ export const creativeLayerSchema = z.discriminatedUnion('type', [
 ]);
 export type CreativeLayer = z.infer<typeof creativeLayerSchema>;
 
+export const loraStackItemSchema = z.object({
+  model: z.string().min(1).max(500),
+  strengthModel: z.number().min(-5).max(5).optional(),
+  strengthClip: z.number().min(-5).max(5).optional(),
+  nodeType: z.enum(['LoraLoader', 'LoraLoaderModelOnly']).optional(),
+});
+
+export const creativeGenerationSettingsSchema = z.object({
+  loraMode: z.enum(['off', 'manual', 'automatic']).default('off'),
+  loras: z.array(loraStackItemSchema).max(3).default([]),
+});
+export type CreativeGenerationSettings = z.infer<typeof creativeGenerationSettingsSchema>;
+
 export const creativeProjectDocumentSchema = z.object({
   schemaVersion: z.literal(CREATIVE_PROJECT_SCHEMA_VERSION),
   id: z.string().min(1),
@@ -369,6 +382,8 @@ export const creativeProjectDocumentSchema = z.object({
   approvedAt: z.string().optional(),
   /** CS-9: independent technical / semantic-fidelity / human-aesthetic states (see approval-states.ts). */
   approvalStates: approvalStatesSchema.optional(),
+  /** Reproducible image-engine choices used for this project, including the selected LoRA stack. */
+  generationSettings: creativeGenerationSettingsSchema.optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 });

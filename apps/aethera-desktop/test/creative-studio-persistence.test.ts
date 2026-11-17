@@ -74,8 +74,14 @@ describe('Aethera Creative Studio — Desktop Persistence, Undo/Redo & Reopen', 
           prompt: 'Thumbnail de tecnologia com alto contraste',
           brandKitId: kit.id,
           useAiGeneration: false,
+          loraMode: 'manual',
+          loras: [{ model: 'style/manga.safetensors', strengthModel: 0.35, strengthClip: 0.25 }],
         });
         const projectId = created.document.id;
+        expect(created.document.generationSettings).toEqual({
+          loraMode: 'manual',
+          loras: [{ model: 'style/manga.safetensors', strengthModel: 0.35, strengthClip: 0.25 }],
+        });
         const editor = service.getOrCreateEditor(projectId);
         const initialHeadline = created.document.layers.find((l) => l.type === 'text' && l.role === 'headline');
         const initialHeadlineText = initialHeadline?.type === 'text' ? initialHeadline.text : '';
@@ -104,6 +110,8 @@ describe('Aethera Creative Studio — Desktop Persistence, Undo/Redo & Reopen', 
 
         const reloaded = service.loadDocument(projectId);
         expect(reloaded).not.toBeNull();
+        expect(reloaded?.generationSettings?.loraMode).toBe('manual');
+        expect(reloaded?.generationSettings?.loras[0]?.model).toBe('style/manga.safetensors');
         const reloadedText = reloaded!.layers.find((l) => l.type === 'text' && l.role === 'headline');
         expect(reloadedText?.type === 'text' ? reloadedText.text : '').toBe('NOVO TITULO');
 

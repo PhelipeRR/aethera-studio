@@ -129,6 +129,44 @@ describe('ComfyUI workflow registry', () => {
     ).toEqual({ ok: true, errors: [] });
   });
 
+  it('chains multiple LoRAs without colliding with ControlNet or IP-Adapter nodes', () => {
+    const workflow = buildComfyUiTxt2ImgWorkflow({
+      checkpoint: 'animagine-xl-3.1.safetensors',
+      positivePrompt: 'Goku cinematic manga aura',
+      negativePrompt: 'text',
+      width: 768,
+      height: 768,
+      seed: 10,
+      steps: 8,
+      cfg: 5,
+      samplerName: 'euler',
+      scheduler: 'normal',
+      filenamePrefix: 'Aethera/lora-stack',
+      loras: [
+        { model: 'character/goku.safetensors', strengthModel: 0.7, strengthClip: 0.6 },
+        { model: 'style/manga.safetensors', strengthModel: 0.35, strengthClip: 0.25, nodeType: 'LoraLoaderModelOnly' },
+      ],
+      controlNet: {
+        model: 'pose.safetensors',
+        image: { filename: 'pose.png', subfolder: 'aethera', type: 'input' },
+      },
+      ipAdapter: {
+        model: 'ip.safetensors',
+        clipVisionModel: 'clip.safetensors',
+        image: { filename: 'identity.png', subfolder: 'aethera', type: 'input' },
+      },
+    });
+
+    expect(workflow['10']).toMatchObject({ class_type: 'LoraLoader', inputs: { model: ['1', 0], clip: ['1', 1], lora_name: 'character/goku.safetensors' } });
+    expect(workflow['11']).toMatchObject({ class_type: 'LoraLoaderModelOnly', inputs: { model: ['10', 0], lora_name: 'style/manga.safetensors' } });
+    expect(workflow['2']?.inputs['clip']).toEqual(['10', 1]);
+    expect(workflow['5']?.inputs['model']).toEqual(['18', 0]);
+    expect(workflow['12']).toMatchObject({ class_type: 'ControlNetLoader' });
+    expect(workflow['14']).toMatchObject({ class_type: 'ControlNetApply' });
+    expect(workflow['18']).toMatchObject({ class_type: 'IPAdapterAdvanced' });
+    expect(workflow['18']?.inputs['model']).toEqual(['11', 0]);
+  });
+
   it('builds a native img2img graph with an uploaded reference and denoise strength', () => {
     const workflow = buildComfyUiImg2ImgWorkflow({
       checkpoint: 'sdxl.safetensors',
@@ -150,6 +188,33 @@ describe('ComfyUI workflow registry', () => {
     expect(workflow['5']).toMatchObject({ class_type: 'VAEEncode', inputs: { pixels: ['4', 0], vae: ['1', 2] } });
     expect(workflow['6']).toMatchObject({ class_type: 'KSampler', inputs: { denoise: 0.42, latent_image: ['5', 0] } });
     expect(workflow['8']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['7', 0] } });
+  });
+
+  it('preserves a multi-LoRA stack when switching to img2img', () => {
+    const workflow = buildComfyUiImg2ImgWorkflow({
+      checkpoint: 'sdxl.safetensors',
+      positivePrompt: 'manga character',
+      negativePrompt: 'text',
+      width: 768,
+      height: 768,
+      seed: 7,
+      steps: 10,
+      cfg: 5,
+      samplerName: 'euler',
+      scheduler: 'normal',
+      denoise: 0.42,
+      inputImage: { filename: 'reference.png', subfolder: 'aethera', type: 'input' },
+      filenamePrefix: 'Aethera/reference-lora-stack',
+      loras: [
+        { model: 'character.safetensors' },
+        { model: 'manga.safetensors', nodeType: 'LoraLoaderModelOnly' },
+      ],
+    });
+
+    expect(workflow['10']).toMatchObject({ class_type: 'LoraLoader' });
+    expect(workflow['11']).toMatchObject({ class_type: 'LoraLoaderModelOnly', inputs: { model: ['10', 0] } });
+    expect(workflow['6']?.inputs['model']).toEqual(['11', 0]);
+    expect(workflow['6']?.inputs['latent_image']).toEqual(['5', 0]);
   });
 
   it('preserves ControlNet nodes when an img2img reference is combined with conditioning', () => {

@@ -96,6 +96,31 @@ describe('ComfyUiImageAdapter', () => {
     expect(gateway.queued?.['5']).toMatchObject({ inputs: { model: ['10', 0] } });
   });
 
+  it('passes a bounded LoRA stack through the native adapter and preserves loader chaining', async () => {
+    const gateway = fakeGateway();
+    gateway.getObjectInfo = async () => ({
+      ...readyObjectInfo(),
+      LoraLoader: { input: { required: { lora_name: [['character.safetensors', 'style.safetensors']] } } },
+      LoraLoaderModelOnly: { input: { required: { lora_name: [['character.safetensors', 'style.safetensors']] } } },
+    });
+    const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
+
+    await adapter.generateImage({
+      prompt: 'character manga style',
+      width: 768,
+      height: 768,
+      loras: [
+        { model: 'character.safetensors', strengthModel: 0.7, strengthClip: 0.6 },
+        { model: 'style.safetensors', strengthModel: 0.35, strengthClip: 0.25, nodeType: 'LoraLoaderModelOnly' },
+      ],
+    });
+
+    expect(gateway.queued?.['10']).toMatchObject({ class_type: 'LoraLoader', inputs: { lora_name: 'character.safetensors', model: ['1', 0] } });
+    expect(gateway.queued?.['11']).toMatchObject({ class_type: 'LoraLoaderModelOnly', inputs: { lora_name: 'style.safetensors', model: ['10', 0] } });
+    expect(gateway.queued?.['2']).toMatchObject({ inputs: { clip: ['10', 1] } });
+    expect(gateway.queued?.['5']).toMatchObject({ inputs: { model: ['11', 0] } });
+  });
+
   it('uploads a conditioning image and queues the discovered ControlNet graph', async () => {
     const gateway = fakeGateway();
     const uploads: string[] = [];

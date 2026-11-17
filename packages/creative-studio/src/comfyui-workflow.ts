@@ -1,4 +1,5 @@
 import type { ComfyUiHistoryEntry, ComfyUiImageRef } from './comfyui-client.js';
+import { normalizeLoraStack, type LoraStackItem } from './lora-catalog.js';
 
 export interface ComfyUiWorkflowNode {
   class_type: string;
@@ -21,6 +22,7 @@ export interface ComfyUiTxt2ImgInput {
   scheduler: string;
   filenamePrefix: string;
   lora?: { model: string; strengthModel?: number; strengthClip?: number; nodeType?: 'LoraLoader' | 'LoraLoaderModelOnly' };
+  loras?: Array<{ model: string; strengthModel?: number; strengthClip?: number; nodeType?: 'LoraLoader' | 'LoraLoaderModelOnly' }>;
   controlNet?: ComfyUiControlNetInput;
   ipAdapter?: ComfyUiIpAdapterInput;
   faceDetailer?: ComfyUiFaceDetailerInput;
@@ -89,13 +91,15 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
   const steps = Math.max(1, Math.round(input.steps));
   const cfg = Math.max(0, input.cfg);
   const seed = Math.max(0, Math.floor(input.seed));
-  const loraNodeType = input.lora?.nodeType ?? 'LoraLoader';
-  const modelRef: [string, number] = input.lora ? ['10', 0] : ['1', 0];
-  const clipRef: [string, number] = input.lora && loraNodeType === 'LoraLoader' ? ['10', 1] : ['1', 1];
+  const loraStack: LoraStackItem[] = normalizeLoraStack(input.loras?.length ? input.loras : input.lora ? [input.lora] : []);
+  const loraStart = 10;
+  const controlStart = loraStack.length > 0 ? loraStart + loraStack.length : 11;
+  const ipAdapterStart = input.controlNet ? controlStart + 3 : loraStack.length > 1 ? 14 + loraStack.length - 1 : 14;
+  let modelRef: [string, number] = ['1', 0];
+  let clipRef: [string, number] = ['1', 1];
   const controlNetNodeType = input.controlNet?.nodeType ?? 'ControlNetApply';
-  const conditioningRef: [string, number] = input.controlNet ? ['13', 0] : ['2', 0];
-  const negativeConditioningRef: [string, number] = input.controlNet ? ['13', 1] : ['3', 0];
-  const modelForSampler: [string, number] = input.ipAdapter ? ['17', 0] : modelRef;
+  const conditioningRef: [string, number] = input.controlNet ? [String(controlStart + 2), 0] : ['2', 0];
+  const negativeConditioningRef: [string, number] = input.controlNet ? [String(controlStart + 2), 1] : ['3', 0];
   const workflow: ComfyUiWorkflow = {
     '1': {
       class_type: 'CheckpointLoaderSimple',
@@ -126,7 +130,7 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
         sampler_name: input.samplerName,
         scheduler: input.scheduler,
         denoise: 1,
-        model: modelForSampler,
+        model: modelRef,
         positive: conditioningRef,
         negative: negativeConditioningRef,
         latent_image: ['4', 0],
@@ -144,47 +148,61 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
       _meta: { title: 'Aethera output' },
     },
   };
-  if (input.lora) {
-    workflow['10'] = {
-      class_type: loraNodeType,
-      inputs: loraNodeType === 'LoraLoader'
+  const positiveNode = workflow['2'];
+  const negativeNode = workflow['3'];
+  const samplerNode = workflow['5'];
+  if (!positiveNode || !negativeNode || !samplerNode) throw new Error('Base ComfyUI workflow is incomplete.');
+  for (const [index, lora] of loraStack.entries()) {
+    const nodeId = String(loraStart + index);
+    const nodeType = lora.nodeType ?? 'LoraLoader';
+    workflow[nodeId] = {
+      class_type: nodeType,
+      inputs: nodeType === 'LoraLoader'
         ? {
-            model: ['1', 0],
-            clip: ['1', 1],
-            lora_name: input.lora.model,
-            strength_model: Math.max(-5, Math.min(5, input.lora.strengthModel ?? 1)),
-            strength_clip: Math.max(-5, Math.min(5, input.lora.strengthClip ?? input.lora.strengthModel ?? 1)),
+            model: modelRef,
+            clip: clipRef,
+            lora_name: lora.model,
+            strength_model: Math.max(-5, Math.min(5, lora.strengthModel ?? 1)),
+            strength_clip: Math.max(-5, Math.min(5, lora.strengthClip ?? lora.strengthModel ?? 1)),
           }
         : {
-            model: ['1', 0],
-            lora_name: input.lora.model,
-            strength_model: Math.max(-5, Math.min(5, input.lora.strengthModel ?? 1)),
+            model: modelRef,
+            lora_name: lora.model,
+            strength_model: Math.max(-5, Math.min(5, lora.strengthModel ?? 1)),
           },
-      _meta: { title: 'Aethera LoRA' },
+      _meta: { title: `Aethera LoRA ${index + 1}` },
     };
+    modelRef = [nodeId, 0];
+    if (nodeType === 'LoraLoader') clipRef = [nodeId, 1];
   }
+  positiveNode.inputs['clip'] = clipRef;
+  negativeNode.inputs['clip'] = clipRef;
+  samplerNode.inputs['model'] = modelRef;
   if (input.controlNet) {
+    const controlLoaderId = String(controlStart);
+    const controlImageId = String(controlStart + 1);
+    const controlApplyId = String(controlStart + 2);
     const imageName = input.controlNet.image.subfolder
       ? `${input.controlNet.image.subfolder}/${input.controlNet.image.filename}`
       : input.controlNet.image.filename;
-    workflow['11'] = {
+    workflow[controlLoaderId] = {
       class_type: 'ControlNetLoader',
       inputs: { control_net_name: input.controlNet.model },
       _meta: { title: 'Aethera ControlNet model' },
     };
-    workflow['12'] = {
+    workflow[controlImageId] = {
       class_type: 'LoadImage',
       inputs: { image: imageName },
       _meta: { title: 'Aethera ControlNet conditioning image' },
     };
-    workflow['13'] = {
+    workflow[controlApplyId] = {
       class_type: controlNetNodeType,
       inputs: controlNetNodeType === 'ControlNetApplyAdvanced'
         ? {
             positive: ['2', 0],
             negative: ['3', 0],
-            control_net: ['11', 0],
-            image: ['12', 0],
+            control_net: [controlLoaderId, 0],
+            image: [controlImageId, 0],
             strength: Math.max(0, Math.min(5, input.controlNet.strength ?? 0.65)),
             start_percent: Math.max(0, Math.min(1, input.controlNet.startPercent ?? 0)),
             end_percent: Math.max(0, Math.min(1, input.controlNet.endPercent ?? 1)),
@@ -192,41 +210,45 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
         : {
             positive: ['2', 0],
             negative: ['3', 0],
-            control_net: ['11', 0],
-            image: ['12', 0],
+            control_net: [controlLoaderId, 0],
+            image: [controlImageId, 0],
             strength: Math.max(0, Math.min(5, input.controlNet.strength ?? 0.65)),
           },
       _meta: { title: 'Aethera ControlNet conditioning' },
     };
   }
   if (input.ipAdapter) {
+    const ipModelId = String(ipAdapterStart);
+    const ipVisionId = String(ipAdapterStart + 1);
+    const ipImageId = String(ipAdapterStart + 2);
+    const ipApplyId = String(ipAdapterStart + 3);
     const imageName = input.ipAdapter.image.subfolder
       ? `${input.ipAdapter.image.subfolder}/${input.ipAdapter.image.filename}`
       : input.ipAdapter.image.filename;
     const ipAdapterNodeType = input.ipAdapter.nodeType ?? 'IPAdapterAdvanced';
-    workflow['14'] = {
+    workflow[ipModelId] = {
       class_type: 'IPAdapterModelLoader',
       inputs: { ipadapter_file: input.ipAdapter.model },
       _meta: { title: 'Aethera IP-Adapter model' },
     };
-    workflow['15'] = {
+    workflow[ipVisionId] = {
       class_type: 'CLIPVisionLoader',
       inputs: { clip_name: input.ipAdapter.clipVisionModel },
       _meta: { title: 'Aethera IP-Adapter vision encoder' },
     };
-    workflow['16'] = {
+    workflow[ipImageId] = {
       class_type: 'LoadImage',
       inputs: { image: imageName },
       _meta: { title: 'Aethera IP-Adapter reference image' },
     };
-    workflow['17'] = {
+    workflow[ipApplyId] = {
       class_type: ipAdapterNodeType,
       inputs: ipAdapterNodeType === 'IPAdapterAdvanced'
         ? {
             model: modelRef,
-            ipadapter: ['14', 0],
-            clip_vision: ['15', 0],
-            image: ['16', 0],
+            ipadapter: [ipModelId, 0],
+            clip_vision: [ipVisionId, 0],
+            image: [ipImageId, 0],
             weight: Math.max(-1, Math.min(5, input.ipAdapter.weight ?? 0.8)),
             weight_type: 'linear',
             combine_embeds: 'concat',
@@ -236,13 +258,14 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
           }
         : {
             model: modelRef,
-            ipadapter: ['14', 0],
-            clip_vision: ['15', 0],
-            image: ['16', 0],
+            ipadapter: [ipModelId, 0],
+            clip_vision: [ipVisionId, 0],
+            image: [ipImageId, 0],
             weight: Math.max(-1, Math.min(5, input.ipAdapter.weight ?? 0.8)),
           },
       _meta: { title: 'Aethera IP-Adapter identity conditioning' },
     };
+    samplerNode.inputs['model'] = [ipApplyId, 0];
   }
   return workflow;
 }
@@ -250,6 +273,7 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
 export function buildComfyUiFaceDetailerWorkflow(input: ComfyUiTxt2ImgInput): ComfyUiWorkflow {
   if (!input.faceDetailer) throw new Error('FaceDetailer settings are required.');
   const { faceDetailer: _faceDetailer, ...baseInput } = input;
+  void _faceDetailer;
   const workflow = buildComfyUiTxt2ImgWorkflow(baseInput);
   const sampler = workflow['5'];
   const positive = sampler?.inputs['positive'];
@@ -317,18 +341,14 @@ export function buildComfyUiImg2ImgWorkflow(input: ComfyUiImg2ImgInput): ComfyUi
     if (!value) throw new Error(`Base ComfyUI workflow is missing node ${id}.`);
     return value;
   };
+  const passthrough = Object.fromEntries(
+    Object.entries(base).filter(([id]) => !new Set(['1', '2', '3', '4', '5', '6', '7']).has(id)),
+  );
   return {
     '1': node('1'),
     '2': node('2'),
     '3': node('3'),
-    ...(base['10'] ? { '10': base['10'] } : {}),
-    ...(base['11'] ? { '11': base['11'] } : {}),
-    ...(base['12'] ? { '12': base['12'] } : {}),
-    ...(base['13'] ? { '13': base['13'] } : {}),
-    ...(base['14'] ? { '14': base['14'] } : {}),
-    ...(base['15'] ? { '15': base['15'] } : {}),
-    ...(base['16'] ? { '16': base['16'] } : {}),
-    ...(base['17'] ? { '17': base['17'] } : {}),
+    ...passthrough,
     '4': { class_type: 'LoadImage', inputs: { image: imageName }, _meta: { title: 'Aethera reference image' } },
     '5': { class_type: 'VAEEncode', inputs: { pixels: ['4', 0], vae: ['1', 2] }, _meta: { title: 'Aethera reference encode' } },
     '6': {
@@ -356,11 +376,14 @@ export function buildComfyUiInpaintWorkflow(input: ComfyUiInpaintInput): ComfyUi
     if (!value) throw new Error(`Base ComfyUI workflow is missing node ${id}.`);
     return value;
   };
+  const passthrough = Object.fromEntries(
+    Object.entries(base).filter(([id]) => !new Set(['1', '2', '3', '4', '5', '6', '7']).has(id)),
+  );
   return {
     '1': node('1'),
     '2': node('2'),
     '3': node('3'),
-    ...(base['10'] ? { '10': base['10'] } : {}),
+    ...passthrough,
     '4': { class_type: 'LoadImage', inputs: { image: imageName }, _meta: { title: 'Aethera inpaint base image' } },
     '5': { class_type: 'LoadImage', inputs: { image: maskName }, _meta: { title: 'Aethera localized repair mask' } },
     '6': {

@@ -29,3 +29,4 @@ export * from './gpu-generation-lease.js';
 export * from './generated-image-quality.js';
 export * from './comfyui-capabilities.js';
 export * from './multi-character-composition.js';
+export * from './lora-catalog.js';
