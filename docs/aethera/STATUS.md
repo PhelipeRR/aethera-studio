@@ -724,5 +724,6 @@ P1 — Audio-First Timeline foi autorizado para implementação. P2 permanece bl
 - [x] Diagnóstico persistido: duração planejada, medida, final, tolerância, ajustes por cena, stream de áudio final, provedor efetivo por segmento, cache hit/key e modo de narração.
 - [x] Cache de narração isolado por endpoint/modelo/voz; correções visuais reutilizam os WAVs e não fazem nova chamada TTS quando o sidecar é verificável.
 - [x] Testes focados: 7 arquivos / 23 testes passando; inclui áudio longo/curto, dois segmentos, atribuição por cena, stream final e cache.
-- [x] Evidência real: MP4 `C:\dev\neuralbridge-studio\artifacts\aethera-p1-audio-first\20261117165701\render\cyberpunk-audio-first.mp4`, arquivo Cyberpunk local reutilizado sem download, H.264/AAC 48 kHz, `deliveryValidation.valid=true`, stream de áudio `19,285 ms`.
+- [x] Evidência real: MP4 `C:\dev\neuralbridge-studio\artifacts\aethera-p1-audio-first\20261117170536\render\cyberpunk-audio-first.mp4`, arquivo Cyberpunk local reutilizado sem download, duas cenas/segmentos, H.264/AAC 48 kHz, `deliveryValidation.valid=true`, stream de áudio `19,565 ms`.
+- [x] Falhas técnicas de truncamento carregam `RealRenderError.audioFirstTimeline` para o checkpoint antes do estado `error`, preservando diagnóstico após reinício.
 - [ ] Aceite do usuário ainda pendente; P2 não iniciado.

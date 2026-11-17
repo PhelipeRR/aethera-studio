@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { AetheraEvolutionCore } from '../../../packages/cinema/src/index.js';
-import { StagedCinemaPipeline, type StagedProductionJob } from '../src/main/cinema-pipeline.js';
+import { AetheraEvolutionCore, RealRenderError } from '../../../packages/cinema/src/index.js';
+import { captureRenderFailureDiagnostics, StagedCinemaPipeline, type StagedProductionJob } from '../src/main/cinema-pipeline.js';
 
 const tempDirs: string[] = [];
 function makeTempDir(prefix: string): string {
@@ -25,6 +25,37 @@ function researchUntilAborted(calls: AbortSignal[]) {
 }
 
 describe('StagedCinemaPipeline — identidade da execução (jobId + attempt)', () => {
+  it('persists audio-first diagnostics when a render fails after narration measurement', () => {
+    const job: Pick<StagedProductionJob, 'audioFirstTimeline'> = {};
+    const error = new RealRenderError('audio_truncated: final stream too short', {
+      code: 'audio_truncated',
+      audioFirstTimeline: {
+        plannedDurationMs: 2_000,
+        measuredNarrationDurationMs: 4_200,
+        finalTimelineDurationMs: 4_200,
+        narrationEndMs: 4_200,
+        durationToleranceMs: 1_500,
+        completeNarrationPreserved: true,
+        adjustments: [],
+        mixedAudioDurationMs: 4_200,
+        finalAudioStreamDurationMs: 3_900,
+        narrationSegmentCount: 2,
+        narrationCacheHits: 1,
+        narrationCacheDir: 'cache/voice-segments',
+        sceneDurationAdjustments: [],
+        narrationProviders: [{ segmentId: 'seg_1', mode: 'windows_sapi_tts', cacheHit: true, cacheKey: 'cache-key' }],
+      },
+    });
+
+    captureRenderFailureDiagnostics(job, error);
+    const afterRestart = JSON.parse(JSON.stringify(job)) as typeof job;
+    expect(afterRestart.audioFirstTimeline).toMatchObject({
+      measuredNarrationDurationMs: 4_200,
+      finalAudioStreamDurationMs: 3_900,
+      narrationProviders: [{ segmentId: 'seg_1', mode: 'windows_sapi_tts', cacheHit: true }],
+    });
+  });
+
   it('persists independent creative dimensions, delivery preset and preview profile in the contract', async () => {
     const root = makeTempDir('aethera-format-persist-');
     const calls: AbortSignal[] = [];

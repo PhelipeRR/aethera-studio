@@ -66,6 +66,7 @@ import {
   createEmptyEditorialAuditTrail,
   evaluateProductionContract,
   extractProductionContract,
+  RealRenderError,
   reviseProductionContract,
   recordContractEvidence,
   recordContractRecovery,
@@ -205,6 +206,15 @@ export interface StagedProductionJob {
   error?: string;
   startedAt?: string;
   updatedAt: string;
+}
+
+export function captureRenderFailureDiagnostics(
+  job: Pick<StagedProductionJob, 'audioFirstTimeline'>,
+  error: unknown,
+): void {
+  if (error instanceof RealRenderError && error.audioFirstTimeline) {
+    job.audioFirstTimeline = error.audioFirstTimeline;
+  }
 }
 
 export interface SceneAssemblyRecord {
@@ -2834,6 +2844,7 @@ export class StagedCinemaPipeline {
       }
       job.state = 'error';
       job.error = err instanceof Error ? err.message : String(err);
+      captureRenderFailureDiagnostics(job, err);
       job.message = `Falha na etapa "${job.state}": ${job.error}`;
       return this.saveJob(job);
     } finally {

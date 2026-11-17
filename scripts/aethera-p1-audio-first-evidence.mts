@@ -33,19 +33,28 @@ const sourceMedia: SourceMediaRecord = {
   fps: { value: 24, rate: 1 },
   hasAudio: false,
 };
-const spokenText =
-  'Cyberpunk 2077 transforma Night City em uma paisagem de neon, chuva e conflito. Cada avenida apresenta uma escolha visual diferente, e esta narração longa valida que a montagem respeita a última palavra sem cortar o áudio.';
+const spokenSegments = [
+  {
+    beatId: 'beat_1',
+    stage: 'hook' as const,
+    title: 'Night City',
+    spokenText: 'Cyberpunk 2077 transforma Night City em uma paisagem de neon, chuva e conflito.',
+    estimatedDurationSec: 1,
+  },
+  {
+    beatId: 'beat_2',
+    stage: 'progression' as const,
+    title: 'Evidence',
+    spokenText: 'Cada avenida apresenta uma escolha visual diferente, e esta narração longa valida que a montagem respeita a última palavra sem cortar o áudio.',
+    estimatedDurationSec: 1,
+  },
+];
+const spokenText = spokenSegments.map((segment) => segment.spokenText).join(' ');
 const editorialScript = buildEditorialScript({
   scriptId: `${projectId}_script`,
   source: 'agent',
   treatment: 'Evidência real do pipeline audio-first com mídia local de Cyberpunk 2077.',
-  segments: [{
-    beatId: 'beat_1',
-    stage: 'hook',
-    title: 'Night City',
-    spokenText,
-    estimatedDurationSec: 2,
-  }],
+  segments: spokenSegments,
 });
 const pkg = produceCinemaPackage({
   projectId,
@@ -57,12 +66,12 @@ const pkg = produceCinemaPackage({
   editorialScript,
   externalDirection: {
     treatment: editorialScript.treatment,
-    beats: [{ stage: 'hook', summary: spokenText }],
+    beats: spokenSegments.map((segment) => ({ stage: segment.stage, summary: segment.spokenText })),
   },
 });
-pkg.timeline.clips = pkg.timeline.clips.slice(0, 1);
-pkg.direction.shots = pkg.direction.shots.slice(0, 1);
-pkg.direction.narrativeBeats = pkg.direction.narrativeBeats.slice(0, 1);
+pkg.timeline.clips = pkg.timeline.clips.slice(0, 2);
+pkg.direction.shots = pkg.direction.shots.slice(0, 2);
+pkg.direction.narrativeBeats = pkg.direction.narrativeBeats.slice(0, 2);
 
 const rendered = await renderRealCinemaMp4({
   pkg,

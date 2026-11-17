@@ -88,6 +88,26 @@ export interface RealRenderInput {
   allowProceduralVoiceFallback?: boolean;
 }
 
+export type AudioFirstRenderAudit = AudioFirstDurationAudit & {
+  mixedAudioDurationMs: number;
+  finalAudioStreamDurationMs: number | null;
+  narrationSegmentCount: number;
+  narrationCacheHits: number;
+  narrationCacheDir: string;
+  sceneDurationAdjustments: Array<{
+    sceneId: string;
+    plannedDurationMs: number;
+    adjustedDurationMs: number;
+    reason: string;
+  }>;
+  narrationProviders: Array<{
+    segmentId: string;
+    mode: NarrationMode;
+    cacheHit: boolean;
+    cacheKey: string;
+  }>;
+};
+
 export interface RealRenderResult {
   mp4Path: string;
   isTechnicalSample: boolean;
@@ -119,25 +139,7 @@ export interface RealRenderResult {
   narrationTextSent?: string;
   editorialConsistency?: EditorialConsistencyReport;
   audioQuality?: AudioQualityGateReport;
-  audioFirstTimeline?: AudioFirstDurationAudit & {
-    mixedAudioDurationMs: number;
-    finalAudioStreamDurationMs: number;
-    narrationSegmentCount: number;
-    narrationCacheHits: number;
-    narrationCacheDir: string;
-    sceneDurationAdjustments: Array<{
-      sceneId: string;
-      plannedDurationMs: number;
-      adjustedDurationMs: number;
-      reason: string;
-    }>;
-    narrationProviders: Array<{
-      segmentId: string;
-      mode: NarrationMode;
-      cacheHit: boolean;
-      cacheKey: string;
-    }>;
-  };
+  audioFirstTimeline?: AudioFirstRenderAudit;
   deliveryValidation?: {
     valid: boolean;
     target: 'preview' | 'master';
@@ -145,6 +147,18 @@ export interface RealRenderResult {
     actual: { width: number; height: number; fps: number; durationSec: number; audioCodec: string | null; videoCodec: string; audioSampleRate: number | null; audioDurationSec: number };
     errors: string[];
   };
+}
+
+export class RealRenderError extends Error {
+  readonly code: 'audio_truncated' | 'render_failed';
+  readonly audioFirstTimeline: AudioFirstRenderAudit | undefined;
+
+  constructor(message: string, options: { code: RealRenderError['code']; audioFirstTimeline?: AudioFirstRenderAudit }) {
+    super(message);
+    this.name = 'RealRenderError';
+    this.code = options.code;
+    this.audioFirstTimeline = options.audioFirstTimeline;
+  }
 }
 
 const VOICESTUDIO_PREFERRED_VOICE_ID = '9190edfa'; // Perfil: Narrador YouTube PT-BR
@@ -1297,15 +1311,27 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   }
 
   const mixedAudioDurationMs = await measureAudioDurationMs(audioMixPath);
+  const buildAudioFirstAudit = (finalAudioStreamDurationMs: number | null): AudioFirstRenderAudit => ({
+    ...audioFirstBase,
+    mixedAudioDurationMs,
+    finalAudioStreamDurationMs,
+    narrationSegmentCount,
+    narrationCacheHits,
+    narrationCacheDir: voiceCacheDir,
+    narrationProviders,
+    sceneDurationAdjustments,
+  });
   if (mixedAudioDurationMs + 150 < measuredNarMs) {
-    throw new Error(
+    throw new RealRenderError(
       `audio_truncated: o master de áudio (${mixedAudioDurationMs}ms) ficou menor que a narração medida (${measuredNarMs}ms).`,
+      { code: 'audio_truncated', audioFirstTimeline: buildAudioFirstAudit(null) },
     );
   }
   const finalAudioStreamDurationMs = await measureAudioStreamDurationMs(mp4Path);
   if (finalAudioStreamDurationMs + 150 < measuredNarMs) {
-    throw new Error(
+    throw new RealRenderError(
       `audio_truncated: o stream de áudio do MP4 final (${finalAudioStreamDurationMs}ms) ficou menor que a narração medida (${measuredNarMs}ms).`,
+      { code: 'audio_truncated', audioFirstTimeline: buildAudioFirstAudit(finalAudioStreamDurationMs) },
     );
   }
   const probe = await probeRealMp4(mp4Path);
@@ -1382,16 +1408,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     narrationTextSent: narrationTextToSpeak,
     editorialConsistency,
     audioQuality,
-    audioFirstTimeline: {
-      ...audioFirstBase,
-      mixedAudioDurationMs,
-      finalAudioStreamDurationMs,
-      narrationSegmentCount,
-      narrationCacheHits,
-      narrationCacheDir: voiceCacheDir,
-      narrationProviders,
-      sceneDurationAdjustments,
-    },
+    audioFirstTimeline: buildAudioFirstAudit(finalAudioStreamDurationMs),
     deliveryValidation,
   };
 }
