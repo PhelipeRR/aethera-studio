@@ -115,7 +115,19 @@ if (status.state !== 'ready' || status.models.checkpoints.length === 0) {
     generatedAt: new Date().toISOString(),
     status,
     checkpoint,
+    acceptanceStatus: 'structural_pass_pending_human_review' as const,
     results,
+    humanReview: {
+      status: 'pending' as const,
+      evaluator: 'human reviewer required',
+      criteria: [
+        'subject identity and requested character count',
+        'facial and anatomical integrity',
+        'focal hierarchy and composition quality',
+        'text-safe area and thumbnail legibility',
+        'absence of empty or generic composition',
+      ],
+    },
     limitations: [
       'Structural audit does not prove identity, anatomy, character count, text legibility, or visual quality; human review is required.',
       'The native acceptance path uses one full-canvas diffusion pass; regional multi-character generation and IP-Adapter identity locking require installed nodes/models and are not silently assumed.',

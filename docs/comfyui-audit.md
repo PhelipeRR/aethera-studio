@@ -59,18 +59,18 @@ No additional checkpoint was downloaded merely to enlarge the inventory. The cur
 
 Report: `artifacts/comfyui-acceptance/report.json`; images: `artifacts/comfyui-acceptance/*.png`.
 
-The six baseline requests completed the structural gate: PNG, expected dimensions, three channels, and non-flat luminance. The measured durations were:
+The six baseline requests completed the structural gate: PNG, expected dimensions, three channels, and non-flat luminance. The latest rerun on 2026-11-17 produced the following measurements:
 
 | Case | Resolution | Seed | Time | Peak VRAM |
 | --- | ---: | ---: | ---: | ---: |
-| anime individual | 768×768 | 10000 | 15,638 ms | 7,419 MiB |
-| anime 2 | 1024×576 | 10001 | 3,135 ms | 7,420 MiB |
-| anime 4/trio | 1024×576 | 10002 | 11,001 ms | 7,637 MiB |
-| anime 8 | 1024×576 | 10003 | 11,243 ms | 7,611 MiB |
-| gaming thumbnail | 1280×720 | 10004 | 4,538 ms | 7,394 MiB |
-| NextWorth banner | 1280×720 | 10005 | 4,562 ms | 7,422 MiB |
+| anime individual | 768×768 | 10000 | 6,501 ms | 7,627 MiB |
+| anime 2 | 1024×576 | 10001 | 12,069 ms | 7,627 MiB |
+| cyberpunk trio | 1024×576 | 10002 | 2,979 ms | 7,401 MiB |
+| cyberpunk group 8 | 1024×576 | 10003 | 2,954 ms | 7,369 MiB |
+| gaming thumbnail | 1280×720 | 10004 | 4,456 ms | 7,433 MiB |
+| NextWorth banner | 1280×720 | 10005 | 4,556 ms | 7,369 MiB |
 
-The structural gate is not a semantic or aesthetic gate. Human review found the close-up usable, but the two/multi-character, gamer, and NextWorth banner outputs were mostly silhouettes/backgrounds and did not reliably satisfy the requested subjects. The baseline therefore proves the runtime path, not production visual quality. The current report includes the post-install capability snapshot and sampled peak VRAM.
+The report now records `acceptanceStatus: structural_pass_pending_human_review` and a separate `humanReview.status: pending`. The visual recheck found the close-up usable; the two-character combat image was mostly silhouettes, the trio and eight-character cases were dominated by background/silhouettes, and the gamer thumbnail and NextWorth banner lacked a reliably readable focal subject. The baseline therefore proves the runtime path and VRAM envelope, not production visual quality.
 
 ### Face refinement and upscale
 
