@@ -155,6 +155,7 @@ export interface RealRenderResult {
   editorialConsistency?: EditorialConsistencyReport;
   audioQuality?: AudioQualityGateReport;
   audioFirstTimeline?: AudioFirstRenderAudit;
+  narrationCacheHits?: number;
   smartCaptions?: {
     enabled: boolean;
     cacheKey: string;
@@ -1557,6 +1558,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     editorialConsistency,
     audioQuality,
     audioFirstTimeline: buildAudioFirstAudit(finalAudioStreamDurationMs),
+    narrationCacheHits,
     ...(smartCaptionArtifact && smartCaptionCachePath ? {
       smartCaptions: {
         enabled: true,
