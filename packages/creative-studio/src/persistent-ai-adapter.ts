@@ -266,6 +266,7 @@ export class PersistentPythonAiAdapter implements ExternalImageAdapter {
         rationale: isOffTopic
           ? `CLIP multimodal detectou desalinhamento semântico (${(pos * 100).toFixed(1)}% positivo vs ${(neg * 100).toFixed(1)}% distrator "${(resp.best_negative as string) ?? ''}").`
           : `CLIP multimodal confirmou aderência ao tema "${(resp.best_positive as string) ?? ''}" (similaridade calibrada ${(pos * 100).toFixed(1)}% vs ${(neg * 100).toFixed(1)}% distrator).`,
+        evidenceScope: request.evidenceBbox ? 'localized' : 'generic',
       };
     } finally {
       rmSync(workDir, { recursive: true, force: true });

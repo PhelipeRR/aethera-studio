@@ -67,6 +67,11 @@ export interface SemanticEvaluationRequest {
   imageBuffer: Buffer;
   positiveConcepts: string[];
   negativeConcepts: string[];
+  /** CS10: the criterion is evaluated on a localized crop, not only on the compound scene prompt. */
+  criterionId?: string;
+  criterionKind?: string;
+  regionIndex?: number | null;
+  evidenceBbox?: { x: number; y: number; width: number; height: number };
 }
 
 export interface SemanticEvaluationResult {
@@ -77,6 +82,8 @@ export interface SemanticEvaluationResult {
   isOffTopic: boolean;
   matchedLabel: string;
   rationale: string;
+  /** Attribute confirmation is valid only when the evaluator saw the localized crop. */
+  evidenceScope?: 'localized' | 'generic' | 'unavailable';
 }
 
 export interface VisualQualityInspectionRequest {

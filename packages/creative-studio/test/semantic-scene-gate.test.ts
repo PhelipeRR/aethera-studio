@@ -29,15 +29,16 @@ async function imageBuffer(): Promise<Buffer> {
 
 function evaluator(score: number, margin = score - 0.25, offTopic = false): SemanticEvaluationAdapter {
   return {
-    async evaluateImageSemantics() {
+    async evaluateImageSemantics(request) {
       return {
         evaluatorId: 'test-local-clip',
         positiveScore: score,
         negativeScore: score - margin,
         margin,
         isOffTopic: offTopic,
-        matchedLabel: 'local criterion',
+        matchedLabel: request.positiveConcepts[0] ?? 'local criterion',
         rationale: 'controlled local evaluator evidence',
+        evidenceScope: request.evidenceBbox ? 'localized' : 'generic',
       };
     },
   };
@@ -76,6 +77,27 @@ describe('Semantic Scene Gate prompt criteria', () => {
     expect(criteria.find((criterion) => criterion.scope === 'scene')?.sourcePrompt).toBe(recipe.scenePrompt);
     expect(criteria.filter((criterion) => criterion.kind === 'character')).toHaveLength(2);
   });
+
+  it('binds each required attribute to the correct character crop and uses attribute-only probes', () => {
+    const recipe = recipeFor([
+      'young swordswoman with long silver hair and red scarf, white and crimson armor, katana raised',
+      'tall spear warrior with short black hair, dark blue plated armor, spear held in guard',
+    ]);
+    const criteria = buildSemanticCriteria(recipe);
+    const katana = criteria.find((criterion) => criterion.id === 'character-1-object-katana');
+    const armor = criteria.find((criterion) => criterion.id === 'character-1-wardrobe-armor');
+
+    expect(katana).toMatchObject({
+      regionIndex: 0,
+      positiveConcepts: ['katana'],
+      evidenceBbox: expect.objectContaining({ x: expect.any(Number), y: expect.any(Number), width: expect.any(Number), height: expect.any(Number) }),
+    });
+    expect(katana?.negativeConcepts).toContain('empty hands');
+    expect(armor?.positiveConcepts).toEqual(['armor']);
+    expect(armor?.evidenceBbox?.y).toBeGreaterThan(katana?.evidenceBbox?.y ?? -1);
+    expect(katana?.sourcePrompt).toContain('katana');
+    expect(katana?.positiveConcepts.join(' ')).not.toContain('swordswoman');
+  });
 });
 
 describe('Semantic Scene Gate evidence policy', () => {
@@ -101,6 +123,46 @@ describe('Semantic Scene Gate evidence policy', () => {
     expect(result.verdict).toBe('needs_review');
     expect(result.criteria.some((criterion) => criterion.status === 'uncertain')).toBe(true);
     expect(result.failureCategories.semantic).toContain('insufficient_semantic_evidence');
+  });
+
+  it('does not confirm an attribute from a generic or mismatched evaluator label', async () => {
+    const requests: Array<{ criterionKind: string | undefined; regionIndex: number | null | undefined; evidenceBbox: unknown | undefined }> = [];
+    const result = await evaluateSemanticSceneGate({
+      imageBuffer: await imageBuffer(),
+      recipe: recipeFor(['swordswoman with katana raised', 'spear warrior with spear held']),
+      adapter: {
+        async evaluateImageSemantics(request) {
+          requests.push({ criterionKind: request.criterionKind, regionIndex: request.regionIndex, evidenceBbox: request.evidenceBbox });
+          return {
+            evaluatorId: 'test-generic-clip',
+            positiveScore: 0.88,
+            negativeScore: 0.2,
+            margin: 0.68,
+            isOffTopic: false,
+            matchedLabel: 'generic character portrait',
+            rationale: 'generic prompt-only evidence',
+            evidenceScope: 'generic',
+          };
+        },
+      },
+    });
+
+    const katana = result.criteria.find((criterion) => criterion.id === 'character-1-object-katana');
+    expect(katana).toMatchObject({ status: 'uncertain', reason: expect.stringContaining('Localized') });
+    expect(requests.some((request) => request.criterionKind === 'object' && request.regionIndex === 0 && request.evidenceBbox)).toBe(true);
+    expect(result.verdict).toBe('needs_review');
+  });
+
+  it('offers a bounded repair candidate for an uncertain required attribute without rejecting it', async () => {
+    const result = await evaluateSemanticSceneGate({
+      imageBuffer: await imageBuffer(),
+      recipe: recipeFor(['swordswoman with katana raised', 'spear warrior with spear held']),
+      adapter: evaluator(0.58, 0.3),
+    });
+
+    expect(result.verdict).toBe('needs_review');
+    expect(result.criteria.some((criterion) => criterion.status === 'uncertain' && criterion.kind === 'object')).toBe(true);
+    expect(result.repairCandidates.some((candidate) => candidate.criterionId.includes('object') && candidate.bbox.width > 0)).toBe(true);
   });
 
   it('records evaluator failure as uncertainty and never as proof of absence', async () => {

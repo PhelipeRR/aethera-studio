@@ -38,6 +38,8 @@ export interface SemanticCriterion {
   rationale: string;
   reason: string;
   bbox: GateRect | null;
+  evidenceBbox: GateRect | null;
+  evidenceScope: 'localized' | 'generic' | 'unavailable';
 }
 
 export interface SemanticRepairCandidate {
@@ -64,8 +66,9 @@ export interface SemanticSceneGateResult {
   }>;
 }
 
-interface CriterionDraft extends Omit<SemanticCriterion, 'status' | 'score' | 'negativeScore' | 'margin' | 'evaluatorId' | 'matchedLabel' | 'rationale' | 'reason' | 'bbox'> {
+interface CriterionDraft extends Omit<SemanticCriterion, 'status' | 'score' | 'negativeScore' | 'margin' | 'evaluatorId' | 'matchedLabel' | 'rationale' | 'reason' | 'bbox' | 'evidenceBbox' | 'evidenceScope'> {
   bbox: GateRect | null;
+  evidenceBbox: GateRect | null;
 }
 
 const DEFAULTS: Required<SemanticSceneGateOptions> = {
@@ -98,6 +101,14 @@ const TERM_GROUPS: Array<{ kind: Exclude<SemanticCriterionKind, 'character' | 's
   },
 ];
 
+const ATTRIBUTE_NEGATIVES: Record<Exclude<SemanticCriterionKind, 'character' | 'scene'>, string[]> = {
+  object: ['empty hands', 'no visible weapon', 'background only'],
+  wardrobe: ['plain clothing', 'wrong outfit', 'no required garment'],
+  accessory: ['plain head', 'no visible accessory', 'generic hairstyle'],
+  pose: ['neutral pose', 'unposed character', 'wrong body position'],
+  action: ['static character', 'no visible action', 'inactive scene'],
+};
+
 function uniqueMatches(text: string, terms: string[]): string[] {
   const lower = text.toLocaleLowerCase();
   return terms.filter((term) => lower.includes(term.toLocaleLowerCase()));
@@ -110,11 +121,33 @@ function regionRect(recipe: VisualRecipe, index: number): GateRect {
     : { x: 0, y: 0, width: recipe.width, height: recipe.height };
 }
 
+function boundedRect(rect: GateRect, x: number, y: number, width: number, height: number): GateRect {
+  const left = Math.max(rect.x, Math.min(rect.x + rect.width, rect.x + x));
+  const top = Math.max(rect.y, Math.min(rect.y + rect.height, rect.y + y));
+  const right = Math.max(left + 1, Math.min(rect.x + rect.width, left + width));
+  const bottom = Math.max(top + 1, Math.min(rect.y + rect.height, top + height));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function attributeEvidenceRect(recipe: VisualRecipe, index: number, kind: Exclude<SemanticCriterionKind, 'character' | 'scene'>): GateRect {
+  const region = regionRect(recipe, index);
+  switch (kind) {
+    case 'accessory':
+      return boundedRect(region, region.width * 0.08, region.height * 0.02, region.width * 0.84, region.height * 0.42);
+    case 'wardrobe':
+      return boundedRect(region, region.width * 0.06, region.height * 0.22, region.width * 0.88, region.height * 0.58);
+    case 'object':
+    case 'pose':
+    case 'action':
+      return boundedRect(region, region.width * 0.03, region.height * 0.08, region.width * 0.94, region.height * 0.86);
+  }
+}
+
 /**
  * Builds only requirements that are actually present in the generated recipe's prompts. It deliberately does not
  * manufacture object/weapon expectations from a character count or a generic character role.
  */
-export function buildSemanticCriteria(recipe: VisualRecipe): Array<Omit<SemanticCriterion, 'status' | 'score' | 'negativeScore' | 'margin' | 'evaluatorId' | 'matchedLabel' | 'rationale' | 'reason'>> {
+export function buildSemanticCriteria(recipe: VisualRecipe): Array<Omit<SemanticCriterion, 'status' | 'score' | 'negativeScore' | 'margin' | 'evaluatorId' | 'matchedLabel' | 'rationale' | 'reason' | 'evidenceScope'>> {
   const criteria: CriterionDraft[] = [];
   const scenePrompt = recipe.scenePrompt?.trim() || recipe.positivePrompt;
   criteria.push({
@@ -127,6 +160,7 @@ export function buildSemanticCriteria(recipe: VisualRecipe): Array<Omit<Semantic
     positiveConcepts: [scenePrompt],
     negativeConcepts: [],
     bbox: null,
+    evidenceBbox: null,
   });
 
   recipe.characterRegions.forEach((region, index) => {
@@ -142,10 +176,12 @@ export function buildSemanticCriteria(recipe: VisualRecipe): Array<Omit<Semantic
       positiveConcepts: [sourcePrompt],
       negativeConcepts: [],
       bbox,
+      evidenceBbox: bbox,
     });
 
     for (const group of TERM_GROUPS) {
       for (const term of uniqueMatches(sourcePrompt, group.terms)) {
+        const evidenceBbox = attributeEvidenceRect(recipe, index, group.kind);
         criteria.push({
           id: `character-${index + 1}-${group.kind}-${term.replace(/\s+/g, '-')}`,
           scope: 'character',
@@ -154,8 +190,9 @@ export function buildSemanticCriteria(recipe: VisualRecipe): Array<Omit<Semantic
           requirement: term,
           sourcePrompt,
           positiveConcepts: [term],
-          negativeConcepts: [],
-          bbox,
+          negativeConcepts: ATTRIBUTE_NEGATIVES[group.kind],
+          bbox: evidenceBbox,
+          evidenceBbox,
         });
       }
     }
@@ -171,14 +208,26 @@ async function cropBuffer(imageBuffer: Buffer, bbox: GateRect, width: number, he
   return sharp(imageBuffer).extract({ left, top, width: cropWidth, height: cropHeight }).png().toBuffer();
 }
 
+export async function cropSemanticEvidence(imageBuffer: Buffer, bbox: GateRect): Promise<Buffer> {
+  const metadata = await sharp(imageBuffer).metadata();
+  return cropBuffer(imageBuffer, bbox, metadata.width ?? bbox.x + bbox.width, metadata.height ?? bbox.y + bbox.height);
+}
+
 function classify(
   evaluation: SemanticEvaluationResult,
   options: Required<SemanticSceneGateOptions>,
+  criterion: CriterionDraft,
 ): { status: SemanticCriterionStatus; reason: string } {
   if (evaluation.isOffTopic && evaluation.positiveScore <= options.failureScore && evaluation.margin <= options.failureMargin) {
     return { status: 'failed', reason: 'Local evaluator returned a strong explicit contradiction to the prompt criterion.' };
   }
   if (!evaluation.isOffTopic && evaluation.positiveScore >= options.confirmScore && evaluation.margin >= options.confirmMargin) {
+    const isAttribute = criterion.kind !== 'character' && criterion.kind !== 'scene';
+    const label = evaluation.matchedLabel.toLocaleLowerCase();
+    const localizedLabel = criterion.positiveConcepts.some((concept) => label.includes(concept.toLocaleLowerCase()));
+    if (isAttribute && (evaluation.evidenceScope !== 'localized' || !localizedLabel)) {
+      return { status: 'uncertain', reason: 'Localized attribute evidence was not confirmed by a matching evaluator label.' };
+    }
     return { status: 'confirmed', reason: 'Local evaluator returned positive evidence above the confirmation thresholds.' };
   }
   return { status: 'uncertain', reason: 'Local evidence is ambiguous; absence of detection is not treated as absence.' };
@@ -310,6 +359,8 @@ export async function evaluateSemanticSceneGate(input: {
         rationale: 'No local semantic evaluator was available.',
         reason: 'No local semantic evaluator was available; the criterion cannot be approved or rejected automatically.',
         bbox: draft.bbox,
+        evidenceBbox: draft.evidenceBbox,
+        evidenceScope: 'unavailable',
       });
       continue;
     }
@@ -318,8 +369,12 @@ export async function evaluateSemanticSceneGate(input: {
         imageBuffer: target,
         positiveConcepts: draft.positiveConcepts,
         negativeConcepts: draft.negativeConcepts,
+        criterionId: draft.id,
+        criterionKind: draft.kind,
+        regionIndex: draft.regionIndex,
+        ...(draft.evidenceBbox ? { evidenceBbox: draft.evidenceBbox } : {}),
       });
-      const classified = classify(evaluation, options);
+      const classified = classify(evaluation, options, draft);
       criteria.push({
         ...draft,
         status: classified.status,
@@ -331,6 +386,8 @@ export async function evaluateSemanticSceneGate(input: {
         rationale: evaluation.rationale,
         reason: classified.reason,
         bbox: draft.bbox,
+        evidenceBbox: draft.evidenceBbox,
+        evidenceScope: evaluation.evidenceScope ?? (draft.kind === 'character' || draft.kind === 'scene' ? 'generic' : 'generic'),
       });
     } catch (error) {
       criteria.push({
@@ -344,6 +401,8 @@ export async function evaluateSemanticSceneGate(input: {
         rationale: 'The local semantic evaluator failed.',
         reason: `The local semantic evaluator failed: ${errorReason(error)}`,
         bbox: draft.bbox,
+        evidenceBbox: draft.evidenceBbox,
+        evidenceScope: 'unavailable',
       });
     }
   }
@@ -354,8 +413,11 @@ export async function evaluateSemanticSceneGate(input: {
   const confirmedVisualFailures = observations.filter((observation) => observation.status === 'confirmed');
   const uncertainVisualFailures = observations.filter((observation) => observation.status === 'uncertain');
   const scores = criteria.map((criterion) => criterion.score).filter((score): score is number => score !== null);
-  const repairCandidates = failed
-    .filter((criterion): criterion is SemanticCriterion & { bbox: GateRect } => criterion.bbox !== null)
+  const repairCandidates = criteria
+    .filter((criterion): criterion is SemanticCriterion & { bbox: GateRect } => criterion.bbox !== null && (
+      criterion.status === 'failed'
+      || (criterion.status === 'uncertain' && criterion.kind !== 'character' && criterion.kind !== 'scene')
+    ))
     .map((criterion) => ({
       criterionId: criterion.id,
       bbox: criterion.bbox,

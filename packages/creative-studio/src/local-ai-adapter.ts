@@ -214,6 +214,7 @@ export class LocalPythonAiAdapter implements ExternalImageAdapter {
         rationale: isOffTopic
           ? `CLIP multimodal detectou desalinhamento semântico (${(pos * 100).toFixed(1)}% positivo vs ${(neg * 100).toFixed(1)}% distrator "${parsed.best_negative ?? ''}").`
           : `CLIP multimodal confirmou aderência ao tema "${parsed.best_positive ?? ''}" (similaridade calibrada ${(pos * 100).toFixed(1)}% vs ${(neg * 100).toFixed(1)}% distrator).`,
+        evidenceScope: request.evidenceBbox ? 'localized' : 'generic',
       };
     } finally {
       rmSync(workDir, { recursive: true, force: true });
