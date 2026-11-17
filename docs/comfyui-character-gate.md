@@ -422,3 +422,57 @@ Comparação visual: `run-2026-11-17T2021/proposal-tree-comparison.png`.
 - A localização por bordas retas pode confundir o objeto com bordas do corpo. Por isso, sem extensão suficiente, o resultado é `uncertain` e vai para revisão humana. O CLIP ViT-B/32 continua incapaz de confirmar armas finas.
 - O `protectRects` reduz, mas não elimina, mudanças no cabelo: o `growMaskBy` e a mistura do VAE ainda tocam a borda do rosto.
 - Próximo passo técnico sugerido: guiar a forma da arma (ControlNet de linha/OpenPose com a haste desenhada, ou colagem de um recorte de arma seguida de harmonização) em vez de pedir só por texto.
+
+### CS10 — investigação: ControlNet para dar forma à arma — `artifacts/cs10-controlnet-weapon-probe/2026-11-17T2050`
+
+**Pergunta:** o inpaint só por texto não desenha armas longas e finas (T2003/T2021). Um ControlNet que já recebe a geometria da arma resolve?
+
+**Disponível localmente:** sem download. Há `xinsir-controlnet-depth-sdxl-1.0`, `thibaud-controlnet-openpose-sdxl-1.0`, Depth Anything V2 Large (`comfyui_controlnet_aux`) e `ControlNetApplyAdvanced`. Não há ControlNet canny/lineart SDXL instalado.
+
+**Método** (sonda fora do runner; base = imagem adotada do T2021, seed 31001, animagine 24 passos, cfg 5,5, euler_ancestral):
+1. Mapa de profundidade da base (Depth Anything V2, 1024).
+2. A arma é desenhada no mapa como a superfície mais próxima, seguindo a relação do prompt:
+   - katana: empunhadura nas mãos (OpenPose), lâmina de 0,5 h a 28° da vertical, para longe do rosto, com tsuba;
+   - lança: diagonal de 24° pelas duas mãos, ponta para cima e à frente.
+3. Máscara estreita: linha + 28 px, círculo nas mãos, rosto protegido. Fora da máscara, os pixels voltam da base.
+4. Variantes:
+   - A: depth 0,9, denoise 0,6;
+   - B: depth 1,0 até 90%, denoise 0,75;
+   - C: traço cinza neutro pintado na imagem inicial como sugestão de pixels, mais depth 0,9 e denoise 0,6.
+
+**Resultado:**
+
+| Variante | Katana (visual) | Lança (visual) |
+|---|---|---|
+| A | lâmina sai de trás do ombro, sem continuidade com a mão; ponta fraca | haste escura sólida, diagonal, ponta para cima |
+| B | empunhadura com tsuba na mão, lâmina erguida passando a cabeça | idem A, mais definida |
+| C | **melhor**: mão fechada na empunhadura, guarda visível, lâmina contínua até a ponta | haste translúcida ("fantasma") |
+
+Suporte de borda ao longo da linha planejada; uma linha deslocada 30 px serve de controle:
+
+| | base | A | B | C | linha deslocada |
+|---|---|---|---|---|---|
+| katana | 0,26 | 0,57 | 0,75 | 0,83 | ≤ 0,05 |
+| lança | 0,03 | 0,77 | 0,78 | 0,70 | ≤ 0,04 |
+
+Por terços, do cabo à ponta:
+- katana A: 0,59 / 0,78 / **0,31** (lâmina incompleta, como se vê);
+- katana C: 0,78 / 0,88 / 0,90;
+- lança B: 0,83 / 0,52 / 0,98 (o terço do meio cruza a calça escura).
+
+**Combinação sequencial:** lança B aplicada sobre a katana C, com a mesma máscara, seed e controle. O suporte da katana fica 0,83 → 0,83 e o da lança 0,78 → 0,78; nenhuma remove a outra. Comparação: `controlnet-comparison.png` (base / katana C / lança B / combinada).
+
+**Conclusões:**
+- **Presença e orientação: resolvidas pelo depth ControlNet com a arma desenhada no mapa.** Em 6 de 6 saídas a arma aparece na linha planejada, coisa que o texto sozinho nunca conseguiu. Para lâminas claras contra o céu, o traço como sugestão (C) melhora a continuidade. Contra fundo escuro (lança), ele vira translucidez, então a sugestão deve depender do contraste local.
+- **Empunhadura: só parcialmente.** O depth guia o objeto, não a mão. A katana C ficou de fato empunhada, mas na lança as mãos não se fecham sobre a haste: ela passa rente ao punho esquerdo, a 0,04 h. "Guarda" de verdade (braços erguidos segurando a haste) e "katana erguida acima da cabeça" exigem mudar o braço. O caminho é OpenPose ControlNet (já instalado) com os keypoints do braço reposicionados, combinado ao depth.
+- **Verificação:** a busca cega por Hough perdeu a maioria das armas visíveis (lâmina fina contra o céu claro, haste escura contra roupa escura). Com ControlNet a posição esperada é conhecida, então a verificação certa é o **suporte de borda ao longo da linha planejada, por terços** (cabo, meio, ponta), contra a base e uma linha deslocada de controle. Isso se soma à distância do pulso redetectado. Isso não reduz nenhum limiar: é uma medida nova, com controle negativo.
+- **Defeito encontrado em `assessObjectRelation`:** para armas longas seguradas no meio da haste, a ponta é escolhida como a extremidade mais distante do pulso, o que é instável perto do empate (lança A deu `guard_ambiguous`, lança B `satisfied`). Para `guard` e `raised`, a ponta deve ser a extremidade superior.
+- A proximidade do pulso não prova que a mão está fechada. Um ponto de contato ainda depende de revisão humana.
+
+**Próximo passo proposto (não implementado):**
+1. Estratégia `object_controlnet` no runner, com a geometria da arma derivada da relação e da pose, o controle depth com a arma desenhada e a sugestão de pixels condicionada ao contraste. A estratégia fica opcional, ativa só quando o ControlNet de profundidade existe.
+2. Verificação pela linha planejada, por terços.
+3. OpenPose ControlNet com o braço reposicionado para `raised` e `guard`.
+4. Ponta definida pela extremidade superior.
+
+Tudo continua como proposta, com `humanReview.status=pending`.
