@@ -2,6 +2,7 @@ import { normalizeLoraStack, type LoraArchitecture } from './lora-catalog.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { z } from 'zod';
 
 export type LoraInstallSource = 'huggingface' | 'civitai' | 'local' | 'unknown';
 
@@ -14,6 +15,21 @@ export interface LoraInstallCandidate {
   sizeBytes?: number;
   sha256?: string;
 }
+
+export const loraInstallCandidateSchema = z.object({
+  model: z.string().min(1).max(500),
+  source: z.enum(['huggingface', 'civitai', 'local', 'unknown']),
+  sourceUrl: z.string().url().optional(),
+  license: z.string().max(200).optional(),
+  architecture: z.enum(['sd15', 'sdxl', 'flux', 'unknown']).optional(),
+  sizeBytes: z.number().int().positive().optional(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/iu).optional(),
+});
+
+export const loraInstallRequestSchema = z.object({
+  candidate: loraInstallCandidateSchema,
+  confirmed: z.boolean(),
+});
 
 export interface LoraInstallAssessment {
   allowed: boolean;

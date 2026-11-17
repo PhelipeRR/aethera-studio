@@ -226,6 +226,7 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeIngestFile: (input: { sourcePath: string; kind: string }) => ipcRenderer.invoke('creative:ingest-file', input),
   creativeAiStatus: () => ipcRenderer.invoke('creative:ai-status'),
   creativeImageEngineStatus: () => ipcRenderer.invoke('creative:image-engine-status'),
+  creativeInstallLora: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:install-lora', input),
   creativeCancelGeneration: () => ipcRenderer.invoke('creative:cancel-generation'),
   creativeReleaseImageMemory: () => ipcRenderer.invoke('creative:release-image-memory'),
   creativeUpscaleProjectBackground: (input: { projectId: string; model: string }) => ipcRenderer.invoke('creative:upscale-project-background', input),

@@ -17,6 +17,7 @@
 - [x] **Recuperação real:** `scripts/comfyui-autostart-acceptance.ts` parou os processos ComfyUI verificados, ativou o auto-start pelo serviço Aethera e confirmou endpoint/provider `ready`; evidência em `artifacts/comfyui-autostart-acceptance/report.json`.
 - [x] **Integração LoRA segura:** catálogo lê metadados safetensors quando disponíveis, classifica a seleção essencial (personagem, cinematográfico, mangá, efeitos e games), bloqueia seleção automática sem arquitetura verificada, encadeia até três LoRAs no workflow nativo, expõe `off/manual/automatic` no painel, persiste a pilha por projeto e inclui a explicação no relatório de geração.
 - [x] **Política de instalação LoRA:** candidatos externos exigem host HTTPS confiável, licença, arquitetura compatível, tamanho conhecido, SHA-256 e confirmação explícita; nenhum download foi disparado sem candidato/licença aprovados.
+- [x] **Instalador auditável:** serviço/preload disponibilizam a instalação confirmada, com arquivo temporário, verificação de hash/tamanho e rename atômico; sem confirmação, a rede nem é chamada.
 - [ ] **Pendências operacionais:** revisão comercial da licença “other” do OpenPose. LoRA continua indisponível porque nenhum modelo LoRA foi instalado.
 - [x] **Validação de código:** settings focados 2/2, renderer TypeScript e main TypeScript isolado passaram; `npm run typecheck` agregado ainda reproduz somente o JSX6142 preexistente em `apps/aethera-desktop/test/delete-prompt-dialog.test.ts`.
 

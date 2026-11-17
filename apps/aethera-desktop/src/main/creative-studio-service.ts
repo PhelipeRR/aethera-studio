@@ -56,6 +56,9 @@ import {
   type VisualConceptCritique,
   discoverComfyUi,
   buildLoraCatalog,
+  assessLoraInstallCandidate,
+  installLoraCandidate,
+  loraInstallRequestSchema,
   normalizeLoraStack,
   selectLorasForPrompt,
   type LoraStackItem,
@@ -119,6 +122,8 @@ export interface CreativeStudioServiceOptions {
   /** Test seam and portable override for the local ComfyUI bootstrap script. */
   comfyUiStartupScript?: string;
   comfyUiStartupRunner?: (scriptPath: string) => Promise<void>;
+  /** Test seam and explicit target for verified LoRA installation. */
+  comfyUiLoraRoot?: string;
 }
 
 /**
@@ -154,6 +159,7 @@ export class AetheraCreativeStudioService {
   private readonly imageEngineSettingsStore: CreativeImageEngineSettingsStore;
   private readonly comfyUiStartupScript: string;
   private readonly comfyUiStartupRunner: (scriptPath: string) => Promise<void>;
+  private readonly comfyUiLoraRoot: string;
   private comfyUiStartupAttempted = false;
   private comfyUiStartupPromise: Promise<void> | null = null;
   private comfyUiStartupStatus: Omit<CreativeImageEngineStartupStatus, 'enabled'> = {
@@ -171,6 +177,7 @@ export class AetheraCreativeStudioService {
     const imageEngineSettings = this.imageEngineSettingsStore.load();
     this.comfyUiStartupScript = options.comfyUiStartupScript ?? join(homedir(), 'Documents', 'ComfyUI', 'Start-ComfyUI.ps1');
     this.comfyUiStartupStatus = { state: 'idle', scriptPath: this.comfyUiStartupScript };
+    this.comfyUiLoraRoot = options.comfyUiLoraRoot ?? join(homedir(), 'Documents', 'ComfyUI', 'models', 'loras');
     this.comfyUiStartupRunner = options.comfyUiStartupRunner ?? (async (scriptPath) => {
       const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
       await execFileAsync(shell, [
@@ -324,6 +331,27 @@ export class AetheraCreativeStudioService {
 
   async cancelImageGeneration(): Promise<boolean> {
     return this.comfyUiAdapter.cancel();
+  }
+
+  /**
+   * Installs one externally sourced LoRA only after the caller explicitly confirms the audited candidate.
+   * The policy deliberately returns an assessment without touching the network when confirmation is absent.
+   */
+  async installLora(input: unknown): Promise<{
+    assessment: ReturnType<typeof assessLoraInstallCandidate>;
+    result?: Awaited<ReturnType<typeof installLoraCandidate>>;
+    loraCatalog?: ReturnType<typeof buildLoraCatalog>;
+  }> {
+    const request = loraInstallRequestSchema.parse(input);
+    const assessment = assessLoraInstallCandidate(request.candidate, 'sdxl');
+    if (!assessment.allowed || !request.confirmed) return { assessment };
+    const result = await installLoraCandidate(request.candidate, {
+      targetRoot: this.comfyUiLoraRoot,
+      confirmed: true,
+      checkpointArchitecture: 'sdxl',
+    });
+    const status = await this.imageEngineStatus();
+    return { assessment, result, loraCatalog: status.loraCatalog };
   }
 
   async releaseImageMemory(): Promise<boolean> {
@@ -1403,6 +1431,7 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
   });
 
   ipcMain.handle('creative:image-engine-status', async () => service.imageEngineStatus());
+  ipcMain.handle('creative:install-lora', async (_ev, input: unknown) => service.installLora(input));
   ipcMain.handle('creative:cancel-generation', async () => service.cancelImageGeneration());
   ipcMain.handle('creative:release-image-memory', async () => service.releaseImageMemory());
   ipcMain.handle('creative:upscale-project-background', async (_ev, input: { projectId: string; model: string }) => service.upscaleProjectBackground(input));
