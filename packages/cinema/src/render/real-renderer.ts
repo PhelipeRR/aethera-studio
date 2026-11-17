@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CinemaProductionPackage } from '../index.js';
@@ -32,10 +32,27 @@ import {
   type PronunciationDictionaryEntry,
   type SynthesizedSegmentProbe,
 } from '../audio/voice-director.js';
+import {
+  buildAudioFirstDurationAudit,
+  type AudioFirstDurationAudit,
+} from '../audio/audio-first-timeline.js';
 import type { AetheraEvolutionCore, ProductionDirectives } from '../evolution/evolution-core.js';
 import { resolveDeliveryProfile, type ResolvedDeliveryProfile } from '../director/aethera-format-catalog.js';
 
 const execFileAsync = promisify(execFile);
+type NarrationMode = 'voicestudio_tts' | 'elevenlabs_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback';
+
+interface CachedNarrationMetadata {
+  schemaVersion: 1;
+  cacheKey: string;
+  mode: NarrationMode;
+}
+
+export function assertNarrationModeIsApproved(mode: NarrationMode, allowProceduralVoiceFallback = false): void {
+  if (mode === 'procedural_voice_fallback' && !allowProceduralVoiceFallback) {
+    throw new Error('procedural_voice_blocked: nenhum provedor de voz aprovado concluiu a narração completa.');
+  }
+}
 
 export interface RealRenderInput {
   pkg: CinemaProductionPackage;
@@ -66,6 +83,8 @@ export interface RealRenderInput {
   voiceBaseWpm?: number;
   channelId?: string;
   language?: string;
+  /** Procedural formant audio is never accepted silently; opt in only for explicit technical fixtures. */
+  allowProceduralVoiceFallback?: boolean;
 }
 
 export interface RealRenderResult {
@@ -74,7 +93,7 @@ export interface RealRenderResult {
   sampleLabel?: string;
   appliedDirectives?: ProductionDirectives;
   renderedHeadlines?: string[];
-  narrationMode: 'voicestudio_tts' | 'elevenlabs_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback';
+  narrationMode: NarrationMode;
   encoderUsed: string;
   appliedEffects: string[];
   probe: RealMp4ProbeResult;
@@ -99,6 +118,12 @@ export interface RealRenderResult {
   narrationTextSent?: string;
   editorialConsistency?: EditorialConsistencyReport;
   audioQuality?: AudioQualityGateReport;
+  audioFirstTimeline?: AudioFirstDurationAudit & {
+    mixedAudioDurationMs: number;
+    narrationSegmentCount: number;
+    narrationCacheHits: number;
+    narrationCacheDir: string;
+  };
   deliveryValidation?: {
     valid: boolean;
     target: 'preview' | 'master';
@@ -375,7 +400,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   });
   const minClipDur = Math.min(...clipSpecs.map((s) => s.effectiveDur));
   const xfadeDur = Number(Math.min(0.4, minClipDur * 0.28).toFixed(2));
-  const totalDur = Number(
+  const plannedVideoDur = Number(
     (
       clipSpecs.reduce((acc, s) => acc + s.effectiveDur, 0) -
       Math.max(0, clipSpecs.length - 1) * xfadeDur
@@ -772,14 +797,33 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   mkdirSync(voiceCacheDir, { recursive: true });
   const segmentWavPaths: string[] = [];
   const segmentProbes: SynthesizedSegmentProbe[] = [];
-  let narrationMode: 'voicestudio_tts' | 'elevenlabs_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback' = 'voicestudio_tts';
+  let narrationMode: NarrationMode = 'voicestudio_tts';
+  let narrationCacheHits = 0;
 
   for (const seg of voicePlan.segments) {
     const cachedSegPath = join(voiceCacheDir, `voice_${seg.cacheKey}.wav`);
+    const cachedMetadataPath = `${cachedSegPath}.json`;
     const segWorkPath = join(workDir, `nar_${seg.segmentId}.wav`);
-    if (existsSync(cachedSegPath) && statSync(cachedSegPath).size > 1024) {
-      copyFileSync(cachedSegPath, segWorkPath);
-    } else {
+    let usedCachedNarration = false;
+    if (existsSync(cachedSegPath) && statSync(cachedSegPath).size > 1024 && existsSync(cachedMetadataPath)) {
+      try {
+        const metadata = JSON.parse(readFileSync(cachedMetadataPath, 'utf8')) as Partial<CachedNarrationMetadata>;
+        const modeMatchesProvider = useElevenLabs
+          ? metadata.mode === 'elevenlabs_tts'
+          : metadata.mode === 'voicestudio_tts' || metadata.mode === 'windows_sapi_tts' || metadata.mode === 'procedural_voice_fallback';
+        if (metadata.schemaVersion === 1 && metadata.cacheKey === seg.cacheKey && metadata.mode && modeMatchesProvider) {
+          assertNarrationModeIsApproved(metadata.mode, input.allowProceduralVoiceFallback);
+          copyFileSync(cachedSegPath, segWorkPath);
+          narrationMode = metadata.mode;
+          narrationCacheHits += 1;
+          usedCachedNarration = true;
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith('procedural_voice_blocked:')) throw error;
+        // A cache sem metadata verificável não é reutilizada: não podemos provar que não é voz procedural.
+      }
+    }
+    if (!usedCachedNarration) {
       const mode = await synthesizeNarrationWav(seg.ttsInputText, segWorkPath, {
         ...(input.voiceStudioUrl ? { voiceStudioUrl: input.voiceStudioUrl } : {}),
         ...(input.voiceStudioModelId ? { voiceStudioModelId: input.voiceStudioModelId } : {}),
@@ -790,11 +834,17 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
         ...(input.ttsModelId ? { ttsModelId: input.ttsModelId } : {}),
         ...(input.language ? { language: input.language } : {}),
       });
-      if (mode !== 'voicestudio_tts') narrationMode = mode;
-      // Never cache a fallback voice under the ElevenLabs key.
-      const cacheable = useElevenLabs ? mode === 'elevenlabs_tts' : true;
+      narrationMode = mode;
+      assertNarrationModeIsApproved(mode, input.allowProceduralVoiceFallback);
+      // Never cache a fallback voice or a provider under a different namespace.
+      const cacheable = mode !== 'procedural_voice_fallback' && (useElevenLabs ? mode === 'elevenlabs_tts' : true);
       if (cacheable && existsSync(segWorkPath) && statSync(segWorkPath).size > 1024) {
         copyFileSync(segWorkPath, cachedSegPath);
+        writeFileSync(
+          cachedMetadataPath,
+          JSON.stringify({ schemaVersion: 1, cacheKey: seg.cacheKey, mode } satisfies CachedNarrationMetadata),
+          'utf8',
+        );
       }
     }
     const segFinalPath = join(workDir, `nar_${seg.segmentId}_paced.wav`);
@@ -831,7 +881,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       { windowsHide: true, timeout: 60_000 },
     );
   } else {
-    narrationMode = await synthesizeNarrationWav(narrationTextToSpeak.slice(0, 3800), narrationWav, {
+    narrationMode = await synthesizeNarrationWav(narrationTextToSpeak, narrationWav, {
       ...(input.voiceStudioUrl ? { voiceStudioUrl: input.voiceStudioUrl } : {}),
       ...(input.voiceStudioModelId ? { voiceStudioModelId: input.voiceStudioModelId } : {}),
       ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
@@ -841,10 +891,16 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       ...(input.ttsModelId ? { ttsModelId: input.ttsModelId } : {}),
       ...(input.language ? { language: input.language } : {}),
     });
+    assertNarrationModeIsApproved(narrationMode, input.allowProceduralVoiceFallback);
   }
 
-  const totalDurMs = Math.round(totalDur * 1000);
   const measuredNarMs = await measureAudioDurationMs(narrationWav);
+  const audioFirstBase = buildAudioFirstDurationAudit({
+    plannedTimelineDurationMs: Math.round(plannedVideoDur * 1000),
+    measuredNarrationDurationMs: measuredNarMs,
+  });
+  const totalDurMs = audioFirstBase.finalTimelineDurationMs;
+  const totalDur = totalDurMs / 1000;
   const audioTimeline: AudioTimelineEvent[] = [
     {
       sourceId: 'nar_master_01',
@@ -852,7 +908,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       bus: 'A1_narration',
       role: 'narration',
       startMs: 0,
-      endMs: Math.min(measuredNarMs, totalDurMs),
+      endMs: measuredNarMs,
       gainDb: 0,
       priority: 100,
       fadeInMs: 40,
@@ -943,8 +999,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     `sine=frequency=520:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.32,volume=${sfxVol},adelay=${sfxDelay1Ms}|${sfxDelay1Ms}[sfx1]`,
     `sine=frequency=780:sample_rate=48000:duration=0.22,afade=t=out:st=0.04:d=0.18,volume=0.35,volume=${sfxVol},adelay=${sfxDelay2Ms}|${sfxDelay2Ms}[sfx2]`,
     `sine=frequency=440:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.30,volume=${sfxVol},adelay=${sfxDelay3Ms}|${sfxDelay3Ms}[sfx3]`,
-    `[sfx1][sfx2][sfx3]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=${totalDur},atrim=0:${totalDur},asplit=2[sfx_mix][sfx_stem]`,
-    `[nar_mix][ducked_music][amb][sfx_mix]amix=inputs=4:duration=longest:normalize=0,atrim=0:${totalDur},loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}[aout]`,
+    `[sfx1][sfx2][sfx3]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=${totalDur},asplit=2[sfx_mix][sfx_stem]`,
+    `[nar_mix][ducked_music][amb][sfx_mix]amix=inputs=4:duration=longest:normalize=0,loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}[aout]`,
   ].join(';');
 
   const rawAudioMixPath = join(workDir, 'audio_master_raw.wav');
@@ -1028,7 +1084,12 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const audioBitrate = outputAudioCodec === 'aac' ? (renderTarget === 'preview' ? '128k' : '192k') : undefined;
   const pixels = targetWidth * targetHeight;
   const targetVideoBitrate = renderTarget === 'preview' ? '2M' : pixels >= 8_000_000 ? '18M' : pixels >= 3_500_000 ? '10M' : '5M';
-  const outputVideoFilter = `scale=${targetWidth}:${targetHeight},fps=${targetFps}`;
+  const videoExtensionSec = Math.max(0, totalDur - plannedVideoDur);
+  const outputVideoFilter = [
+    `scale=${targetWidth}:${targetHeight}`,
+    `fps=${targetFps}`,
+    ...(videoExtensionSec > 0.01 ? [`tpad=stop_mode=clone:stop_duration=${videoExtensionSec.toFixed(3)}`] : []),
+  ].join(',');
   let encoderUsed = 'libx264';
   if (input.useNvenc) {
     try {
@@ -1087,6 +1148,12 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     ]);
   }
 
+  const mixedAudioDurationMs = await measureAudioDurationMs(audioMixPath);
+  if (mixedAudioDurationMs + 150 < measuredNarMs) {
+    throw new Error(
+      `audio_truncated: o master de áudio (${mixedAudioDurationMs}ms) ficou menor que a narração medida (${measuredNarMs}ms).`,
+    );
+  }
   const probe = await probeRealMp4(mp4Path);
   const anomalies = await detectMediaAnomalies(mp4Path);
   const targetLufsForQc = deliveryProfile.audio.integratedLufs;
@@ -1095,7 +1162,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const validationErrors: string[] = [];
   if (probe.width !== targetWidth || probe.height !== targetHeight) validationErrors.push(`Dimensões FFprobe ${probe.width}x${probe.height} divergem do alvo ${targetWidth}x${targetHeight}.`);
   if (Math.abs(probe.fps - targetFps) > 0.1) validationErrors.push(`FPS FFprobe ${probe.fps} diverge do alvo ${targetFps}.`);
-  if (Math.abs(probe.durationSec - totalDur) > Math.max(1.5, totalDur * 0.08)) validationErrors.push(`Duração FFprobe ${probe.durationSec}s diverge do planejamento ${totalDur}s.`);
+  if (Math.abs(probe.durationSec - totalDur) > audioFirstBase.durationToleranceMs / 1000) validationErrors.push(`Duração FFprobe ${probe.durationSec}s diverge do planejamento ${totalDur}s.`);
+  if (probe.durationSec + audioFirstBase.durationToleranceMs / 1000 < measuredNarMs / 1000) validationErrors.push(`Duração FFprobe ${probe.durationSec}s termina antes da narração medida ${measuredNarMs / 1000}s.`);
   if (probe.videoCodec !== expectedVideoCodec) validationErrors.push(`Codec de vídeo FFprobe ${probe.videoCodec} diverge do codec esperado ${expectedVideoCodec}.`);
   if (probe.audioCodec !== deliveryProfile.preset.audioCodec) validationErrors.push(`Codec de áudio FFprobe ${probe.audioCodec ?? 'ausente'} diverge do codec esperado ${deliveryProfile.preset.audioCodec}.`);
   if (probe.audioSampleRate !== deliveryProfile.audio.sampleRate) validationErrors.push(`Sample rate FFprobe ${probe.audioSampleRate ?? 'ausente'} diverge do alvo ${deliveryProfile.audio.sampleRate}.`);
@@ -1160,6 +1228,13 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     narrationTextSent: narrationTextToSpeak,
     editorialConsistency,
     audioQuality,
+    audioFirstTimeline: {
+      ...audioFirstBase,
+      mixedAudioDurationMs,
+      narrationSegmentCount: voicePlan.segments.length,
+      narrationCacheHits,
+      narrationCacheDir: voiceCacheDir,
+    },
     deliveryValidation,
   };
 }

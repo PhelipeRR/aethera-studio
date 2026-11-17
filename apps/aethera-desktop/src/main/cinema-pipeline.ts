@@ -200,6 +200,8 @@ export interface StagedProductionJob {
    */
   sceneAssembly?: SceneAssemblyRecord[];
   isTechnicalSample?: boolean;
+  /** Persisted audio-first render audit; credentials never enter this structure. */
+  audioFirstTimeline?: RealRenderResult['audioFirstTimeline'];
   error?: string;
   startedAt?: string;
   updatedAt: string;
@@ -1612,9 +1614,12 @@ export class StagedCinemaPipeline {
                 }));
 
           checkCancelled();
-          job.state = 'validacao_visual';
-          job.progressPct = 62;
-          job.message = 'Validando mídias por Scene Grounding e evidências por frame...';
+          // Keep state as 'aquisicao' until runAutonomousMediaAcquisition actually completes.
+          // Setting 'validacao_visual' here and saving would make the stage tracker emit
+          // 'aquisicao stage_completed' before any download/validation ran (root cause of the
+          // premature-completion bug observed in job_mwjp4upj_31mqyofu / cinema_1794859719031).
+          job.progressPct = 58;
+          job.message = 'Adquirindo e validando mídias orientadas pela decupagem semântica...';
           this.saveJob(job);
 
           const baseDeps = this.deps.autonomousAcquisitionDeps;
@@ -1776,6 +1781,15 @@ export class StagedCinemaPipeline {
             licensePolicy: 'assemble_with_rights_review',
             signal,
           });
+
+          // Only now that acquisition + visual grounding actually finished can we transition out of 'aquisicao'.
+          // This prevents the stage tracker from emitting 'aquisicao stage_completed' before downloads/validation ran.
+          checkCancelled();
+          job.state = 'validacao_visual';
+          job.progressPct = 62;
+          job.message = 'Validando mídias por Scene Grounding e evidências por frame...';
+          this.saveJob(job);
+
           job.autonomousAudit = audit;
           const existingDecisionIds = new Set(relevanceDecisions.map((decision) => decision.mediaId));
           const affectedSegmentIds = new Set(audit.affectedSegmentIds);
@@ -2542,7 +2556,13 @@ export class StagedCinemaPipeline {
         job.contract = evaluated.contract;
         job.contractCompliance = evaluated.report;
       }
-      const previewEvidence = this.recordStageEvidence(job.contract, 'previa', 'measurement', 'Prévia renderizada e medida por FFprobe.');
+      job.audioFirstTimeline = render.audioFirstTimeline;
+      const previewEvidence = this.recordStageEvidence(
+        job.contract,
+        'previa',
+        'measurement',
+        `Prévia renderizada e medida por FFprobe; narração ${render.audioFirstTimeline?.measuredNarrationDurationMs ?? 'não informada'}ms, timeline final ${render.audioFirstTimeline?.finalTimelineDurationMs ?? Math.round(render.probe.durationSec * 1000)}ms.`,
+      );
       if (previewEvidence) job.contract = previewEvidence;
 
       const v1Clips = pkg.timeline.clips.filter((c) => c.trackId === 'v1');

@@ -21,6 +21,7 @@ export * from './color/color-pipeline.js';
 export * from './audio/sound-engine.js';
 export * from './audio/sound-director.js';
 export * from './audio/voice-director.js';
+export * from './audio/audio-first-timeline.js';
 export * from './qc/qc-engine.js';
 export * from './qc/real-media-probe.js';
 export * from './qc/waveform-extractor.js';

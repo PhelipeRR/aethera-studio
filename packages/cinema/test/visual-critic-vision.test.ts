@@ -165,6 +165,7 @@ describe('AI Visual Critic with real vision & targeted repairs', () => {
     });
     expect(existsSync(first.mp4Path)).toBe(true);
     expect(first.incrementalRenderStats?.reRenderedScenes).toBe(3);
+    expect(first.audioFirstTimeline?.narrationCacheHits).toBe(0);
 
     // Single-provider vision critic flags ONLY clip 1 on real extracted frames
     const v1 = pkg.timeline.clips.filter((c) => c.trackId === 'v1');
@@ -218,5 +219,7 @@ describe('AI Visual Critic with real vision & targeted repairs', () => {
     // Scenes 2 and 3 reused from cache; only scene 1 re-rendered!
     expect(second.incrementalRenderStats?.cacheHits).toBe(2);
     expect(second.incrementalRenderStats?.reRenderedScenes).toBe(1);
+    expect(second.audioFirstTimeline?.narrationCacheHits).toBeGreaterThan(0);
+    expect(second.audioFirstTimeline?.measuredNarrationDurationMs).toBe(first.audioFirstTimeline?.measuredNarrationDurationMs);
   }, 40000);
 });
