@@ -13,6 +13,7 @@ import {
   type ComfyUiWorkflow,
   type ComfyUiControlNetInput,
   type ComfyUiIpAdapterInput,
+  type ComfyUiRegionalPrompt,
 } from './comfyui-workflow.js';
 import type {
   ExternalImageAdapter,
@@ -21,6 +22,7 @@ import type {
   LocalizedInpaintRequest,
 } from './image-generation-adapter.js';
 import { GpuGenerationLease } from './gpu-generation-lease.js';
+import { applyCheckpointProfile, resolveCheckpointProfile, type AppliedCheckpointProfile } from './checkpoint-profiles.js';
 
 export interface ComfyUiGateway {
   getSystemStats(): Promise<ComfyUiSystemStats>;
@@ -53,6 +55,19 @@ function safeFilenamePrefix(value: string): string {
   return value.replace(/[^A-Za-z0-9_./-]+/g, '-').replace(/^[/.-]+|[/.-]+$/g, '') || 'Aethera/creative';
 }
 
+export interface ComfyUiGenerationMetadata {
+  checkpoint: string;
+  width: number;
+  height: number;
+  steps: number;
+  cfg: number;
+  samplerName: string;
+  scheduler: string;
+  checkpointProfile: Pick<AppliedCheckpointProfile, 'family' | 'evidence' | 'adjustments'>;
+  regionalComposition: boolean;
+  regionCount: number;
+}
+
 export class ComfyUiImageAdapter implements ExternalImageAdapter {
   readonly id = 'comfyui-native';
   gateway: ComfyUiGateway;
@@ -70,6 +85,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
   private readonly gpuLease = new GpuGenerationLease();
   private activePromptId: string | null = null;
   private availabilityError: string | null = null;
+  private lastGeneration: ComfyUiGenerationMetadata | null = null;
 
   constructor(options?: ComfyUiImageAdapterOptions) {
     this.requestTimeoutMs = options?.requestTimeoutMs;
@@ -120,6 +136,11 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       this.availabilityError = error instanceof Error ? error.message : String(error);
       return false;
     }
+  }
+
+  /** Effective parameters of the last successful native generation (after checkpoint profile adjustments). */
+  getLastGenerationMetadata(): ComfyUiGenerationMetadata | null {
+    return this.lastGeneration;
   }
 
   getAvailabilityError(): string | null {
@@ -189,13 +210,43 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
             : 'IPAdapterApply' as const,
         }
       : undefined;
+    const checkpoint = request.model ?? this.checkpoint;
+    const profiled = applyCheckpointProfile(
+      {
+        steps: request.steps ?? this.steps,
+        cfg: request.cfg ?? this.cfg,
+        samplerName: request.samplerName ?? this.samplerName,
+        scheduler: request.scheduler ?? this.scheduler,
+        prompt: request.prompt,
+        negativePrompt: request.negativePrompt ?? 'text, letters, watermark, low quality, deformed anatomy',
+      },
+      resolveCheckpointProfile(checkpoint),
+    );
+    const qualityPrefix = profiled.prompt.slice(0, Math.max(0, profiled.prompt.length - request.prompt.length));
+    request = {
+      ...request,
+      prompt: profiled.prompt,
+      negativePrompt: profiled.negativePrompt,
+      steps: profiled.steps,
+      cfg: profiled.cfg,
+      samplerName: profiled.samplerName,
+      scheduler: profiled.scheduler,
+    };
     const regions = request.characterRegions?.slice(0, 8) ?? [];
+    // Multi-character txt2img uses native area conditioning in a single pass. The previous background + per-region
+    // inpaint loop let the background pass draw the whole group and then repainted every region with the group prompt,
+    // which multiplied the character count (see docs/comfyui-audit.md, 2026-11-17 regional composition fix).
     const regionalComposition = regions.length > 1 && !uploadedReference;
     const workflowRequest = regionalComposition
       ? {
           ...request,
-          prompt: `${request.prompt}, background environment only, no visible characters, calm separated regions for later compositing`,
-          negativePrompt: `${request.negativePrompt ?? ''}, people, characters, bodies, faces`,
+          regions: regions.map((region, index) => ({
+            prompt: `${qualityPrefix}${region.prompt ?? `solo, single character ${index + 1} of ${regions.length}, full body, distinct face and outfit, ${request.prompt}`}`,
+            x: region.x,
+            y: region.y,
+            width: region.width,
+            height: region.height,
+          })),
         }
       : request;
     const workflow = uploadedReference
@@ -208,20 +259,19 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       this.availabilityError = validation.errors.join(' ');
       throw new Error(`ComfyUI is not configured for image generation: ${this.availabilityError}`);
     }
-    let image = await this.runWorkflow(workflow);
-    if (!regionalComposition) return image;
-
-    // Native ComfyUI has no regional-conditioning node in the clean install. A bounded inpaint pass per region
-    // gives multi-character requests a real composition path while keeping each character isolated and auditable.
-    for (const region of regions) {
-      image = await this.inpaintRegionInternal({
-        imageBuffer: image,
-        bbox: region,
-        prompt: `one and only one distinct full-body character in the ${region.anchor} region; ${request.prompt}; preserve the rest of the image exactly, no fused bodies, no duplicate faces, no other visible people in this region`,
-        negativePrompt: 'multiple people, extra person, duplicate character, cloned face, group, crowd, background character, fused bodies, extra limbs, malformed anatomy',
-        strength: 0.92,
-      });
-    }
+    const image = await this.runWorkflow(workflow);
+    this.lastGeneration = {
+      checkpoint,
+      width: request.width,
+      height: request.height,
+      steps: profiled.steps,
+      cfg: profiled.cfg,
+      samplerName: profiled.samplerName,
+      scheduler: profiled.scheduler,
+      checkpointProfile: { family: profiled.family, evidence: profiled.evidence, adjustments: profiled.adjustments },
+      regionalComposition,
+      regionCount: regionalComposition ? regions.length : 0,
+    };
     return image;
   }
 
@@ -250,7 +300,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       negativePrompt: request.negativePrompt ?? 'text, letters, watermark, low quality, deformed anatomy, extra limbs',
       width,
       height,
-      seed: 0,
+      seed: request.seed ?? Math.abs((Math.round(request.bbox.x) * 73856093) ^ (Math.round(request.bbox.y) * 19349663) ^ (Math.round(request.bbox.width) * 83492791)) % 2_147_483_647,
       steps: this.steps,
       cfg: this.cfg,
       samplerName: this.samplerName,
@@ -318,7 +368,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     return true;
   }
 
-  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora' | 'loras' | 'faceDetailer'>, controlNet?: ComfyUiControlNetInput, ipAdapter?: ComfyUiIpAdapterInput): ComfyUiWorkflow {
+  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora' | 'loras' | 'faceDetailer'> & { regions?: ComfyUiRegionalPrompt[] }, controlNet?: ComfyUiControlNetInput, ipAdapter?: ComfyUiIpAdapterInput): ComfyUiWorkflow {
     const loras = request.loras?.length ? request.loras : request.lora ? [request.lora] : undefined;
     const input = {
       checkpoint: request.model ?? this.checkpoint,
@@ -335,6 +385,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       ...(controlNet ? { controlNet } : {}),
       ...(ipAdapter ? { ipAdapter } : {}),
       ...(request.faceDetailer ? { faceDetailer: request.faceDetailer } : {}),
+      ...(request.regions?.length ? { regions: request.regions } : {}),
       filenamePrefix: this.filenamePrefix,
     };
     return request.faceDetailer ? buildComfyUiFaceDetailerWorkflow(input) : buildComfyUiTxt2ImgWorkflow(input);

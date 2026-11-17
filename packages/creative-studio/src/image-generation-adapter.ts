@@ -43,7 +43,8 @@ export interface ImageGenerationRequest {
   batchSize?: number;
   preset?: string;
   characterCount?: number;
-  characterRegions?: Array<{ id: string; anchor: string; x: number; y: number; width: number; height: number }>;
+  /** Per-character pixel regions; `prompt` is the solo description bound to that area by regional conditioning. */
+  characterRegions?: Array<{ id: string; anchor: string; x: number; y: number; width: number; height: number; prompt?: string }>;
 }
 
 export interface BackgroundRemovalRequest {
@@ -90,6 +91,8 @@ export interface LocalizedInpaintRequest {
   negativePrompt?: string;
   bbox: { x: number; y: number; width: number; height: number };
   strength?: number;
+  /** Explicit sampler seed; defaults to a value derived from the bbox so separate repairs do not share noise. */
+  seed?: number;
 }
 
 export interface ImageUpscaleRequest {

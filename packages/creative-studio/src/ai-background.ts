@@ -27,6 +27,10 @@ export interface AiGenerationReport {
   ipAdapter?: { model: string; clipVisionModel: string; weight: number; referenceImagePath?: string };
   faceDetailer?: { detectorModel: string; denoise?: number; guideSize?: number; maxSize?: number };
   qualityAudit?: GeneratedImageQualityAudit;
+  /** Provider that actually produced the image (a chain may fall back) and the errors that caused any fallback. */
+  servedBy?: { providerId: string; fallbackErrors: string[] };
+  /** Effective engine parameters after checkpoint-profile adjustments, when the serving engine reports them. */
+  engineParameters?: unknown;
 }
 
 export interface GenerateAiBackgroundInput {
@@ -151,12 +155,20 @@ export async function generateAiBackground(
         extension: 'png',
         originalName: `ai-gen-${attemptRecipe.preset}-${attemptRecipe.seed}.png`,
       });
+      const servedReporter = input.imageAdapter as ExternalImageAdapter & {
+        getLastServedProvider?: () => { providerId: string; fallbackErrors: string[] } | null;
+        getLastGenerationMetadata?: () => unknown;
+      };
+      const servedBy = servedReporter.getLastServedProvider?.() ?? { providerId: engineId, fallbackErrors: [] };
+      const engineParameters = servedReporter.getLastGenerationMetadata?.() ?? null;
       return {
         asset,
         report: {
           status: 'generated',
           engineId,
-          message: `Fundo gerado por ${engineId} (preset ${attemptRecipe.preset}, seed ${attemptRecipe.seed}${attempt > 1 ? `, após ${attempt} tentativas` : ''}).`,
+          servedBy,
+          ...(engineParameters ? { engineParameters } : {}),
+          message: `Fundo gerado por ${servedBy.providerId}${servedBy.fallbackErrors.length ? ` (fallback após: ${servedBy.fallbackErrors.join(' | ')})` : ''} (preset ${attemptRecipe.preset}, seed ${attemptRecipe.seed}${attempt > 1 ? `, após ${attempt} tentativas` : ''}).`,
           durationMs: Date.now() - started,
           recipe: attemptRecipe,
           ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),

@@ -7,6 +7,7 @@ import {
   buildComfyUiFaceDetailerWorkflow,
   extractComfyUiImages,
   validateComfyUiWorkflow,
+  type ComfyUiWorkflow,
 } from '../src/comfyui-workflow.js';
 import type { ComfyUiHistoryEntry } from '../src/comfyui-client.js';
 
@@ -383,8 +384,42 @@ describe('ComfyUI workflow registry', () => {
     });
     expect(workflow['4']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/base.png' } });
     expect(workflow['5']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/mask.png' } });
-    expect(workflow['6']).toMatchObject({ class_type: 'VAEEncodeForInpaint', inputs: { pixels: ['4', 0], mask: ['5', 0], vae: ['1', 2], grow_mask_by: 8 } });
+    expect(workflow['inpaint_mask']).toMatchObject({ class_type: 'ImageToMask', inputs: { image: ['5', 0], channel: 'red' } });
+    expect(workflow['inpaint_encode']).toMatchObject({ class_type: 'VAEEncode', inputs: { pixels: ['4', 0], vae: ['1', 2] } });
+    expect(workflow['6']).toMatchObject({ class_type: 'SetLatentNoiseMask', inputs: { samples: ['inpaint_encode', 0], mask: ['inpaint_grow', 0] } });
     expect(workflow['9']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['8', 0] } });
+  });
+
+  it('rejects links whose types do not match the live object_info signatures', () => {
+    const objectInfo = {
+      LoadImage: { input: { required: { image: [['a.png']] } }, output: ['IMAGE', 'MASK'] },
+      VAEEncodeForInpaint: { input: { required: { pixels: ['IMAGE', {}], vae: ['VAE', {}], mask: ['MASK', {}], grow_mask_by: ['INT', {}] } }, output: ['LATENT'] },
+      CheckpointLoaderSimple: { input: { required: { ckpt_name: [['m.safetensors']] } }, output: ['MODEL', 'CLIP', 'VAE'] },
+    };
+    const workflow: ComfyUiWorkflow = {
+      '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm.safetensors' } },
+      '4': { class_type: 'LoadImage', inputs: { image: 'a.png' } },
+      '6': { class_type: 'VAEEncodeForInpaint', inputs: { pixels: ['4', 0], vae: ['1', 2], mask: ['4', 0], grow_mask_by: 8 } },
+    };
+    expect(validateComfyUiWorkflow(workflow, objectInfo).errors).toContain(
+      'Workflow node 6 (VAEEncodeForInpaint) input "mask" expects MASK but node 4 (LoadImage) output 0 is IMAGE.',
+    );
+    workflow['6']!.inputs['mask'] = ['4', 1];
+    expect(validateComfyUiWorkflow(workflow, objectInfo).errors.filter((error) => error.includes('expects'))).toEqual([]);
+  });
+
+  it('binds regional prompts to pixel areas and feeds the combined conditioning to the sampler only', () => {
+    const workflow = buildComfyUiTxt2ImgWorkflow({
+      checkpoint: 'sdxl.safetensors', positivePrompt: 'scene', negativePrompt: 'bad', width: 1344, height: 768, seed: 1, steps: 24, cfg: 6,
+      samplerName: 'euler_ancestral', scheduler: 'normal', filenamePrefix: 'Aethera/regional',
+      regions: [
+        { prompt: 'solo, left hero', x: 67, y: 61, width: 581, height: 645 },
+        { prompt: 'solo, right hero', x: 695, y: 61, width: 581, height: 645, strength: 0.6 },
+      ],
+    });
+    expect(workflow['region_1_area']).toMatchObject({ inputs: { x: 64, y: 56, width: 584, height: 648, strength: 0.8 } });
+    expect(workflow['region_2_area']).toMatchObject({ inputs: { strength: 0.6 } });
+    expect(workflow['5']).toMatchObject({ inputs: { positive: ['region_2_combine', 0], negative: ['3', 0] } });
   });
 
   it('builds a checkpoint-independent model upscale graph', () => {

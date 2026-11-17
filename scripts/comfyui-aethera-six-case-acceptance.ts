@@ -116,7 +116,7 @@ try {
         useAiGeneration: true,
         characterCount: testCase.characterCount,
         seed: testCase.seed,
-        maxSide: 1024,
+        // No maxSide: the recipe picks the native SDXL bucket (1344x768 for 16:9).
         maxAttempts: 1,
         loraMode: 'off',
       });
@@ -133,11 +133,17 @@ try {
             return outputPath;
           })()
         : null;
+      const servedBy = result.generation.servedBy ?? null;
+      const engineParameters = (result.generation.engineParameters ?? null) as { checkpoint?: string } | null;
+      // A chain fallback (e.g. local SDXL-Turbo) must never be reported as an Animagine/ComfyUI result.
+      const servedByComfyUi = servedBy?.providerId === 'comfyui-native';
       results.push({
         id: testCase.id,
-        status: result.generation.status,
+        status: result.generation.status === 'generated' && !servedByComfyUi ? 'failed_wrong_provider' : result.generation.status,
         structuralStatus: result.generation.qualityAudit?.passed ? 'passed' : 'not_passed_or_unavailable',
-        model: 'animagine-xl-3.1.safetensors',
+        servedBy,
+        model: servedByComfyUi ? engineParameters?.checkpoint ?? null : null,
+        engineParameters,
         workflow: 'aethera-direction-recipe-comfyui-composition',
         preset: testCase.preset,
         seed: testCase.seed,
@@ -176,7 +182,9 @@ try {
     generatedAt: new Date().toISOString(),
     endpoint: 'http://127.0.0.1:8000',
     checkpoint: 'animagine-xl-3.1.safetensors',
-    acceptanceStatus: 'structural_and_integration_pass_pending_human_review' as const,
+    acceptanceStatus: results.every((result) => result.status === 'generated')
+      ? 'structural_and_integration_pass_pending_human_review'
+      : 'failed',
     results,
     humanReview: {
       status: 'pending' as const,
@@ -185,6 +193,7 @@ try {
     limitations: [
       'The structural quality audit does not prove semantic fidelity or production aesthetics.',
       'The six cases use LoRA mode off because no verified LoRA file is installed in the runtime.',
+      'Character count is steered by native area conditioning, not guaranteed; count drift must be checked by a human.',
     ],
   };
   writeFileSync(join(artifactDir, 'report.json'), JSON.stringify(report, null, 2), 'utf8');

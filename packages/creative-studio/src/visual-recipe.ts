@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { ART_SPECIFICATIONS, type BrandKit, type CreativeArtType } from './schemas.js';
 import { getProfessionalPreset, resolveProfessionalPreset, type ProfessionalPresetId } from './creative-presets.js';
 import { planMultiCharacterComposition, type CharacterRegion } from './multi-character-composition.js';
+import { nearestSdxlBucket } from './checkpoint-profiles.js';
 
 /**
  * CF-1 — Visual recipe: turns the user's brief (any language), the creative direction from the reasoning engines and
@@ -59,7 +60,8 @@ export interface VisualRecipe {
   scheduler: string;
   stylization: number;
   characterCount: number;
-  characterRegions: CharacterRegion[];
+  /** Regions carry a solo prompt each; the engine binds it to the region with native area conditioning. */
+  characterRegions: Array<CharacterRegion & { prompt?: string }>;
 }
 
 export interface VisualRecipeInput {
@@ -71,7 +73,10 @@ export interface VisualRecipeInput {
   /** Explicit seed; otherwise derived from `seedKey` (or the prompt) so a recipe is reproducible. */
   seed?: number;
   seedKey?: string;
-  /** Max side of the generation size (default 1024). */
+  /**
+   * Max side of the generation size. When omitted, the recipe uses the nearest native SDXL bucket (e.g. 1344x768
+   * for 16:9): generating below the training buckets letterboxed and shrank subjects on Animagine XL 3.1.
+   */
   maxSide?: number;
   professionalPreset?: ProfessionalPresetId;
   characterCount?: number;
@@ -250,6 +255,34 @@ function textSafeZonesFor(artType: CreativeArtType): TextSafeZone[] {
   return [];
 }
 
+/**
+ * Visual differentiators assigned per region when the brief does not describe each character. Without them every
+ * region receives the same text and SDXL tends to clone one face across the group.
+ */
+const DISTINCT_TRAITS = [
+  'spiky black hair, determined expression',
+  'long silver hair, calm expression',
+  'short red hair, fierce grin',
+  'blonde ponytail, focused eyes',
+  'dark blue hair, serious expression',
+  'white hair with hood, confident smile',
+  'green hair, shouting battle cry',
+  'purple hair, cool smirk',
+];
+
+const COUNT_WORDS = /\b(?:two|three|four|five|six|seven|eight|nine|ten|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez|\d+)\s+/gi;
+
+/** Removes group/count wording so a per-region prompt describes one character instead of the whole cast. */
+export function stripGroupWording(subject: string): string {
+  return subject
+    .replace(/\s*\b(?:arranged\s+)?in\s+(?:a\s+)?(?:readable\s+)?(?:two|three|\d+)-row group\b/gi, '')
+    .replace(COUNT_WORDS, '')
+    .replace(/\b(?:group of|grupo de|duo of|trio of|a pair of)\s+/gi, '')
+    .replace(/\s+,/g, ',')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function capWords(text: string, maxWords: number): string {
   const words = text.split(/\s+/).filter(Boolean);
   return words.length <= maxWords ? text : words.slice(0, maxWords).join(' ').replace(/[,\s]+$/, '');
@@ -303,7 +336,7 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
     subjectTerms.join(', '),
     direction?.lighting ?? (preset === 'logo_element' ? undefined : 'dramatic rim lighting, volumetric light'),
     direction?.camera,
-    characterCount > 1 ? `${characterCount} distinct isolated character regions, no fused bodies, no duplicate faces` : undefined,
+    characterCount > 1 ? `exactly ${characterCount} characters, each clearly separated, no fused bodies, no duplicate faces` : undefined,
     paletteText,
     preset === 'logo_element' || preset === 'avatar' ? undefined : 'highly detailed, depth of field',
   ]
@@ -317,11 +350,28 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
     if (phrase && !phrases.some((p) => p.toLowerCase() === key)) phrases.push(phrase);
   }
   const positivePrompt = capWords(phrases.join(', '), MAX_PROMPT_WORDS);
-  const maxSide = input.maxSide ?? 1024;
-  const scale = Math.min(1, maxSide / Math.max(spec.width, spec.height));
-  const width = Math.max(256, Math.round((spec.width * scale) / 8) * 8);
-  const height = Math.max(256, Math.round((spec.height * scale) / 8) * 8);
+  const bucket = nearestSdxlBucket(spec.width, spec.height);
+  const scale = input.maxSide !== undefined ? Math.min(1, input.maxSide / Math.max(spec.width, spec.height)) : 1;
+  const width = input.maxSide !== undefined ? Math.max(256, Math.round((spec.width * scale) / 8) * 8) : bucket.width;
+  const height = input.maxSide !== undefined ? Math.max(256, Math.round((spec.height * scale) / 8) * 8) : bucket.height;
   const characterPlan = planMultiCharacterComposition({ width, height, characterCount });
+  const characterStyle = stripBrandTokens(direction?.style ?? PRESET_STYLE[preset], banned);
+  const characterSubject = stripBrandTokens(stripGroupWording(subject), banned);
+  const characterRegions = characterCount > 1
+    ? characterPlan.regions.map((region) => ({
+        ...region,
+        prompt: capWords(
+          [
+            'solo, single character, full body',
+            DISTINCT_TRAITS[region.index % DISTINCT_TRAITS.length],
+            characterSubject,
+            characterStyle,
+            direction?.lighting ?? 'dramatic rim lighting',
+          ].filter(Boolean).join(', '),
+          MAX_PROMPT_WORDS,
+        ),
+      }))
+    : characterPlan.regions;
   const seed = input.seed ?? deriveSeed(input.seedKey ?? `${input.artType}:${input.prompt}`);
 
   return {
@@ -341,7 +391,7 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
     scheduler: professionalPreset.scheduler,
     stylization,
     characterCount,
-    characterRegions: characterPlan.regions,
+    characterRegions,
   };
 }
 

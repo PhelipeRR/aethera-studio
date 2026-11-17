@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import sharp from 'sharp';
 import type {
   BackgroundRemovalRequest,
   ExternalImageAdapter,
@@ -130,7 +131,10 @@ export class LocalPythonAiAdapter implements ExternalImageAdapter {
       if (!existsSync(outPath)) {
         throw new Error('Local AI worker completed without writing output image.');
       }
-      return readFileSync(outPath);
+      const generated = readFileSync(outPath);
+      // The worker caps the side at 1024 for VRAM; callers and the structural audit expect the requested size.
+      if (genW === request.width && genH === request.height) return generated;
+      return await sharp(generated).resize(request.width, request.height, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer();
     } finally {
       rmSync(workDir, { recursive: true, force: true });
     }
@@ -299,7 +303,25 @@ export class LocalPythonAiAdapter implements ExternalImageAdapter {
 export class ProviderChainImageAdapter implements ExternalImageAdapter {
   readonly id = 'provider-chain';
 
+  private lastServed: { providerId: string; fallbackErrors: string[] } | null = null;
+
   constructor(private readonly providers: ExternalImageAdapter[]) {}
+
+  /**
+   * Which provider produced the last generated image and why earlier providers were skipped. Reports must use this
+   * instead of the chain id: a silent fallback previously made local SDXL output look like an Animagine generation.
+   */
+  getLastServedProvider(): { providerId: string; fallbackErrors: string[] } | null {
+    return this.lastServed;
+  }
+
+  /** Effective engine parameters reported by the provider that served the last image, when it exposes them. */
+  getLastGenerationMetadata(): unknown {
+    const served = this.providers.find((p) => p.id === this.lastServed?.providerId) as
+      | (ExternalImageAdapter & { getLastGenerationMetadata?: () => unknown })
+      | undefined;
+    return served?.getLastGenerationMetadata?.() ?? null;
+  }
 
   async isAvailable(): Promise<boolean> {
     for (const p of this.providers) {
@@ -310,11 +332,17 @@ export class ProviderChainImageAdapter implements ExternalImageAdapter {
 
   async generateImage(request: ImageGenerationRequest): Promise<Buffer> {
     const errors: string[] = [];
+    this.lastServed = null;
     for (const p of this.providers) {
       if (!p.generateImage) continue;
-      if (!(await p.isAvailable())) continue;
+      if (!(await p.isAvailable())) {
+        errors.push(`${p.id}: unavailable`);
+        continue;
+      }
       try {
-        return await p.generateImage(request);
+        const image = await p.generateImage(request);
+        this.lastServed = { providerId: p.id, fallbackErrors: [...errors] };
+        return image;
       } catch (err) {
         errors.push(`${p.id}: ${err instanceof Error ? err.message : String(err)}`);
       }

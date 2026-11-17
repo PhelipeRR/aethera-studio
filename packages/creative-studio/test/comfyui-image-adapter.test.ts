@@ -10,6 +10,7 @@ function readyObjectInfo(): Record<string, unknown> {
   return {
     CheckpointLoaderSimple: { input: { required: { ckpt_name: [['sdxl.safetensors']] } } },
     CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {}, VAEEncodeForInpaint: {}, UpscaleModelLoader: {}, ImageUpscaleWithModel: {},
+    ImageToMask: {}, GrowMask: {}, SetLatentNoiseMask: {}, ConditioningSetArea: {}, ConditioningCombine: {},
   };
 }
 
@@ -235,8 +236,11 @@ describe('ComfyUiImageAdapter', () => {
     expect(gateway.queued?.['4']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/aethera-inpaint-base.png' } });
     expect(gateway.queued?.['5']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/aethera-inpaint-mask.png' } });
     expect(gateway.queued?.['3']).toMatchObject({ class_type: 'CLIPTextEncode', inputs: { text: 'extra fingers, duplicate hands' } });
-    expect(gateway.queued?.['6']).toMatchObject({ class_type: 'VAEEncodeForInpaint', inputs: { pixels: ['4', 0], mask: ['5', 0], grow_mask_by: 8 } });
+    expect(gateway.queued?.['inpaint_mask']).toMatchObject({ class_type: 'ImageToMask', inputs: { image: ['5', 0], channel: 'red' } });
+    expect(gateway.queued?.['inpaint_grow']).toMatchObject({ class_type: 'GrowMask', inputs: { mask: ['inpaint_mask', 0], expand: 8 } });
+    expect(gateway.queued?.['6']).toMatchObject({ class_type: 'SetLatentNoiseMask', inputs: { samples: ['inpaint_encode', 0], mask: ['inpaint_grow', 0] } });
     expect(gateway.queued?.['7']).toMatchObject({ class_type: 'KSampler', inputs: { denoise: 0.48, latent_image: ['6', 0] } });
+    expect((gateway.queued?.['7'] as { inputs: { seed: number } }).inputs.seed).not.toBe(0);
     const maskUpload = uploads.at(1);
     expect(maskUpload).toBeDefined();
     await expect(sharp(maskUpload?.bytes ?? Buffer.alloc(0)).metadata()).resolves.toMatchObject({ width: 96, height: 64, format: 'png' });
@@ -252,32 +256,49 @@ describe('ComfyUiImageAdapter', () => {
     expect(gateway.queued?.['3']).toMatchObject({ class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['1', 0], image: ['2', 0] } });
   });
 
-  it('turns multiple character regions into a base pass plus bounded inpaint passes', async () => {
+  it('renders multiple character regions in one pass with native area conditioning', async () => {
     const gateway = fakeGateway();
-    const generated = await sharp({ create: { width: 128, height: 72, channels: 3, background: '#445566' } }).png().toBuffer();
     let queueCount = 0;
     gateway.queuePrompt = async (prompt) => {
       queueCount += 1;
       gateway.queued = prompt;
       return { prompt_id: `prompt-${queueCount}` };
     };
-    gateway.getImage = async () => generated;
-    gateway.uploadImage = async (_buffer, filename) => ({ name: filename, subfolder: 'aethera', type: 'input' });
     const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
 
-    await expect(adapter.generateImage({
+    await adapter.generateImage({
       prompt: 'two distinct anime warriors in an action exchange',
       negativePrompt: 'fused bodies',
       width: 128,
       height: 72,
       characterCount: 2,
       characterRegions: [
-        { id: 'left', anchor: 'left', x: 0, y: 0, width: 56, height: 72 },
-        { id: 'right', anchor: 'right', x: 72, y: 0, width: 56, height: 72 },
+        { id: 'left', anchor: 'left', x: 0, y: 0, width: 64, height: 72, prompt: 'solo, swordsman in crimson coat' },
+        { id: 'right', anchor: 'right', x: 64, y: 0, width: 64, height: 72 },
       ],
-    })).resolves.toEqual(generated);
-    expect(queueCount).toBe(3);
-    expect(gateway.queued?.['6']).toMatchObject({ class_type: 'VAEEncodeForInpaint' });
-    expect(gateway.queued?.['3']).toMatchObject({ class_type: 'CLIPTextEncode', inputs: { text: expect.stringContaining('multiple people') } });
+    });
+    expect(queueCount).toBe(1);
+    expect(gateway.queued?.['2']).toMatchObject({ inputs: { text: 'two distinct anime warriors in an action exchange' } });
+    expect(gateway.queued?.['region_1_text']).toMatchObject({ class_type: 'CLIPTextEncode', inputs: { text: 'solo, swordsman in crimson coat' } });
+    expect(gateway.queued?.['region_2_text']).toMatchObject({ inputs: { text: expect.stringContaining('solo, single character 2 of 2') } });
+    expect(gateway.queued?.['region_1_area']).toMatchObject({ class_type: 'ConditioningSetArea', inputs: { conditioning: ['region_1_text', 0], x: 0, y: 0, width: 64, height: 72, strength: 0.8 } });
+    expect(gateway.queued?.['region_2_combine']).toMatchObject({ class_type: 'ConditioningCombine', inputs: { conditioning_1: ['region_1_combine', 0], conditioning_2: ['region_2_area', 0] } });
+    expect(gateway.queued?.['5']).toMatchObject({ class_type: 'KSampler', inputs: { positive: ['region_2_combine', 0] } });
+    expect(adapter.getLastGenerationMetadata()).toMatchObject({ regionalComposition: true, regionCount: 2 });
+  });
+
+  it('moves Animagine generations into the model-card sampling envelope and records the adjustment', async () => {
+    const gateway = fakeGateway();
+    gateway.getObjectInfo = async () => ({ ...readyObjectInfo(), CheckpointLoaderSimple: { input: { required: { ckpt_name: [['animagine-xl-3.1.safetensors']] } } } });
+    const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'animagine-xl-3.1.safetensors' });
+
+    await adapter.generateImage({ prompt: 'anime warrior', width: 1344, height: 768, steps: 12, cfg: 5.5, samplerName: 'dpmpp_2m', scheduler: 'karras' });
+    expect(gateway.queued?.['5']).toMatchObject({ inputs: { steps: 24, cfg: 5.5, sampler_name: 'euler_ancestral', scheduler: 'normal' } });
+    expect(gateway.queued?.['2']).toMatchObject({ inputs: { text: 'masterpiece, best quality, very aesthetic, absurdres, anime warrior' } });
+    expect(adapter.getLastGenerationMetadata()?.checkpointProfile).toEqual({
+      family: 'animagine-xl-3',
+      evidence: 'model_card',
+      adjustments: ['steps 12→24', 'sampler dpmpp_2m→euler_ancestral', 'scheduler karras→normal'],
+    });
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildCharacterGenerationBrief, planMultiCharacterComposition, validateCharacterRegions } from '../src/multi-character-composition.js';
-import { buildVisualRecipe } from '../src/visual-recipe.js';
+import { buildVisualRecipe, stripGroupWording } from '../src/visual-recipe.js';
+import { nearestSdxlBucket } from '../src/checkpoint-profiles.js';
 
 describe('multi-character composition planning', () => {
   it('allocates non-overlapping regions for one to eight characters', () => {
@@ -29,6 +30,18 @@ describe('multi-character composition planning', () => {
     const recipe = buildVisualRecipe({ artType: 'thumbnail', prompt: 'anime duel', characterCount: 2 });
     expect(recipe.characterCount).toBe(2);
     expect(recipe.characterRegions).toHaveLength(2);
-    expect(recipe.positivePrompt).toMatch(/2 distinct isolated character regions/i);
+    expect(recipe.positivePrompt).toMatch(/exactly 2 characters/i);
+    expect(recipe).toMatchObject({ width: 1344, height: 768 });
+    const prompts = recipe.characterRegions.map((region) => region.prompt ?? '');
+    expect(prompts.every((prompt) => prompt.startsWith('solo, single character, full body'))).toBe(true);
+    expect(new Set(prompts).size).toBe(2);
+  });
+
+  it('keeps an explicit maxSide and strips group wording from per-character prompts', () => {
+    expect(buildVisualRecipe({ artType: 'thumbnail', prompt: 'anime duel', maxSide: 1024 })).toMatchObject({ width: 1024, height: 576 });
+    expect(stripGroupWording('two original anime warriors mid-strike')).toBe('original anime warriors mid-strike');
+    expect(stripGroupWording('eight distinct heroes arranged in a readable two-row group, varied poses')).toBe('distinct heroes, varied poses');
+    expect(nearestSdxlBucket(2560, 1440)).toEqual({ width: 1344, height: 768 });
+    expect(nearestSdxlBucket(800, 800)).toEqual({ width: 1024, height: 1024 });
   });
 });

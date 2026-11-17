@@ -39,7 +39,7 @@ describe('CF-1 visual recipe', () => {
     expect(recipe.positivePrompt).not.toMatch(/personagens|cinematogr|identidade|cen[aá]rios/i);
     expect(recipe.positivePrompt.split(/\s+/).length).toBeLessThanOrEqual(62);
     expect(recipe.negativePrompt).toMatch(/\btext\b.*\bletters\b.*\bwatermark\b/);
-    expect(recipe).toMatchObject({ width: 1024, height: 576, source: 'deterministic' });
+    expect(recipe).toMatchObject({ width: 1344, height: 768, source: 'deterministic' });
     expect(recipe.textSafeZones[0]).toEqual({ x: 507, y: 509, width: 1546, height: 423 });
   });
 
@@ -177,7 +177,7 @@ describe('CF-1 orchestration order and AI background report', () => {
     });
     expect(res.report.status).toBe('generated');
     expect(res.asset?.kind).toBe('image');
-    expect(seen).toMatchObject({ seed: 7, width: 1024, height: 576 });
+    expect(seen).toMatchObject({ seed: 7, width: 1344, height: 768 });
     expect(seen?.strength).toBe(0.38);
     expect(res.report.referenceStrength).toBe(0.38);
     expect(seen?.negativePrompt).toMatch(/text/);

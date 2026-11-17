@@ -26,6 +26,21 @@ export interface ComfyUiTxt2ImgInput {
   controlNet?: ComfyUiControlNetInput;
   ipAdapter?: ComfyUiIpAdapterInput;
   faceDetailer?: ComfyUiFaceDetailerInput;
+  /**
+   * Native regional prompting: each region is encoded separately and bound to its pixel area with core
+   * `ConditioningSetArea`, then combined with the global prompt. One sampling pass keeps lighting and scene coherent.
+   */
+  regions?: ComfyUiRegionalPrompt[];
+}
+
+export interface ComfyUiRegionalPrompt {
+  prompt: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Area conditioning strength; 0.8 was the best observed balance on Animagine XL 3.1 (see docs/comfyui-audit.md). */
+  strength?: number;
 }
 
 export interface ComfyUiFaceDetailerInput {
@@ -267,6 +282,7 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
     };
     samplerNode.inputs['model'] = [ipApplyId, 0];
   }
+  if (input.regions?.length) applyRegionalConditioning(workflow, input.regions, clipRef, width, height);
   return workflow;
 }
 
@@ -360,6 +376,44 @@ export function buildComfyUiImg2ImgWorkflow(input: ComfyUiImg2ImgInput): ComfyUi
   };
 }
 
+function applyRegionalConditioning(
+  workflow: ComfyUiWorkflow,
+  regions: ComfyUiRegionalPrompt[],
+  clipRef: [string, number],
+  width: number,
+  height: number,
+): void {
+  let positiveRef: [string, number] = ['2', 0];
+  const regionNodeIds = new Set<string>();
+  for (const [index, region] of regions.slice(0, 8).entries()) {
+    const x = Math.max(0, Math.min(width - 64, Math.floor(region.x / 8) * 8));
+    const y = Math.max(0, Math.min(height - 64, Math.floor(region.y / 8) * 8));
+    const regionWidth = Math.max(64, Math.min(width - x, Math.round(region.width / 8) * 8));
+    const regionHeight = Math.max(64, Math.min(height - y, Math.round(region.height / 8) * 8));
+    const textId = `region_${index + 1}_text`;
+    const areaId = `region_${index + 1}_area`;
+    const combineId = `region_${index + 1}_combine`;
+    workflow[textId] = { class_type: 'CLIPTextEncode', inputs: { text: region.prompt, clip: clipRef }, _meta: { title: `Aethera region ${index + 1} prompt` } };
+    workflow[areaId] = {
+      class_type: 'ConditioningSetArea',
+      inputs: { conditioning: [textId, 0], x, y, width: regionWidth, height: regionHeight, strength: Math.max(0, Math.min(10, region.strength ?? 0.8)) },
+      _meta: { title: `Aethera region ${index + 1} area` },
+    };
+    workflow[combineId] = { class_type: 'ConditioningCombine', inputs: { conditioning_1: positiveRef, conditioning_2: [areaId, 0] }, _meta: { title: `Aethera region ${index + 1} combine` } };
+    for (const id of [textId, areaId, combineId]) regionNodeIds.add(id);
+    positiveRef = [combineId, 0];
+  }
+  // Only the main sampling chain receives the area conditioning. Crop-based refiners such as FaceDetailer keep the
+  // global prompt, because pixel areas are meaningless inside a face crop.
+  const consumers = new Set(['KSampler', 'ControlNetApply', 'ControlNetApplyAdvanced']);
+  for (const [nodeId, node] of Object.entries(workflow)) {
+    if (regionNodeIds.has(nodeId) || !consumers.has(node.class_type)) continue;
+    for (const [name, value] of Object.entries(node.inputs)) {
+      if (Array.isArray(value) && value[0] === '2' && value[1] === 0) node.inputs[name] = positiveRef;
+    }
+  }
+}
+
 /**
  * Native ComfyUI localized repair graph. The mask is deliberately supplied as a separate LoadImage node so the
  * caller can audit exactly which pixels are allowed to change. This keeps localized repairs portable without
@@ -386,15 +440,20 @@ export function buildComfyUiInpaintWorkflow(input: ComfyUiInpaintInput): ComfyUi
     ...passthrough,
     '4': { class_type: 'LoadImage', inputs: { image: imageName }, _meta: { title: 'Aethera inpaint base image' } },
     '5': { class_type: 'LoadImage', inputs: { image: maskName }, _meta: { title: 'Aethera localized repair mask' } },
+    // LoadImage output 0 is IMAGE; VAEEncodeForInpaint requires MASK. The mask PNG is opaque black/white, so the red
+    // channel carries the editable area (its alpha output would be empty).
+    inpaint_mask: { class_type: 'ImageToMask', inputs: { image: ['5', 0], channel: 'red' }, _meta: { title: 'Aethera localized repair mask channel' } },
+    // VAEEncodeForInpaint blanks the masked pixels and is meant for inpaint checkpoints at denoise 1.0; with regular
+    // SDXL checkpoints it produced grey hard-edged boxes. VAEEncode + SetLatentNoiseMask keeps the original pixels as
+    // context so a partial denoise blends the repair into the scene.
+    inpaint_encode: { class_type: 'VAEEncode', inputs: { pixels: ['4', 0], vae: ['1', 2] }, _meta: { title: 'Aethera localized repair encode' } },
+    ...(input.growMaskBy > 0
+      ? { inpaint_grow: { class_type: 'GrowMask', inputs: { mask: ['inpaint_mask', 0], expand: Math.round(input.growMaskBy), tapered_corners: true }, _meta: { title: 'Aethera localized repair mask grow' } } }
+      : {}),
     '6': {
-      class_type: 'VAEEncodeForInpaint',
-      inputs: {
-        pixels: ['4', 0],
-        vae: ['1', 2],
-        mask: ['5', 0],
-        grow_mask_by: Math.max(0, Math.round(input.growMaskBy)),
-      },
-      _meta: { title: 'Aethera localized repair encode' },
+      class_type: 'SetLatentNoiseMask',
+      inputs: { samples: ['inpaint_encode', 0], mask: [input.growMaskBy > 0 ? 'inpaint_grow' : 'inpaint_mask', 0] },
+      _meta: { title: 'Aethera localized repair noise mask' },
     },
     '7': {
       ...node('5'),
@@ -544,6 +603,7 @@ export function validateComfyUiWorkflow(workflow: ComfyUiWorkflow, objectInfo: R
     }
     if (installed.length === 0) errors.push('ComfyUI reports no ControlNet models for ControlNetLoader.');
   }
+  errors.push(...linkTypeErrors(workflow, objectInfo));
   for (const [nodeId, node] of Object.entries(workflow)) {
     if (!node.class_type || !node.inputs) errors.push(`Workflow node ${nodeId} is missing class_type or inputs.`);
     for (const value of Object.values(node.inputs ?? {})) {
@@ -553,6 +613,44 @@ export function validateComfyUiWorkflow(workflow: ComfyUiWorkflow, objectInfo: R
     }
   }
   return { ok: errors.length === 0, errors };
+}
+
+interface ObjectInfoNode {
+  input?: { required?: Record<string, unknown>; optional?: Record<string, unknown> };
+  output?: unknown[];
+}
+
+function declaredInputType(info: ObjectInfoNode | undefined, name: string): string | undefined {
+  const spec = info?.input?.required?.[name] ?? info?.input?.optional?.[name];
+  const type = Array.isArray(spec) ? spec[0] : undefined;
+  return typeof type === 'string' ? type : undefined;
+}
+
+/**
+ * Checks each link against the live `/object_info` signatures, so a graph that ComfyUI would reject with
+ * "Return type mismatch between linked nodes" fails locally with a clear message instead of an opaque HTTP 400.
+ * Wildcards, combo lists and node types without a reported signature are skipped.
+ */
+function linkTypeErrors(workflow: ComfyUiWorkflow, objectInfo: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  for (const [nodeId, node] of Object.entries(workflow)) {
+    const info = objectInfo[node.class_type] as ObjectInfoNode | undefined;
+    for (const [name, value] of Object.entries(node.inputs ?? {})) {
+      if (!Array.isArray(value) || value.length !== 2 || typeof value[0] !== 'string' || typeof value[1] !== 'number') continue;
+      const source = workflow[value[0]];
+      if (!source) continue;
+      const expected = declaredInputType(info, name);
+      const sourceInfo = objectInfo[source.class_type] as ObjectInfoNode | undefined;
+      const produced = Array.isArray(sourceInfo?.output) ? sourceInfo.output[value[1]] : undefined;
+      if (typeof expected !== 'string' || typeof produced !== 'string') continue;
+      if (expected === '*' || produced === '*' || expected === 'COMBO') continue;
+      const accepted = expected.split(',').map((type) => type.trim());
+      if (!accepted.includes(produced)) {
+        errors.push(`Workflow node ${nodeId} (${node.class_type}) input "${name}" expects ${expected} but node ${value[0]} (${source.class_type}) output ${value[1]} is ${produced}.`);
+      }
+    }
+  }
+  return errors;
 }
 
 export function extractComfyUiImages(history: ComfyUiHistoryEntry): ComfyUiImageRef[] {

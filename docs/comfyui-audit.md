@@ -89,6 +89,41 @@ This pass exercised the real desktop service chain — creative direction, visua
 
 All six returned `generated` with the structural audit passed and `acceptanceStatus: structural_and_integration_pass_pending_human_review`. The visual inspection in this run found a strong anime close-up, a readable gamer focal subject, and a coherent panoramic banner; the two-character, trio, and banner outputs still showed character-count drift (extra visible figures), while the eight-character group was readable but still needs a human count/anatomy check. These are visual observations, not final human approval.
 
+> **Invalidated (2026-11-17 regional composition fix).** The ComfyUI log for this run shows `Failed to validate prompt … VAEEncodeForInpaint: mask, received_type(IMAGE) mismatch input_type(MASK)` for every multi-character case. `ProviderChainImageAdapter` swallowed the error and fell back to the local SDXL-Turbo worker (`local-sdxl-rembg`), while the report hard-coded `model: animagine-xl-3.1`. The four multi-character images and the banner of this run were therefore **not** Animagine/regional outputs. The run is preserved in `artifacts/comfyui-aethera-six-case-acceptance/previous-run-fallback-2026-11-17T0025/`.
+
+### Regional composition fix (2026-11-17)
+
+Root causes found with live evidence (ComfyUI log, isolated experiments in the session scratchpad, model card):
+
+| Defect | Evidence | Fix |
+| --- | --- | --- |
+| Inpaint graph invalid on ComfyUI 0.20.1 | `LoadImage` output 0 (IMAGE) wired to `VAEEncodeForInpaint.mask` (MASK) → HTTP 400 | Mask goes through `ImageToMask` (red channel) + `GrowMask`; encoding uses `VAEEncode` + `SetLatentNoiseMask`, because `VAEEncodeForInpaint` greys the area and produced hard-edged grey boxes with the non-inpaint Animagine checkpoint |
+| Local validator did not catch it | Validator only checked node presence | `validateComfyUiWorkflow` now checks every link type against the live `/object_info` signatures |
+| Silent fallback misattributed | Chain returned `provider-chain`; report hard-coded the model | `ProviderChainImageAdapter.getLastServedProvider()`; the generation report carries `servedBy` + `engineParameters`; the acceptance script marks a fallback as `failed_wrong_provider` |
+| Background pass drew the cast | Isolated run: prompt with the subject plus "no visible characters" still rendered 2 warriors | Background + per-region inpaint loop replaced by one txt2img pass with core `ConditioningSetArea`/`ConditioningCombine` regional prompts (strength 0.8) |
+| Each region repainted with the group prompt, seed 0 | Region prompt contained "Two … warriors"; inpaint seed hard-coded to `0` | Recipe emits a distinct `solo, single character, full body, <trait>, <subject without count words>` prompt per region; repairs derive a per-bbox seed |
+| Under-resolution | 1024×576 (0.59 MP) letterboxed and shrank subjects; the Animagine card lists 1344×768 for 16:9 | Recipe uses the nearest native SDXL bucket when `maxSide` is not forced |
+| Presets not checkpoint-aware | Presets ran 10–14 steps with `dpmpp_2m` on every checkpoint | `checkpoint-profiles.ts`: Animagine XL 3.x uses the card envelope (Euler a, 24–30 steps, CFG 5–7, quality tags); Illustrious uses the same envelope marked `generic_sdxl` because its card publishes no parameters; unknown SDXL checkpoints keep preset numbers (Turbo/Lightning safety). Adjustments are recorded in the report |
+
+Isolated comparison at 1344×768, seed 31001: plain txt2img kept characters tiny; area conditioning produced exactly two large characters for the duel and four (one extra) for the trio.
+
+#### Six-case rerun after the fix
+
+Report: `artifacts/comfyui-aethera-six-case-acceptance/report.json` (generated 2026-11-17T03:53:49Z); contact sheet: `contact-sheet.png`. Every case was served by `comfyui-native` with no fallback (`servedBy.fallbackErrors: []`), checkpoint `animagine-xl-3.1.safetensors`, Euler a, 24 steps, 1344×768.
+
+| Case | Regions | Total time | Peak VRAM | Visual observation (not human approval) |
+| --- | ---: | ---: | ---: | --- |
+| anime individual | 0 | 61,016 ms | 7,211 MiB | clean anime face, aligned eyes; clear quality gain over the 1024×576 run; tight crop |
+| anime 2 | 2 | 66,241 ms | 7,264 MiB | two main characters on left/right regions, plus one background silhouette |
+| cyberpunk trio | 3 | 58,703 ms | 7,226 MiB | three main characters, but a crowd of small background figures |
+| cyberpunk group 8 | 8 | 60,071 ms | 7,587 MiB | roughly eight foreground figures plus background crowd; needs human count/anatomy check |
+| gamer thumbnail | 0 | 48,235 ms | 7,185 MiB | strong expressive focal face with headset |
+| NextWorth banner | 2 | 60,042 ms | 7,217 MiB | two mecha heroes at the edges; the central safe band is busier than ideal |
+
+Times include creative direction, composition, and persistence. Peak VRAM stayed under the 8 GB card with `releaseMemoryAfterGeneration` enabled.
+
+A follow-up variant added `crowd, background people, bystanders, extra person` to the multi-character negative prompt. With the same seeds it improved the eight-character count but made the duel abstract and dropped the trio to two characters, so it was **rejected and reverted**; the evidence is in `run-crowd-negative-rejected/`. The remaining defect is background-figure drift in busy city scenes, not cloned faces. Next candidates, each to be judged on several seeds rather than one: a calmer `setting` for multi-character briefs, higher area strength for the cast regions, or an OpenPose skeleton per region via the installed ControlNet.
+
 ### Face refinement and upscale
 
 - Animagine direct generation: `artifacts/comfyui-bootstrap/animagine-first-generation.png` — 768×768, generated, 10,700 ms, peak observed 7,714 MiB; coherent but tightly cropped.
