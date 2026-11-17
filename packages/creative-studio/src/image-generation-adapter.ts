@@ -35,6 +35,8 @@ export interface ImageGenerationRequest {
   controlNet?: { model: string; imagePath: string; strength?: number; startPercent?: number; endPercent?: number };
   /** Optional IP-Adapter stack; referenceImagePath defaults to referenceImagePaths[0]. */
   ipAdapter?: { model: string; clipVisionModel: string; referenceImagePath?: string; weight?: number };
+  /** Optional Impact Pack face refinement pass. Requires a reported Ultralytics detector model. */
+  faceDetailer?: { detectorModel: string; guideSize?: number; maxSize?: number; seed?: number; steps?: number; cfg?: number; denoise?: number; bboxThreshold?: number; bboxDilation?: number; bboxCropFactor?: number };
   batchSize?: number;
   preset?: string;
   characterCount?: number;

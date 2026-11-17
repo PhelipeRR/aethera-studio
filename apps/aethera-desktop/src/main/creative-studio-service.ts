@@ -576,6 +576,7 @@ export class AetheraCreativeStudioService {
     lora?: { model: string; strengthModel?: number; strengthClip?: number };
     controlNet?: { model: string; imagePath: string; strength?: number; startPercent?: number; endPercent?: number };
     ipAdapter?: { model: string; clipVisionModel: string; referenceImagePath?: string; weight?: number };
+    faceDetailer?: { detectorModel: string; guideSize?: number; maxSize?: number; denoise?: number };
     characterCount?: number;
     assetManifest?: Record<string, ManagedAssetRef>;
   }): Promise<{
@@ -627,6 +628,7 @@ export class AetheraCreativeStudioService {
         ...(input.lora ? { lora: input.lora } : {}),
         ...(input.controlNet ? { controlNet: input.controlNet } : {}),
         ...(input.ipAdapter ? { ipAdapter: input.ipAdapter } : {}),
+        ...(input.faceDetailer ? { faceDetailer: input.faceDetailer } : {}),
         ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
         ...(input.seed !== undefined ? { seed: input.seed } : {}),
         ...(input.maxSide !== undefined ? { maxSide: input.maxSide } : {}),
@@ -713,6 +715,7 @@ export class AetheraCreativeStudioService {
       ...(input.lora ? { lora: input.lora } : {}),
       ...(input.controlNet ? { controlNet: input.controlNet } : {}),
       ...(input.ipAdapter ? { ipAdapter: input.ipAdapter } : {}),
+      ...(input.faceDetailer ? { faceDetailer: input.faceDetailer } : {}),
       ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
     };
     this.repo.saveGenerationRun({

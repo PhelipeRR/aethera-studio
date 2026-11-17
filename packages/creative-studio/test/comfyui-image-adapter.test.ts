@@ -53,6 +53,29 @@ describe('ComfyUiImageAdapter', () => {
     expect(gateway.queued?.['5']).toMatchObject({ class_type: 'KSampler', inputs: { seed: 17, steps: 6, cfg: 4.5 } });
   });
 
+  it('runs FaceDetailer only when the requested detector is exposed by ComfyUI', async () => {
+    const gateway = fakeGateway();
+    gateway.getObjectInfo = async () => ({
+      ...readyObjectInfo(),
+      UltralyticsDetectorProvider: { input: { required: { model_name: [['bbox/face_yolov8m.pt']] } } },
+      FaceDetailer: {},
+    });
+    const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
+
+    await adapter.generateImage({
+      prompt: 'anime portrait',
+      negativePrompt: 'text',
+      width: 768,
+      height: 768,
+      seed: 12,
+      faceDetailer: { detectorModel: 'bbox/face_yolov8m.pt', denoise: 0.3 },
+    });
+
+    expect(gateway.queued?.['20']).toMatchObject({ class_type: 'UltralyticsDetectorProvider', inputs: { model_name: 'bbox/face_yolov8m.pt' } });
+    expect(gateway.queued?.['21']).toMatchObject({ class_type: 'FaceDetailer', inputs: { bbox_detector: ['20', 0], denoise: 0.3 } });
+    expect(gateway.queued?.['22']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['21', 0] } });
+  });
+
   it('queues a native LoRA loader only when the selected model is reported by ComfyUI', async () => {
     const gateway = fakeGateway();
     gateway.getObjectInfo = async () => ({

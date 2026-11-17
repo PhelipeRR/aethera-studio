@@ -23,6 +23,20 @@ export interface ComfyUiTxt2ImgInput {
   lora?: { model: string; strengthModel?: number; strengthClip?: number; nodeType?: 'LoraLoader' | 'LoraLoaderModelOnly' };
   controlNet?: ComfyUiControlNetInput;
   ipAdapter?: ComfyUiIpAdapterInput;
+  faceDetailer?: ComfyUiFaceDetailerInput;
+}
+
+export interface ComfyUiFaceDetailerInput {
+  detectorModel: string;
+  guideSize?: number;
+  maxSize?: number;
+  seed?: number;
+  steps?: number;
+  cfg?: number;
+  denoise?: number;
+  bboxThreshold?: number;
+  bboxDilation?: number;
+  bboxCropFactor?: number;
 }
 
 export interface ComfyUiControlNetInput {
@@ -233,6 +247,66 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
   return workflow;
 }
 
+export function buildComfyUiFaceDetailerWorkflow(input: ComfyUiTxt2ImgInput): ComfyUiWorkflow {
+  if (!input.faceDetailer) throw new Error('FaceDetailer settings are required.');
+  const { faceDetailer: _faceDetailer, ...baseInput } = input;
+  const workflow = buildComfyUiTxt2ImgWorkflow(baseInput);
+  const sampler = workflow['5'];
+  const positive = sampler?.inputs['positive'];
+  const negative = sampler?.inputs['negative'];
+  const model = sampler?.inputs['model'];
+  const clip = workflow['2']?.inputs['clip'];
+  if (!sampler || !positive || !negative || !model || !clip) throw new Error('Base ComfyUI graph is incomplete for FaceDetailer.');
+  workflow['20'] = {
+    class_type: 'UltralyticsDetectorProvider',
+    inputs: { model_name: input.faceDetailer.detectorModel },
+    _meta: { title: 'Aethera face detector' },
+  };
+  workflow['21'] = {
+    class_type: 'FaceDetailer',
+    inputs: {
+      image: ['6', 0],
+      model,
+      clip,
+      vae: ['1', 2],
+      guide_size: Math.max(64, input.faceDetailer.guideSize ?? 512),
+      guide_size_for: true,
+      max_size: Math.max(64, input.faceDetailer.maxSize ?? 1024),
+      seed: Math.max(0, Math.floor(input.faceDetailer.seed ?? input.seed + 1)),
+      steps: Math.max(1, Math.round(input.faceDetailer.steps ?? input.steps)),
+      cfg: Math.max(0, input.faceDetailer.cfg ?? input.cfg),
+      sampler_name: input.samplerName,
+      scheduler: input.scheduler,
+      positive,
+      negative,
+      denoise: Math.max(0.0001, Math.min(1, input.faceDetailer.denoise ?? 0.35)),
+      feather: 5,
+      noise_mask: true,
+      force_inpaint: true,
+      bbox_threshold: Math.max(0, Math.min(1, input.faceDetailer.bboxThreshold ?? 0.4)),
+      bbox_dilation: Math.round(input.faceDetailer.bboxDilation ?? 10),
+      bbox_crop_factor: Math.max(1, input.faceDetailer.bboxCropFactor ?? 3),
+      sam_detection_hint: 'none',
+      sam_dilation: 0,
+      sam_threshold: 0.93,
+      sam_bbox_expansion: 0,
+      sam_mask_hint_threshold: 0.7,
+      sam_mask_hint_use_negative: 'False',
+      drop_size: 10,
+      bbox_detector: ['20', 0],
+      wildcard: '',
+      cycle: 1,
+    },
+    _meta: { title: 'Aethera FaceDetailer' },
+  };
+  workflow['22'] = {
+    class_type: 'SaveImage',
+    inputs: { filename_prefix: input.filenamePrefix, images: ['21', 0] },
+    _meta: { title: 'Aethera FaceDetailer output' },
+  };
+  return workflow;
+}
+
 export function buildComfyUiImg2ImgWorkflow(input: ComfyUiImg2ImgInput): ComfyUiWorkflow {
   const width = Math.max(64, Math.round(input.width / 8) * 8);
   const height = Math.max(64, Math.round(input.height / 8) * 8);
@@ -346,6 +420,10 @@ function controlNetNames(objectInfo: Record<string, unknown>): string[] {
   return values[0].filter((value): value is string => typeof value === 'string');
 }
 
+function detectorNames(objectInfo: Record<string, unknown>): string[] {
+  return modelNamesFromNode(objectInfo, 'UltralyticsDetectorProvider', 'model_name');
+}
+
 function modelNamesFromNode(objectInfo: Record<string, unknown>, nodeType: string, field: string): string[] {
   const loader = objectInfo[nodeType];
   if (!loader || typeof loader !== 'object') return [];
@@ -406,6 +484,15 @@ export function validateComfyUiWorkflow(workflow: ComfyUiWorkflow, objectInfo: R
       errors.push(`LoRA "${node.inputs['lora_name']}" is not reported by ComfyUI as installed.`);
     }
     if (installed.length === 0) errors.push('ComfyUI reports no LoRA models for the selected loader.');
+  }
+  for (const node of Object.values(workflow)) {
+    if (node.class_type !== 'UltralyticsDetectorProvider' || typeof node.inputs['model_name'] !== 'string') continue;
+    if (!availableTypes.has(node.class_type)) continue;
+    const installed = detectorNames(objectInfo);
+    if (installed.length > 0 && !installed.includes(node.inputs['model_name'])) {
+      errors.push(`Face detector "${node.inputs['model_name']}" is not reported by ComfyUI as installed.`);
+    }
+    if (installed.length === 0) errors.push('ComfyUI reports no face detector models for UltralyticsDetectorProvider.');
   }
   for (const node of Object.values(workflow)) {
     if (node.class_type === 'IPAdapterModelLoader' && typeof node.inputs['ipadapter_file'] === 'string') {

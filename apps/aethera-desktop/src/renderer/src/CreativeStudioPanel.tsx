@@ -35,6 +35,7 @@ interface CreativeBridge {
       lora?: { model: string; strengthModel: number; strengthClip: number };
       controlNet?: { model: string; strength: number; imagePath: string };
       ipAdapter?: { model: string; clipVisionModel: string; weight: number; referenceImagePath?: string };
+      faceDetailer?: { detectorModel: string; denoise?: number; guideSize?: number; maxSize?: number };
       qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
       generationRunId?: string;
     };
@@ -54,6 +55,7 @@ interface CreativeBridge {
       lora?: { model: string; strengthModel: number; strengthClip: number };
       controlNet?: { model: string; strength: number; imagePath: string };
       ipAdapter?: { model: string; clipVisionModel: string; weight: number; referenceImagePath?: string };
+      faceDetailer?: { detectorModel: string; denoise?: number; guideSize?: number; maxSize?: number };
       qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
       generationRunId?: string;
     };
@@ -118,7 +120,7 @@ interface CreativeBridge {
       endpoint?: string;
       version?: string;
       reason?: string;
-      models: { checkpoints: string[]; loras: string[]; controlnet: string[]; ipadapter: string[]; clip_vision: string[]; upscale_models: string[] };
+      models: { checkpoints: string[]; loras: string[]; controlnet: string[]; ipadapter: string[]; clip_vision: string[]; upscale_models: string[]; faceDetectors: string[] };
       capabilities: { nativeTxt2Img: boolean; nativeImg2Img: boolean; inpaint: boolean; controlNet: boolean; ipAdapter: boolean; faceDetailer: boolean; upscale: boolean; lora: boolean };
     };
     localAvailable: boolean;
@@ -187,6 +189,7 @@ export function CreativeStudioPanel() {
   const [selectedIpAdapter, setSelectedIpAdapter] = useState('');
   const [selectedClipVision, setSelectedClipVision] = useState('');
   const [ipAdapterWeight, setIpAdapterWeight] = useState(0.8);
+  const [selectedFaceDetector, setSelectedFaceDetector] = useState('');
   const [selectedUpscaleModel, setSelectedUpscaleModel] = useState('');
   const [releaseMemoryAfterGeneration, setReleaseMemoryAfterGeneration] = useState(false);
   const [fidelityMode, setFidelityMode] = useState<'conceptual_art' | 'content_faithful' | 'authentic_gameplay'>(
@@ -228,6 +231,7 @@ export function CreativeStudioPanel() {
     lora?: { model: string; strengthModel: number; strengthClip: number };
     controlNet?: { model: string; strength: number; imagePath: string };
     ipAdapter?: { model: string; clipVisionModel: string; weight: number; referenceImagePath?: string };
+    faceDetailer?: { detectorModel: string; denoise?: number; guideSize?: number; maxSize?: number };
     qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
   } | null>(null);
   const [generationBusy, setGenerationBusy] = useState(false);
@@ -292,6 +296,9 @@ export function CreativeStudioPanel() {
           : {}),
         ...(selectedIpAdapter && selectedClipVision && referencePath.trim()
           ? { ipAdapter: { model: selectedIpAdapter, clipVisionModel: selectedClipVision, referenceImagePath: referencePath.trim(), weight: ipAdapterWeight } }
+          : {}),
+        ...(engineStatus?.comfyUi.capabilities.faceDetailer && engineStatus.comfyUi.models.faceDetectors.includes(selectedFaceDetector)
+          ? { faceDetailer: { detectorModel: selectedFaceDetector, denoise: 0.35, guideSize: 512, maxSize: 1024 } }
           : {}),
         maxAttempts,
         characterCount,
@@ -560,6 +567,17 @@ export function CreativeStudioPanel() {
                 </label>
               </>
             )}
+            {engineStatus.comfyUi.capabilities.faceDetailer && engineStatus.comfyUi.models.faceDetectors.length > 0 && (
+              <select
+                aria-label="Detector do FaceDetailer ComfyUI"
+                value={selectedFaceDetector}
+                onChange={(e) => setSelectedFaceDetector(e.target.value)}
+                style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
+              >
+                <option value="">Sem FaceDetailer</option>
+                {engineStatus.comfyUi.models.faceDetectors.map((model) => <option key={model} value={model}>{model}</option>)}
+              </select>
+            )}
             {engineStatus.comfyUi.models.upscale_models.length > 0 && (
               <select
                 aria-label="Modelo de upscale ComfyUI"
@@ -806,6 +824,7 @@ export function CreativeStudioPanel() {
                   {generationReport.lora ? ` · LoRA ${generationReport.lora.model} (${generationReport.lora.strengthModel})` : ''}
                   {generationReport.controlNet ? ` · ControlNet ${generationReport.controlNet.model} (${generationReport.controlNet.strength})` : ''}
                   {generationReport.ipAdapter ? ` · IP-Adapter ${generationReport.ipAdapter.model} (${generationReport.ipAdapter.weight})` : ''}
+                  {generationReport.faceDetailer ? ` · FaceDetailer ${generationReport.faceDetailer.detectorModel}` : ''}
                 </div>
               )}
               {generationReport.qualityAudit && (

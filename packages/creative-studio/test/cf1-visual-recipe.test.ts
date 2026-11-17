@@ -173,6 +173,7 @@ describe('CF-1 orchestration order and AI background report', () => {
       seed: 7,
       referenceImagePaths: ['C:/reference.png'],
       referenceStrength: 0.38,
+      faceDetailer: { detectorModel: 'bbox/face_yolov8m.pt', guideSize: 512, denoise: 0.35 },
     });
     expect(res.report.status).toBe('generated');
     expect(res.asset?.kind).toBe('image');
@@ -181,6 +182,8 @@ describe('CF-1 orchestration order and AI background report', () => {
     expect(res.report.referenceStrength).toBe(0.38);
     expect(seen?.negativePrompt).toMatch(/text/);
     expect(seen?.prompt).toBe(res.report.recipe?.positivePrompt);
+    expect(seen?.faceDetailer).toEqual({ detectorModel: 'bbox/face_yolov8m.pt', guideSize: 512, denoise: 0.35 });
+    expect(res.report.faceDetailer).toEqual({ detectorModel: 'bbox/face_yolov8m.pt', guideSize: 512, denoise: 0.35 });
   });
 
   it('retries a structurally rejected image with a bounded seed change', async () => {

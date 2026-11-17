@@ -22,6 +22,7 @@ export interface AiGenerationReport {
   lora?: { model: string; strengthModel: number; strengthClip: number };
   controlNet?: { model: string; strength: number; imagePath: string };
   ipAdapter?: { model: string; clipVisionModel: string; weight: number; referenceImagePath?: string };
+  faceDetailer?: { detectorModel: string; denoise?: number; guideSize?: number; maxSize?: number };
   qualityAudit?: GeneratedImageQualityAudit;
 }
 
@@ -44,6 +45,7 @@ export interface GenerateAiBackgroundInput {
   lora?: { model: string; strengthModel?: number; strengthClip?: number };
   controlNet?: { model: string; imagePath: string; strength?: number; startPercent?: number; endPercent?: number };
   ipAdapter?: { model: string; clipVisionModel: string; referenceImagePath?: string; weight?: number };
+  faceDetailer?: { detectorModel: string; guideSize?: number; maxSize?: number; denoise?: number };
   characterCount?: number;
 }
 
@@ -131,6 +133,7 @@ export async function generateAiBackground(
               },
             }
           : {}),
+        ...(input.faceDetailer ? { faceDetailer: input.faceDetailer } : {}),
         ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
         ...(attemptRecipe.characterRegions.length > 1 ? { characterRegions: attemptRecipe.characterRegions } : {}),
       });
@@ -157,6 +160,7 @@ export async function generateAiBackground(
           ...(input.lora ? { lora: { model: input.lora.model, strengthModel: input.lora.strengthModel ?? 1, strengthClip: input.lora.strengthClip ?? input.lora.strengthModel ?? 1 } } : {}),
           ...(input.controlNet ? { controlNet: { model: input.controlNet.model, strength: input.controlNet.strength ?? 0.65, imagePath: input.controlNet.imagePath } } : {}),
           ...(input.ipAdapter ? { ipAdapter: { model: input.ipAdapter.model, clipVisionModel: input.ipAdapter.clipVisionModel, weight: input.ipAdapter.weight ?? 0.8, ...(input.ipAdapter.referenceImagePath ? { referenceImagePath: input.ipAdapter.referenceImagePath } : {}) } } : {}),
+          ...(input.faceDetailer ? { faceDetailer: input.faceDetailer } : {}),
           qualityAudit,
         },
       };
@@ -181,6 +185,7 @@ export async function generateAiBackground(
       ...(input.lora ? { lora: { model: input.lora.model, strengthModel: input.lora.strengthModel ?? 1, strengthClip: input.lora.strengthClip ?? input.lora.strengthModel ?? 1 } } : {}),
       ...(input.controlNet ? { controlNet: { model: input.controlNet.model, strength: input.controlNet.strength ?? 0.65, imagePath: input.controlNet.imagePath } } : {}),
       ...(input.ipAdapter ? { ipAdapter: { model: input.ipAdapter.model, clipVisionModel: input.ipAdapter.clipVisionModel, weight: input.ipAdapter.weight ?? 0.8, ...(input.ipAdapter.referenceImagePath ? { referenceImagePath: input.ipAdapter.referenceImagePath } : {}) } } : {}),
+      ...(input.faceDetailer ? { faceDetailer: input.faceDetailer } : {}),
       ...(lastAudit ? { qualityAudit: lastAudit } : {}),
     },
   };

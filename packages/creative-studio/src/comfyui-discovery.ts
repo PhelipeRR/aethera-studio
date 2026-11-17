@@ -35,6 +35,7 @@ export interface ComfyUiStatus {
     vramFreeBytes?: number;
   };
   models: ComfyUiModelInventory;
+  faceDetectors: string[];
   capabilities: ComfyUiCapabilities;
   reason?: string;
 }
@@ -202,6 +203,18 @@ function checkpointNamesFromObjectInfo(objectInfo: Record<string, unknown>): str
   return values[0].filter((value): value is string => typeof value === 'string');
 }
 
+function faceDetectorNamesFromObjectInfo(objectInfo: Record<string, unknown>): string[] {
+  const provider = objectInfo['UltralyticsDetectorProvider'];
+  if (!provider || typeof provider !== 'object') return [];
+  const input = (provider as Record<string, unknown>)['input'];
+  const required = input && typeof input === 'object' ? (input as Record<string, unknown>)['required'] : undefined;
+  const values = required && typeof required === 'object' ? (required as Record<string, unknown>)['model_name'] : undefined;
+  if (!Array.isArray(values) || !Array.isArray(values[0])) return [];
+  return values[0]
+    .filter((value): value is string => typeof value === 'string' && /face/i.test(value))
+    .sort((a, b) => a.localeCompare(b));
+}
+
 function deviceFrom(stats: ComfyUiSystemStats): ComfyUiStatus['device'] {
   const device = stats.devices?.[0];
   if (!device) return undefined;
@@ -238,6 +251,7 @@ export async function discoverComfyUi(options?: ComfyUiDiscoveryOptions): Promis
       const objectInfo = await client.getObjectInfo();
       models = inventoryFor(modelRootsFor(install, stats, fileSystem), fileSystem);
       const discoveredCheckpoints = checkpointNamesFromObjectInfo(objectInfo);
+      const faceDetectors = faceDetectorNamesFromObjectInfo(objectInfo);
       const mergedModels = {
         ...models,
         checkpoints: models.checkpoints.length > 0 ? models.checkpoints : discoveredCheckpoints,
@@ -257,6 +271,7 @@ export async function discoverComfyUi(options?: ComfyUiDiscoveryOptions): Promis
         ...(install?.version ? { version: install.version } : {}),
         ...(device ? { device } : {}),
         models: mergedModels,
+        faceDetectors,
         capabilities: inspectComfyUiCapabilities(objectInfo, mergedModels),
         ...(reason ? { reason } : {}),
       };
@@ -266,13 +281,14 @@ export async function discoverComfyUi(options?: ComfyUiDiscoveryOptions): Promis
   }
 
   if (!install) {
-    return { state: 'not_installed', models, capabilities: emptyCapabilities(), reason: 'ComfyUI installation was not found and no endpoint is reachable.' };
+    return { state: 'not_installed', models, faceDetectors: [], capabilities: emptyCapabilities(), reason: 'ComfyUI installation was not found and no endpoint is reachable.' };
   }
   return {
     state: 'offline',
     ...(install.root ? { installRoot: install.root } : {}),
     ...(install.version ? { version: install.version } : {}),
     models,
+    faceDetectors: [],
     capabilities: emptyCapabilities(),
     reason: `ComfyUI is installed but not reachable. ${errors.join(' ')}`.trim(),
   };

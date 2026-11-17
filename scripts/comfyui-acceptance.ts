@@ -51,6 +51,12 @@ if (status.state !== 'ready' || status.models.checkpoints.length === 0) {
   for (const testCase of cases) {
     const started = Date.now();
     const before = await vramMiB();
+    let peak = before;
+    const sampler = setInterval(() => {
+      void vramMiB().then((current) => {
+        if (current !== null && (peak === null || current > peak)) peak = current;
+      });
+    }, 500);
     try {
       const image = await adapter.generateImage({
         prompt: testCase.prompt,
@@ -65,6 +71,9 @@ if (status.state !== 'ready' || status.models.checkpoints.length === 0) {
       const audit = await auditGeneratedImage(image, { expectedWidth: testCase.width, expectedHeight: testCase.height });
       const outputPath = join(outputDir, `${testCase.id}.png`);
       writeFileSync(outputPath, image);
+      clearInterval(sampler);
+      const after = await vramMiB();
+      if (after !== null && (peak === null || after > peak)) peak = after;
       results.push({
         id: testCase.id,
         status: audit.passed ? 'passed' : 'rejected',
@@ -76,12 +85,16 @@ if (status.state !== 'ready' || status.models.checkpoints.length === 0) {
         file: outputPath,
         ms: Date.now() - started,
         vramBeforeMiB: before,
-        vramAfterMiB: await vramMiB(),
+        vramAfterMiB: after,
+        vramPeakMiB: peak,
         audit,
         defects: audit.findings,
         corrections: [],
       });
     } catch (error) {
+      clearInterval(sampler);
+      const after = await vramMiB();
+      if (after !== null && (peak === null || after > peak)) peak = after;
       results.push({
         id: testCase.id,
         status: 'failed',
@@ -92,7 +105,8 @@ if (status.state !== 'ready' || status.models.checkpoints.length === 0) {
         resolution: `${testCase.width}x${testCase.height}`,
         ms: Date.now() - started,
         vramBeforeMiB: before,
-        vramAfterMiB: await vramMiB(),
+        vramAfterMiB: after,
+        vramPeakMiB: peak,
         error: error instanceof Error ? error.message : String(error),
       });
     }

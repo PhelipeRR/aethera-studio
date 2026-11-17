@@ -33,6 +33,7 @@ describe('ComfyUI discovery', () => {
           return new Response(JSON.stringify({
             CheckpointLoaderSimple: { input: { required: { ckpt_name: [['sdxl.safetensors']] } } },
             CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {},
+            UltralyticsDetectorProvider: { input: { required: { model_name: [['bbox/face_yolov8m.pt', 'bbox/hand_yolov8s.pt']] } } },
           }));
         }
         return new Response('{}');
@@ -45,6 +46,7 @@ describe('ComfyUI discovery', () => {
     expect(result.device?.name).toContain('4060 Ti');
     expect(result.models.checkpoints).toEqual(['sdxl.safetensors']);
     expect(result.models.loras).toEqual(['style.safetensors']);
+    expect(result.faceDetectors).toEqual(['bbox/face_yolov8m.pt']);
     expect(result.reason).toBeUndefined();
   });
 

@@ -4,12 +4,43 @@ import {
   buildComfyUiImg2ImgWorkflow,
   buildComfyUiInpaintWorkflow,
   buildComfyUiUpscaleWorkflow,
+  buildComfyUiFaceDetailerWorkflow,
   extractComfyUiImages,
   validateComfyUiWorkflow,
 } from '../src/comfyui-workflow.js';
 import type { ComfyUiHistoryEntry } from '../src/comfyui-client.js';
 
 describe('ComfyUI workflow registry', () => {
+  it('builds a FaceDetailer pass from the native output and validates its detector model', () => {
+    const workflow = buildComfyUiFaceDetailerWorkflow({
+      checkpoint: 'animagine-xl-3.1.safetensors',
+      positivePrompt: 'anime portrait, clean face and hands',
+      negativePrompt: 'text, malformed anatomy',
+      width: 768,
+      height: 768,
+      seed: 42,
+      steps: 8,
+      cfg: 5.5,
+      samplerName: 'euler',
+      scheduler: 'normal',
+      filenamePrefix: 'Aethera/facedetailer',
+      faceDetailer: { detectorModel: 'bbox/face_yolov8m.pt', seed: 43, denoise: 0.35 },
+    });
+
+    expect(workflow['20']).toMatchObject({ class_type: 'UltralyticsDetectorProvider', inputs: { model_name: 'bbox/face_yolov8m.pt' } });
+    expect(workflow['21']).toMatchObject({
+      class_type: 'FaceDetailer',
+      inputs: { image: ['6', 0], model: ['1', 0], clip: ['1', 1], vae: ['1', 2], bbox_detector: ['20', 0], seed: 43, denoise: 0.35 },
+    });
+    expect(workflow['22']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['21', 0] } });
+    expect(validateComfyUiWorkflow(workflow, {
+      CheckpointLoaderSimple: { input: { required: { ckpt_name: [['animagine-xl-3.1.safetensors']] } } },
+      CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {},
+      UltralyticsDetectorProvider: { input: { required: { model_name: [['bbox/face_yolov8m.pt']] } } },
+      FaceDetailer: {},
+    })).toEqual({ ok: true, errors: [] });
+  });
+
   it('builds a native-node txt2img graph with the requested generation controls', () => {
     const workflow = buildComfyUiTxt2ImgWorkflow({
       checkpoint: 'sd_xl_base_1.0.safetensors',

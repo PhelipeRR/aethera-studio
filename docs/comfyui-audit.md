@@ -1,108 +1,71 @@
-# ComfyUI image engine audit
+# ComfyUI local audit
 
-Audit date: 2026-11-16. Host: Windows, RTX 4060 Ti 8 GB. Command:
+Status checked on 2026-11-16/17. This document records the operational evidence for the local image-generation path; large PNG outputs remain outside Git under `artifacts/`.
 
-```powershell
-npx tsx scripts/comfyui-audit.ts
-```
+## Runtime
 
-The six-case harness is:
+| Item | Evidence |
+| --- | --- |
+| Endpoint | `http://127.0.0.1:8000` ready; port 8188 is not listening |
+| ComfyUI | `0.20.1` |
+| Python | `C:\Users\Pheli\Documents\ComfyUI\.venv\Scripts\python.exe`, Python 3.12 |
+| PyTorch/CUDA | `2.10.0+cu130`, CUDA 13.0 |
+| GPU | NVIDIA GeForce RTX 4060 Ti, 8,585,216,000 bytes VRAM |
+| Binding | localhost-only (`--listen 127.0.0.1 --port 8000`) |
+| Runtime paths | base directory `C:\Users\Pheli\Documents\ComfyUI`; extra paths from `extra_models_config.yaml` |
 
-```powershell
-npx tsx scripts/comfyui-acceptance.ts
-npx tsx scripts/comfyui-acceptance.ts --reference C:\path\to\reference.png
-```
+The Aethera discovery path now probes both 8000 and 8188, then retargets the native adapter to the discovered ready endpoint. The existing `Start-ComfyUI.ps1` starts the server hidden and writes status/log files. Aethera automatic launch on desktop startup was not independently verified.
 
-When the runtime is offline or has no checkpoint, the harness exits as blocked and prints the exact discovery result. When it is ready, it writes per-case PNGs and `artifacts/comfyui-acceptance/report.json` with duration, VRAM samples, image dimensions and the structural audit.
+## Models and licenses
 
-## Evidence from this machine
+| Asset | Local file | Size | SHA-256 | Source/license |
+| --- | --- | ---: | --- | --- |
+| Animagine XL 3.1 | `models/checkpoints/animagine-xl-3.1.safetensors` | 6,938,325,776 | `e3c47aedb06418c6c331443cd89f2b3b3b34b7ed2102a3d4c4408a8d35aad6b0` | [official model card](https://huggingface.co/cagliostrolab/animagine-xl-3.1), OpenRAIL++ |
+| Illustrious XL v2.0 | `models/checkpoints/Illustrious-XL-v2.0.safetensors` | 6,938,040,674 | `c2a1a3eaa13d4c107dc7e00c3fe830cab427aa026362740ea094745b3422a331` | [official model card](https://huggingface.co/OnomaAIResearch/Illustrious-XL-v2.0), CreativeML OpenRAIL-M |
+| 4x-UltraSharp | `models/upscale_models/4x-UltraSharp.pth` | 66,961,958 | `a5812231fc936b42af08a5edba784195495d303d5b3248c24489ef0c4021fe01` | [official file page](https://huggingface.co/NiceTwice/4x-UltraSharp/blob/main/4x-UltraSharp.pth) |
 
-The audit found:
+Both checkpoints are recognized by `/object_info`; no duplicate checkpoint name was found in the discovered model roots.
 
-- installation: `C:\Users\Pheli\AppData\Local\Programs\ComfyUI`;
-- ComfyUI version: `0.20.1` from `resources\ComfyUI\comfyui_version.py`;
-- loopback ports `8188` and `8000`: not reachable (`fetch failed` / connection refused);
-- no ComfyUI process was running;
-- model directories exist, but the audited model extensions are absent from `checkpoints`, `controlnet`, `ipadapter`, `clip_vision`, `diffusion_models`, `loras`, `vae`, `upscale_models` and `embeddings`;
-- GPU evidence from the baseline: `NVIDIA GeForce RTX 4060 Ti`, 8188 MiB total VRAM, driver `621.01`.
+## Custom nodes and capabilities
 
-The reproducible result is therefore:
+- [ComfyUI Manager](https://github.com/Comfy-Org/ComfyUI-Manager), commit `c8bf0d48f33382ba621a5b44820cc636d32e38ce`.
+- [Impact Pack](https://github.com/ltdrdata/ComfyUI-Impact-Pack), commit `4a8a239abae00e5e72a54481427d43e9362a42bb`.
+- [Impact Subpack](https://github.com/ltdrdata/ComfyUI-Impact-Subpack), commit `50c7b71a6a224734cc9b21963c6d1926816a97f1`.
+- Live `/object_info` exposes `FaceDetailer`, `DetailerForEach`, `UltralyticsDetectorProvider`, and `UpscaleModelLoader`.
+- Detector installed: `models/ultralytics/bbox/face_yolov8m.pt` (52,026,019 bytes).
+- SAM model installed: `models/sams/sam_vit_b_01ec64.pth` (375,042,383 bytes).
+- Current live capability inventory: native txt2img, img2img, inpaint, FaceDetailer, and upscale are available; ControlNet, IP-Adapter, and LoRA are not yet available because their nodes/models are not installed.
 
-```json
-{
-  "state": "offline",
-  "version": "0.20.1",
-  "models": {
-    "checkpoints": [],
-    "controlnet": [],
-    "ipadapter": [],
-    "clip_vision": [],
-    "diffusion_models": [],
-    "loras": [],
-    "vae": [],
-    "upscale_models": [],
-    "embeddings": []
-  },
-  "capabilities": {
-    "nativeTxt2Img": false,
-    "nativeImg2Img": false,
-    "inpaint": false,
-    "controlNet": false,
-    "ipAdapter": false,
-    "faceDetailer": false,
-    "upscale": false,
-    "lora": false
-  }
-}
-```
+## Real generation evidence
 
-This is an environment blocker, not a workflow-quality result. No model was downloaded, no external endpoint was enabled, and no ComfyUI process was started automatically.
+### Baseline acceptance
 
-## Model decision
+Report: `artifacts/comfyui-acceptance/report.json`; images: `artifacts/comfyui-acceptance/*.png`.
 
-No model is installed locally, so these are recommendations rather than validated assets. The file-size figures below are repository weights, not a promise of peak VRAM usage; SDXL text encoders, VAE, attention workspace, ControlNet/IP-Adapter and upscale stages add runtime memory.
+The six baseline requests completed the structural gate: PNG, expected dimensions, three channels, and non-flat luminance. The measured durations were:
 
-- **general quality baseline:** [Stable Diffusion XL base 1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0), the broad SDXL reference checkpoint and a practical compatibility target for native ComfyUI graphs;
-- **anime premium candidate:** [Animagine XL 3.1](https://huggingface.co/cagliostrolab/animagine-xl-3.1), an SDXL anime fine-tune whose card reports improved anatomy/prompt interpretation, a 6.94 GB safetensors weight, and CreativeML Open RAIL++ terms;
-- **anime cinematic candidate:** [Illustrious XL v2.0](https://huggingface.co/OnomaAIResearch/Illustrious-XL-v2.0), a 6.94 GB SDXL illustration checkpoint under `creativeml-openrail-m`; it needs a real prompt/sampler comparison against Animagine before becoming the default;
-- **specialised character candidate:** [Pony Diffusion V6](https://huggingface.co/AstraliteHeart/pony-diffusion-v6), an approximately 6.94 GB SDXL weight under `creativeml-openrail-m`, but the model is specialised for pony/anthro/furry/cartoon subjects and is not the general NextWorth baseline;
-- **fast preview candidate:** [SDXL-Lightning](https://huggingface.co/ByteDance/SDXL-Lightning), whose card provides 1/2/4/8-step variants; prefer a compatible 4-step checkpoint only after the ComfyUI graph, model pairing and license are checked;
-- **existing local fallback:** [SDXL-Turbo](https://huggingface.co/stabilityai/sdxl-turbo), useful for quick previews at 1–4 steps, but its card points commercial users to Stability’s license, so it is not treated as the professional-quality baseline;
-- **not selected for a monetized channel:** [FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) is a 12B model under the FLUX.1-dev Non-Commercial License. Quantized community variants do not automatically remove that restriction, so it is not acceptable as the NextWorth default without a separate license decision;
-- **later identity-control candidate:** [IP-Adapter for SDXL](https://huggingface.co/h94/IP-Adapter), especially Plus/Face variants. The card lists a large SDXL image encoder and the runtime currently has no IP-Adapter node/model, so it remains disabled until VRAM and identity-fidelity validation pass. The optional graph follows the official [ComfyUI IPAdapter node contract](https://github.com/comfyorg/comfyui-ipadapter/blob/main/IPAdapterPlus.py) (`IPAdapterModelLoader`, `CLIPVisionLoader`, `IPAdapterAdvanced`/`IPAdapterApply`).
+| Case | Resolution | Seed | Time | Peak VRAM |
+| --- | ---: | ---: | ---: | ---: |
+| anime individual | 768×768 | 10000 | 15,638 ms | 7,419 MiB |
+| anime 2 | 1024×576 | 10001 | 3,135 ms | 7,420 MiB |
+| anime 4/trio | 1024×576 | 10002 | 11,001 ms | 7,637 MiB |
+| anime 8 | 1024×576 | 10003 | 11,243 ms | 7,611 MiB |
+| gaming thumbnail | 1280×720 | 10004 | 4,538 ms | 7,394 MiB |
+| NextWorth banner | 1280×720 | 10005 | 4,562 ms | 7,422 MiB |
 
-Recommended installation order for the 8 GB card: one SDXL anime checkpoint (Animagine or Illustrious, not both initially), native VAE path, then the six-case harness; only after that add one ControlNet or one IP-Adapter stack and measure peak VRAM again. The model names above are not yet installed or visually accepted on this machine.
+The structural gate is not a semantic or aesthetic gate. Human review found the close-up usable, but the two/multi-character, gamer, and NextWorth banner outputs were mostly silhouettes/backgrounds and did not reliably satisfy the requested subjects. The baseline therefore proves the runtime path, not production visual quality. The current report includes the post-install capability snapshot and sampled peak VRAM.
 
-The application does not silently download or activate any of these. The selected checkpoint must be present in ComfyUI’s own inventory and the user must approve its license for the intended channel.
+### Face refinement and upscale
 
-## Delivered engine path
+- Animagine direct generation: `artifacts/comfyui-bootstrap/animagine-first-generation.png` — 768×768, generated, 10,700 ms, peak observed 7,714 MiB; coherent but tightly cropped.
+- Illustrious direct generation: `artifacts/comfyui-bootstrap/illustrious-first-generation.png` — 768×768, generated, 6,286 ms; model loaded, but anatomy/prompt adherence needs tuning.
+- Raw FaceDetailer workflow: `artifacts/comfyui-bootstrap/illustrious-facedetailer.png` — completed successfully.
+- Aethera adapter FaceDetailer workflow: `artifacts/comfyui-bootstrap/aethera-facedetailer.png` — completed successfully in 16,337 ms.
+- Aethera adapter upscale with 4x-UltraSharp: `artifacts/comfyui-bootstrap/aethera-facedetailer-upscaled.png` — 3072×3072, completed in 6,325 ms.
 
-The Aethera path is now:
+## Remaining work / blockers
 
-1. creative direction returns structured notes;
-2. `VisualRecipe` selects a professional preset and carries seed, dimensions, steps, CFG, sampler and scheduler;
-3. `ComfyUiImageAdapter` validates the selected checkpoint and native nodes against `/object_info`;
-4. it queues a native txt2img or img2img graph through `/prompt`, waits on `/history`, and downloads `/view` output;
-5. the generated buffer receives a structural audit for dimensions and luminance variation;
-6. a user-selected seed, render side (768/1024), reference denoise, bounded retry limit or serial batch changes the persisted request rather than hiding parameters in process memory;
-7. an optional native `LoraLoader`/`LoraLoaderModelOnly` node is inserted only when the selected LoRA is reported by `/object_info`;
-8. an optional `ControlNetLoader` + discovered `ControlNetApplyAdvanced`/`ControlNetApply` path is inserted only when its model, conditioning image and node type are available;
-9. an optional `IPAdapterModelLoader` + `CLIPVisionLoader` + discovered `IPAdapterAdvanced`/`IPAdapterApply` path is inserted only when both model inventories, a reference image and compatible nodes are available;
-10. only a real output is composed; fallback reports remain visible in the panel and production console.
-
-Reference images use `/upload/image` and a native `LoadImage → VAEEncode → KSampler` graph. Localized repair uses a bounded mask with `VAEEncodeForInpaint` when that node is exposed. Multi-character requests with two to eight planned regions use one environment pass followed by one bounded inpaint pass per region; a reference image deliberately remains on the single img2img path. The adapter also has a checkpoint-independent `LoadImage → UpscaleModelLoader → ImageUpscaleWithModel` graph, exposed in the panel as an explicit background-upscale action that creates a new managed asset. Jobs are serialized by a process-local GPU lease; memory can be released explicitly or after each generation.
-
-## What is still blocked
-
-The real six-case ComfyUI acceptance pass cannot be claimed until a server is running with at least one compatible checkpoint. The upscale graph and panel action cannot be validated until an `upscale_models` file is installed. ControlNet, IP-Adapter, the new LoRA graph and face-detail workflows also cannot be validated while their models/nodes are absent. The current reference path is native img2img with explicit denoise control; IP-Adapter is now an optional feature-gated path, but identity still requires human/semantic verification and is never promised as perfect.
-
-To unblock the real pass, install/import a licensed checkpoint into the audited ComfyUI `models\checkpoints` directory, start ComfyUI on `127.0.0.1:8188`, and rerun the audit. The panel will then expose the reported checkpoint list rather than accepting an arbitrary model name.
-
-## Validation already run
-
-- ComfyUI client/workflow/discovery/adapter tests: passing;
-- reference upload and img2img graph tests: passing;
-- professional preset tests: passing;
-- generated-image structural audit and GPU lease tests: passing;
-- Aethera renderer build: passing, with existing `import.meta` and browser externalization warnings;
-- desktop node typecheck: still reports the pre-existing JSX6142 in `test/delete-prompt-dialog.test.ts` because that tsconfig does not enable JSX.
+1. Add semantic/human-review recording to the six-case acceptance so subject count, anatomy, focal point, text-safe area, and “empty composition” become explicit acceptance criteria.
+2. Improve multi-character and banner quality with regional composition/conditioning; do not mark the structural baseline as visually accepted.
+3. Install and hash-verify compatible ControlNet and IP-Adapter nodes/models before exposing those controls. The UI remains feature-gated and currently hides unavailable models.
+4. Verify Aethera-to-ComfyUI startup/recovery end-to-end and decide whether the duplicate dependency installation in the unused Comfy Desktop venv should be cleaned up. The live server uses the Documents venv and is not affected.

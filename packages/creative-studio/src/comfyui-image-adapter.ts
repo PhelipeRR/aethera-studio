@@ -8,6 +8,7 @@ import {
   extractComfyUiImages,
   buildComfyUiImg2ImgWorkflow,
   buildComfyUiTxt2ImgWorkflow,
+  buildComfyUiFaceDetailerWorkflow,
   validateComfyUiWorkflow,
   type ComfyUiWorkflow,
   type ComfyUiControlNetInput,
@@ -198,7 +199,9 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
         }
       : request;
     const workflow = uploadedReference
-      ? this.img2imgWorkflowFor(request, uploadedReference, controlNet, ipAdapter)
+      ? request.faceDetailer
+        ? (() => { throw new Error('ComfyUI FaceDetailer is currently supported only for native txt2img.'); })()
+        : this.img2imgWorkflowFor(request, uploadedReference, controlNet, ipAdapter)
       : this.workflowFor(workflowRequest, controlNet, ipAdapter);
     const validation = validateComfyUiWorkflow(workflow, objectInfo);
     if (!validation.ok) {
@@ -314,8 +317,8 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     return true;
   }
 
-  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora'>, controlNet?: ComfyUiControlNetInput, ipAdapter?: ComfyUiIpAdapterInput): ComfyUiWorkflow {
-    return buildComfyUiTxt2ImgWorkflow({
+  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora' | 'faceDetailer'>, controlNet?: ComfyUiControlNetInput, ipAdapter?: ComfyUiIpAdapterInput): ComfyUiWorkflow {
+    const input = {
       checkpoint: request.model ?? this.checkpoint,
       positivePrompt: request.prompt,
       negativePrompt: request.negativePrompt ?? 'text, letters, watermark, low quality, deformed anatomy',
@@ -329,8 +332,10 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       ...(request.lora ? { lora: request.lora } : {}),
       ...(controlNet ? { controlNet } : {}),
       ...(ipAdapter ? { ipAdapter } : {}),
+      ...(request.faceDetailer ? { faceDetailer: request.faceDetailer } : {}),
       filenamePrefix: this.filenamePrefix,
-    });
+    };
+    return request.faceDetailer ? buildComfyUiFaceDetailerWorkflow(input) : buildComfyUiTxt2ImgWorkflow(input);
   }
 
   private img2imgWorkflowFor(
