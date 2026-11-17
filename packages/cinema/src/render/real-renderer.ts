@@ -37,9 +37,10 @@ import {
   type AudioFirstDurationAudit,
 } from '../audio/audio-first-timeline.js';
 import { applyBrollSelectionsToTimeline, type BrollTimelineSelection } from '../edit/broll-timeline.js';
-import { recomputeTimelineFingerprints } from '../ir/timeline-ir.js';
+import { recomputeTimelineFingerprints, type CanonicalTimeline } from '../ir/timeline-ir.js';
 import type { AetheraEvolutionCore, ProductionDirectives } from '../evolution/evolution-core.js';
 import { resolveDeliveryProfile, type DeliveryQualityProfile, type ResolvedDeliveryProfile } from '../director/aethera-format-catalog.js';
+import { compileSmartCaptions, type CaptionWord, type SmartCaptionArtifact, type SmartCaptionStyle } from '../captions/smart-captions.js';
 
 const execFileAsync = promisify(execFile);
 type NarrationMode = 'voicestudio_tts' | 'elevenlabs_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback';
@@ -90,6 +91,11 @@ export interface RealRenderInput {
   allowProceduralVoiceFallback?: boolean;
   /** Scene Grounding selections are applied before clip specs are read; the Audio-First clock remains authoritative. */
   brollSelections?: readonly BrollTimelineSelection[];
+  /** Measured word timestamps on the final Audio-First clock. Caption rendering never invents or stretches them. */
+  captionWords?: readonly CaptionWord[];
+  captionStyle?: SmartCaptionStyle;
+  captionKeywords?: readonly string[];
+  captionPlacement?: 'bottom' | 'top';
 }
 
 export type AudioFirstRenderAudit = AudioFirstDurationAudit & {
@@ -144,6 +150,16 @@ export interface RealRenderResult {
   editorialConsistency?: EditorialConsistencyReport;
   audioQuality?: AudioQualityGateReport;
   audioFirstTimeline?: AudioFirstRenderAudit;
+  smartCaptions?: {
+    enabled: boolean;
+    cacheKey: string;
+    cachePath: string;
+    cacheHit: boolean;
+    wordCount: number;
+    cueCount: number;
+    coverage: SmartCaptionArtifact['coverage'];
+    style: SmartCaptionStyle;
+  };
   deliveryValidation?: {
     valid: boolean;
     target: 'preview' | 'master';
@@ -367,6 +383,30 @@ function escapeDrawtext(raw: string): string {
     .replace(/:/g, ' -')
     .replace(/'/g, '')
     .slice(0, 56);
+}
+
+function captionWordsFromSubtitleClips(clips: readonly CanonicalTimeline['clips'][number][]): CaptionWord[] {
+  const words: CaptionWord[] = [];
+  for (const clip of clips) {
+    const effect = clip.effects.find((candidate) => candidate.kind === 'subtitle_style' && candidate.enabled);
+    const rawWords = effect?.params['words'];
+    if (!Array.isArray(rawWords)) continue;
+    for (const raw of rawWords) {
+      if (!raw || typeof raw !== 'object') continue;
+      const value = raw as Record<string, unknown>;
+      const text = typeof value['text'] === 'string' ? value['text'] : typeof value['w'] === 'string' ? value['w'] : '';
+      const startMs = typeof value['startMs'] === 'number' ? value['startMs'] : typeof value['s'] === 'number' ? Math.round(value['s'] * 1_000) : -1;
+      const endMs = typeof value['endMs'] === 'number' ? value['endMs'] : typeof value['e'] === 'number' ? Math.round(value['e'] * 1_000) : -1;
+      if (text.trim() && Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
+        words.push({ text: text.trim(), startMs: Math.round(clip.timelineRange.start.value / clip.timelineRange.start.rate * 1_000) + Math.round(startMs), endMs: Math.round(clip.timelineRange.start.value / clip.timelineRange.start.rate * 1_000) + Math.round(endMs) });
+      }
+    }
+  }
+  return words.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+}
+
+function escapeAssFilterPath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
 }
 
 function resolveFontOption(): string {
@@ -735,6 +775,37 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const totalDurMs = audioFirstBase.finalTimelineDurationMs;
   const totalDur = totalDurMs / 1000;
 
+  const measuredCaptionWords = input.captionWords?.length
+    ? [...input.captionWords].sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)
+    : captionWordsFromSubtitleClips(subtitleClips);
+  let smartCaptionArtifact: SmartCaptionArtifact | undefined;
+  let smartCaptionCacheHit = false;
+  let smartCaptionCachePath = '';
+  if (measuredCaptionWords.length > 0) {
+    const safeMargins = { top: Math.round(targetHeight * safeArea.top / 100), right: safeRight, bottom: safeBottom, left: safeLeft };
+    smartCaptionArtifact = compileSmartCaptions({
+      words: measuredCaptionWords,
+      durationMs: totalDurMs,
+      width: targetWidth,
+      height: targetHeight,
+      safeArea: safeMargins,
+      style: input.captionStyle ?? 'geek',
+      ...(input.captionKeywords ? { keywords: input.captionKeywords } : {}),
+      ...(input.captionPlacement ? { placement: input.captionPlacement } : {}),
+    });
+    const captionCacheDir = join(input.segmentCacheDir ?? workDir, 'captions');
+    mkdirSync(captionCacheDir, { recursive: true });
+    smartCaptionCachePath = join(captionCacheDir, `captions_${smartCaptionArtifact.cacheKey}.ass`);
+    if (existsSync(smartCaptionCachePath) && statSync(smartCaptionCachePath).size > 128) {
+      smartCaptionCacheHit = true;
+      smartCaptionArtifact = { ...smartCaptionArtifact, ass: readFileSync(smartCaptionCachePath, 'utf8') };
+    } else {
+      const tmpCaptionPath = `${smartCaptionCachePath}.tmp`;
+      writeFileSync(tmpCaptionPath, smartCaptionArtifact.ass, 'utf8');
+      renameSync(tmpCaptionPath, smartCaptionCachePath);
+    }
+  }
+
   const palettes = [
     ['0x0f0a1f', '0x8b5cf6'],
     ['0x160d24', '0xf59e0b'],
@@ -1052,8 +1123,28 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     ]);
   }
 
-  // 2b. Burn timed subtitle track clips if present
-  if (subtitleClips.length > 0) {
+  // 2b. Burn measured word captions with libass. This is deliberately after xfade: the ASS clock is the
+  // measured Audio-First clock, so scene edits do not cause a second, estimated caption clock.
+  if (smartCaptionArtifact && smartCaptionCachePath) {
+    const subVideoPath = join(workDir, 'video_smart_captioned.mp4');
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-i',
+      rawVideoPath,
+      '-vf',
+      `ass='${escapeAssFilterPath(smartCaptionCachePath)}'`,
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      '-preset',
+      'veryfast',
+      subVideoPath,
+    ]);
+    copyFileSync(subVideoPath, rawVideoPath);
+  } else if (subtitleClips.length > 0) {
+    // Legacy subtitle clips without measured words stay on the old drawtext path. They are not reported as
+    // word-synchronized captions and never pretend to have timestamps they do not possess.
     const subVideoPath = join(workDir, 'video_subtitled.mp4');
     const subFilters = subtitleClips.map((sc) => {
       const startSec = Number((sc.timelineRange.start.value / sc.timelineRange.start.rate).toFixed(2));
@@ -1423,6 +1514,18 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     editorialConsistency,
     audioQuality,
     audioFirstTimeline: buildAudioFirstAudit(finalAudioStreamDurationMs),
+    ...(smartCaptionArtifact && smartCaptionCachePath ? {
+      smartCaptions: {
+        enabled: true,
+        cacheKey: smartCaptionArtifact.cacheKey,
+        cachePath: smartCaptionCachePath,
+        cacheHit: smartCaptionCacheHit,
+        wordCount: measuredCaptionWords.length,
+        cueCount: smartCaptionArtifact.cues.length,
+        coverage: smartCaptionArtifact.coverage,
+        style: smartCaptionArtifact.style,
+      },
+    } : {}),
     deliveryValidation,
   };
 }

@@ -73,6 +73,14 @@ describe('Audio-first real renderer', () => {
       useNvenc: false,
       previewQuality: 'fast_preview',
       allowProceduralVoiceFallback: false,
+      captionStyle: 'game',
+      captionKeywords: ['Night City'],
+      captionWords: [
+        { text: 'Em', startMs: 120, endMs: 300 },
+        { text: 'Night', startMs: 330, endMs: 560 },
+        { text: 'City', startMs: 590, endMs: 860 },
+        { text: 'cada', startMs: 900, endMs: 1_080 },
+      ],
     });
 
     expect(rendered.narrationMode).not.toBe('procedural_voice_fallback');
@@ -100,6 +108,11 @@ describe('Audio-first real renderer', () => {
       3,
     );
     expect(rendered.deliveryValidation?.valid).toBe(true);
+    expect(rendered.smartCaptions?.enabled).toBe(true);
+    expect(rendered.smartCaptions?.wordCount).toBe(4);
+    expect(rendered.smartCaptions?.cueCount).toBeGreaterThan(0);
+    expect(rendered.smartCaptions?.coverage.endMs).toBe(1_080);
+    expect(rendered.smartCaptions?.cachePath).toMatch(/captions_[a-f0-9]+\.ass$/u);
 
     const narrationMetadataFiles = readdirSync(rendered.audioFirstTimeline?.narrationCacheDir ?? '')
       .filter((file) => file.endsWith('.wav.json'));
