@@ -8,6 +8,7 @@ export interface CreativeImageEngineSettings {
   checkpoint: string;
   preferredPreset: ProfessionalPresetId;
   releaseMemoryAfterGeneration: boolean;
+  autoStartComfyUi: boolean;
 }
 
 export const DEFAULT_CREATIVE_IMAGE_ENGINE_SETTINGS: CreativeImageEngineSettings = {
@@ -15,6 +16,7 @@ export const DEFAULT_CREATIVE_IMAGE_ENGINE_SETTINGS: CreativeImageEngineSettings
   checkpoint: 'sd_xl_base_1.0.safetensors',
   preferredPreset: 'youtube_thumbnail_1280x720',
   releaseMemoryAfterGeneration: false,
+  autoStartComfyUi: false,
 };
 
 function isProfessionalPreset(value: unknown): value is ProfessionalPresetId {
@@ -50,6 +52,10 @@ export function normalizeCreativeImageEngineSettings(
   if ('releaseMemoryAfterGeneration' in raw) {
     if (typeof raw['releaseMemoryAfterGeneration'] !== 'boolean') throw new Error('A opção de liberar VRAM deve ser booleana.');
     next.releaseMemoryAfterGeneration = raw['releaseMemoryAfterGeneration'];
+  }
+  if ('autoStartComfyUi' in raw) {
+    if (typeof raw['autoStartComfyUi'] !== 'boolean') throw new Error('A opção de iniciar o ComfyUI automaticamente deve ser booleana.');
+    next.autoStartComfyUi = raw['autoStartComfyUi'];
   }
   return next;
 }

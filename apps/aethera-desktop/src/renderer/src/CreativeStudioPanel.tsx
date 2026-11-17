@@ -125,14 +125,15 @@ interface CreativeBridge {
     };
     localAvailable: boolean;
     activeProvider: string;
+    startup: { enabled: boolean; state: 'disabled' | 'idle' | 'starting' | 'started' | 'ready' | 'missing' | 'failed'; scriptPath: string; message?: string };
   }>;
   creativeImageEngineSettings?: () => Promise<{
-    settings: { endpoint: string; checkpoint: string; preferredPreset: ProfessionalPresetId; releaseMemoryAfterGeneration: boolean };
+    settings: { endpoint: string; checkpoint: string; preferredPreset: ProfessionalPresetId; releaseMemoryAfterGeneration: boolean; autoStartComfyUi: boolean };
     availableCheckpoints: string[];
     status: NonNullable<Awaited<ReturnType<NonNullable<CreativeBridge['creativeImageEngineStatus']>>>>;
   }>;
   creativeSaveImageEngineSettings?: (input: Record<string, unknown>) => Promise<{
-    settings: { endpoint: string; checkpoint: string; preferredPreset: ProfessionalPresetId; releaseMemoryAfterGeneration: boolean };
+    settings: { endpoint: string; checkpoint: string; preferredPreset: ProfessionalPresetId; releaseMemoryAfterGeneration: boolean; autoStartComfyUi: boolean };
     availableCheckpoints: string[];
     status: NonNullable<Awaited<ReturnType<NonNullable<CreativeBridge['creativeImageEngineStatus']>>>>;
     requiresRestart: boolean;
@@ -188,10 +189,11 @@ export function CreativeStudioPanel() {
   const [controlNetStrength, setControlNetStrength] = useState(0.65);
   const [selectedIpAdapter, setSelectedIpAdapter] = useState('');
   const [selectedClipVision, setSelectedClipVision] = useState('');
-  const [ipAdapterWeight, setIpAdapterWeight] = useState(0.8);
+  const [ipAdapterWeight, setIpAdapterWeight] = useState(0.35);
   const [selectedFaceDetector, setSelectedFaceDetector] = useState('');
   const [selectedUpscaleModel, setSelectedUpscaleModel] = useState('');
   const [releaseMemoryAfterGeneration, setReleaseMemoryAfterGeneration] = useState(false);
+  const [autoStartComfyUi, setAutoStartComfyUi] = useState(false);
   const [fidelityMode, setFidelityMode] = useState<'conceptual_art' | 'content_faithful' | 'authentic_gameplay'>(
     'conceptual_art',
   );
@@ -257,9 +259,13 @@ export function CreativeStudioPanel() {
     setAiAvailable(ai.available);
     if (persistedImageEngine) {
       setEngineStatus(persistedImageEngine.status);
-      setSelectedCheckpoint(persistedImageEngine.settings.checkpoint);
+      const availableCheckpoints = persistedImageEngine.status.comfyUi.models.checkpoints;
+      setSelectedCheckpoint(availableCheckpoints.includes(persistedImageEngine.settings.checkpoint)
+        ? persistedImageEngine.settings.checkpoint
+        : availableCheckpoints[0] ?? persistedImageEngine.settings.checkpoint);
       setProfessionalPreset(persistedImageEngine.settings.preferredPreset);
       setReleaseMemoryAfterGeneration(persistedImageEngine.settings.releaseMemoryAfterGeneration);
+      setAutoStartComfyUi(persistedImageEngine.settings.autoStartComfyUi);
       setSelectedUpscaleModel(persistedImageEngine.status.comfyUi.models.upscale_models[0] ?? '');
     } else if (imageEngine) {
       setEngineStatus(imageEngine);
@@ -386,9 +392,13 @@ export function CreativeStudioPanel() {
     const saved = await getBridge()?.creativeSaveImageEngineSettings?.(patch);
     if (!saved) return;
     setEngineStatus(saved.status);
-    setSelectedCheckpoint(saved.settings.checkpoint);
+    const availableCheckpoints = saved.status.comfyUi.models.checkpoints;
+    setSelectedCheckpoint(availableCheckpoints.includes(saved.settings.checkpoint)
+      ? saved.settings.checkpoint
+      : availableCheckpoints[0] ?? saved.settings.checkpoint);
     setProfessionalPreset(saved.settings.preferredPreset);
     setReleaseMemoryAfterGeneration(saved.settings.releaseMemoryAfterGeneration);
+    setAutoStartComfyUi(saved.settings.autoStartComfyUi);
     setStatusMsg(saved.requiresRestart ? 'Configuração salva; reinicie o Aethera para aplicar o endpoint.' : 'Configuração do engine salva.');
   };
 
@@ -487,6 +497,11 @@ export function CreativeStudioPanel() {
         </div>
         {engineStatus?.comfyUi.reason && (
           <span style={{ color: 'var(--muted-foreground)', maxWidth: 620 }}>{engineStatus.comfyUi.reason}</span>
+        )}
+        {engineStatus?.startup.enabled && engineStatus.startup.message && (
+          <span style={{ color: engineStatus.startup.state === 'failed' || engineStatus.startup.state === 'missing' ? 'var(--warning)' : 'var(--muted-foreground)', maxWidth: 620 }}>
+            auto-start: {engineStatus.startup.message}
+          </span>
         )}
         {engineStatus && (
           <span style={{ color: 'var(--muted-foreground)' }}>
@@ -588,6 +603,14 @@ export function CreativeStudioPanel() {
                 {engineStatus.comfyUi.models.upscale_models.map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
             )}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="Quando o ComfyUI estiver instalado, inicia o script local uma vez se o endpoint estiver offline.">
+              <input
+                type="checkbox"
+                checked={autoStartComfyUi}
+                onChange={(e) => void saveImageEngineSettings({ autoStartComfyUi: e.target.checked })}
+              />
+              iniciar ComfyUI se offline
+            </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <input
                 type="checkbox"

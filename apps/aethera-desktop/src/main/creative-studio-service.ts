@@ -1,7 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import type { IpcMain } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { TraceMoeProvenanceAdapter } from '@neuralbridge/cinema';
@@ -58,6 +61,15 @@ import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js
 import { createProductionJobId, type ProductionConsoleService } from './production-console.js';
 import { CreativeImageEngineSettingsStore, type CreativeImageEngineSettings } from './creative-image-engine-settings.js';
 
+const execFileAsync = promisify(execFile);
+
+export interface CreativeImageEngineStartupStatus {
+  enabled: boolean;
+  state: 'disabled' | 'idle' | 'starting' | 'started' | 'ready' | 'missing' | 'failed';
+  scriptPath: string;
+  message?: string;
+}
+
 class SqliteBrandKitStore implements BrandKitStore {
   constructor(private readonly repo: AetheraCreativeStudioRepository) {}
 
@@ -100,6 +112,9 @@ export interface CreativeStudioServiceOptions {
   authenticMediaSource?: AuthenticMediaSource | null;
   comfyUiEndpoint?: string;
   comfyUiCheckpoint?: string;
+  /** Test seam and portable override for the local ComfyUI bootstrap script. */
+  comfyUiStartupScript?: string;
+  comfyUiStartupRunner?: (scriptPath: string) => Promise<void>;
 }
 
 /**
@@ -133,6 +148,14 @@ export class AetheraCreativeStudioService {
   private readonly productionConsole: ProductionConsoleService | undefined;
   private comfyUiEndpoint: string | undefined;
   private readonly imageEngineSettingsStore: CreativeImageEngineSettingsStore;
+  private readonly comfyUiStartupScript: string;
+  private readonly comfyUiStartupRunner: (scriptPath: string) => Promise<void>;
+  private comfyUiStartupAttempted = false;
+  private comfyUiStartupPromise: Promise<void> | null = null;
+  private comfyUiStartupStatus: Omit<CreativeImageEngineStartupStatus, 'enabled'> = {
+    state: 'idle',
+    scriptPath: '',
+  };
   /** Console job of the creative execution in progress; concurrent thumbnails each carry their own. */
   private readonly consoleJob = new AsyncLocalStorage<CreativeConsoleJob>();
 
@@ -142,6 +165,20 @@ export class AetheraCreativeStudioService {
     this.storageRoot = join(options.userDataDir, 'creative-studio');
     this.imageEngineSettingsStore = new CreativeImageEngineSettingsStore(join(this.storageRoot, 'image-engine-settings.json'));
     const imageEngineSettings = this.imageEngineSettingsStore.load();
+    this.comfyUiStartupScript = options.comfyUiStartupScript ?? join(homedir(), 'Documents', 'ComfyUI', 'Start-ComfyUI.ps1');
+    this.comfyUiStartupStatus = { state: 'idle', scriptPath: this.comfyUiStartupScript };
+    this.comfyUiStartupRunner = options.comfyUiStartupRunner ?? (async (scriptPath) => {
+      const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
+      await execFileAsync(shell, [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        scriptPath,
+      ], { windowsHide: true, timeout: 150_000, maxBuffer: 16 * 1024 });
+    });
     this.comfyUiEndpoint = options.comfyUiEndpoint ?? imageEngineSettings.endpoint;
     this.ingestion = new AssetIngestionService({
       storageRoot: this.storageRoot,
@@ -183,16 +220,79 @@ export class AetheraCreativeStudioService {
     });
   }
 
-  async imageEngineStatus(): Promise<{ comfyUi: ComfyUiStatus; localAvailable: boolean; activeProvider: string }> {
+  private async ensureComfyUiStarted(enabled: boolean): Promise<CreativeImageEngineStartupStatus> {
+    if (!enabled) return { enabled: false, state: 'disabled', scriptPath: this.comfyUiStartupScript };
+    if (this.comfyUiStartupAttempted) {
+      if (this.comfyUiStartupPromise) await this.comfyUiStartupPromise;
+      return { enabled: true, ...this.comfyUiStartupStatus };
+    }
+    if (!existsSync(this.comfyUiStartupScript)) {
+      this.comfyUiStartupAttempted = true;
+      this.comfyUiStartupStatus = {
+        state: 'missing',
+        scriptPath: this.comfyUiStartupScript,
+        message: 'O script local de inicialização do ComfyUI não foi encontrado.',
+      };
+      return { enabled: true, ...this.comfyUiStartupStatus };
+    }
+    this.comfyUiStartupAttempted = true;
+    this.comfyUiStartupStatus = { state: 'starting', scriptPath: this.comfyUiStartupScript };
+    this.comfyUiStartupPromise = (async () => {
+      try {
+        await this.comfyUiStartupRunner(this.comfyUiStartupScript);
+        this.comfyUiStartupStatus = {
+          state: 'started',
+          scriptPath: this.comfyUiStartupScript,
+          message: 'O script de inicialização terminou; verificando o endpoint local.',
+        };
+      } catch (error) {
+        this.comfyUiStartupStatus = {
+          state: 'failed',
+          scriptPath: this.comfyUiStartupScript,
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })();
+    await this.comfyUiStartupPromise;
+    this.comfyUiStartupPromise = null;
+    return { enabled: true, ...this.comfyUiStartupStatus };
+  }
+
+  async imageEngineStatus(): Promise<{ comfyUi: ComfyUiStatus; localAvailable: boolean; activeProvider: string; startup: CreativeImageEngineStartupStatus }> {
+    const imageEngineSettings = this.imageEngineSettingsStore.load();
     const endpoints = [...new Set([
       this.comfyUiEndpoint,
       'http://127.0.0.1:8000',
       'http://127.0.0.1:8188',
     ].filter((endpoint): endpoint is string => Boolean(endpoint)))];
-    const comfyUi = await discoverComfyUi({ requestTimeoutMs: 750, endpoints });
+    let comfyUi = await discoverComfyUi({ requestTimeoutMs: 750, endpoints });
+    let startup = imageEngineSettings.autoStartComfyUi
+      ? comfyUi.state === 'offline'
+        ? await this.ensureComfyUiStarted(true)
+        : { enabled: true, ...this.comfyUiStartupStatus }
+      : await this.ensureComfyUiStarted(false);
+    if (startup.state === 'started') {
+      comfyUi = await discoverComfyUi({ requestTimeoutMs: 750, endpoints });
+      if (comfyUi.state === 'ready') {
+        this.comfyUiStartupStatus = { state: 'ready', scriptPath: this.comfyUiStartupScript, message: 'ComfyUI está online no endpoint local.' };
+      } else {
+        this.comfyUiStartupStatus = {
+          state: 'failed',
+          scriptPath: this.comfyUiStartupScript,
+          message: 'O script terminou, mas o endpoint do ComfyUI continuou indisponível.',
+        };
+      }
+      startup = { enabled: true, ...this.comfyUiStartupStatus };
+    }
     if (comfyUi.endpoint && comfyUi.endpoint !== this.comfyUiEndpoint) {
       this.comfyUiAdapter.setEndpoint(comfyUi.endpoint);
       this.comfyUiEndpoint = comfyUi.endpoint;
+    }
+    const compatibleCheckpoint = comfyUi.models.checkpoints.includes(imageEngineSettings.checkpoint)
+      ? imageEngineSettings.checkpoint
+      : comfyUi.models.checkpoints.find((checkpoint) => /animagine/i.test(checkpoint)) ?? comfyUi.models.checkpoints[0];
+    if (compatibleCheckpoint && compatibleCheckpoint !== imageEngineSettings.checkpoint) {
+      this.comfyUiAdapter.setCheckpoint(compatibleCheckpoint);
     }
     const [localAvailable, comfyAvailable] = await Promise.all([
       this.localImageAdapter.isAvailable(),
@@ -202,6 +302,7 @@ export class AetheraCreativeStudioService {
       comfyUi,
       localAvailable,
       activeProvider: comfyAvailable ? this.comfyUiAdapter.id : localAvailable ? this.localImageAdapter.id : 'none',
+      startup,
     };
   }
 
@@ -265,7 +366,12 @@ export class AetheraCreativeStudioService {
     status: Awaited<ReturnType<AetheraCreativeStudioService['imageEngineStatus']>>;
     requiresRestart: boolean;
   }> {
+    const previous = this.imageEngineSettingsStore.load();
     const settings = this.imageEngineSettingsStore.save(input);
+    if (settings.autoStartComfyUi !== previous.autoStartComfyUi) {
+      this.comfyUiStartupAttempted = false;
+      this.comfyUiStartupStatus = { state: 'idle', scriptPath: this.comfyUiStartupScript };
+    }
     this.comfyUiAdapter.setEndpoint(settings.endpoint);
     this.comfyUiEndpoint = settings.endpoint;
     this.comfyUiAdapter.setCheckpoint(settings.checkpoint);

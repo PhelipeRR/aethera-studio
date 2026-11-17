@@ -14,8 +14,8 @@ describe('CreativeImageEngineSettingsStore', () => {
     try {
       const store = new CreativeImageEngineSettingsStore(join(root, 'image-engine.json'));
       expect(store.load()).toEqual(DEFAULT_CREATIVE_IMAGE_ENGINE_SETTINGS);
-      const saved = store.save({ checkpoint: 'models/sdxl.safetensors', preferredPreset: 'cyberpunk_neon', releaseMemoryAfterGeneration: true });
-      expect(saved).toMatchObject({ checkpoint: 'models/sdxl.safetensors', preferredPreset: 'cyberpunk_neon', releaseMemoryAfterGeneration: true });
+      const saved = store.save({ checkpoint: 'models/sdxl.safetensors', preferredPreset: 'cyberpunk_neon', releaseMemoryAfterGeneration: true, autoStartComfyUi: true });
+      expect(saved).toMatchObject({ checkpoint: 'models/sdxl.safetensors', preferredPreset: 'cyberpunk_neon', releaseMemoryAfterGeneration: true, autoStartComfyUi: true });
       expect(new CreativeImageEngineSettingsStore(join(root, 'image-engine.json')).load()).toEqual(saved);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -25,5 +25,6 @@ describe('CreativeImageEngineSettingsStore', () => {
   it('rejects non-loopback endpoints and unknown presets', () => {
     expect(() => normalizeCreativeImageEngineSettings({ endpoint: 'http://192.168.1.5:8188' })).toThrow(/loopback/i);
     expect(() => normalizeCreativeImageEngineSettings({ preferredPreset: 'unknown' })).toThrow(/preset/i);
+    expect(() => normalizeCreativeImageEngineSettings({ autoStartComfyUi: 'yes' })).toThrow(/iniciar.*booleana/i);
   });
 });
