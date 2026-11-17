@@ -1196,6 +1196,11 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   }
   const probe = await probeRealMp4(mp4Path);
   const anomalies = await detectMediaAnomalies(mp4Path);
+  if (probe.durationSec + 0.15 < measuredNarMs / 1000) {
+    throw new Error(
+      `audio_truncated: o MP4 final (${probe.durationSec.toFixed(3)}s) termina antes da narração medida (${(measuredNarMs / 1000).toFixed(3)}s).`,
+    );
+  }
   const targetLufsForQc = deliveryProfile.audio.integratedLufs;
   const realQcFindings = runRealMediaQc(probe, targetLufsForQc, anomalies);
   const expectedVideoCodec = deliveryProfile.preset.videoCodec === 'h264_nvenc' ? 'h264' : deliveryProfile.preset.videoCodec;
