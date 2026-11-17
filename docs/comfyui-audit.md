@@ -117,3 +117,5 @@ The native integration now discovers LoRAs from `models/loras`, reads the bounde
 | Games LoRA | As needed | Game-specific styles | Catalog category supported; no file installed |
 
 The desktop flow now exposes `off`, `manual`, and `automatic` modes, shows compatibility evidence and warnings, persists the effective stack per project, and includes the selection explanation in the generation report. No LoRA was downloaded in this pass: installation remains gated on a concrete candidate, license review, and explicit confirmation because the current runtime has no verified LoRA file to benchmark.
+
+The install policy is also explicit in `lora-install-policy.ts`: only HTTPS Hugging Face/Civitai hosts or local files are accepted, the checkpoint architecture must match, the license and file size must be known, and a SHA-256 is mandatory. External downloads always require confirmation; no network installer was invoked in this run.
