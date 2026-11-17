@@ -223,6 +223,23 @@ export class QualityGateService {
 
     // 5.6. Editorial dominance, floating-sticker detection, typographic hierarchy & empty-space audit
     let totalSubjectAreaCoverage = 0;
+    const hasVisualFocus =
+      visibleSubjects.length > 0 ||
+      visibleBackgrounds.some((layer) => layer.type === 'background' && Boolean(layer.assetId));
+    if (doc.visualFocusRequired && doc.artType === 'thumbnail' && !hasVisualFocus) {
+      findings.push({
+        code: 'THUMBNAIL_NO_VISUAL_FOCUS',
+        severity: 'critical',
+        message: 'Thumbnail sem foco visual real: é necessário um sujeito ou um fundo de imagem, não apenas paleta e texto.',
+      });
+    }
+    if (doc.visualFocusRequired && doc.artType === 'banner' && !hasVisualFocus) {
+      findings.push({
+        code: 'BANNER_NO_VISUAL_FOCUS',
+        severity: 'critical',
+        message: 'Banner sem foco visual real: é necessário um sujeito ou um fundo de imagem, não apenas paleta e texto.',
+      });
+    }
     if (doc.artType === 'thumbnail') {
       for (const sLayer of visibleSubjects) {
         if (sLayer.type !== 'subject') continue;

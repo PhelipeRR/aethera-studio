@@ -30,6 +30,7 @@ export interface CreativePlanInput {
   watermarkAsset?: ManagedAssetRef | null;
   sourceCinemaProjectId?: string;
   sourceVideoAssetId?: string;
+  visualFocusRequired?: boolean;
   variantStyle?: ThumbnailVariantStyle;
   avatarBackdrop?: 'light' | 'dark' | 'transparent';
   /**
@@ -364,6 +365,7 @@ export class CompositionPlanner {
       ...(input.brandKit?.id ? { brandKitId: input.brandKit.id } : {}),
       ...(input.sourceCinemaProjectId ? { sourceCinemaProjectId: input.sourceCinemaProjectId } : {}),
       ...(input.sourceVideoAssetId ? { sourceVideoAssetId: input.sourceVideoAssetId } : {}),
+      ...(input.visualFocusRequired !== undefined ? { visualFocusRequired: input.visualFocusRequired } : {}),
       prompt: input.prompt,
       layers,
       assetManifest,

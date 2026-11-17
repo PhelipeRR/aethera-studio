@@ -359,6 +359,8 @@ export const creativeProjectDocumentSchema = z.object({
   brandKitId: z.string().min(1).optional(),
   sourceCinemaProjectId: z.string().min(1).optional(),
   sourceVideoAssetId: z.string().min(1).optional(),
+  /** Production-generated thumbnails/banners must contain an asset-backed visual focus. */
+  visualFocusRequired: z.boolean().optional(),
   prompt: z.string().default(''),
   layers: z.array(creativeLayerSchema).min(1),
   assetManifest: z.record(z.string(), managedAssetRefSchema).default({}),

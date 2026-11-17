@@ -652,6 +652,7 @@ export class AetheraCreativeStudioService {
         subjectAsset,
         ...(backgroundOrigin ? { backgroundOrigin } : {}),
         ...(input.sourceCinemaProjectId ? { sourceCinemaProjectId: input.sourceCinemaProjectId } : {}),
+        visualFocusRequired: input.artType === 'thumbnail' || input.artType === 'banner',
         ...(input.avatarBackdrop ? { avatarBackdrop: input.avatarBackdrop } : {}),
       },
       direction,
