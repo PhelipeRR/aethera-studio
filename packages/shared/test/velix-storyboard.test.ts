@@ -114,6 +114,19 @@ describe('storyboard building and media selection', () => {
     expect(ranked.find((item) => item.candidate.segment.id === 'segment-unavailable')).toMatchObject({ eligible: false, reviewRequired: false });
     expect(ranked.find((item) => item.candidate.segment.id === 'segment-review-semantic')).toMatchObject({ eligible: false, reviewRequired: true });
   });
+
+  it('blocks discontinuous intervals and lets framing affect ranking only after semantic evidence exists', () => {
+    const [scene] = buildScenes([{ chapter: null, narration: 'Exploração de mundo aberto.' }], [], 'standard', makeId);
+    if (!scene) throw new Error('sem cena');
+    const clean = segmentCandidate('clean', 'exploration', 'exploração de mundo aberto', 'game-1');
+    const framed = segmentCandidate('framed', 'exploration', 'exploração de mundo aberto', 'game-1');
+    framed.segment = { ...framed.segment, broll: { ...framed.segment.broll!, framingScore: 0.1 } };
+    const broken = segmentCandidate('broken', 'exploration', 'exploração de mundo aberto', 'game-1');
+    broken.segment = { ...broken.segment, broll: { ...broken.segment.broll!, continuity: { valid: false, gapsMs: [400] } } };
+    const ranked = rankMedia(scene, [clean, framed, broken], segmentContext('game-1'));
+    expect(ranked.find((item) => item.candidate.segment.id === 'segment-broken')).toMatchObject({ eligible: false, reviewRequired: false });
+    expect(ranked.find((item) => item.candidate.segment.id === 'segment-clean')?.score).toBeGreaterThan(ranked.find((item) => item.candidate.segment.id === 'segment-framed')?.score ?? 1);
+  });
 });
 
 describe('storyboard validation and edits', () => {

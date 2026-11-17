@@ -271,7 +271,7 @@ export function rankMediaSegments(scene: StoryboardScene, candidates: readonly M
     const kind = requestedKind === null ? 0.5 : segment.kind === requestedKind ? 1 : segment.kind === 'unknown' ? 0.25 : 0.05;
     const qualityFlags = [segment.quality.overlayText, segment.quality.watermark, segment.quality.black, segment.quality.frozen].filter(Boolean).length;
     const quality = bounded(1 - segment.quality.blur * 0.55 - qualityFlags * 0.2 + segment.quality.motion * 0.08);
-    const technicalValid = segment.broll ? segment.broll.technicalStatus === 'technical_valid' : !segment.quality.black && !segment.quality.frozen;
+    const technicalValid = segment.broll ? segment.broll.technicalStatus === 'technical_valid' && segment.broll.continuity.valid : !segment.quality.black && !segment.quality.frozen;
     const semanticAdequate = segment.broll ? segment.broll.semanticStatus === 'semantic_adequate' : Boolean(segment.description.trim() || segment.analysis);
     const semanticNeedsReview = segment.broll?.semanticStatus === 'needs_review';
     const framing = bounded(segment.broll?.framingScore ?? (segment.quality.overlayText || segment.quality.watermark ? 0.5 : 1));
