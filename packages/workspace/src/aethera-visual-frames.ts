@@ -34,19 +34,19 @@ export function segmentFrameTimes(startMs: number, endMs: number): number[] {
 }
 
 /** Reuses the confined thumbnail extractor; JPEG bytes are content addressed and paths never come from a provider. */
-export async function extractSegmentFrames(input: { root: string; relativePath: string; startMs: number; endMs: number; ffmpeg?: string; signal?: AbortSignal }): Promise<Array<{ hash: string; path: string }>> {
+export async function extractSegmentFrames(input: { root: string; relativePath: string; startMs: number; endMs: number; ffmpeg?: string; signal?: AbortSignal }): Promise<Array<{ hash: string; path: string; atMs: number }>> {
   const root = realpathSync(input.root);
   const directory = join(root, '.aethera-frames');
   mkdirSync(directory, { recursive: true });
   const inside = relative(root, realpathSync(directory));
   if (!inside || inside.startsWith('..') || isAbsolute(inside)) throw new Error('forbidden: frames outside project.');
-  const frames: Array<{ hash: string; path: string }> = [];
+  const frames: Array<{ hash: string; path: string; atMs: number }> = [];
   for (const time of segmentFrameTimes(input.startMs, input.endMs)) {
     const buffer = await extractVelixThumbnail({ ...input, time: time / 1_000 });
     const hash = createHash('sha256').update(buffer).digest('hex');
     const path = join(directory, `${hash}.jpg`);
     if (!existsSync(path)) writeFileSync(path, buffer, { flag: 'wx' });
-    frames.push({ hash, path });
+    frames.push({ hash, path, atMs: time });
   }
   return frames;
 }

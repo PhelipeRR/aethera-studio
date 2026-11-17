@@ -80,7 +80,7 @@ export type BrollIndexStatus = (typeof brollIndexStatuses)[number];
 export const brollKeyframeSchema = z.strictObject({ atMs: z.number().int().nonnegative(), hash: z.string().min(1), relativePath: z.string().min(1) });
 export const brollSegmentMetaSchema = z.strictObject({
   indexVersion: z.string().min(1), sourceHash: z.string().min(1), keyframes: z.array(brollKeyframeSchema), technicalStatus: z.enum(brollTechnicalStatuses), semanticStatus: z.enum(brollSemanticStatuses),
-  flashFrameTimesMs: z.array(z.number().int().nonnegative()), continuity: z.strictObject({ valid: z.boolean(), gapsMs: z.array(z.number().int().nonnegative()) }), diagnostics: z.array(z.string()),
+  flashFrameTimesMs: z.array(z.number().int().nonnegative()), semanticEvidence: z.array(z.strictObject({ atMs: z.number().int().nonnegative(), observed: z.string().min(1) })).optional(), framingScore: z.number().min(0).max(1).optional(), continuity: z.strictObject({ valid: z.boolean(), gapsMs: z.array(z.number().int().nonnegative()) }), diagnostics: z.array(z.string()),
 });
 export const mediaSegmentSchema = z.strictObject({
   schemaVersion: z.literal(1), id: z.string().min(1), assetId: z.string().min(1), startMs: z.number().int().nonnegative(), endMs: z.number().int().positive(),
@@ -161,12 +161,14 @@ export function subjectIdentityStatus(signals: readonly IdentitySignal[], option
 
 // §4.4 — matching
 
+export const sceneMatchEvidenceSchema = z.strictObject({ atMs: z.number().int().nonnegative(), observed: z.string().min(1) });
 export const sceneMatchSchema = z.strictObject({
   sceneId: z.string().min(1), sentenceIds: z.array(z.string().min(1)).min(1), segmentId: z.string().min(1),
   /** AP-02: the acquired asset the segment belongs to (absent in matches saved before AP-02). */
   assetId: z.string().min(1).optional(), sourceStartMs: z.number().int().nonnegative(), sourceEndMs: z.number().int().positive(),
   subjectId: z.string().min(1).optional(), confidence: z.number().min(0).max(1).optional(), confidenceBand: z.enum(['automatic', 'review', 'reject']).optional(),
-  score: z.number().min(0).max(1), breakdown: z.strictObject({ semantic: z.number(), subject: z.number(), kind: z.number(), quality: z.number(), diversity: z.number(), duration: z.number() }), reason: z.string().min(1),
+  evidence: z.array(sceneMatchEvidenceSchema).optional(),
+  score: z.number().min(0).max(1), breakdown: z.strictObject({ semantic: z.number(), subject: z.number(), kind: z.number(), quality: z.number(), diversity: z.number(), duration: z.number(), framing: z.number().optional(), continuity: z.number().optional() }), reason: z.string().min(1),
 }).refine((value) => value.sourceEndMs > value.sourceStartMs, { message: 'O trecho precisa terminar depois de começar.', path: ['sourceEndMs'] });
 export type SceneMatch = z.infer<typeof sceneMatchSchema>;
 

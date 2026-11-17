@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { parseSignalStats, probeSegmentQuality, segmentsFromCuts, summarizeSignalStats, windowCuts } from '../src/aethera-segment-quality.js';
+import { parseSignalStats, probeSegmentQuality, probeSegmentTemporalSamples, segmentsFromCuts, summarizeSignalStats, windowCuts } from '../src/aethera-segment-quality.js';
 import { createReferenceClips, FFMPEG, REFERENCE_GAMES, REFERENCE_SECTIONS } from './fixtures/aethera-reference.js';
 
 let root: string;
@@ -67,4 +67,11 @@ describe('FFmpeg segment quality on the reference scenario', () => {
   it('parses one luma and one difference value per frame', () => {
     expect(parseSignalStats('frame:0\nlavfi.signalstats.YAVG=16\nlavfi.signalstats.YDIF=0\nframe:1\nlavfi.signalstats.YAVG=120.5\nlavfi.signalstats.YDIF=3.2\n')).toEqual({ luma: [16, 120.5], diff: [0, 3.2] });
   });
+
+  it('returns timestamped temporal samples for flash and continuity analysis', async () => {
+    const samples = await probeSegmentTemporalSamples({ ffmpeg: FFMPEG, root, relativePath: clips['fixture-game-a'] as string, startMs: 1_000, endMs: 3_000 });
+    expect(samples.length).toBeGreaterThan(5);
+    expect(samples[0]?.atMs).toBe(1_000);
+    expect(samples.every((sample) => Number.isFinite(sample.meanLuma) && Number.isFinite(sample.meanDiff))).toBe(true);
+  }, 30_000);
 });

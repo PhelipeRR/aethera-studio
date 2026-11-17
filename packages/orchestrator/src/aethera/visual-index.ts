@@ -1,6 +1,6 @@
 import type { AetheraStudioRepository } from '@neuralbridge/database';
 import { normalizeGameTitle, segmentKinds, type IdentitySignal, type MediaSegment, type VerifiedSubject, type VisionPolicy } from '@neuralbridge/shared';
-import { BROLL_INDEX_VERSION, canReuseBrollIndex, detectSegmentCuts, extractSegmentFrames, makeBrollContactSheet, probeSegmentQuality, segmentsFromCuts, selectVisualAnalysisFfmpeg, stableBrollSegmentId, windowCuts } from '@neuralbridge/workspace';
+import { BROLL_INDEX_VERSION, canReuseBrollIndex, classifyTemporalSamples, detectSegmentCuts, discardFlashKeyframeTimes, extractSegmentFrames, makeBrollContactSheet, probeSegmentQuality, probeSegmentTemporalSamples, segmentsFromCuts, selectVisualAnalysisFfmpeg, stableBrollSegmentId, validateBrollContinuity, windowCuts } from '@neuralbridge/workspace';
 import { join, relative } from 'node:path';
 import type { ProductionStageAdapter } from '../velix-production.js';
 import { runCheckpointedItems } from './item-checkpoint.js';
@@ -89,17 +89,24 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
             context.signal.throwIfAborted();
             const segmentId = stableBrollSegmentId({ sourceHash: asset.sha256, startMs: segment.startMs, endMs: segment.endMs, indexVersion: BROLL_INDEX_VERSION });
             const frames = await extractSegmentFrames({ root, relativePath: asset.path, startMs: segment.startMs, endMs: segment.endMs, ffmpeg: analysisFfmpeg, signal: context.signal });
-            const request = { frames, policy: deps.policy, budgetKey: context.runId, signal: context.signal };
+            const temporalSamples = await probeSegmentTemporalSamples({ ffmpeg: analysisFfmpeg, root, relativePath: asset.path, startMs: segment.startMs, endMs: segment.endMs, signal: context.signal });
+            const temporal = classifyTemporalSamples(temporalSamples);
+            const continuity = validateBrollContinuity({ startMs: segment.startMs, endMs: segment.endMs, samples: temporalSamples });
+            const safeFrameTimes = discardFlashKeyframeTimes(frames.map((frame) => frame.atMs ?? 0), temporal.flashFrameTimesMs);
+            const visionFrames = safeFrameTimes.length > 0 ? frames.filter((frame) => safeFrameTimes.includes(frame.atMs ?? -1)) : frames;
+            const request = { frames: visionFrames, policy: deps.policy, budgetKey: context.runId, signal: context.signal };
             const classified = await router.classify({ ...request, labels: segmentKinds });
             const described = await router.describe(request);
             const image = await router.embedImage(request);
             const text = described.value ? await router.embedText({ ...request, texts: [described.value.description] }) : null;
             const ocr = await router.ocr(request);
+            const semantic = await router.analyze({ ...request, context: `Trecho do ativo ${result.assetId}; descreva somente o que está visível.` });
             const quality = await probeSegmentQuality({ ffmpeg: analysisFfmpeg, root, relativePath: asset.path, startMs: segment.startMs, endMs: segment.endMs, signal: context.signal });
-            const capabilities = [['classify', classified], ['describe', described], ['embed_image', image], ['embed_text', text], ['ocr', ocr]] as const;
+            const capabilities = [['classify', classified], ['describe', described], ['embed_image', image], ['embed_text', text], ['ocr', ocr], ['analyze', semantic]] as const;
+            const semanticTechnicalBlocked = !semantic.value && semantic.attempts.length > 0 && semantic.attempts.every((attempt) => attempt.outcome === 'unavailable' || attempt.outcome === 'error' || attempt.outcome === 'over_budget');
             const limitations = capabilities.filter(([, value]) => !value || value.provider === null).map(([task]) => `${task}: no available provider`);
             limitations.push('blur/overlayText/watermark not measured; defaults are not clearance.');
-            const analyzed: MediaSegment = { ...segment, id: segmentId, frameHashes: frames.map((frame) => frame.hash), kind: classified.kind, description: described.value?.description ?? '', tags: described.value?.tags ?? [],
+            const analyzed: MediaSegment = { ...segment, id: segmentId, frameHashes: visionFrames.map((frame) => frame.hash), kind: classified.kind, description: described.value?.description ?? '', tags: described.value?.tags ?? [],
               embeddingRefs: [image, text].flatMap((value) => {
                 const provider = value?.provider;
                 const model = value?.model;
@@ -107,7 +114,7 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
               }),
               quality: { ...segment.quality, motion: quality.motion, black: quality.black, frozen: quality.frozen, overlayText: ocr.value?.some((text) => text.trim().length > 0) ?? false },
               analyzedBy: { provider: classified.provider ?? 'ffmpeg-heuristics', model: classified.model ?? 'ffmpeg-signalstats', confidence: classified.confidence },
-              broll: { indexVersion: BROLL_INDEX_VERSION, sourceHash: asset.sha256, keyframes: frames.map((frame, index) => ({ atMs: Math.floor(segment.startMs + ((segment.endMs - segment.startMs) * (index + 0.5)) / frames.length), hash: frame.hash, relativePath: relative(root, frame.path).replaceAll('\\', '/') })), technicalStatus: quality.black || quality.frozen ? 'technical_blocked' : 'technical_valid', semanticStatus: 'not_evaluated', flashFrameTimesMs: [], continuity: { valid: true, gapsMs: [] }, diagnostics: [`quality_frames=${quality.frames}`, `mean_luma=${quality.meanLuma.toFixed(2)}`, `mean_diff=${quality.meanDiff.toFixed(2)}`] },
+              broll: { indexVersion: BROLL_INDEX_VERSION, sourceHash: asset.sha256, keyframes: visionFrames.map((frame, index) => ({ atMs: Math.floor(segment.startMs + ((segment.endMs - segment.startMs) * (index + 0.5)) / visionFrames.length), hash: frame.hash, relativePath: relative(root, frame.path).replaceAll('\\', '/') })), technicalStatus: temporal.technicalStatus === 'technical_blocked' || quality.black || quality.frozen || !continuity.valid || semanticTechnicalBlocked ? 'technical_blocked' : 'technical_valid', semanticStatus: semantic.value && semantic.value.confidence > 0 ? 'semantic_adequate' : 'not_evaluated', ...(semantic.value ? { semanticEvidence: semantic.value.frames.map((frame) => ({ atMs: frame.atMs, observed: frame.observed })) } : {}), framingScore: semantic.value ? (semantic.value.overlays.burnedText || semantic.value.overlays.watermark ? 0.5 : 1) : 0.5, flashFrameTimesMs: temporal.flashFrameTimesMs, continuity, diagnostics: [`quality_frames=${quality.frames}`, `mean_luma=${quality.meanLuma.toFixed(2)}`, `mean_diff=${quality.meanDiff.toFixed(2)}`, `temporal_samples=${temporalSamples.length}`, `flash_frames=${temporal.flashFrameTimesMs.length}`, ...(continuity.valid ? [] : ['continuity_gap']), ...(semanticTechnicalBlocked ? ['semantic_technical_blocked'] : [])] },
               analysis: { version: deps.policy.version, band: classified.band, calibratedConfidence: classified.calibratedConfidence, limitations,
                 attempts: capabilities.flatMap(([task, value]) => value?.attempts.map((attempt) => ({ task, provider: attempt.provider, outcome: attempt.outcome, ...(attempt.detail ? { detail: attempt.detail } : {}) })) ?? []),
               },
@@ -141,7 +148,7 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
             const previous = deps.repository.listIdentities(identity.subjectId).filter((item) => item.segmentId === identity.segmentId).at(-1);
             if (!previous || JSON.stringify({ ...previous, id: '' }) !== JSON.stringify({ ...identity, id: '' })) deps.repository.recordIdentity(identity);
           }
-          return { status: 'done', result: { assetId: result.assetId, segments: segments.length } };
+          return { status: 'done', result: { assetId: result.assetId, segments: segments.length, reusedBrollIndex: false } };
         });
       }, context.signal);
       context.writeArtifact({ kind: 'visual-index', relativePath: `producoes/${context.runId}/visual-index/${context.stageId}.json`, content: JSON.stringify({ schemaVersion: 1, policy: deps.policy, items: context.state['items'], limitations: ['Real B-1 benchmark pending. Unavailable providers are explicit in each segment.'] }), mime: 'application/json' });

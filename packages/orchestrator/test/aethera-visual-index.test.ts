@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AetheraStudioRepository, openDatabase, velixLocalAssets, videoProjects, VelixProductionRepository } from '@neuralbridge/database';
-import type { ProductionBrief, VisionPolicy } from '@neuralbridge/shared';
+import type { ProductionBrief, SegmentAnalysis, VisionPolicy } from '@neuralbridge/shared';
 import { afterEach, expect, it } from 'vitest';
 import { createReferenceClips, FFMPEG } from '../../workspace/test/fixtures/aethera-reference.js';
 import { createVisualIndexStageAdapter, resolveTitleMentions } from '../src/aethera/visual-index.js';
@@ -34,12 +34,13 @@ it('indexes real synthetic media through ProductionRunService and reindexes afte
   const job = repository.enqueueAcquisition({ runId: run.id, subjectId: 'game', referenceId: 'ref', adapter: 'local-import', idempotencyKey: 'synthetic' });
   repository.updateAcquisition(job.id, { status: 'done', result: { assetId: 'asset', contentHash: 'a'.repeat(64), width: 320, height: 180, fps: 30, durationMs: 5_000, vcodec: 'h264', acodec: null } });
   let calls = 0;
-  const provider: VisualAnalysisProvider = { id: 'local-siglip', model: 'synthetic-test-only', capabilities: ['classify', 'describe', 'embed_image', 'embed_text', 'ocr'], limits: { maxImagesPerCall: 2, vramMb: 1 }, detect: async () => ({ available: true }),
+  const provider: VisualAnalysisProvider = { id: 'local-siglip', model: 'synthetic-test-only', capabilities: ['classify', 'describe', 'embed_image', 'embed_text', 'ocr', 'analyze'], limits: { maxImagesPerCall: 2, vramMb: 1 }, detect: async () => ({ available: true }),
     classify: async () => { calls++; return { kind: 'combat', confidence: 0.8 }; },
     describe: async () => { calls++; return { description: 'Synthetic animation only', tags: ['synthetic'] }; },
     embedImage: async ({ frames }) => { calls++; return frames.map(() => [1, 0]); },
     embedText: async ({ texts }) => { calls++; return texts.map(() => [0, 1]); },
     ocr: async ({ frames }) => { calls++; return frames.map(() => ''); },
+    analyze: async ({ frames }) => { calls++; return { schemaVersion: 1, nature: 'action', natureConfidence: 0.9, description: 'Synthetic visual action', frames: frames.map((frame) => ({ atMs: frame.atMs ?? 0, observed: 'Synthetic movement visible', visibleText: [] })), entities: [], actions: [{ description: 'moving', basis: 'observed', confidence: 0.9 }], environment: null, overlays: { burnedText: false, burnedTextRegion: 'bottom', watermark: false, webcam: false }, limitations: [] , confidence: 0.9 } satisfies SegmentAnalysis; },
   };
   const noTasks: ProductionTaskPort = { start: async () => { throw new Error('No external task in synthetic test'); }, cancel: () => undefined, pause: () => undefined, resumePaused: () => undefined } as unknown as ProductionTaskPort;
   const adapter = () => createVisualIndexStageAdapter({ repository, providers: createVisionProviders([provider]), policy, projectRoot: () => root, asset: () => ({ path: clip, sha256: 'a'.repeat(64) }), ffmpeg: FFMPEG, ffprobe: FFMPEG.replace('ffmpeg.exe', 'ffprobe.exe') });
@@ -54,6 +55,11 @@ it('indexes real synthetic media through ProductionRunService and reindexes afte
   expect(brollIndex?.contactSheetPath && existsSync(join(root, brollIndex.contactSheetPath))).toBe(true);
   expect(brollIndex?.segments).toHaveLength(segments.length);
   expect(segments.every((segment) => segment.broll?.indexVersion === 'p2.1' && segment.broll?.keyframes.length === segment.frameHashes.length)).toBe(true);
+  expect(segments.some((segment) => segment.broll?.technicalStatus === 'technical_blocked')).toBe(true);
+  expect(segments.some((segment) => segment.broll?.technicalStatus === 'technical_valid')).toBe(true);
+  expect(segments.every((segment) => segment.broll?.diagnostics.some((item) => item.startsWith('temporal_samples=')))).toBe(true);
+  expect(segments.every((segment) => segment.broll?.semanticStatus === 'semantic_adequate')).toBe(true);
+  expect(segments.every((segment) => segment.analysis?.attempts.some((attempt) => attempt.task === 'analyze'))).toBe(true);
   expect(repository.listIdentities('game').every((identity) => identity.status === 'review_required')).toBe(true);
   expect(calls).toBeGreaterThan(0);
   handles.pop(); handle.close();

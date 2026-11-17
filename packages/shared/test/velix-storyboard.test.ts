@@ -24,7 +24,7 @@ const narration = 'Os painéis solares cobrem telhados no Brasil inteiro hoje. A
 const media = (referenceId: string, title: string, rightsStatus: MediaCandidate['rightsStatus'] = 'verified_allowed', extra: Partial<MediaCandidate> = {}): MediaCandidate => ({ referenceId, kind: 'video', title, publisher: 'Acervo', url: `https://acervo.exemplo/${referenceId}`, publishedAt: '2025-06-01', rightsStatus, width: 1920, height: 1080, durationSeconds: 20, ...extra });
 const segmentCandidate = (id: string, kind: MediaSegment['kind'], description: string, subjectId: string, status: SubjectIdentity['status'] = 'verified', confidence = 0.99): MediaSegmentCandidate => ({
   asset: media(`asset-${id}`, `${description} gameplay`),
-  segment: { schemaVersion: 1, id: `segment-${id}`, assetId: `asset-${id}`, startMs: 1_000, endMs: 7_000, frameHashes: [`frame-${id}`], kind, description, tags: description.split(' '), embeddingRefs: [], quality: { blur: 0, motion: 0.8, overlayText: false, watermark: false, black: false, frozen: false }, analyzedBy: { provider: 'synthetic', model: 'synthetic', confidence }, analysis: { version: 'synthetic-v1', band: status === 'verified' ? 'automatic' : 'review', calibratedConfidence: confidence, limitations: [], attempts: [] } },
+  segment: { schemaVersion: 1, id: `segment-${id}`, assetId: `asset-${id}`, startMs: 1_000, endMs: 7_000, frameHashes: [`frame-${id}`], kind, description, tags: description.split(' '), embeddingRefs: [], quality: { blur: 0, motion: 0.8, overlayText: false, watermark: false, black: false, frozen: false }, analyzedBy: { provider: 'synthetic', model: 'synthetic', confidence }, analysis: { version: 'synthetic-v1', band: status === 'verified' ? 'automatic' : 'review', calibratedConfidence: confidence, limitations: [], attempts: [] }, broll: { indexVersion: 'p2.1', sourceHash: 'a'.repeat(64), keyframes: [{ atMs: 4_000, hash: `frame-${id}`, relativePath: `frames/${id}.jpg` }], technicalStatus: 'technical_valid', semanticStatus: 'semantic_adequate', semanticEvidence: [{ atMs: 4_000, observed: description }], flashFrameTimesMs: [], continuity: { valid: true, gapsMs: [] }, diagnostics: [] } },
   identity: { schemaVersion: 1, id: `identity-${id}`, assetId: `asset-${id}`, segmentId: `segment-${id}`, subjectId, signals: [], status, calibratedConfidence: confidence, verifiedBy: 'rules' },
 });
 const segmentContext = (subjectId: string, thresholds: ConfidenceThresholds = { autoAt: 0.95, reviewAt: 0.8 }) => ({ format, usedReferenceIds: [], usedSegmentIds: [], subjectId, thresholds });
@@ -70,6 +70,7 @@ describe('storyboard building and media selection', () => {
     expect(ranked[0]?.candidate.segment.id).toBe('segment-boss');
     expect(ranked[0]?.breakdown.kind).toBeGreaterThan(ranked[1]?.breakdown.kind ?? 0);
     expect(ranked[0]).toMatchObject({ eligible: true, confidenceBand: 'automatic', sourceStartMs: 1_000, sourceEndMs: 7_000 });
+    expect(ranked[0]?.match.evidence).toEqual([{ atMs: 4_000, observed: 'combate contra chefe' }]);
     expect(ranked[0]?.reason).toMatch(/combate|tipo/i);
   });
 
@@ -97,6 +98,21 @@ describe('storyboard building and media selection', () => {
     if (!scene) throw new Error('sem cena');
     const ranked = rankMedia(scene, [segmentCandidate('uncalibrated', 'exploration', 'exploração de mundo aberto', 'game-1')], segmentContext('game-1', null));
     expect(ranked[0]).toMatchObject({ eligible: false, reviewRequired: true, confidenceBand: 'review' });
+  });
+
+  it('never lets technical or semantically insufficient segments become automatic matches', () => {
+    const [scene] = buildScenes([{ chapter: null, narration: 'Exploração de mundo aberto.' }], [], 'standard', makeId);
+    if (!scene) throw new Error('sem cena');
+    const blocked = segmentCandidate('blocked', 'exploration', 'exploração de mundo aberto', 'game-1');
+    blocked.segment = { ...blocked.segment, broll: { ...blocked.segment.broll!, technicalStatus: 'technical_blocked' } };
+    const unavailable = segmentCandidate('unavailable', 'exploration', 'exploração de mundo aberto', 'game-1');
+    unavailable.segment = { ...unavailable.segment, broll: { ...unavailable.segment.broll!, semanticStatus: 'not_evaluated' } };
+    const review = segmentCandidate('review-semantic', 'exploration', 'exploração de mundo aberto', 'game-1');
+    review.segment = { ...review.segment, broll: { ...review.segment.broll!, semanticStatus: 'needs_review' } };
+    const ranked = rankMedia(scene, [blocked, unavailable, review], segmentContext('game-1'));
+    expect(ranked.find((item) => item.candidate.segment.id === 'segment-blocked')).toMatchObject({ eligible: false, reviewRequired: false });
+    expect(ranked.find((item) => item.candidate.segment.id === 'segment-unavailable')).toMatchObject({ eligible: false, reviewRequired: false });
+    expect(ranked.find((item) => item.candidate.segment.id === 'segment-review-semantic')).toMatchObject({ eligible: false, reviewRequired: true });
   });
 });
 

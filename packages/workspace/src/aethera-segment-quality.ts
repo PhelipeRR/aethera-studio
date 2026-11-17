@@ -3,6 +3,7 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { mediaSegmentSchema, type MediaSegment } from '@neuralbridge/shared';
+import type { TemporalSample } from './aethera-broll-index.js';
 
 const exec = promisify(execFile);
 
@@ -71,6 +72,21 @@ export async function probeSegmentQuality(input: { ffmpeg: string; root: string;
   } catch (error) {
     if (input.signal?.aborted) throw new Error('cancelled: análise interrompida.', { cause: error });
     throw new Error(`FFmpeg falhou ao medir o segmento: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
+}
+
+/** Timestamped low-rate samples used only for flash/continuity classification; the interval is already bounded by the indexer. */
+export async function probeSegmentTemporalSamples(input: { ffmpeg: string; root: string; relativePath: string; startMs: number; endMs: number; signal?: AbortSignal }): Promise<TemporalSample[]> {
+  if (!(input.endMs > input.startMs) || input.startMs < 0) throw new Error('invalid: intervalo de segmento inválido.');
+  const file = confinedFile(input.root, input.relativePath);
+  const args = ['-hide_banner', '-v', 'error', '-ss', (input.startMs / 1_000).toFixed(3), '-t', ((input.endMs - input.startMs) / 1_000).toFixed(3), '-i', file, '-vf', `scale=-2:${QUALITY_HEIGHT},fps=${QUALITY_FPS},signalstats,metadata=print:file=-`, '-an', '-f', 'null', '-'];
+  try {
+    const { stdout } = await exec(input.ffmpeg, args, { windowsHide: true, timeout: 120_000, maxBuffer: 32 * 1024 * 1024, ...(input.signal ? { signal: input.signal } : {}) });
+    const stats = parseSignalStats(stdout);
+    return stats.luma.map((meanLuma, index) => ({ atMs: input.startMs + Math.round((index * 1_000) / QUALITY_FPS), meanLuma, meanDiff: stats.diff[index] ?? 0 }));
+  } catch (error) {
+    if (input.signal?.aborted) throw new Error('cancelled: análise temporal interrompida.', { cause: error });
+    throw new Error(`FFmpeg falhou ao amostrar o intervalo: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 }
 

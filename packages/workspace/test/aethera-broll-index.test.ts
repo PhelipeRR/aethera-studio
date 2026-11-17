@@ -6,9 +6,11 @@ import {
   BROLL_INDEX_VERSION,
   canReuseBrollIndex,
   classifyTemporalSamples,
+  discardFlashKeyframeTimes,
   makeBrollContactSheet,
   representativeKeyframeTimes,
   stableBrollSegmentId,
+  validateBrollContinuity,
 } from '../src/aethera-broll-index.js';
 
 it('creates deterministic interval identities and interior representative times', () => {
@@ -32,6 +34,11 @@ it('flags an isolated flash without rejecting a moving interval', () => {
   expect(result.reasons).toContain('flash_frame_candidate');
 });
 
+it('discards keyframe times inside a confirmed flash window', () => {
+  expect(discardFlashKeyframeTimes([500, 1_000, 1_500], [1_000])).toEqual([500, 1_500]);
+  expect(discardFlashKeyframeTimes([1_000], [1_000])).toEqual([]);
+});
+
 it('blocks black or frozen intervals while preserving valid static thresholds as evidence', () => {
   expect(classifyTemporalSamples([
     { atMs: 0, meanLuma: 16, meanDiff: 0 },
@@ -48,6 +55,12 @@ it('reuses only a complete index with the same source fingerprint and index vers
   expect(canReuseBrollIndex(base, { sourceHash: 'a'.repeat(64), indexVersion: BROLL_INDEX_VERSION })).toBe(true);
   expect(canReuseBrollIndex(base, { sourceHash: 'b'.repeat(64), indexVersion: BROLL_INDEX_VERSION })).toBe(false);
   expect(canReuseBrollIndex({ ...base, status: 'indexing' }, { sourceHash: base.sourceHash, indexVersion: base.indexVersion })).toBe(false);
+});
+
+it('blocks incomplete temporal coverage but accepts ordinary CFR rounding', () => {
+  expect(validateBrollContinuity({ startMs: 0, endMs: 500, samples: [{ atMs: 0 }, { atMs: 100 }, { atMs: 200 }, { atMs: 300 }, { atMs: 400 }] })).toEqual({ valid: true, gapsMs: [] });
+  expect(validateBrollContinuity({ startMs: 0, endMs: 1_000, samples: [{ atMs: 0 }, { atMs: 100 }, { atMs: 700 }, { atMs: 800 }, { atMs: 900 }] })).toEqual({ valid: false, gapsMs: [500] });
+  expect(validateBrollContinuity({ startMs: 0, endMs: 500, samples: [] }).valid).toBe(false);
 });
 
 it('writes an inspectable contact sheet from cached keyframes without replacing source media', async () => {

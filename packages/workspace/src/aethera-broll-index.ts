@@ -15,6 +15,11 @@ export interface TemporalClassification {
   reasons: string[];
 }
 
+export interface BrollContinuity {
+  valid: boolean;
+  gapsMs: number[];
+}
+
 export function stableBrollSegmentId(input: { sourceHash: string; startMs: number; endMs: number; indexVersion: string }): string {
   if (!input.sourceHash || input.endMs <= input.startMs || input.startMs < 0) throw new Error('invalid: B-roll interval identity.');
   const digest = createHash('sha256').update(JSON.stringify([input.indexVersion, input.sourceHash, input.startMs, input.endMs])).digest('hex');
@@ -44,6 +49,38 @@ export function classifyTemporalSamples(samples: readonly TemporalSample[]): Tem
     ...(flashFrameTimesMs.length ? ['flash_frame_candidate'] : []),
   ];
   return { technicalStatus: black || frozen ? 'technical_blocked' : 'technical_valid', flashFrameTimesMs, reasons };
+}
+
+export function discardFlashKeyframeTimes(timesMs: readonly number[], flashFrameTimesMs: readonly number[], guardMs = 120): number[] {
+  return timesMs.filter((time) => !flashFrameTimesMs.some((flash) => Math.abs(time - flash) <= guardMs));
+}
+
+/**
+ * Checks that the frames used to describe an interval cover the requested source range without a missing span.
+ * The edge tolerance is deliberately wider than one sample period so ordinary CFR rounding is not treated as a gap.
+ */
+export function validateBrollContinuity(input: {
+  startMs: number;
+  endMs: number;
+  samples: readonly Pick<TemporalSample, 'atMs'>[];
+  samplePeriodMs?: number;
+}): BrollContinuity {
+  if (input.startMs < 0 || input.endMs <= input.startMs || input.samples.length === 0) return { valid: false, gapsMs: [Math.max(0, input.endMs - input.startMs)] };
+  const period = Math.max(1, input.samplePeriodMs ?? 100);
+  const sorted = [...input.samples].map((sample) => sample.atMs).filter(Number.isFinite).sort((a, b) => a - b);
+  if (sorted.length === 0) return { valid: false, gapsMs: [input.endMs - input.startMs] };
+  const gaps: number[] = [];
+  const edgeTolerance = Math.round(period * 1.5);
+  const internalTolerance = Math.round(period * 2.5);
+  const firstGap = sorted[0]! - input.startMs;
+  if (firstGap > edgeTolerance) gaps.push(Math.round(firstGap));
+  for (let index = 1; index < sorted.length; index += 1) {
+    const gap = sorted[index]! - sorted[index - 1]! - period;
+    if (gap > internalTolerance) gaps.push(Math.round(gap));
+  }
+  const lastGap = input.endMs - sorted.at(-1)! - period;
+  if (lastGap > edgeTolerance) gaps.push(Math.round(lastGap));
+  return { valid: gaps.length === 0, gapsMs: gaps };
 }
 
 export function canReuseBrollIndex(index: BrollIndex, expected: { sourceHash: string; indexVersion: string }): boolean {

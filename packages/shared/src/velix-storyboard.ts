@@ -227,7 +227,7 @@ export interface SegmentRankContext {
   neighbourPublishers?: readonly string[];
 }
 
-export type SegmentMatchBreakdown = Record<'semantic' | 'subject' | 'kind' | 'quality' | 'diversity' | 'duration', number>;
+export type SegmentMatchBreakdown = Record<'semantic' | 'subject' | 'kind' | 'quality' | 'diversity' | 'duration', number> & { framing?: number; continuity?: number };
 export interface RankedSegmentCandidate {
   candidate: MediaSegmentCandidate;
   eligible: boolean;
@@ -271,10 +271,15 @@ export function rankMediaSegments(scene: StoryboardScene, candidates: readonly M
     const kind = requestedKind === null ? 0.5 : segment.kind === requestedKind ? 1 : segment.kind === 'unknown' ? 0.25 : 0.05;
     const qualityFlags = [segment.quality.overlayText, segment.quality.watermark, segment.quality.black, segment.quality.frozen].filter(Boolean).length;
     const quality = bounded(1 - segment.quality.blur * 0.55 - qualityFlags * 0.2 + segment.quality.motion * 0.08);
+    const technicalValid = segment.broll ? segment.broll.technicalStatus === 'technical_valid' : !segment.quality.black && !segment.quality.frozen;
+    const semanticAdequate = segment.broll ? segment.broll.semanticStatus === 'semantic_adequate' : Boolean(segment.description.trim() || segment.analysis);
+    const semanticNeedsReview = segment.broll?.semanticStatus === 'needs_review';
+    const framing = bounded(segment.broll?.framingScore ?? (segment.quality.overlayText || segment.quality.watermark ? 0.5 : 1));
+    const continuity = segment.broll ? Number(segment.broll.continuity.valid) : Number(!segment.quality.black && !segment.quality.frozen);
     const diversity = 1 / (1 + (usedSegments.get(segment.id) ?? 0));
     const duration = Math.min(1, (segment.endMs - segment.startMs) / 1_000 / sceneSeconds);
-    const breakdown = { semantic: bounded(semantic), subject, kind, quality, diversity, duration } satisfies SegmentMatchBreakdown;
-    const score = rounded(0.38 * breakdown.semantic + 0.25 * breakdown.subject + 0.15 * breakdown.kind + 0.1 * breakdown.quality + 0.07 * breakdown.diversity + 0.05 * breakdown.duration);
+    const breakdown = { semantic: bounded(semantic), subject, kind, quality, diversity, duration, framing, continuity } satisfies SegmentMatchBreakdown;
+    const score = rounded(0.34 * breakdown.semantic + 0.22 * breakdown.subject + 0.13 * breakdown.kind + 0.1 * breakdown.quality + 0.06 * breakdown.framing! + 0.05 * breakdown.continuity! + 0.06 * breakdown.diversity + 0.04 * breakdown.duration);
     const identityMatches = identity?.subjectId === context.subjectId;
     const rawConfidence = Math.min(segment.analysis?.calibratedConfidence ?? segment.analyzedBy.confidence, identity?.calibratedConfidence ?? 0);
     const confidence = rounded(rawConfidence);
@@ -282,15 +287,18 @@ export function rankMediaSegments(scene: StoryboardScene, candidates: readonly M
     // Acquired media is judged by its basis of use (AP-02); legacy media keeps the verified-rights gate.
     const rights = asset.basis ? asset.basis !== 'not_allowed' : asset.rightsStatus === 'verified_allowed';
     const finalUse = asset.basis ? asset.basis === 'licensed' || asset.basis === 'editorial_use' : rights;
-    const eligible = rights && finalUse && identityMatches && identity?.status === 'verified' && band === 'automatic' && breakdown.semantic > 0;
-    const reviewRequired = rights && identityMatches && identity?.status !== 'rejected' && band === 'review';
+    const eligible = rights && finalUse && technicalValid && semanticAdequate && identityMatches && identity?.status === 'verified' && band === 'automatic' && breakdown.semantic > 0;
+    const reviewRequired = rights && finalUse && technicalValid && identityMatches && identity?.status !== 'rejected' && ((semanticNeedsReview && band !== 'reject') || (semanticAdequate && band === 'review'));
     const reason = !rights ? (asset.basis ? 'Sem base de uso permitida (licença ou uso editorial autorizado); o trecho não pode entrar no vídeo.' : `Direitos: ${asset.rightsStatus}; o trecho não pode entrar no vídeo.`)
-      : !identityMatches ? 'Identidade do jogo não corresponde à cena; não será selecionado automaticamente.'
+      : !technicalValid ? 'O intervalo foi bloqueado pela validação técnica (preto, congelamento ou continuidade inválida).'
+        : !semanticAdequate && semanticNeedsReview ? 'A evidência visual precisa de revisão humana antes da seleção.'
+          : !semanticAdequate ? 'A evidência semântica do intervalo está ausente ou tecnicamente bloqueada.'
+            : !identityMatches ? 'Identidade do jogo não corresponde à cena; não será selecionado automaticamente.'
         : identity?.status !== 'verified' ? 'Identidade marcada para revisão humana; o trecho permanece visível, mas não é automático.'
           : band !== 'automatic' ? `Confiança calibrada na faixa ${band}; a seleção automática está bloqueada.`
             : breakdown.semantic <= 0 ? 'A descrição do trecho não explica relação com a frase.'
               : `Trecho do tipo ${segment.kind} entre ${segment.startMs} ms e ${segment.endMs} ms; semelhança semântica ${Math.round(breakdown.semantic * 100)}%.`;
-    const match = sceneMatchSchema.parse({ sceneId: scene.id, sentenceIds: [scene.id], segmentId: segment.id, assetId: segment.assetId, sourceStartMs: segment.startMs, sourceEndMs: segment.endMs, subjectId: identity?.subjectId, confidence, confidenceBand: band, score, breakdown, reason });
+    const match = sceneMatchSchema.parse({ sceneId: scene.id, sentenceIds: [scene.id], segmentId: segment.id, assetId: segment.assetId, sourceStartMs: segment.startMs, sourceEndMs: segment.endMs, subjectId: identity?.subjectId, confidence, confidenceBand: band, score, breakdown, reason, ...(segment.broll?.semanticEvidence?.length ? { evidence: segment.broll.semanticEvidence } : {}) });
     return { candidate, eligible, reviewRequired, confidence, confidenceBand: band, score, sourceStartMs: segment.startMs, sourceEndMs: segment.endMs, reason, breakdown, match };
   });
   return scored.sort((a, b) => Number(b.eligible) - Number(a.eligible) || Number(b.reviewRequired) - Number(a.reviewRequired) || b.score - a.score || a.candidate.segment.id.localeCompare(b.candidate.segment.id));
