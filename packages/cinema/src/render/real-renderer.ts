@@ -45,6 +45,7 @@ type NarrationMode = 'voicestudio_tts' | 'elevenlabs_tts' | 'windows_sapi_tts' |
 interface CachedNarrationMetadata {
   schemaVersion: 1;
   cacheKey: string;
+  providerNamespace: string;
   mode: NarrationMode;
 }
 
@@ -120,15 +121,28 @@ export interface RealRenderResult {
   audioQuality?: AudioQualityGateReport;
   audioFirstTimeline?: AudioFirstDurationAudit & {
     mixedAudioDurationMs: number;
+    finalAudioStreamDurationMs: number;
     narrationSegmentCount: number;
     narrationCacheHits: number;
     narrationCacheDir: string;
+    sceneDurationAdjustments: Array<{
+      sceneId: string;
+      plannedDurationMs: number;
+      adjustedDurationMs: number;
+      reason: string;
+    }>;
+    narrationProviders: Array<{
+      segmentId: string;
+      mode: NarrationMode;
+      cacheHit: boolean;
+      cacheKey: string;
+    }>;
   };
   deliveryValidation?: {
     valid: boolean;
     target: 'preview' | 'master';
     expected: { width: number; height: number; fps: number; durationSec: number; audioCodec: string; videoCodec: string };
-    actual: { width: number; height: number; fps: number; durationSec: number; audioCodec: string | null; videoCodec: string; audioSampleRate: number | null };
+    actual: { width: number; height: number; fps: number; durationSec: number; audioCodec: string | null; videoCodec: string; audioSampleRate: number | null; audioDurationSec: number };
     errors: string[];
   };
 }
@@ -310,6 +324,25 @@ async function synthesizeNarrationWav(
   return 'procedural_voice_fallback';
 }
 
+async function measureAudioStreamDurationMs(filePath: string): Promise<number> {
+  const { stdout } = await execFileAsync('ffprobe', [
+    '-v',
+    'error',
+    '-select_streams',
+    'a:0',
+    '-show_entries',
+    'stream=duration',
+    '-of',
+    'default=noprint_wrappers=1:nokey=1',
+    filePath,
+  ]);
+  const seconds = Number(stdout.trim());
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(`Duração do stream de áudio inválida em ${filePath}: "${stdout.trim()}"`);
+  }
+  return Math.round(seconds * 1000);
+}
+
 function escapeDrawtext(raw: string): string {
   return raw
     .replace(/\\/g, '/')
@@ -338,6 +371,19 @@ interface PreparedNarrationAudio {
   narrationSegmentCount: number;
   narrationCacheHits: number;
   narrationCacheDir: string;
+  narrationProviders: Array<{
+    segmentId: string;
+    mode: NarrationMode;
+    cacheHit: boolean;
+    cacheKey: string;
+  }>;
+  narrationSegments: Array<{
+    segmentId: string;
+    startMs: number;
+    endMs: number;
+    durationMs: number;
+    sceneIndex: number;
+  }>;
   editorialConsistency: EditorialConsistencyReport;
   audioQuality: AudioQualityGateReport;
 }
@@ -354,9 +400,9 @@ async function prepareNarrationAudio(
     .filter(Boolean)
     .join(' ');
   const rawFullText = canonicalFullText || legacyBeatsText || input.pkg.direction.brief.prompt;
-  const rawSegments =
+  const rawSegments: Array<{ segmentId: string; text: string; beatId?: string }> =
     input.pkg.editorialScript?.segments && input.pkg.editorialScript.segments.length > 0
-      ? input.pkg.editorialScript.segments.map((s) => ({ segmentId: s.segmentId, text: s.spokenText }))
+      ? input.pkg.editorialScript.segments.map((s) => ({ segmentId: s.segmentId, text: s.spokenText, beatId: s.beatId }))
       : (rawFullText.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [rawFullText]).reduce<Array<{ segmentId: string; text: string }>>(
           (acc, sentence) => {
             const trimmed = sentence.trim();
@@ -373,11 +419,12 @@ async function prepareNarrationAudio(
         );
 
   const useElevenLabs = input.ttsProviderId === 'elevenlabs' && Boolean(input.ttsVoiceId);
+  const providerNamespace = useElevenLabs
+    ? `elevenlabs:${input.ttsVoiceId}:${input.ttsModelId || 'default'}`
+    : `voicestudio:${(input.voiceStudioUrl ?? 'http://localhost:3900').replace(/\/+$/, '')}:${input.voiceStudioModelId ?? 'omnivoice'}:${input.voiceStudioVoiceId ?? '9190edfa'}`;
   const voicePlan = directNarrationSegments({
-    segments: rawSegments,
-    voiceId: useElevenLabs
-      ? `elevenlabs:${input.ttsVoiceId}:${input.ttsModelId || 'default'}`
-      : input.voiceStudioVoiceId || '9190edfa',
+    segments: rawSegments.map(({ segmentId, text }) => ({ segmentId, text })),
+    voiceId: providerNamespace,
     ...(input.voiceExpressiveness !== undefined ? { expressiveness: input.voiceExpressiveness } : {}),
     ...(input.voiceBaseWpm !== undefined ? { baseWpm: input.voiceBaseWpm } : {}),
     ...(input.pronunciationDictionary ? { dictionary: input.pronunciationDictionary } : {}),
@@ -395,6 +442,17 @@ async function prepareNarrationAudio(
   mkdirSync(voiceCacheDir, { recursive: true });
   const segmentWavPaths: string[] = [];
   const segmentProbes: SynthesizedSegmentProbe[] = [];
+  const narrationProviders: PreparedNarrationAudio['narrationProviders'] = [];
+  const narrationSegments: PreparedNarrationAudio['narrationSegments'] = [];
+  const sceneIndexBySegmentId = new Map(
+    rawSegments.map((segment, index) => {
+      const matchedShotIndex = segment.beatId
+        ? input.pkg.direction.shots.findIndex((shot) => shot.beatId === segment.beatId)
+        : -1;
+      return [segment.segmentId, matchedShotIndex >= 0 ? matchedShotIndex : index] as const;
+    }),
+  );
+  let narrationCursorMs = 0;
   let narrationMode: NarrationMode = 'voicestudio_tts';
   let narrationCacheHits = 0;
 
@@ -403,16 +461,18 @@ async function prepareNarrationAudio(
     const cachedMetadataPath = `${cachedSegPath}.json`;
     const segWorkPath = join(workDir, `nar_${seg.segmentId}.wav`);
     let usedCachedNarration = false;
+    let segmentMode: NarrationMode = 'voicestudio_tts';
     if (existsSync(cachedSegPath) && statSync(cachedSegPath).size > 1024 && existsSync(cachedMetadataPath)) {
       try {
         const metadata = JSON.parse(readFileSync(cachedMetadataPath, 'utf8')) as Partial<CachedNarrationMetadata>;
         const modeMatchesProvider = useElevenLabs
           ? metadata.mode === 'elevenlabs_tts'
           : metadata.mode === 'voicestudio_tts' || metadata.mode === 'windows_sapi_tts' || metadata.mode === 'procedural_voice_fallback';
-        if (metadata.schemaVersion === 1 && metadata.cacheKey === seg.cacheKey && metadata.mode && modeMatchesProvider) {
+        if (metadata.schemaVersion === 1 && metadata.cacheKey === seg.cacheKey && metadata.providerNamespace === providerNamespace && metadata.mode && modeMatchesProvider) {
           assertNarrationModeIsApproved(metadata.mode, input.allowProceduralVoiceFallback);
           copyFileSync(cachedSegPath, segWorkPath);
           narrationMode = metadata.mode;
+          segmentMode = metadata.mode;
           narrationCacheHits += 1;
           usedCachedNarration = true;
         }
@@ -433,13 +493,14 @@ async function prepareNarrationAudio(
         ...(input.language ? { language: input.language } : {}),
       });
       narrationMode = mode;
+      segmentMode = mode;
       assertNarrationModeIsApproved(mode, input.allowProceduralVoiceFallback);
       const cacheable = mode !== 'procedural_voice_fallback' && (useElevenLabs ? mode === 'elevenlabs_tts' : true);
       if (cacheable && existsSync(segWorkPath) && statSync(segWorkPath).size > 1024) {
         copyFileSync(segWorkPath, cachedSegPath);
         writeFileSync(
           cachedMetadataPath,
-          JSON.stringify({ schemaVersion: 1, cacheKey: seg.cacheKey, mode } satisfies CachedNarrationMetadata),
+          JSON.stringify({ schemaVersion: 1, cacheKey: seg.cacheKey, providerNamespace, mode } satisfies CachedNarrationMetadata),
           'utf8',
         );
       }
@@ -453,6 +514,15 @@ async function prepareNarrationAudio(
     );
     segmentWavPaths.push(segFinalPath);
     const durMs = await measureAudioDurationMs(segFinalPath);
+    narrationSegments.push({
+      segmentId: seg.segmentId,
+      startMs: narrationCursorMs,
+      endMs: narrationCursorMs + durMs,
+      durationMs: durMs,
+      sceneIndex: sceneIndexBySegmentId.get(seg.segmentId) ?? seg.order,
+    });
+    narrationCursorMs += durMs;
+    narrationProviders.push({ segmentId: seg.segmentId, mode: segmentMode, cacheHit: usedCachedNarration, cacheKey: seg.cacheKey });
     segmentProbes.push({
       segmentId: seg.segmentId,
       editorialText: seg.editorialText,
@@ -488,6 +558,9 @@ async function prepareNarrationAudio(
       ...(input.language ? { language: input.language } : {}),
     });
     assertNarrationModeIsApproved(narrationMode, input.allowProceduralVoiceFallback);
+    const fallbackDurationMs = await measureAudioDurationMs(narrationWav);
+    narrationSegments.push({ segmentId: 'full_narration', startMs: 0, endMs: fallbackDurationMs, durationMs: fallbackDurationMs, sceneIndex: 0 });
+    narrationProviders.push({ segmentId: 'full_narration', mode: narrationMode, cacheHit: false, cacheKey: 'uncached_full_narration' });
   }
 
   return {
@@ -498,6 +571,8 @@ async function prepareNarrationAudio(
     narrationSegmentCount: voicePlan.segments.length,
     narrationCacheHits,
     narrationCacheDir: voiceCacheDir,
+    narrationProviders,
+    narrationSegments,
     editorialConsistency,
     audioQuality,
   };
@@ -590,18 +665,52 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const narrationCacheHits = narration.narrationCacheHits;
   const narrationSegmentCount = narration.narrationSegmentCount;
   const voiceCacheDir = narration.narrationCacheDir;
+  const narrationSegments = narration.narrationSegments;
+  const narrationProviders = narration.narrationProviders;
   const editorialConsistency = narration.editorialConsistency;
   const audioQuality = narration.audioQuality;
   const audioFirstBase = buildAudioFirstDurationAudit({
     plannedTimelineDurationMs: Math.round(plannedVideoDur * 1000),
     measuredNarrationDurationMs: measuredNarMs,
   });
-  if (audioFirstBase.finalTimelineDurationMs > audioFirstBase.plannedDurationMs) {
+  const targetTimelineDurationSec = audioFirstBase.finalTimelineDurationMs / 1000;
+  const sceneDurationAdjustments: Array<{
+    sceneId: string;
+    plannedDurationMs: number;
+    adjustedDurationMs: number;
+    reason: string;
+  }> = [];
+  if (audioFirstBase.finalTimelineDurationMs > audioFirstBase.plannedDurationMs && clipSpecs.length > 0) {
+    const audioDurationByScene = clipSpecs.map(() => 0);
+    for (const segment of narrationSegments) {
+      const sceneIndex = Math.min(Math.max(0, segment.sceneIndex), audioDurationByScene.length - 1);
+      audioDurationByScene[sceneIndex] = (audioDurationByScene[sceneIndex] ?? 0) + segment.durationMs;
+    }
+    clipSpecs.forEach((spec, index) => {
+      const measuredSceneMs = audioDurationByScene[index] ?? 0;
+      if (measuredSceneMs <= 0) return;
+      const plannedDurationMs = Math.round(spec.effectiveDur * 1000);
+      const transitionCompensationMs = index < clipSpecs.length - 1 ? Math.round(xfadeDur * 1000) : 0;
+      const adjustedDurationMs = Math.max(1_200, measuredSceneMs + transitionCompensationMs);
+      spec.effectiveDur = Number((adjustedDurationMs / 1000).toFixed(2));
+      sceneDurationAdjustments.push({
+        sceneId: spec.shot?.shotId ?? `scene_${index + 1}`,
+        plannedDurationMs,
+        adjustedDurationMs: Math.round(spec.effectiveDur * 1000),
+        reason: 'Duração da cena ajustada pela duração medida dos segmentos de narração atribuídos, preservando a transição FFmpeg.',
+      });
+    });
+    const adjustedVideoDuration = clipSpecs.reduce((sum, spec) => sum + spec.effectiveDur, 0) - Math.max(0, clipSpecs.length - 1) * xfadeDur;
     const lastClip = clipSpecs.at(-1);
-    if (lastClip) {
-      lastClip.effectiveDur = Number(
-        (lastClip.effectiveDur + (audioFirstBase.finalTimelineDurationMs - audioFirstBase.plannedDurationMs) / 1000).toFixed(2),
-      );
+    if (lastClip && adjustedVideoDuration < targetTimelineDurationSec) {
+      const plannedDurationMs = Math.round(lastClip.effectiveDur * 1000);
+      lastClip.effectiveDur = Number((lastClip.effectiveDur + targetTimelineDurationSec - adjustedVideoDuration).toFixed(2));
+      sceneDurationAdjustments.push({
+        sceneId: lastClip.shot?.shotId ?? `scene_${clipSpecs.length}`,
+        plannedDurationMs,
+        adjustedDurationMs: Math.round(lastClip.effectiveDur * 1000),
+        reason: 'Cauda final estendida para cobrir a duração total medida sem truncar a narração.',
+      });
     }
   }
   const totalDurMs = audioFirstBase.finalTimelineDurationMs;
@@ -946,19 +1055,20 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     await execFileAsync('ffmpeg', ['-y', '-i', subVideoPath, '-c', 'copy', rawVideoPath]);
   }
 
+  const narrationEvents: AudioTimelineEvent[] = narrationSegments.map((segment) => ({
+    sourceId: `nar_${segment.segmentId}`,
+    sceneId: clipSpecs[Math.min(Math.max(0, segment.sceneIndex), clipSpecs.length - 1)]?.shot?.shotId ?? `scene_${Math.min(Math.max(0, segment.sceneIndex), clipSpecs.length - 1) + 1}`,
+    bus: 'A1_narration',
+    role: 'narration',
+    startMs: segment.startMs,
+    endMs: segment.endMs,
+    gainDb: 0,
+    priority: 100,
+    fadeInMs: 40,
+    fadeOutMs: 120,
+  }));
   const audioTimeline: AudioTimelineEvent[] = [
-    {
-      sourceId: 'nar_master_01',
-      sceneId: clipSpecs[0]?.shot?.shotId ?? 'scene_01',
-      bus: 'A1_narration',
-      role: 'narration',
-      startMs: 0,
-      endMs: measuredNarMs,
-      gainDb: 0,
-      priority: 100,
-      fadeInMs: 40,
-      fadeOutMs: 120,
-    },
+    ...narrationEvents,
     {
       sourceId: 'music_bed_01',
       sceneId: 'global',
@@ -1152,7 +1262,6 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
         ...(audioBitrate ? ['-b:a', audioBitrate] : []),
         '-r',
         String(targetFps),
-        '-shortest',
         mp4Path,
       ]);
       encoderUsed = 'h264_nvenc';
@@ -1183,7 +1292,6 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       ...(audioBitrate ? ['-b:a', audioBitrate] : []),
       '-r',
       String(targetFps),
-      '-shortest',
       mp4Path,
     ]);
   }
@@ -1194,13 +1302,14 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       `audio_truncated: o master de áudio (${mixedAudioDurationMs}ms) ficou menor que a narração medida (${measuredNarMs}ms).`,
     );
   }
-  const probe = await probeRealMp4(mp4Path);
-  const anomalies = await detectMediaAnomalies(mp4Path);
-  if (probe.durationSec + 0.15 < measuredNarMs / 1000) {
+  const finalAudioStreamDurationMs = await measureAudioStreamDurationMs(mp4Path);
+  if (finalAudioStreamDurationMs + 150 < measuredNarMs) {
     throw new Error(
-      `audio_truncated: o MP4 final (${probe.durationSec.toFixed(3)}s) termina antes da narração medida (${(measuredNarMs / 1000).toFixed(3)}s).`,
+      `audio_truncated: o stream de áudio do MP4 final (${finalAudioStreamDurationMs}ms) ficou menor que a narração medida (${measuredNarMs}ms).`,
     );
   }
+  const probe = await probeRealMp4(mp4Path);
+  const anomalies = await detectMediaAnomalies(mp4Path);
   const targetLufsForQc = deliveryProfile.audio.integratedLufs;
   const realQcFindings = runRealMediaQc(probe, targetLufsForQc, anomalies);
   const expectedVideoCodec = deliveryProfile.preset.videoCodec === 'h264_nvenc' ? 'h264' : deliveryProfile.preset.videoCodec;
@@ -1216,7 +1325,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     valid: validationErrors.length === 0,
     target: renderTarget,
     expected: { width: targetWidth, height: targetHeight, fps: targetFps, durationSec: totalDur, audioCodec: deliveryProfile.preset.audioCodec, videoCodec: expectedVideoCodec },
-    actual: { width: probe.width, height: probe.height, fps: probe.fps, durationSec: probe.durationSec, audioCodec: probe.audioCodec, videoCodec: probe.videoCodec, audioSampleRate: probe.audioSampleRate },
+    actual: { width: probe.width, height: probe.height, fps: probe.fps, durationSec: probe.durationSec, audioCodec: probe.audioCodec, videoCodec: probe.videoCodec, audioSampleRate: probe.audioSampleRate, audioDurationSec: finalAudioStreamDurationMs / 1000 },
     errors: validationErrors,
   } as const;
   const waveformPeaks = await extractWaveformPeaks(audioMixPath, 80);
@@ -1276,9 +1385,12 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     audioFirstTimeline: {
       ...audioFirstBase,
       mixedAudioDurationMs,
+      finalAudioStreamDurationMs,
       narrationSegmentCount,
       narrationCacheHits,
       narrationCacheDir: voiceCacheDir,
+      narrationProviders,
+      sceneDurationAdjustments,
     },
     deliveryValidation,
   };

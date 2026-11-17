@@ -716,3 +716,13 @@ composição, ritmo e coerência.
 - [ ] Falta validar a retomada completa em um novo teste E2E, reutilizando os arquivos existentes quando encontrados.
 
 P1 — Audio-First Timeline foi autorizado para implementação. P2 permanece bloqueado até o aceite explícito de P1.
+
+## P1 — Audio-First Timeline (implementação concluída para aceite — 2026-11-17)
+
+- [x] Narração preparada e medida via `ffprobe` antes da codificação das cenas; duração final = `max(duração planejada, duração medida)`.
+- [x] Pausas preservadas por segmento; cena ajustada pela duração medida do segmento atribuído; `atrim`, `Math.min` de truncamento e `-shortest` removidos do caminho final.
+- [x] Diagnóstico persistido: duração planejada, medida, final, tolerância, ajustes por cena, stream de áudio final, provedor efetivo por segmento, cache hit/key e modo de narração.
+- [x] Cache de narração isolado por endpoint/modelo/voz; correções visuais reutilizam os WAVs e não fazem nova chamada TTS quando o sidecar é verificável.
+- [x] Testes focados: 7 arquivos / 23 testes passando; inclui áudio longo/curto, dois segmentos, atribuição por cena, stream final e cache.
+- [x] Evidência real: MP4 `C:\dev\neuralbridge-studio\artifacts\aethera-p1-audio-first\20261117165701\render\cyberpunk-audio-first.mp4`, arquivo Cyberpunk local reutilizado sem download, H.264/AAC 48 kHz, `deliveryValidation.valid=true`, stream de áudio `19,285 ms`.
+- [ ] Aceite do usuário ainda pendente; P2 não iniciado.

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -37,8 +37,16 @@ describe('Audio-first real renderer', () => {
           stage: 'hook',
           title: 'Night City',
           spokenText:
-            'Em Night City, cada avenida revela uma camada diferente de Cyberpunk 2077. A cidade mistura neon, chuva, anúncios e conflitos humanos em uma paisagem que nunca fica parada. Nesta validação, a narração é deliberadamente mais longa que a estimativa visual para provar que a timeline não corta palavras nem termina antes da última frase.',
-          estimatedDurationSec: 2,
+            'Em Night City, cada avenida revela uma camada diferente de Cyberpunk 2077. A cidade mistura neon, chuva, anúncios e conflitos humanos em uma paisagem que nunca fica parada.',
+          estimatedDurationSec: 1.5,
+        },
+        {
+          beatId: 'beat_2',
+          stage: 'progression',
+          title: 'Evidence',
+          spokenText:
+            'Nesta validação, a narração é deliberadamente mais longa que a estimativa visual para provar que a timeline não corta palavras nem termina antes da última frase.',
+          estimatedDurationSec: 1.5,
         },
       ],
     });
@@ -54,9 +62,9 @@ describe('Audio-first real renderer', () => {
         beats: editorialScript.segments.map((segment) => ({ stage: segment.stage, summary: segment.spokenText })),
       },
     });
-    pkg.timeline.clips = pkg.timeline.clips.slice(0, 1);
-    pkg.direction.shots = pkg.direction.shots.slice(0, 1);
-    pkg.direction.narrativeBeats = pkg.direction.narrativeBeats.slice(0, 1);
+    pkg.timeline.clips = pkg.timeline.clips.slice(0, 2);
+    pkg.direction.shots = pkg.direction.shots.slice(0, 2);
+    pkg.direction.narrativeBeats = pkg.direction.narrativeBeats.slice(0, 2);
 
     const rendered = await renderRealCinemaMp4({
       pkg,
@@ -78,7 +86,30 @@ describe('Audio-first real renderer', () => {
     expect(rendered.audioFirstTimeline?.mixedAudioDurationMs).toBeGreaterThanOrEqual(
       (rendered.audioFirstTimeline?.measuredNarrationDurationMs ?? 0) - 150,
     );
+    expect(rendered.audioFirstTimeline?.finalAudioStreamDurationMs).toBeGreaterThanOrEqual(
+      (rendered.audioFirstTimeline?.measuredNarrationDurationMs ?? 0) - 150,
+    );
+    expect(rendered.audioFirstTimeline?.narrationSegmentCount).toBe(2);
+    expect(rendered.audioFirstTimeline?.narrationProviders).toHaveLength(2);
+    expect(rendered.audioFirstTimeline?.narrationProviders.every((provider) => provider.mode !== 'procedural_voice_fallback')).toBe(true);
+    expect(rendered.audioFirstTimeline?.sceneDurationAdjustments.length).toBeGreaterThanOrEqual(2);
+    expect(rendered.audioTimeline.filter((event) => event.bus === 'A1_narration')).toHaveLength(2);
+    expect(new Set(rendered.audioTimeline.filter((event) => event.bus === 'A1_narration').map((event) => event.sceneId)).size).toBe(2);
+    expect(rendered.deliveryValidation?.actual.audioDurationSec).toBeCloseTo(
+      (rendered.audioFirstTimeline?.finalAudioStreamDurationMs ?? 0) / 1000,
+      3,
+    );
     expect(rendered.deliveryValidation?.valid).toBe(true);
+
+    const narrationMetadataFiles = readdirSync(rendered.audioFirstTimeline?.narrationCacheDir ?? '')
+      .filter((file) => file.endsWith('.wav.json'));
+    expect(narrationMetadataFiles).toHaveLength(2);
+    const firstMetadataFile = narrationMetadataFiles[0];
+    if (!firstMetadataFile) throw new Error('Expected a persisted narration metadata sidecar.');
+    const narrationMetadata = JSON.parse(
+      readFileSync(join(rendered.audioFirstTimeline?.narrationCacheDir ?? '', firstMetadataFile), 'utf8'),
+    ) as { providerNamespace?: string };
+    expect(narrationMetadata.providerNamespace).toMatch(/^voicestudio:/);
 
     const persistedAfterRestart = JSON.parse(JSON.stringify(rendered)) as typeof rendered;
     expect(persistedAfterRestart.audioFirstTimeline).toMatchObject({
