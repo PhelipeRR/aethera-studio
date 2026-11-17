@@ -46,13 +46,15 @@ export interface ComfyUiImageAdapterOptions {
   filenamePrefix?: string;
 }
 
+const DEFAULT_COMFYUI_ENDPOINT = 'http://127.0.0.1:8000';
+
 function safeFilenamePrefix(value: string): string {
   return value.replace(/[^A-Za-z0-9_./-]+/g, '-').replace(/^[/.-]+|[/.-]+$/g, '') || 'Aethera/creative';
 }
 
 export class ComfyUiImageAdapter implements ExternalImageAdapter {
   readonly id = 'comfyui-native';
-  readonly gateway: ComfyUiGateway;
+  gateway: ComfyUiGateway;
   checkpoint: string;
   private readonly steps: number;
   private readonly cfg: number;
@@ -61,18 +63,22 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
   private readonly timeoutMs: number;
   private releaseMemoryAfterGeneration: boolean;
   private readonly filenamePrefix: string;
+  private readonly nativeGateway: boolean;
+  private readonly requestTimeoutMs: number | undefined;
+  private endpoint: string | undefined;
   private readonly gpuLease = new GpuGenerationLease();
   private activePromptId: string | null = null;
   private availabilityError: string | null = null;
 
   constructor(options?: ComfyUiImageAdapterOptions) {
+    this.requestTimeoutMs = options?.requestTimeoutMs;
     if (options?.gateway) {
       this.gateway = options.gateway;
+      this.nativeGateway = false;
     } else {
-      this.gateway = new ComfyUiClient({
-        baseUrl: options?.endpoint ?? 'http://127.0.0.1:8188',
-        ...(options?.requestTimeoutMs !== undefined ? { requestTimeoutMs: options.requestTimeoutMs } : {}),
-      });
+      this.nativeGateway = true;
+      this.endpoint = options?.endpoint ?? DEFAULT_COMFYUI_ENDPOINT;
+      this.gateway = this.createNativeGateway(this.endpoint);
     }
     this.checkpoint = options?.checkpoint ?? 'sd_xl_base_1.0.safetensors';
     this.steps = options?.steps ?? 8;
@@ -82,6 +88,25 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     this.timeoutMs = options?.timeoutMs ?? 10 * 60_000;
     this.releaseMemoryAfterGeneration = options?.releaseMemoryAfterGeneration ?? false;
     this.filenamePrefix = safeFilenamePrefix(options?.filenamePrefix ?? 'Aethera/creative');
+  }
+
+  getEndpoint(): string | undefined {
+    return this.endpoint;
+  }
+
+  setEndpoint(endpoint: string): void {
+    if (!this.nativeGateway) throw new Error('Cannot retarget a ComfyUI adapter backed by a custom gateway.');
+    const gateway = this.createNativeGateway(endpoint);
+    this.gateway = gateway;
+    this.endpoint = gateway.baseUrl;
+    this.availabilityError = null;
+  }
+
+  private createNativeGateway(endpoint: string): ComfyUiClient {
+    return new ComfyUiClient({
+      baseUrl: endpoint,
+      ...(this.requestTimeoutMs !== undefined ? { requestTimeoutMs: this.requestTimeoutMs } : {}),
+    });
   }
 
   async isAvailable(): Promise<boolean> {

@@ -136,12 +136,58 @@ function emptyCapabilities(): ComfyUiCapabilities {
   return { nativeTxt2Img: false, nativeImg2Img: false, inpaint: false, controlNet: false, ipAdapter: false, faceDetailer: false, upscale: false, lora: false };
 }
 
-function inventoryFor(resourceRoot: string, fileSystem: ComfyUiFileSystem): ComfyUiModelInventory {
+function uniquePaths(paths: string[]): string[] {
+  return [...new Set(paths.filter(Boolean))];
+}
+
+function argvValue(argv: string[] | undefined, flag: string): string | undefined {
+  if (!argv) return undefined;
+  const index = argv.indexOf(flag);
+  const value = index >= 0 ? argv[index + 1] : undefined;
+  return value && !value.startsWith('-') ? value : undefined;
+}
+
+function basePathsFromExtraModelConfig(source: string): string[] {
+  const paths: string[] = [];
+  for (const line of source.split(/\r?\n/u)) {
+    const match = line.match(/^\s*base_path:\s*(?:"([^"]+)"|'([^']+)'|(.+?))\s*$/u);
+    const value = match?.[1] ?? match?.[2] ?? match?.[3];
+    if (value) paths.push(value.trim());
+  }
+  return paths;
+}
+
+function modelRootsFor(
+  install: { resourceRoot: string } | undefined,
+  stats: ComfyUiSystemStats,
+  fileSystem: ComfyUiFileSystem,
+): string[] {
+  const roots = install ? [install.resourceRoot] : [];
+  const argv = stats.system?.argv;
+  const baseDirectory = argvValue(argv, '--base-directory');
+  if (baseDirectory) roots.push(baseDirectory);
+  const extraConfig = argvValue(argv, '--extra-model-paths-config');
+  if (extraConfig && fileSystem.exists(extraConfig)) {
+    try {
+      roots.push(...basePathsFromExtraModelConfig(fileSystem.readFile(extraConfig)));
+    } catch {
+      // A readable runtime is still useful when an optional model-path file is unavailable.
+    }
+  }
+  return uniquePaths(roots);
+}
+
+function inventoryFor(resourceRoots: string[], fileSystem: ComfyUiFileSystem): ComfyUiModelInventory {
   const inventory = emptyInventory();
+  for (const resourceRoot of resourceRoots) {
+    for (const category of MODEL_CATEGORIES) {
+      const directory = join(resourceRoot, 'models', category);
+      if (!fileSystem.exists(directory)) continue;
+      inventory[category].push(...fileSystem.listFiles(directory).filter((path) => MODEL_EXTENSIONS.test(path)));
+    }
+  }
   for (const category of MODEL_CATEGORIES) {
-    const directory = join(resourceRoot, 'models', category);
-    if (!fileSystem.exists(directory)) continue;
-    inventory[category] = fileSystem.listFiles(directory).filter((path) => MODEL_EXTENSIONS.test(path));
+    inventory[category] = [...new Set(inventory[category])].sort((a, b) => a.localeCompare(b));
   }
   return inventory;
 }
@@ -170,8 +216,8 @@ function deviceFrom(stats: ComfyUiSystemStats): ComfyUiStatus['device'] {
 export async function discoverComfyUi(options?: ComfyUiDiscoveryOptions): Promise<ComfyUiStatus> {
   const fileSystem = options?.fileSystem ?? nativeFileSystem;
   const install = findInstallRoot(options?.installRoots ?? defaultInstallRoots(), fileSystem);
-  const endpoints = options?.endpoints ?? ['http://127.0.0.1:8188', 'http://127.0.0.1:8000'];
-  const models = install ? inventoryFor(install.resourceRoot, fileSystem) : emptyInventory();
+  const endpoints = options?.endpoints ?? ['http://127.0.0.1:8000', 'http://127.0.0.1:8188'];
+  let models = install ? inventoryFor([install.resourceRoot], fileSystem) : emptyInventory();
   const errors: string[] = [];
 
   for (const endpoint of endpoints) {
@@ -190,6 +236,7 @@ export async function discoverComfyUi(options?: ComfyUiDiscoveryOptions): Promis
     try {
       const stats = await client.getSystemStats();
       const objectInfo = await client.getObjectInfo();
+      models = inventoryFor(modelRootsFor(install, stats, fileSystem), fileSystem);
       const discoveredCheckpoints = checkpointNamesFromObjectInfo(objectInfo);
       const mergedModels = {
         ...models,

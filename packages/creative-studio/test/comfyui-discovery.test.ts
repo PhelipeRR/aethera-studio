@@ -81,4 +81,48 @@ describe('ComfyUI discovery', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('merges models from the runtime base directory and extra model paths', async () => {
+    const result = await discoverComfyUi({
+      endpoints: ['http://127.0.0.1:8000'],
+      installRoots: ['C:/ComfyUI'],
+      fileSystem: {
+        exists: (path) => path.endsWith('comfyui_version.py')
+          || path.endsWith('checkpoints')
+          || path.endsWith('loras')
+          || path.endsWith('extra_models_config.yaml'),
+        readFile: (path) => path.endsWith('extra_models_config.yaml')
+          ? 'comfyui_desktop:\n  base_path: C:\\Documents\\ComfyUI\n'
+          : '__version__ = "0.20.1"',
+        listFiles: (path) => path.includes('Documents/ComfyUI') || path.includes('Documents\\ComfyUI')
+          ? ['animagine-xl-3.1.safetensors']
+          : ['sdxl.safetensors'],
+      },
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/system_stats')) {
+          return new Response(JSON.stringify({
+            system: {
+              argv: [
+                'python',
+                '--base-directory', 'C:\\Documents\\ComfyUI',
+                '--extra-model-paths-config', 'C:\\Documents\\extra_models_config.yaml',
+              ],
+            },
+            devices: [{ name: 'NVIDIA GeForce RTX 4060 Ti', vram_total: 8_188_000_000 }],
+          }));
+        }
+        if (url.endsWith('/object_info')) {
+          return new Response(JSON.stringify({
+            CheckpointLoaderSimple: { input: { required: { ckpt_name: [['animagine-xl-3.1.safetensors']] } } },
+            CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {},
+          }));
+        }
+        return new Response('{}');
+      },
+    });
+
+    expect(result.state).toBe('ready');
+    expect(result.models.checkpoints).toEqual(['animagine-xl-3.1.safetensors', 'sdxl.safetensors']);
+  });
 });

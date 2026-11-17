@@ -131,7 +131,7 @@ export class AetheraCreativeStudioService {
   readonly conceptEngine: ConceptDrivenEngine;
   private readonly editors = new Map<string, LayeredDocumentEditor>();
   private readonly productionConsole: ProductionConsoleService | undefined;
-  private readonly comfyUiEndpoint: string | undefined;
+  private comfyUiEndpoint: string | undefined;
   private readonly imageEngineSettingsStore: CreativeImageEngineSettingsStore;
   /** Console job of the creative execution in progress; concurrent thumbnails each carry their own. */
   private readonly consoleJob = new AsyncLocalStorage<CreativeConsoleJob>();
@@ -184,11 +184,17 @@ export class AetheraCreativeStudioService {
   }
 
   async imageEngineStatus(): Promise<{ comfyUi: ComfyUiStatus; localAvailable: boolean; activeProvider: string }> {
-    const [comfyUi, localAvailable, comfyAvailable] = await Promise.all([
-      discoverComfyUi({
-        requestTimeoutMs: 750,
-        ...(this.comfyUiEndpoint ? { endpoints: [this.comfyUiEndpoint] } : {}),
-      }),
+    const endpoints = [...new Set([
+      this.comfyUiEndpoint,
+      'http://127.0.0.1:8000',
+      'http://127.0.0.1:8188',
+    ].filter((endpoint): endpoint is string => Boolean(endpoint)))];
+    const comfyUi = await discoverComfyUi({ requestTimeoutMs: 750, endpoints });
+    if (comfyUi.endpoint && comfyUi.endpoint !== this.comfyUiEndpoint) {
+      this.comfyUiAdapter.setEndpoint(comfyUi.endpoint);
+      this.comfyUiEndpoint = comfyUi.endpoint;
+    }
+    const [localAvailable, comfyAvailable] = await Promise.all([
       this.localImageAdapter.isAvailable(),
       this.comfyUiAdapter.isAvailable(),
     ]);
@@ -260,6 +266,8 @@ export class AetheraCreativeStudioService {
     requiresRestart: boolean;
   }> {
     const settings = this.imageEngineSettingsStore.save(input);
+    this.comfyUiAdapter.setEndpoint(settings.endpoint);
+    this.comfyUiEndpoint = settings.endpoint;
     this.comfyUiAdapter.setCheckpoint(settings.checkpoint);
     this.comfyUiAdapter.setReleaseMemoryAfterGeneration(settings.releaseMemoryAfterGeneration);
     const current = await this.getImageEngineSettings();

@@ -11,7 +11,7 @@ export interface CreativeImageEngineSettings {
 }
 
 export const DEFAULT_CREATIVE_IMAGE_ENGINE_SETTINGS: CreativeImageEngineSettings = {
-  endpoint: 'http://127.0.0.1:8188',
+  endpoint: 'http://127.0.0.1:8000',
   checkpoint: 'sd_xl_base_1.0.safetensors',
   preferredPreset: 'youtube_thumbnail_1280x720',
   releaseMemoryAfterGeneration: false,

@@ -28,6 +28,14 @@ function fakeGateway(): ComfyUiGateway & { queued?: Record<string, unknown> } {
 }
 
 describe('ComfyUiImageAdapter', () => {
+  it('uses the ComfyUI Desktop port by default and can retarget a native client', () => {
+    const adapter = new ComfyUiImageAdapter();
+
+    expect(adapter.getEndpoint()).toBe('http://127.0.0.1:8000');
+    adapter.setEndpoint('http://127.0.0.1:8188');
+    expect(adapter.getEndpoint()).toBe('http://127.0.0.1:8188');
+  });
+
   it('validates the graph, queues the prompt, waits for completion, and downloads the output', async () => {
     const gateway = fakeGateway();
     const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors', steps: 6, cfg: 4.5 });
