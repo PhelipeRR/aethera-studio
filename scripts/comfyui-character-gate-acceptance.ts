@@ -33,6 +33,14 @@ const onlyCases = process.env.GATE_CASES?.split(',').filter(Boolean);
 const seedOffset = Number(process.env.GATE_SEED_OFFSET ?? 0);
 const maxAttempts = Number(process.env.GATE_MAX_ATTEMPTS ?? 4);
 
+function gateAxisLabel(gate: CharacterGateReport | null): string {
+  if (!gate) return 'count=? sem=? quality=?';
+  const count = gate.attempts.find((attempt) => attempt.attempt === gate.chosenAttempt)?.gate?.verdict ?? '?';
+  const semantic = gate.attempts.find((attempt) => attempt.attempt === gate.chosenAttempt)?.semantic?.verdict ?? 'not-run';
+  const quality = gate.attempts.find((attempt) => attempt.attempt === gate.chosenAttempt)?.visualQuality?.verdict ?? 'not-run';
+  return `count=${count} sem=${semantic} quality=${quality}`;
+}
+
 async function vramMiB(): Promise<number | null> {
   try {
     const { stdout } = await execFileAsync('nvidia-smi', ['--query-gpu=memory.used', '--format=csv,noheader,nounits']);
@@ -155,6 +163,7 @@ try {
                   poseControlNetModel,
                   holdModels: (work) => service.comfyUiAdapter.withModelsHeld(work),
                   cutoutBatch: (paths) => service.batchCutout.cutout(paths),
+                  semanticGate: { enabled: true, localizedRepair: true },
                 },
               }
             : {}),
@@ -168,10 +177,16 @@ try {
         const gate = report.characterGate ?? null;
         const attemptFiles: string[] = [];
         for (const attempt of gate?.attempts ?? []) {
-          if (!attempt.imageAsset) continue;
-          const path = join(runDir, `${label}-attempt${attempt.attempt}-${attempt.gate?.verdict ?? attempt.status}-seed${attempt.seed}.png`);
-          writeFileSync(path, await sharp(service.ingestion.resolvePortablePath(attempt.imageAsset.relativePath)).png().toBuffer());
-          attemptFiles.push(path);
+          const evidenceAssets = [
+            attempt.imageAsset ? { ref: attempt.imageAsset, kind: 'final' } : null,
+            attempt.repair?.originalImageAsset ? { ref: attempt.repair.originalImageAsset, kind: 'original' } : null,
+            attempt.repair?.repairedImageAsset ? { ref: attempt.repair.repairedImageAsset, kind: 'repaired' } : null,
+          ].filter((entry): entry is { ref: { relativePath: string; originalName: string }; kind: string } => entry !== null);
+          for (const entry of evidenceAssets) {
+            const path = join(runDir, `${label}-attempt${attempt.attempt}-${entry.kind}-${attempt.overallVerdict ?? attempt.gate?.verdict ?? attempt.status}-seed${attempt.seed}.png`);
+            writeFileSync(path, await sharp(service.ingestion.resolvePortablePath(entry.ref.relativePath)).png().toBuffer());
+            attemptFiles.push(path);
+          }
         }
         results.push({
           id: testCase.id,
@@ -199,7 +214,7 @@ try {
         clearInterval(sampler);
       }
       const last = results.at(-1)!;
-      console.log(`[gate] ${label}: ${String(last.status)} ${last.gate ? `${last.gate.verdict} after ${last.gate.attempts.length} attempt(s), stop=${last.gate.stopReason}` : ''} in ${String(last.ms)} ms${last.error ? ` — ${String(last.error)}` : ''}`);
+      console.log(`[gate] ${label}: ${String(last.status)} ${last.gate ? `${last.gate.verdict} ${gateAxisLabel(last.gate)} after ${last.gate.attempts.length} attempt(s), stop=${last.gate.stopReason}` : ''} in ${String(last.ms)} ms${last.error ? ` — ${String(last.error)}` : ''}`);
     }
   }
 
@@ -213,7 +228,7 @@ try {
     const after = results.find((result) => result.id === id && result.mode === 'after');
     const tiles: Array<{ title: string; path: string | null }> = [
       { title: `before seed ${String(before?.seed ?? '?')}`, path: before?.file ?? null },
-      { title: `after: ${after?.gate?.verdict ?? String(after?.status)} (#${String(after?.gate?.chosenAttempt ?? '?')})`, path: after?.file ?? null },
+      { title: `after: ${after?.gate?.verdict ?? String(after?.status)} (#${String(after?.gate?.chosenAttempt ?? '?')}) ${gateAxisLabel(after?.gate ?? null)}`, path: after?.file ?? null },
       ...((after?.attemptFiles as string[] | undefined) ?? []).map((path) => ({ title: path.split(/[\\/]/).pop()!.replace(`${id}-after-`, '').replace('.png', ''), path })),
     ];
     return { id, tiles };
@@ -237,11 +252,19 @@ try {
   await sharp({ create: { width: cellW * columns, height: rows.length * (cellH + label * 2), channels: 3, background: '#000' } }).composite(composites).png().toFile(sheetPath);
 
   const report = {
+    schemaVersion: 'cs10-semantic-scene-gate-v1',
     runId,
     generatedAt: new Date().toISOString(),
     endpoint: 'http://127.0.0.1:8000',
     checkpoint: 'animagine-xl-3.1.safetensors',
     detectors: ['yolo_person (person_yolov8m-seg)', 'yolo_face (face_yolov8m, anime+real)', 'yolo_hand (hand_yolov8s)', 'openpose (lllyasviel body CNN, non-YOLO)'],
+    semanticEvaluators: ['local-clip-vit-base-patch32 (existing local adapter)', 'local-visual-quality-critic (existing local adapter)'],
+    evidencePolicy: {
+      promptOriented: true,
+      missingDetectionIsNotAbsence: true,
+      uncertainEvidence: 'needs_review',
+      humanApprovalRequired: true,
+    },
     poseControlNetModel,
     crowdSuppressionLora: 'off (not used)',
     contactSheet: sheetPath,

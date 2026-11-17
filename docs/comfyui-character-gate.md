@@ -123,17 +123,67 @@ Evidências em `artifacts/comfyui-character-gate-acceptance/run-2026-11-17T1208/
 - `*-before.png` e `*-after.png`
 - `*-attempt<n>-<veredicto>-seed<s>.png`
 
-## Revisão visual do agente (não substitui a do usuário)
+## Revisão visual do agente do CS9 (histórica; não substitui a do usuário)
 
-- **T1217 duo (passed):** o personagem da direita aparece **semi-transparente** e se mistura ao céu. O gate não mede opacidade ou "fantasma", então isso é um possível falso positivo que precisa da revisão humana.
+- **T1217 duo (passed):** o personagem da direita aparecia **semi-transparente** e se misturava ao céu. Essa limitação foi coberta pelo detector de alfa explícito do CS10.
 - **Duos:** nenhum mostra katana ou lança. A aderência à descrição é fraca e não é avaliada pelo gate.
 - **Grupos de 8 em camadas:** os 8 personagens estão distintos e legíveis, o que é uma melhora grande sobre o "antes" ilegível. Os problemas são poses rígidas em fila, pés às vezes "flutuando" sobre o cenário e adesão parcial às descrições.
 - **Trios aprovados:** ficaram limpos. O trio rejeitado (T1217 #1) tinha de fato um 4º personagem e pedestres.
 
-## Pendências
+## Pendências históricas do CS9
 
-- Detectar personagens translúcidos ou fantasmas, por exemplo pela opacidade da máscara versus o fundo.
-- Avaliar aderência à descrição (CLIP/WD14 por região).
-- Variar poses nas camadas e aterrar os pés com sombra de contato.
 - Detector anime dedicado (deepghs), que precisa de autorização para download.
 - Banners estilizados com evidência só de rosto continuam em `needs_review`, o que é intencional.
+
+## CS10 — Semantic Scene Gate e composição cinematográfica
+
+O CS10 está integrado ao mesmo `runCharacterCompositionGate`; não existe um
+segundo pipeline. Quando `semanticGate.enabled` está ativo, cada tentativa
+registra separadamente:
+
+- `count`: contagem, figurantes, regiões vazias, sobreposição, anatomia e área segura;
+- `semantic`: critérios derivados somente do prompt por cena/personagem, objetos,
+  roupas, acessórios, poses e ações;
+- `visualQuality`: métricas do crítico visual local, artefatos localizados,
+  coerência física, composição e identidade.
+
+Os critérios são avaliados com o CLIP local já disponível (`local-clip-vit-base-patch32`)
+em crops regionais e na imagem completa. A inspeção local já existente também é
+reutilizada. O gate não baixa modelos nem instala pesos adicionais.
+
+Política de evidência:
+
+- objeto não mencionado não vira requisito;
+- ausência de detecção, score inconclusivo, evaluator indisponível e recorte
+  potencialmente incompleto viram `needs_review`;
+- somente contradição semântica forte ou defeito objetivo comprovado (como uma
+  máscara explicitamente semi-transparente) pode gerar `rejected`;
+- `passed_pending_human_review` continua exigindo aprovação visual humana.
+
+Quando existe um bbox acionável, o runner pode fazer uma única correção
+localizada via `inpaintRegion`, reavaliar a imagem e preservar tanto a imagem
+original rejeitada quanto a reparada, com seed e prompt registrados. A
+composição em camadas agora usa variações determinísticas de OpenPose,
+profundidade, iluminação compartilhada e sombras de contato reaplicadas após a
+harmonização.
+
+O acceptance script CS10 usa os mesmos casos de dupla, trio e oito personagens
+e grava `schemaVersion: cs10-semantic-scene-gate-v1`, contact sheet com os três
+eixos, `report.json`, PNGs antes/depois e todos os artefatos rejeitados em
+`artifacts/comfyui-character-gate-acceptance/<run-id>/`. O relatório registra
+explicitamente indisponibilidade de modelos/evaluators; não fabrica evidência
+de conformidade.
+
+### Aceitação real CS10 — `run-2026-11-17T1348`
+
+| Caso | Contagem | Semântica | Qualidade visual | Veredicto do gate |
+|---|---|---|---|---|
+| 2 personagens | `needs_review` — 2 detectados | `needs_review` — evidência insuficiente | `passed_pending_human_review` | `needs_review` |
+| 3 personagens | `passed_pending_human_review` — 3 detectados | `passed_pending_human_review` | `needs_review` — métrica visual fraca | `needs_review` |
+| 8 personagens | `needs_review` — 8 detectados, baixa concordância | `needs_review` — evidência insuficiente | `passed_pending_human_review` | `needs_review` |
+
+Os três pares foram gerados com modelos locais na RTX 4060 Ti, sem download de
+pesos adicionais; todos os arquivos referenciados no relatório existem e
+`humanReview.status` permanece `pending`. A contact sheet mostra a melhora
+visual do caso de 8 personagens com composição em camadas, mas não substitui a
+aprovação visual final.
