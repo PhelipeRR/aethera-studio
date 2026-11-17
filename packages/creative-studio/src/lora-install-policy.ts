@@ -1,4 +1,7 @@
 import { normalizeLoraStack, type LoraArchitecture } from './lora-catalog.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 
 export type LoraInstallSource = 'huggingface' | 'civitai' | 'local' | 'unknown';
 
@@ -16,6 +19,22 @@ export interface LoraInstallAssessment {
   allowed: boolean;
   requiresConfirmation: boolean;
   reasons: string[];
+}
+
+export interface LoraInstallOptions {
+  targetRoot: string;
+  confirmed: boolean;
+  checkpointArchitecture?: LoraArchitecture;
+  fetchImpl?: typeof fetch;
+  maxBytes?: number;
+}
+
+export interface LoraInstallResult {
+  model: string;
+  path: string;
+  bytes: number;
+  sha256: string;
+  alreadyPresent: boolean;
 }
 
 const MAX_LORA_BYTES = 2 * 1024 * 1024 * 1024;
@@ -73,4 +92,61 @@ export function assessLoraInstallCandidate(
   }
   if (licenseNeedsReview) reasons.push('A licença exige revisão específica antes de uso comercial.');
   return { allowed: reasons.every((reason) => reason === 'Download externo requer confirmação explícita antes da instalação.' || reason === 'A licença exige revisão específica antes de uso comercial.') && !licenseNeedsReview, requiresConfirmation, reasons };
+}
+
+export async function installLoraCandidate(
+  candidate: LoraInstallCandidate,
+  options: LoraInstallOptions,
+): Promise<LoraInstallResult> {
+  const assessment = assessLoraInstallCandidate(candidate, options.checkpointArchitecture ?? 'sdxl');
+  if (!assessment.allowed) throw new Error(`LoRA não pode ser instalado: ${assessment.reasons.join(' ')}`);
+  if (!options.confirmed && assessment.requiresConfirmation) throw new Error('confirmação explícita é obrigatória antes de instalar um LoRA externo.');
+  if (!candidate.sourceUrl) throw new Error('O candidato não possui URL para download.');
+
+  const maxBytes = options.maxBytes ?? MAX_LORA_BYTES;
+  if (!candidate.model.toLowerCase().endsWith('.safetensors')) throw new Error('Somente arquivos LoRA safetensors podem ser instalados automaticamente.');
+  const targetPath = join(options.targetRoot, candidate.model);
+  if (existsSync(targetPath)) {
+    const existingHash = createHash('sha256').update(readFileSync(targetPath)).digest('hex');
+    if (existingHash !== candidate.sha256?.toLowerCase()) throw new Error(`O arquivo LoRA já existe com SHA-256 diferente: ${candidate.model}.`);
+    return { model: candidate.model, path: targetPath, bytes: readFileSync(targetPath).byteLength, sha256: existingHash, alreadyPresent: true };
+  }
+
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(candidate.sourceUrl);
+  if (!response.ok || !response.body) throw new Error(`Download do LoRA falhou: HTTP ${response.status}.`);
+  const contentLength = Number(response.headers.get('content-length') ?? candidate.sizeBytes ?? 0);
+  if (contentLength > maxBytes) throw new Error(`Download do LoRA excede o limite de ${maxBytes} bytes.`);
+
+  mkdirSync(dirname(targetPath), { recursive: true });
+  const tempPath = `${targetPath}.part-${randomUUID()}`;
+  const output = createWriteStream(tempPath, { flags: 'wx' });
+  const reader = response.body.getReader();
+  const hasher = createHash('sha256');
+  let bytes = 0;
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      const data = Buffer.from(chunk.value);
+      bytes += data.byteLength;
+      if (bytes > maxBytes) throw new Error(`Download do LoRA excede o limite de ${maxBytes} bytes.`);
+      hasher.update(data);
+      if (!output.write(data)) await new Promise<void>((resolve) => output.once('drain', resolve));
+    }
+    await new Promise<void>((resolve, reject) => {
+      output.once('finish', resolve);
+      output.once('error', reject);
+      output.end();
+    });
+    const sha256 = hasher.digest('hex');
+    if (sha256 !== candidate.sha256?.toLowerCase()) throw new Error(`SHA-256 do LoRA não confere: esperado ${candidate.sha256}, recebido ${sha256}.`);
+    if (candidate.sizeBytes !== undefined && bytes !== candidate.sizeBytes) throw new Error(`Tamanho do LoRA não confere: esperado ${candidate.sizeBytes}, recebido ${bytes}.`);
+    renameSync(tempPath, targetPath);
+    return { model: candidate.model, path: targetPath, bytes, sha256, alreadyPresent: false };
+  } catch (error) {
+    output.destroy();
+    try { rmSync(tempPath, { force: true }); } catch { /* best effort cleanup */ }
+    throw error;
+  }
 }

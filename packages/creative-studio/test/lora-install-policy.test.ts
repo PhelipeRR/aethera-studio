@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { assessLoraInstallCandidate } from '../src/lora-install-policy.js';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { assessLoraInstallCandidate, installLoraCandidate } from '../src/lora-install-policy.js';
 
 describe('LoRA install policy', () => {
   it('allows a verified SDXL candidate only behind explicit confirmation', () => {
@@ -52,5 +56,50 @@ describe('LoRA install policy', () => {
 
     expect(assessment.allowed).toBe(false);
     expect(assessment.reasons).toContain('A URL do Hugging Face precisa usar um host oficial confiável.');
+  });
+
+  it('does not call the network before explicit confirmation', async () => {
+    let calls = 0;
+    const candidate = {
+      model: 'styles/cinematic.safetensors',
+      source: 'huggingface' as const,
+      sourceUrl: 'https://huggingface.co/example/cinematic/resolve/main/cinematic.safetensors',
+      license: 'Apache-2.0',
+      architecture: 'sdxl' as const,
+      sizeBytes: 4,
+      sha256: createHash('sha256').update('data').digest('hex'),
+    };
+    await expect(installLoraCandidate(candidate, {
+      targetRoot: mkdtempSync(join(tmpdir(), 'lora-policy-')),
+      confirmed: false,
+      fetchImpl: async () => { calls += 1; return new Response('data'); },
+    })).rejects.toThrow(/confirmação/);
+    expect(calls).toBe(0);
+  });
+
+  it('streams a confirmed candidate, verifies the hash, and installs atomically', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lora-install-'));
+    const payload = 'verified lora bytes';
+    const candidate = {
+      model: 'styles/cinematic.safetensors',
+      source: 'huggingface' as const,
+      sourceUrl: 'https://huggingface.co/example/cinematic/resolve/main/cinematic.safetensors',
+      license: 'Apache-2.0',
+      architecture: 'sdxl' as const,
+      sizeBytes: Buffer.byteLength(payload),
+      sha256: createHash('sha256').update(payload).digest('hex'),
+    };
+    try {
+      const result = await installLoraCandidate(candidate, {
+        targetRoot: root,
+        confirmed: true,
+        fetchImpl: async () => new Response(payload),
+      });
+      expect(result).toMatchObject({ model: 'styles/cinematic.safetensors', bytes: Buffer.byteLength(payload), sha256: candidate.sha256, alreadyPresent: false });
+      expect(readFileSync(join(root, 'styles/cinematic.safetensors'), 'utf8')).toBe(payload);
+      expect(readdirSync(join(root, 'styles')).some((name) => name.includes('.part-'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
