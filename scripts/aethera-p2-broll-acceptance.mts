@@ -21,8 +21,10 @@ import {
 } from '../packages/workspace/src/aethera-broll-index.js';
 import { detectSegmentCuts, probeSegmentQuality, probeSegmentTemporalSamples, windowCuts } from '../packages/workspace/src/aethera-segment-quality.js';
 import { extractSegmentFrames, selectVisualAnalysisFfmpeg } from '../packages/workspace/src/aethera-visual-frames.js';
-import { createOllamaLocalVlmProvider } from '../packages/orchestrator/src/aethera/vision-providers.js';
+import { createAgentAdapterVisionProvider, createAntigravityCliVisionProvider, createOllamaLocalVlmProvider, createVisionProviders } from '../packages/orchestrator/src/aethera/vision-providers.js';
 import { VisionRouter } from '../packages/orchestrator/src/aethera/vision-router.js';
+import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
+import { detectAntigravityCli, runAntigravityPrompt } from '../apps/aethera-desktop/src/main/antigravity-cli.js';
 import { createReferenceClips, FFMPEG } from '../packages/workspace/test/fixtures/aethera-reference.js';
 
 const exec = promisify(execFile);
@@ -45,7 +47,7 @@ type SegmentEvidence = {
 const policy: VisionPolicy = {
   schemaVersion: 1,
   task: 'describe',
-  chain: ['local-vlm'],
+  chain: ['local-vlm', 'antigravity', 'claude', 'codex'],
   scope: 'project',
   thresholds: null,
   version: 'p2-acceptance-v1',
@@ -60,12 +62,19 @@ async function probeDurationMs(path: string): Promise<number> {
   return Math.round(duration * 1_000);
 }
 
-async function optionalVisionRouter(root: string): Promise<{ provider: string; model: string; router: VisionRouter; available: boolean; reason?: string }> {
-  const provider = createOllamaLocalVlmProvider();
-  const health = await provider.detect();
+async function optionalVisionRouter(root: string): Promise<{ provider: string; model: string; router: VisionRouter; available: boolean; reason?: string; health: Array<Record<string, unknown>> }> {
+  const configured = [
+    createOllamaLocalVlmProvider(),
+    createAntigravityCliVisionProvider({ root, detect: async () => { const status = await detectAntigravityCli({ refresh: true }); return status.installed && status.authenticated !== false ? { available: true } : { available: false, reason: status.problems.join('; ') || 'Antigravity não autenticado' }; }, runPrompt: ({ prompt, cwd, model, signal }) => runAntigravityPrompt({ prompt, cwd, mode: 'read-only', ...(model ? { model } : {}), ...(signal ? { signal } : {}), timeoutMs: 45_000 }) }),
+    createAgentAdapterVisionProvider({ id: 'claude', root, adapter: new ClaudeCliAdapter() }),
+    createAgentAdapterVisionProvider({ id: 'codex', root, adapter: new CodexCliAdapter() }),
+  ];
+  const providers = createVisionProviders(configured);
+  const health = await Promise.all(providers.filter((item) => ['local-vlm', 'antigravity', 'claude', 'codex'].includes(item.id)).map(async (item) => ({ provider: item.id, model: item.model, ...(await item.detect()) })));
+  const first = health.find((item) => item.available);
   const cache = new Map<string, unknown>();
-  const router = new VisionRouter([provider], { get: (key) => cache.get(JSON.stringify(key)), put: (key, value) => cache.set(JSON.stringify(key), value) });
-  return { provider: provider.id, model: provider.model, router, available: health.available, ...(health.available ? {} : { reason: health.reason }) };
+  const router = new VisionRouter(providers, { get: (key) => cache.get(JSON.stringify(key)), put: (key, value) => cache.set(JSON.stringify(key), value) }, [], undefined, undefined, undefined, undefined, 1_500, { enabledProviders: ['local-vlm', 'antigravity', 'claude', 'codex'], priority: ['local-vlm', 'antigravity', 'claude', 'codex'], perProviderTimeoutMs: { 'local-vlm': 2_000, antigravity: 45_000, claude: 45_000, codex: 45_000 }, maxAttempts: 4 });
+  return { provider: first?.provider ?? 'none', model: first?.model ?? 'none', router, available: Boolean(first), ...(first?.available ? {} : { reason: 'Todos os provedores visuais configurados estão indisponíveis.' }), health };
 }
 
 async function indexAsset(input: { assetId: string; title: string; root: string; relativePath: string; sourcePath: string; durationMs: number; vision: Awaited<ReturnType<typeof optionalVisionRouter>> }): Promise<{ index: Record<string, unknown>; segments: SegmentEvidence[]; cacheReuse: boolean; cutCount: number; elapsedMs: number }> {
@@ -179,6 +188,7 @@ const eligible = ranked.find((item) => item.eligible);
 const technicalForRender = real.segments.find((item) => !item.segment.quality.black && !item.segment.quality.frozen && item.segment.broll?.continuity.valid);
 if (!technicalForRender) throw new Error('p2_no_technical_segment_for_render');
 const integration = await renderIntegration({ sourceStartMs: eligible?.sourceStartMs ?? technicalForRender.segment.startMs, sourceEndMs: eligible?.sourceEndMs ?? technicalForRender.segment.endMs, segmentId: eligible?.candidate.segment.id ?? technicalForRender.segment.id, semanticGatePassed: Boolean(eligible) });
+writeFileSync(join(evidenceDir, 'vision-health.json'), JSON.stringify(vision.health, null, 2));
 
 const report = { schemaVersion: 1, phase: 'P2', runId, sourceReuse: { cyberpunkPath, downloads: 0, sha256: createHash('sha256').update(readFileSync(cyberpunkPath)).digest('hex') }, vision: { provider: vision.provider, model: vision.model, available: vision.available, ...(vision.reason ? { reason: vision.reason } : {}) }, realCyberpunk: { durationMs: realDurationMs, cutCount: real.cutCount, segmentCount: real.segments.length, technicalValid: real.segments.filter((item) => item.segment.broll?.technicalStatus === 'technical_valid').length, semanticAdequate: real.segments.filter((item) => item.segment.broll?.semanticStatus === 'semantic_adequate').length, needsReview: real.segments.filter((item) => item.segment.broll?.semanticStatus === 'needs_review').length, technicalBlocked: real.segments.filter((item) => item.segment.broll?.technicalStatus === 'technical_blocked').length, cacheReuse: real.cacheReuse, contactSheet: real.index.contactSheetPath, segments: real.segments.map((item) => ({ id: item.segment.id, startMs: item.segment.startMs, endMs: item.segment.endMs, technicalStatus: item.segment.broll?.technicalStatus, semanticStatus: item.segment.broll?.semanticStatus, evidence: item.segment.broll?.semanticEvidence ?? [], attempts: item.segment.analysis?.attempts ?? [], keyframes: item.segment.broll?.keyframes ?? [], diagnostics: item.segment.broll?.diagnostics ?? [], timingsMs: item.timingsMs })) }, syntheticMultiCut: { cutCount: synthetic.cutCount, segmentCount: synthetic.segments.length, black: synthetic.segments.filter((item) => item.segment.quality.black).length, frozen: synthetic.segments.filter((item) => item.segment.quality.frozen).length, flashCandidates: synthetic.segments.reduce((sum, item) => sum + (item.segment.broll?.flashFrameTimesMs.length ?? 0), 0), cacheReuse: synthetic.cacheReuse, contactSheet: synthetic.index.contactSheetPath }, sceneGrounding: { eligibleCount: ranked.filter((item) => item.eligible).length, reviewCount: ranked.filter((item) => item.reviewRequired).length, selectedSegmentId: eligible?.candidate.segment.id ?? null, selectedReason: eligible?.reason ?? 'Nenhum trecho semanticamente elegível; render técnico não é aprovação editorial.', ranked: ranked.map((item) => ({ segmentId: item.candidate.segment.id, eligible: item.eligible, reviewRequired: item.reviewRequired, score: item.score, breakdown: item.breakdown, reason: item.reason, evidence: item.match.evidence ?? [] })) }, integrationRender: integration, resources: { maxRssKb: process.resourceUsage().maxRSS, userCpuMicros: process.resourceUsage().userCPUTime, systemCpuMicros: process.resourceUsage().systemCPUTime } };
 writeFileSync(join(evidenceDir, 'report.json'), JSON.stringify(report, null, 2));

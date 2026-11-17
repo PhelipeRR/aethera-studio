@@ -1250,7 +1250,33 @@ productionConsole,
     studioRepository && mediaLibrary && productionRepository
       ? createVisualIndexStageAdapter({
           repository: studioRepository,
-          providers: createVisionProviders(),
+          // Build the same real adapters used by the direct Cinema IPC path. The old stage used
+          // createVisionProviders() alone, which intentionally returns unavailable placeholders
+          // for Codex/Claude and therefore could never fall back from Ollama.
+          providers: (projectId) => {
+            const rootDir = productionRepository.projectRoot(projectId) ?? userDataDir;
+            return createVisionProviders([
+              createOllamaLocalVlmProvider(),
+              createAntigravityCliVisionProvider({
+                root: rootDir,
+                detect: async () => {
+                  const status = await detectAntigravityCli();
+                  return status.installed ? { available: true } : { available: false, reason: status.problems[0] ?? 'Antigravity CLI não encontrado.' };
+                },
+                runPrompt: ({ prompt, cwd, model, signal }) => runAntigravityPrompt({ prompt, cwd, mode: 'read-only', ...(model ? { model } : {}), ...(signal ? { signal } : {}), timeoutMs: 45_000 }),
+              }),
+              ...(taskEngine ? [
+                createTaskEngineVisionProvider({ id: 'claude', model: '', root: rootDir, projectId, enabled: true, taskEngine, checkAvailable: async () => findClientCli('claude') ? { available: true } : { available: false, reason: 'Claude CLI não encontrado.' } }),
+                createTaskEngineVisionProvider({ id: 'codex', model: '', root: rootDir, projectId, enabled: true, taskEngine, checkAvailable: async () => findClientCli('codex') ? { available: true } : { available: false, reason: 'Codex CLI não encontrado.' } }),
+              ] : []),
+            ]);
+          },
+          visionConfig: {
+            enabledProviders: ['local-vlm', 'antigravity', 'claude', 'codex'],
+            priority: ['local-vlm', 'antigravity', 'claude', 'codex'],
+            perProviderTimeoutMs: { 'local-vlm': 30_000, antigravity: 45_000, claude: 30_000, codex: 30_000 },
+            maxAttempts: 4,
+          },
           policy: visualIndexPolicy,
           projectRoot: (projectId) => productionRepository.projectRoot(projectId) ?? null,
           asset: (projectId, assetId) => {

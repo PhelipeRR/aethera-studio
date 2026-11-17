@@ -35,6 +35,16 @@ export interface VisionProviderTelemetry {
   avgLatencyMs: number;
   lastError?: string;
 }
+export interface VisionRouterConfig {
+  /** Providers omitted here are disabled for this router instance. */
+  enabledProviders?: readonly string[];
+  /** Optional runtime priority; policy chain remains the allow-list. */
+  priority?: readonly string[];
+  /** Individual provider deadline. The policy deadline remains the outer request budget. */
+  perProviderTimeoutMs?: Readonly<Record<string, number>>;
+  /** Bounds technical fallback attempts; never changes semantic thresholds. */
+  maxAttempts?: number;
+}
 export function isVisionQuotaError(message: string): boolean {
   return /usage limit|quota|rate[- ]limit|too many requests|\b429\b|try again at|insufficient[_ ]quota|credit balance/i.test(message);
 }
@@ -62,6 +72,7 @@ export class VisionRouter {
     private readonly cooldowns: Map<string, VisionCooldownEntry> = new Map(),
     private readonly timeoutFailures: Map<string, number> = new Map(),
     private readonly healthTimeoutMs = 1_500,
+    private readonly config: VisionRouterConfig = {},
   ) {
     this.providers = new Map(providers.map((provider) => [provider.id, provider]));
     const amounts = new Map<string, number>();
@@ -147,13 +158,14 @@ export class VisionRouter {
   }
 
   private prioritizedChain(chain: readonly string[]): string[] {
-    if (this.telemetry.size === 0) return [...chain];
+    if (this.telemetry.size === 0 && !this.config.priority?.length) return [...chain];
     const indexOf = new Map(chain.map((id, idx) => [id, idx]));
+    const configuredPriority = new Map((this.config.priority ?? []).map((id, idx) => [id, idx]));
     const scoreOf = (id: string): number => {
       if (id === 'ffmpeg-heuristics') return 10_000;
       // Only timeout history changes the order. Other provider errors remain
       // retryable in the declared policy order, preserving fallback evidence.
-      return (this.telemetry.get(id)?.timeouts ?? 0) * 100;
+      return (configuredPriority.get(id) ?? chain.length + (indexOf.get(id) ?? 0)) + (this.telemetry.get(id)?.timeouts ?? 0) * 100;
     };
     return [...chain].sort((a, b) => {
       const diff = scoreOf(a) - scoreOf(b);
@@ -166,8 +178,18 @@ export class VisionRouter {
     let costUsd = 0;
     const empty = (): VisionResult<unknown> => ({ value: null, provider: null, model: null, costUsd, attempts, refs: [] });
     const budgetKey = input.budgetKey ?? `${input.policy.scope}:${input.policy.version}`;
-    for (const id of this.prioritizedChain(input.policy.chain)) {
+    const chain = this.prioritizedChain(input.policy.chain);
+    let providerAttempts = 0;
+    for (const id of chain) {
       if (input.signal?.aborted) throw new Error('cancelled: visual analysis interrupted.');
+      if (this.config.enabledProviders && !this.config.enabledProviders.includes(id)) {
+        attempts.push({ provider: id, outcome: 'unavailable', detail: 'disabled by vision provider configuration' });
+        continue;
+      }
+      if (this.config.maxAttempts !== undefined && providerAttempts >= Math.max(0, this.config.maxAttempts)) {
+        attempts.push({ provider: id, outcome: 'unavailable', detail: 'vision provider attempt limit reached' });
+        continue;
+      }
       const cd = this.cooldowns.get(id);
       if (cd && cd.untilMs > Date.now()) {
         attempts.push({ provider: id, outcome: 'unavailable', detail: `${cd.kind === 'timeout' ? 'timeout_cooldown' : 'quota_cooldown'}: ${cd.reason}` });
@@ -175,6 +197,7 @@ export class VisionRouter {
       }
       const provider = this.providers.get(id);
       if (!provider || !provider.capabilities.includes(capability)) { attempts.push({ provider: id, outcome: 'unavailable', detail: `capability ${capability} unavailable` }); continue; }
+      providerAttempts += 1;
       const controller = new AbortController();
       const abort = () => controller.abort(input.signal?.reason);
       input.signal?.addEventListener('abort', abort, { once: true });
@@ -265,7 +288,8 @@ export class VisionRouter {
         };
         const interrupted = new Promise<never>((_, reject) => {
           controller.signal.addEventListener('abort', () => reject(new Error(input.signal?.aborted ? 'cancelled: visual analysis interrupted.' : 'vision provider timeout')), { once: true });
-          timer = setTimeout(() => controller.abort(), input.policy.maxLatencyMs);
+          const providerTimeout = this.config.perProviderTimeoutMs?.[id] ?? input.policy.maxLatencyMs;
+          timer = setTimeout(() => controller.abort(), Math.max(1, providerTimeout));
         });
         const result = await Promise.race([execute(), interrupted]);
         if (result.value !== null) return result;

@@ -27,6 +27,36 @@ function provider(id: string, confidence: number, options: { available?: boolean
 }
 
 describe('VisionRouter', () => {
+  it('applies configured provider enablement, priority, per-provider timeout and attempt limit', async () => {
+    const calls: string[] = [];
+    const slow = provider('slow', 0.95, { calls });
+    slow.capabilities = ['classify', 'describe'];
+    slow.describe = async ({ signal }) => new Promise((_resolve, reject) => {
+      calls.push('slow');
+      signal?.addEventListener('abort', () => reject(new Error('vision provider timeout')), { once: true });
+    });
+    const fast = provider('fast', 0.95, { calls });
+    fast.capabilities = ['classify', 'describe'];
+    fast.describe = async () => { calls.push('fast'); return { description: 'fast result', tags: ['fast'] }; };
+    const router = new Router([slow, fast], memoryCache(), [], undefined, undefined, undefined, undefined, 1_500, {
+      enabledProviders: ['slow', 'fast'], priority: ['slow', 'fast'], perProviderTimeoutMs: { slow: 10, fast: 100 }, maxAttempts: 2,
+    });
+    const result = await router.describe({ frames: [frames[0]!], policy: policy({ chain: ['slow', 'fast'], maxLatencyMs: 60_000 }) });
+    expect(result.provider).toBe('fast');
+    expect(result.attempts.map((attempt) => attempt.provider)).toEqual(['slow', 'fast']);
+    expect(calls).toEqual(['slow', 'fast']);
+  });
+
+  it('does not call a semantically negative provider fallback to force approval', async () => {
+    const negative: VisualAnalysisProvider = { ...provider('negative', 0.95), capabilities: ['classify', 'analyze'], analyze: async () => ({
+      schemaVersion: 1, nature: 'unknown', natureConfidence: 0.95, description: 'Nada relevante visível.', frames: [{ atMs: 0, observed: 'Cena sem o elemento pedido.', visibleText: [] }], entities: [], actions: [], environment: null, overlays: { burnedText: false, burnedTextRegion: 'bottom', watermark: false, webcam: false }, limitations: [], confidence: 0.95,
+    }) };
+    const fallback = { ...negative, id: 'fallback', analyze: async () => ({ ...await negative.analyze!({ frames }), description: 'resultado que não deve ser usado' }) };
+    const router = new Router([negative, fallback], memoryCache());
+    const result = await router.analyze({ frames, policy: policy({ task: 'describe', chain: ['negative', 'fallback'] }) });
+    expect(result.provider).toBe('negative');
+    expect(result.attempts).toHaveLength(1);
+  });
   it('stops at the first provider whose confidence reaches the automatic band', async () => {
     const calls: string[] = [];
     const router = new VisionRouter([provider('local', 0.95, { calls }), provider('remote', 0.99, { calls })], memoryCache());

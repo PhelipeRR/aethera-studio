@@ -26,7 +26,9 @@ export const segmentAnalysisSchema = z.strictObject({
   actions: z.array(z.strictObject({ description: text(160), basis: z.enum(evidenceBases), confidence })).max(12),
   environment: z.strictObject({ description: text(200), basis: z.enum(evidenceBases), confidence }).nullable(),
   /** Burned-in text competes with captions; webcam and watermark make footage unfit for most edits. */
-  overlays: z.strictObject({ burnedText: z.boolean(), burnedTextRegion: z.enum(textRegions).optional(), watermark: z.boolean(), webcam: z.boolean() }),
+  // Providers may explicitly return null when no burned-in text is visible; normalize that
+  // representation at the domain boundary instead of classifying a valid response as technical failure.
+  overlays: z.strictObject({ burnedText: z.boolean(), burnedTextRegion: z.enum(textRegions).nullable().optional(), watermark: z.boolean(), webcam: z.boolean() }),
   limitations: z.array(text(240)).max(8),
   confidence,
 });

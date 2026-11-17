@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { SegmentAnalysis, VisionPolicy } from '@neuralbridge/shared';
 import { VisionRouter, type VisionCachePort, type VisualAnalysisProvider } from '../src/aethera/vision-router.js';
-import { createTaskEngineVisionProvider } from '../src/aethera/vision-providers.js';
+import { createAgentAdapterVisionProvider, createTaskEngineVisionProvider } from '../src/aethera/vision-providers.js';
 import { judgeNarrationRelevance } from '../src/aethera/visual-relevance.js';
 import type { StructuredReadOnlyInput } from '../src/engine.js';
 
@@ -65,6 +65,26 @@ describe('VisionRouter analyze (universal, multi-frame)', () => {
 });
 
 describe('TaskEngine vision provider analyze', () => {
+  it('reuses an existing agent adapter and sends real image attachments through its multimodal contract', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'adapter-vision-'));
+    const imagePath = join(root, 'frame.jpg');
+    writeFileSync(imagePath, 'jpeg fixture');
+    const requests: Array<{ images?: Array<{ path: string; mime: string }> }> = [];
+    const provider = createAgentAdapterVisionProvider({
+      id: 'codex', root,
+      adapter: {
+        detect: async () => ({ id: 'codex', label: 'Codex', installed: true, path: 'codex', version: 'test', testedVersion: 'test', authenticated: true, authMethod: 'test', features: ['json'], warnings: [], problems: [], checkedAt: new Date().toISOString() }),
+        run: async function* (request) {
+          requests.push(request.images ? { images: request.images } : {});
+          yield { kind: 'done', ok: true, exitCode: 0, timedOut: false, cancelled: false, sessionId: 'session-test', result: JSON.stringify(analysis), errorOutput: null };
+        },
+      },
+    });
+    const value = await provider.analyze?.({ frames: [{ hash: 'frame', path: imagePath, atMs: 1_000 }] });
+    expect(value?.description).toContain('corredor');
+    expect(requests[0]?.images).toEqual([{ path: imagePath, mime: 'image/jpeg' }]);
+  });
+
   it('asks a lean read-only run with every image, the timestamps and the universal schema, and keeps the reported model', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ap04-vision-'));
     const paths = ['f1.jpg', 'f2.jpg'].map((name) => { const path = join(root, name); writeFileSync(path, 'jpeg fixture'); return path; });

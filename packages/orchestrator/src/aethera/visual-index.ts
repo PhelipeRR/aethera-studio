@@ -5,11 +5,12 @@ import { join, relative } from 'node:path';
 import type { ProductionStageAdapter } from '../velix-production.js';
 import { runCheckpointedItems } from './item-checkpoint.js';
 import { SubjectIdentityVerifier } from './subject-identity-verifier.js';
-import { VisionRouter, type VisualAnalysisProvider } from './vision-router.js';
+import { VisionRouter, type VisualAnalysisProvider, type VisionRouterConfig } from './vision-router.js';
 import { visualRenderScheduler } from './visual-work-scheduler.js';
 
 export interface VisualIndexDeps {
-  repository: AetheraStudioRepository; providers: readonly VisualAnalysisProvider[]; policy: VisionPolicy;
+  repository: AetheraStudioRepository; providers: readonly VisualAnalysisProvider[] | ((projectId: string) => readonly VisualAnalysisProvider[]); policy: VisionPolicy;
+  visionConfig?: VisionRouterConfig;
   projectRoot(projectId: string): string | null;
   asset(projectId: string, assetId: string): { path: string; sha256: string } | null;
   ffmpeg: string; ffmpegCandidates?: readonly string[]; ffprobe?: string;
@@ -48,7 +49,8 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
       if (!acquisitions.length) throw new Error('invalid: acquire media before visual indexing.');
       const analysisFfmpeg = await selectVisualAnalysisFfmpeg(deps.ffmpegCandidates ?? [deps.ffmpeg]);
       let costUsd = typeof context.state['visualCostUsd'] === 'number' ? context.state['visualCostUsd'] : 0;
-      const router = new VisionRouter(deps.providers, { get: (key) => deps.repository.visionCache(key), put: (key, value) => deps.repository.saveVisionCache(key, value) }, [], {
+      const providers = typeof deps.providers === 'function' ? deps.providers(context.projectId) : deps.providers;
+      const router = new VisionRouter(providers, { get: (key) => deps.repository.visionCache(key), put: (key, value) => deps.repository.saveVisionCache(key, value) }, [], {
         get: () => deps.repository.visionSpend(context.runId),
         add: (_key, amount) => {
           const total = deps.repository.addVisionSpend(context.runId, amount);
@@ -57,7 +59,7 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
           context.saveState({ ...context.state, visualCostUsd: costUsd });
           return total;
         },
-      });
+      }, undefined, undefined, undefined, undefined, deps.visionConfig);
       await visualRenderScheduler.run(async () => {
         await runCheckpointedItems(context, acquisitions, async (job) => {
           const result = job.result;
