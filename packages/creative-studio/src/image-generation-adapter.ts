@@ -52,6 +52,8 @@ export interface ImageGenerationRequest {
   spatialControl?: 'auto' | 'none';
   /** Scene-only prompt (no cast) used around the character figures. */
   scenePrompt?: string;
+  /** Character Composition Gate retry strategy (multi-character regional graph only); defaults keep CS9 behavior. */
+  compositionStrategy?: CompositionStrategyParams;
   /** Areas that must stay calm (e.g. banner title safe area), in generation pixels. */
   calmZones?: Array<{ x: number; y: number; width: number; height: number }>;
 }
@@ -114,6 +116,18 @@ export interface ImageUpscaleRequest {
  * Optional external AI image generation / segmentation / multimodal evaluation adapter.
  * Kept strictly separate from deterministic Sharp/SVG layer composition.
  */
+export interface CompositionStrategyParams {
+  /** Added to the OpenPose ControlNet strength (0.75 for 2–3 characters, 0.9 for 4+), capped at 1.2. */
+  poseStrengthDelta?: number;
+  poseEndPercent?: number;
+  regionStrength?: number;
+  /** Strength of the masked scene-background prompt (default 0.6). */
+  sceneStrength?: number;
+  /** Extra words for the masked scene-background prompt only (never the global prompt). */
+  sceneSuffix?: string;
+  calmStrength?: number;
+}
+
 export interface ExternalImageAdapter {
   readonly id: string;
   isAvailable(): Promise<boolean>;

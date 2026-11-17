@@ -27,6 +27,9 @@ import {
   generateAiBackground,
   resolveGenerationQualityProfile,
   resolveCrowdSuppression,
+  LocalCharacterGateDetector,
+  BatchCutoutWorker,
+  type CharacterGateConfig,
   type CrowdSuppressionDecision,
   type GenerationQualityOverrides,
   type GenerationQualityProfileId,
@@ -129,6 +132,9 @@ export interface CreativeStudioServiceOptions {
   comfyUiStartupRunner?: (scriptPath: string) => Promise<void>;
   /** Test seam and explicit target for verified LoRA installation. */
   comfyUiLoraRoot?: string;
+  /** ComfyUI install root and venv interpreter used by the Character Composition Gate detectors. */
+  comfyUiRoot?: string;
+  comfyUiPython?: string;
 }
 
 /**
@@ -165,6 +171,8 @@ export class AetheraCreativeStudioService {
   private readonly comfyUiStartupScript: string;
   private readonly comfyUiStartupRunner: (scriptPath: string) => Promise<void>;
   private readonly comfyUiLoraRoot: string;
+  readonly characterGateDetector: LocalCharacterGateDetector;
+  readonly batchCutout: BatchCutoutWorker;
   private comfyUiStartupAttempted = false;
   private comfyUiStartupPromise: Promise<void> | null = null;
   private comfyUiStartupStatus: Omit<CreativeImageEngineStartupStatus, 'enabled'> = {
@@ -183,6 +191,12 @@ export class AetheraCreativeStudioService {
     this.comfyUiStartupScript = options.comfyUiStartupScript ?? join(homedir(), 'Documents', 'ComfyUI', 'Start-ComfyUI.ps1');
     this.comfyUiStartupStatus = { state: 'idle', scriptPath: this.comfyUiStartupScript };
     this.comfyUiLoraRoot = options.comfyUiLoraRoot ?? join(homedir(), 'Documents', 'ComfyUI', 'models', 'loras');
+    const comfyUiRoot = options.comfyUiRoot ?? join(homedir(), 'Documents', 'ComfyUI');
+    this.characterGateDetector = new LocalCharacterGateDetector({
+      comfyUiRoot,
+      pythonPath: options.comfyUiPython ?? join(comfyUiRoot, '.venv', 'Scripts', 'python.exe'),
+    });
+    this.batchCutout = new BatchCutoutWorker({ pythonPath: process.env['NB_PYTHON'] ?? 'python' });
     this.comfyUiStartupRunner = options.comfyUiStartupRunner ?? (async (scriptPath) => {
       const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
       await execFileAsync(shell, [
@@ -742,6 +756,11 @@ export class AetheraCreativeStudioService {
     /** Per-request refinement switches, e.g. `{ faceDetailer: false }` when a case is hurt by it. */
     qualityOverrides?: GenerationQualityOverrides;
     spatialControl?: 'auto' | 'none';
+    /**
+     * Character Composition Gate for multi-character scenes (default on): local detectors, verdict, automatic retries
+     * with new seeds and strategies. `false` disables it; an object tunes it.
+     */
+    characterGate?: boolean | { maxAttempts?: number; retryOnNeedsReview?: 'never' | 'actionable' | 'always'; largeGroupThreshold?: number; layered?: boolean };
     /** Opt-in negative photobombing slider on multi-character scenes (off by default: it can erase the cast). */
     crowdSuppression?: boolean;
     assetManifest?: Record<string, ManagedAssetRef>;
@@ -817,6 +836,19 @@ export class AetheraCreativeStudioService {
       const generationLoras = crowdSuppression.lora && !selectedLoras.some((item) => item.model === crowdSuppression.lora?.model)
         ? [...selectedLoras, crowdSuppression.lora]
         : selectedLoras;
+      const gateSettings = typeof input.characterGate === 'object' ? input.characterGate : {};
+      const characterGate: CharacterGateConfig | undefined = (input.characterCount ?? 1) > 1 && input.characterGate !== false
+        ? {
+            detector: this.characterGateDetector,
+            requiredProviderId: this.comfyUiAdapter.id,
+            poseControlNetModel: gateSettings.layered === false ? null : await this.comfyUiAdapter.findPoseControlNet().catch(() => null),
+            holdModels: (work) => this.comfyUiAdapter.withModelsHeld(work),
+            cutoutBatch: (paths) => this.batchCutout.cutout(paths),
+            ...(gateSettings.maxAttempts !== undefined ? { maxAttempts: gateSettings.maxAttempts } : {}),
+            ...(gateSettings.retryOnNeedsReview ? { retryOnNeedsReview: gateSettings.retryOnNeedsReview } : {}),
+            ...(gateSettings.largeGroupThreshold !== undefined ? { largeGroupThreshold: gateSettings.largeGroupThreshold } : {}),
+          }
+        : undefined;
       const generated = await generateAiBackground({
         artType: input.artType,
         prompt: input.prompt,
@@ -838,6 +870,7 @@ export class AetheraCreativeStudioService {
         ...(input.characterDescriptions?.length ? { characterDescriptions: input.characterDescriptions } : {}),
         ...(input.qualityProfile ? { qualityProfile: resolveGenerationQualityProfile(input.qualityProfile, input.qualityOverrides) } : {}),
         ...(input.spatialControl ? { spatialControl: input.spatialControl } : {}),
+        ...(characterGate ? { characterGate } : {}),
         ...(input.seed !== undefined ? { seed: input.seed } : {}),
         ...(input.maxSide !== undefined ? { maxSide: input.maxSide } : {}),
         ...(input.stylization !== undefined ? { stylization: input.stylization } : {}),
@@ -936,6 +969,7 @@ export class AetheraCreativeStudioService {
       ...(input.qualityOverrides ? { qualityOverrides: input.qualityOverrides } : {}),
       ...(input.spatialControl ? { spatialControl: input.spatialControl } : {}),
       ...(input.crowdSuppression !== undefined ? { crowdSuppression: input.crowdSuppression } : {}),
+      ...(input.characterGate !== undefined ? { characterGate: input.characterGate } : {}),
     };
     this.repo.saveGenerationRun({
       id: generationRunId,

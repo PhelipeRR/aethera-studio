@@ -35,3 +35,6 @@ export * from './checkpoint-profiles.js';
 export * from './generation-profiles.js';
 export * from './spatial-guides.js';
 export * from './crowd-suppression.js';
+export * from './character-gate.js';
+export * from './character-gate-runner.js';
+export * from './layered-composition.js';

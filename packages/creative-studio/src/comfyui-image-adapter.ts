@@ -151,6 +151,11 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
    * Unrefined base image of the last FaceDetailer generation. It comes from the same graph execution as the refined
    * result (same seed, same noise), so it is the exact "basic" counterpart for a basic-versus-refined comparison.
    */
+  /** OpenPose ControlNet reported by ComfyUI, or null (used by the layered composition strategy). */
+  async findPoseControlNet(): Promise<string | null> {
+    return controlNetNames(await this.gateway.getObjectInfo()).find((name) => /openpose/i.test(name)) ?? null;
+  }
+
   getLastUnrefinedImage(): Buffer | null {
     return this.lastUnrefinedImage;
   }
@@ -168,6 +173,21 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     if (!checkpoint.trim()) throw new Error('ComfyUI checkpoint cannot be empty.');
     this.checkpoint = checkpoint.trim();
     this.availabilityError = null;
+  }
+
+  /**
+   * Runs a batch of generations without unloading models between them, then restores the setting and releases memory
+   * once (the layered composition otherwise paid a ~20 s reload per character on the 8 GB card).
+   */
+  async withModelsHeld<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.releaseMemoryAfterGeneration;
+    this.releaseMemoryAfterGeneration = false;
+    try {
+      return await work();
+    } finally {
+      this.releaseMemoryAfterGeneration = previous;
+      if (previous) await this.releaseMemory().catch(() => false);
+    }
   }
 
   setReleaseMemoryAfterGeneration(enabled: boolean): void {
@@ -265,14 +285,17 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     };
     if (regionalComposition) {
       const scene = request.scenePrompt ?? request.prompt;
+      const strategy = request.compositionStrategy ?? {};
       const backgroundMask = await renderZoneMask(request.width, request.height, regions.map(figureBox), { invert: true, blur: 12, padX: 0.15 });
-      maskedPrompts.push({ prompt: `${qualityPrefix}scenery, detailed background, ${scene}`, mask: await uploadGuide(backgroundMask, 'aethera-scene-mask.png'), strength: 0.6 });
-      maskedReport.push({ purpose: 'scene_background', strength: 0.6 });
+      const sceneStrength = strategy.sceneStrength ?? 0.6;
+      const sceneSuffix = strategy.sceneSuffix ? `, ${strategy.sceneSuffix}` : '';
+      maskedPrompts.push({ prompt: `${qualityPrefix}scenery, detailed background, ${scene}${sceneSuffix}`, mask: await uploadGuide(backgroundMask, 'aethera-scene-mask.png'), strength: sceneStrength });
+      maskedReport.push({ purpose: 'scene_background', strength: sceneStrength });
       const poseModel = request.spatialControl === 'none' || controlNet ? undefined : controlNetNames(objectInfo).find((name) => /openpose/i.test(name));
       if (poseModel) {
         const dense = regions.length >= 4;
-        const strength = dense ? 0.9 : 0.75;
-        const endPercent = dense ? 0.85 : 0.7;
+        const strength = Math.min(1.2, (dense ? 0.9 : 0.75) + (strategy.poseStrengthDelta ?? 0));
+        const endPercent = strategy.poseEndPercent ?? (dense ? 0.85 : 0.7);
         const guide = await uploadGuide(await renderOpenPoseGuide(request.width, request.height, regions), 'aethera-pose-guide.png');
         poseControlNet = {
           model: poseModel,
@@ -296,8 +319,9 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     }
     if (request.calmZones?.length && !uploadedReference) {
       const calmMask = await renderZoneMask(request.width, request.height, request.calmZones, { blur: 16 });
-      maskedPrompts.push({ prompt: `${qualityPrefix}open empty sky, soft haze, smooth gradient light, minimal detail`, mask: await uploadGuide(calmMask, 'aethera-calm-mask.png'), strength: 0.8 });
-      maskedReport.push({ purpose: 'calm_zone', strength: 0.8 });
+      const calmStrength = request.compositionStrategy?.calmStrength ?? 0.8;
+      maskedPrompts.push({ prompt: `${qualityPrefix}open empty sky, soft haze, smooth gradient light, minimal detail`, mask: await uploadGuide(calmMask, 'aethera-calm-mask.png'), strength: calmStrength });
+      maskedReport.push({ purpose: 'calm_zone', strength: calmStrength });
     }
     const effectiveControlNet = controlNet ?? poseControlNet;
     const workflowRequest = regionalComposition || maskedPrompts.length
@@ -311,7 +335,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
                   y: region.y,
                   width: region.width,
                   height: region.height,
-                  strength: poseControlNet ? 1 : 0.8,
+                  strength: request.compositionStrategy?.regionStrength ?? (poseControlNet ? 1 : 0.8),
                 })),
               }
             : {}),
