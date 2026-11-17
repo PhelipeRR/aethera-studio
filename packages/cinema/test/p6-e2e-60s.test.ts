@@ -68,6 +68,11 @@ describe('P6 60-second production E2E', () => {
     expect(first.probe.audioCodec).toBeTruthy();
     expect(first.probe.durationSec).toBeGreaterThanOrEqual(55);
     expect(first.probe.durationSec).toBeLessThanOrEqual(65);
+    expect(first.captionAlignment?.provider).toBe('voicestudio-whisper');
+    expect(first.captionAlignment?.wordCount).toBeGreaterThan(0);
+    expect(first.smartCaptions?.enabled).toBe(true);
+    expect(first.smartCaptions?.wordCount).toBe(first.captionAlignment?.wordCount);
+    expect(first.smartCaptions?.coverage.endMs).toBeGreaterThan(first.audioFirstTimeline!.measuredNarrationDurationMs - 1_000);
     expect(first.deliveryGate?.status).toBe('approved');
     expect(second.narrationCacheHits).toBeGreaterThanOrEqual(1);
     expect(second.incrementalRenderStats?.cacheHits).toBeGreaterThanOrEqual(1);
@@ -84,6 +89,8 @@ describe('P6 60-second production E2E', () => {
       deliveryValidation: first.deliveryValidation,
       deliveryGate: first.deliveryGate,
       audioFirstTimeline: first.audioFirstTimeline,
+      captionAlignment: first.captionAlignment,
+      smartCaptions: first.smartCaptions,
       narration: {
         mode: first.narrationMode,
         measuredDurationMs: first.audioFirstTimeline?.measuredNarrationDurationMs,
@@ -92,7 +99,7 @@ describe('P6 60-second production E2E', () => {
       cache: second.incrementalRenderStats,
       limitations: [
         'Nenhum asset local separado de música, ambience ou SFX licenciados foi encontrado; esta prova valida a narração real e a composição FFmpeg.',
-        'Nenhuma legenda foi declarada nesta prova porque timestamps por palavra completos não estavam disponíveis; não há aprovação silenciosa de captions.',
+        ...(first.smartCaptions ? [] : ['Nenhuma legenda foi declarada nesta prova porque timestamps por palavra completos não estavam disponíveis; não há aprovação silenciosa de captions.']),
       ],
     }, null, 2), 'utf8');
   }, 180_000);

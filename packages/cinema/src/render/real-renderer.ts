@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync,
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CinemaProductionPackage } from '../index.js';
-import { synthesizeElevenLabsWav } from './elevenlabs-tts.js';
+import { synthesizeElevenLabsWav, synthesizeElevenLabsWavWithTimestamps, type ElevenLabsWordTimestamp } from './elevenlabs-tts.js';
 import {
   verifyEditorialConsistency,
   type EditorialConsistencyReport,
@@ -52,6 +52,7 @@ interface CachedNarrationMetadata {
   cacheKey: string;
   providerNamespace: string;
   mode: NarrationMode;
+  captionWords?: ElevenLabsWordTimestamp[];
 }
 
 export function assertNarrationModeIsApproved(mode: NarrationMode, allowProceduralVoiceFallback = false): void {
@@ -156,6 +157,7 @@ export interface RealRenderResult {
   audioQuality?: AudioQualityGateReport;
   audioFirstTimeline?: AudioFirstRenderAudit;
   narrationCacheHits?: number;
+  captionAlignment?: { provider: 'elevenlabs' | 'voicestudio-whisper' | 'none'; wordCount: number; error?: string };
   smartCaptions?: {
     enabled: boolean;
     cacheKey: string;
@@ -443,6 +445,8 @@ interface PreparedNarrationAudio {
     cacheHit: boolean;
     cacheKey: string;
   }>;
+  captionWords: CaptionWord[];
+  captionAlignment: { provider: 'elevenlabs' | 'voicestudio-whisper' | 'none'; wordCount: number; error?: string };
   narrationSegments: Array<{
     segmentId: string;
     startMs: number;
@@ -521,6 +525,8 @@ async function prepareNarrationAudio(
   let narrationCursorMs = 0;
   let narrationMode: NarrationMode = 'voicestudio_tts';
   let narrationCacheHits = 0;
+  const captionWords: CaptionWord[] = [];
+  let captionAlignment: PreparedNarrationAudio['captionAlignment'] = { provider: 'none', wordCount: 0 };
 
   for (const seg of voicePlan.segments) {
     const cachedSegPath = join(voiceCacheDir, `voice_${seg.cacheKey}.wav`);
@@ -528,6 +534,7 @@ async function prepareNarrationAudio(
     const segWorkPath = join(workDir, `nar_${seg.segmentId}.wav`);
     let usedCachedNarration = false;
     let segmentMode: NarrationMode = 'voicestudio_tts';
+    let segmentCaptionWords: ElevenLabsWordTimestamp[] = [];
     if (existsSync(cachedSegPath) && statSync(cachedSegPath).size > 1024 && existsSync(cachedMetadataPath)) {
       try {
         const metadata = JSON.parse(readFileSync(cachedMetadataPath, 'utf8')) as Partial<CachedNarrationMetadata>;
@@ -539,6 +546,7 @@ async function prepareNarrationAudio(
           copyFileSync(cachedSegPath, segWorkPath);
           narrationMode = metadata.mode;
           segmentMode = metadata.mode;
+          segmentCaptionWords = metadata.captionWords ?? [];
           narrationCacheHits += 1;
           usedCachedNarration = true;
         }
@@ -548,16 +556,45 @@ async function prepareNarrationAudio(
       }
     }
     if (!usedCachedNarration) {
-      const mode = await synthesizeNarrationWav(seg.ttsInputText, segWorkPath, {
-        ...(input.voiceStudioUrl ? { voiceStudioUrl: input.voiceStudioUrl } : {}),
-        ...(input.voiceStudioModelId ? { voiceStudioModelId: input.voiceStudioModelId } : {}),
-        ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
-        ...(input.ttsProviderId ? { ttsProviderId: input.ttsProviderId } : {}),
-        ...(input.ttsVoiceId ? { ttsVoiceId: input.ttsVoiceId } : {}),
-        ...(input.ttsApiKey ? { ttsApiKey: input.ttsApiKey } : {}),
-        ...(input.ttsModelId ? { ttsModelId: input.ttsModelId } : {}),
-        ...(input.language ? { language: input.language } : {}),
-      });
+      let mode: NarrationMode;
+      const elevenLabsApiKey = input.ttsApiKey || process.env.ELEVENLABS_API_KEY;
+      if (useElevenLabs && elevenLabsApiKey && !input.captionWords?.length) {
+        try {
+          const aligned = await synthesizeElevenLabsWavWithTimestamps({
+            apiKey: elevenLabsApiKey,
+            voiceId: input.ttsVoiceId!,
+            text: seg.ttsInputText,
+            outWavPath: segWorkPath,
+            ...(input.ttsModelId ? { modelId: input.ttsModelId } : {}),
+            ...(input.language ? { languageCode: input.language.slice(0, 2).toLowerCase() } : {}),
+          });
+          segmentCaptionWords = aligned.words;
+          mode = 'elevenlabs_tts';
+        } catch (error) {
+          console.warn(`[aethera] ElevenLabs com timestamps indisponível; fallback de voz preservado: ${error instanceof Error ? error.message : String(error)}`);
+          mode = await synthesizeNarrationWav(seg.ttsInputText, segWorkPath, {
+            ...(input.voiceStudioUrl ? { voiceStudioUrl: input.voiceStudioUrl } : {}),
+            ...(input.voiceStudioModelId ? { voiceStudioModelId: input.voiceStudioModelId } : {}),
+            ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
+            ...(input.ttsProviderId ? { ttsProviderId: input.ttsProviderId } : {}),
+            ...(input.ttsVoiceId ? { ttsVoiceId: input.ttsVoiceId } : {}),
+            ...(input.ttsApiKey ? { ttsApiKey: input.ttsApiKey } : {}),
+            ...(input.ttsModelId ? { ttsModelId: input.ttsModelId } : {}),
+            ...(input.language ? { language: input.language } : {}),
+          });
+        }
+      } else {
+        mode = await synthesizeNarrationWav(seg.ttsInputText, segWorkPath, {
+          ...(input.voiceStudioUrl ? { voiceStudioUrl: input.voiceStudioUrl } : {}),
+          ...(input.voiceStudioModelId ? { voiceStudioModelId: input.voiceStudioModelId } : {}),
+          ...(input.voiceStudioVoiceId ? { voiceStudioVoiceId: input.voiceStudioVoiceId } : {}),
+          ...(input.ttsProviderId ? { ttsProviderId: input.ttsProviderId } : {}),
+          ...(input.ttsVoiceId ? { ttsVoiceId: input.ttsVoiceId } : {}),
+          ...(input.ttsApiKey ? { ttsApiKey: input.ttsApiKey } : {}),
+          ...(input.ttsModelId ? { ttsModelId: input.ttsModelId } : {}),
+          ...(input.language ? { language: input.language } : {}),
+        });
+      }
       narrationMode = mode;
       segmentMode = mode;
       assertNarrationModeIsApproved(mode, input.allowProceduralVoiceFallback);
@@ -566,7 +603,7 @@ async function prepareNarrationAudio(
         copyFileSync(segWorkPath, cachedSegPath);
         writeFileSync(
           cachedMetadataPath,
-          JSON.stringify({ schemaVersion: 1, cacheKey: seg.cacheKey, providerNamespace, mode } satisfies CachedNarrationMetadata),
+          JSON.stringify({ schemaVersion: 1, cacheKey: seg.cacheKey, providerNamespace, mode, ...(segmentCaptionWords.length > 0 ? { captionWords: segmentCaptionWords } : {}) } satisfies CachedNarrationMetadata),
           'utf8',
         );
       }
@@ -580,6 +617,11 @@ async function prepareNarrationAudio(
     );
     segmentWavPaths.push(segFinalPath);
     const durMs = await measureAudioDurationMs(segFinalPath);
+    captionWords.push(...segmentCaptionWords.map((word) => ({
+      text: word.text,
+      startMs: narrationCursorMs + word.startMs,
+      endMs: narrationCursorMs + word.endMs,
+    })));
     narrationSegments.push({
       segmentId: seg.segmentId,
       startMs: narrationCursorMs,
@@ -629,6 +671,34 @@ async function prepareNarrationAudio(
     narrationProviders.push({ segmentId: 'full_narration', mode: narrationMode, cacheHit: false, cacheKey: 'uncached_full_narration' });
   }
 
+  if (captionWords.length > 0) {
+    captionAlignment = { provider: 'elevenlabs', wordCount: captionWords.length };
+  } else if (!input.captionWords?.length) {
+    try {
+      const baseUrl = (input.voiceStudioUrl ?? 'http://localhost:3900').replace(/\/+$/, '');
+      const audioBytes = readFileSync(narrationWav);
+      const form = new FormData();
+      form.set('file', new Blob([new Uint8Array(audioBytes)], { type: 'audio/wav' }), 'narration.wav');
+      form.set('model', 'whisper-1');
+      form.set('response_format', 'verbose_json');
+      form.set('timestamp_granularities[]', 'word');
+      if (input.language) form.set('language', input.language.slice(0, 2).toLowerCase());
+      const response = await fetch(`${baseUrl}/v1/audio/transcriptions`, { method: 'POST', body: form, signal: AbortSignal.timeout(90_000) });
+      if (!response.ok) throw new Error(`VoiceStudio Whisper falhou: HTTP ${response.status}`);
+      const payload = (await response.json()) as { words?: Array<{ word?: string; start?: number; end?: number }> };
+      const words = (payload.words ?? [])
+        .map((word) => ({ text: word.word?.trim() ?? '', startMs: Math.round((word.start ?? -1) * 1_000), endMs: Math.round((word.end ?? -1) * 1_000) }))
+        .filter((word) => word.text.length > 0 && word.startMs >= 0 && word.endMs > word.startMs);
+      if (words.length === 0) throw new Error('VoiceStudio Whisper não retornou palavras com timestamps.');
+      captionWords.push(...words);
+      captionAlignment = { provider: 'voicestudio-whisper', wordCount: words.length };
+    } catch (error) {
+      captionAlignment = { provider: 'none', wordCount: 0, error: error instanceof Error ? error.message : String(error) };
+    }
+  } else {
+    captionAlignment = { provider: 'none', wordCount: 0 };
+  }
+
   return {
     narrationWav,
     narrationTextToSpeak,
@@ -638,6 +708,8 @@ async function prepareNarrationAudio(
     narrationCacheHits,
     narrationCacheDir: voiceCacheDir,
     narrationProviders,
+    captionWords,
+    captionAlignment,
     narrationSegments,
     editorialConsistency,
     audioQuality,
@@ -738,6 +810,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const voiceCacheDir = narration.narrationCacheDir;
   const narrationSegments = narration.narrationSegments;
   const narrationProviders = narration.narrationProviders;
+  const captionAlignment = narration.captionAlignment;
   const editorialConsistency = narration.editorialConsistency;
   const audioQuality = narration.audioQuality;
   const audioFirstBase = buildAudioFirstDurationAudit({
@@ -789,6 +862,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
 
   const measuredCaptionWords = input.captionWords?.length
     ? [...input.captionWords].sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)
+    : narration.captionWords.length > 0
+      ? narration.captionWords.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)
     : captionWordsFromSubtitleClips(subtitleClips);
   let smartCaptionArtifact: SmartCaptionArtifact | undefined;
   let smartCaptionCacheHit = false;
@@ -1555,6 +1630,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     audioTimeline,
     audioAudit,
     narrationTextSent: narrationTextToSpeak,
+    captionAlignment,
     editorialConsistency,
     audioQuality,
     audioFirstTimeline: buildAudioFirstAudit(finalAudioStreamDurationMs),
