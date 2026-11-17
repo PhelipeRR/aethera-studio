@@ -36,6 +36,8 @@ import {
   buildAudioFirstDurationAudit,
   type AudioFirstDurationAudit,
 } from '../audio/audio-first-timeline.js';
+import { applyBrollSelectionsToTimeline, type BrollTimelineSelection } from '../edit/broll-timeline.js';
+import { recomputeTimelineFingerprints } from '../ir/timeline-ir.js';
 import type { AetheraEvolutionCore, ProductionDirectives } from '../evolution/evolution-core.js';
 import { resolveDeliveryProfile, type DeliveryQualityProfile, type ResolvedDeliveryProfile } from '../director/aethera-format-catalog.js';
 
@@ -86,6 +88,8 @@ export interface RealRenderInput {
   language?: string;
   /** Procedural formant audio is never accepted silently; opt in only for explicit technical fixtures. */
   allowProceduralVoiceFallback?: boolean;
+  /** Scene Grounding selections are applied before clip specs are read; the Audio-First clock remains authoritative. */
+  brollSelections?: readonly BrollTimelineSelection[];
 }
 
 export type AudioFirstRenderAudit = AudioFirstDurationAudit & {
@@ -594,6 +598,7 @@ async function prepareNarrationAudio(
 
 export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealRenderResult> {
   mkdirSync(input.outputDir, { recursive: true });
+  if (input.brollSelections?.length) input.pkg.timeline = recomputeTimelineFingerprints(applyBrollSelectionsToTimeline(input.pkg.timeline, input.brollSelections));
   const mp4Path = join(input.outputDir, input.fileName ?? `${input.pkg.timeline.projectId}.mp4`);
   const workDir = join(input.outputDir, '_work');
   mkdirSync(workDir, { recursive: true });
@@ -807,6 +812,17 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
         : '';
 
     const isImageSource = spec.sourceUri ? /\.(png|jpe?g|webp)$/i.test(spec.sourceUri) : false;
+    const sourceRange = spec.clip?.sourceRange;
+    const sourceRangeStartSec = sourceRange ? Math.max(0, sourceRange.start.value / Math.max(1, sourceRange.start.rate)) : 0;
+    const sourceRangeDurationSec = sourceRange ? Math.max(0.001, sourceRange.duration.value / Math.max(1, sourceRange.duration.rate)) : 0;
+    const sourceMedia = spec.clip ? input.pkg.timeline.sourceMedia[spec.clip.mediaId] : undefined;
+    const sourceFps = sourceMedia?.fps ? sourceMedia.fps.value / Math.max(1, sourceMedia.fps.rate) : targetFps;
+    const sourceRangeLoopFrames = Math.max(1, Math.round(sourceRangeDurationSec * sourceFps));
+    // A B-roll match is a bounded source interval, not merely a seek point. Trim the interval once and loop only
+    // those frames when Audio-First makes the scene longer than the selected footage.
+    const sourceRangeFilter = spec.sourceUri && !isImageSource && sourceRange
+      ? `trim=start=${sourceRangeStartSec.toFixed(3)}:duration=${sourceRangeDurationSec.toFixed(3)},setpts=PTS-STARTPTS,loop=loop=-1:size=${sourceRangeLoopFrames}:start=0,setpts=N/FRAME_RATE/TB`
+      : '';
     const baseFilter = spec.sourceUri
       ? `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2,fps=${targetFps},setpts=(PTS-STARTPTS)/${Math.max(0.25, spec.clip?.speed ?? 1)},trim=duration=${spec.effectiveDur},setpts=PTS-STARTPTS`
       : `geq=r='clip(44+38*sin(X/45+T*1.4)+24*cos(Y/35-T),24,235)':g='clip(34+28*cos(X/55-T)+30*sin((X+Y)/60+T),20,235)':b='clip(68+58*sin((X-Y)/42+T*1.8),32,235)',scale=${targetWidth}:${targetHeight}:flags=bilinear`;
@@ -866,6 +882,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
 
     // Real source or procedural texture + keyframes + motion graphics + safe-zone typography + project color grading + vignette VFX
     const vf = [
+      sourceRangeFilter,
       baseFilter,
       ...transformFilters,
       motionBar,
@@ -958,11 +975,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       ? isImageSource
         ? ['-loop', '1', '-t', String(spec.effectiveDur), '-i', spec.sourceUri]
         : [
-            ...(trimStartSec > 0 ? ['-ss', String(trimStartSec)] : []),
-            '-stream_loop',
-            '-1',
-            '-t',
-            String(spec.effectiveDur * Math.max(0.25, spec.clip?.speed ?? 1) + 0.5),
+            ...(sourceRangeFilter ? [] : trimStartSec > 0 ? ['-ss', String(trimStartSec)] : []),
+            ...(sourceRangeFilter ? [] : ['-stream_loop', '-1', '-t', String(spec.effectiveDur * Math.max(0.25, spec.clip?.speed ?? 1) + 0.5)]),
             '-i',
             spec.sourceUri,
           ]

@@ -7,10 +7,8 @@ import {
   buildEditorialScript,
   produceCinemaPackage,
   renderRealCinemaMp4,
-  applyBrollSelectionsToTimeline,
   type SourceMediaRecord,
 } from '../packages/cinema/src/index.js';
-import { recomputeTimelineFingerprints } from '../packages/cinema/src/ir/timeline-ir.js';
 import { rankMediaSegments, VIDEO_FORMATS, type MediaSegment, type MediaSegmentCandidate, type SubjectIdentity, type VisionPolicy } from '../packages/shared/src/index.js';
 import {
   BROLL_INDEX_VERSION,
@@ -155,8 +153,7 @@ async function renderIntegration(selection: { sourceStartMs: number; sourceEndMs
   const firstClip = pkg.timeline.clips.find((clip) => clip.trackId === 'v1');
   if (!firstClip) throw new Error('p2_render_clip_missing');
   const sceneId = firstClip.shotId ?? firstClip.clipId;
-  pkg.timeline = recomputeTimelineFingerprints(applyBrollSelectionsToTimeline(pkg.timeline, [{ sceneId, mediaId: sourceMedia.mediaId, segmentId: selection.segmentId, sourceStartMs: selection.sourceStartMs, sourceEndMs: selection.sourceEndMs }]));
-  const rendered = await renderRealCinemaMp4({ pkg, outputDir: join(evidenceDir, 'render'), fileName: 'p2-broll-audio-first.mp4', requireRealMedia: true, useNvenc: false, previewQuality: 'fast_preview', allowProceduralVoiceFallback: false, voiceStudioVoiceId: '9190edfa', segmentCacheDir: join(evidenceDir, 'segment-cache'), language: 'pt-BR' });
+  const rendered = await renderRealCinemaMp4({ pkg, brollSelections: [{ sceneId, mediaId: sourceMedia.mediaId, segmentId: selection.segmentId, sourceStartMs: selection.sourceStartMs, sourceEndMs: selection.sourceEndMs }], outputDir: join(evidenceDir, 'render'), fileName: 'p2-broll-audio-first.mp4', requireRealMedia: true, useNvenc: false, previewQuality: 'fast_preview', allowProceduralVoiceFallback: false, voiceStudioVoiceId: '9190edfa', segmentCacheDir: join(evidenceDir, 'segment-cache'), language: 'pt-BR' });
   const report = { mp4Path: rendered.mp4Path, sourceRange: selection, semanticGatePassed: selection.semanticGatePassed, narrationMode: rendered.narrationMode, audioFirstTimeline: rendered.audioFirstTimeline, probe: rendered.probe, deliveryValidation: rendered.deliveryValidation, incrementalRenderStats: rendered.incrementalRenderStats };
   writeFileSync(join(evidenceDir, 'integration-render.json'), JSON.stringify(report, null, 2));
   return report;

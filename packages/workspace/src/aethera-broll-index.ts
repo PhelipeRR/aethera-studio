@@ -110,6 +110,10 @@ export function classifyBrollSemanticDecision(input: {
   return { technicalStatus: 'technical_valid', semanticStatus: 'needs_review', reason: 'semantic_evidence_insufficient' };
 }
 
+function escapeContactLabel(label: string): string {
+  return label.replaceAll('\\', '\\\\').replaceAll(':', '\\:').replaceAll("'", "\\'");
+}
+
 export function canReuseBrollIndex(index: BrollIndex, expected: { sourceHash: string; indexVersion: string }): boolean {
   const parsed = brollIndexSchema.safeParse(index);
   return parsed.success && parsed.data.status === 'complete' && parsed.data.sourceHash === expected.sourceHash && parsed.data.indexVersion === expected.indexVersion;
@@ -126,7 +130,7 @@ export async function makeBrollContactSheet(input: { ffmpeg: string; framePaths:
   if (input.framePaths.length === 0 || input.framePaths.length !== input.labels.length) throw new Error('invalid: contact sheet needs one label per frame.');
   if (input.framePaths.some((path) => !existsSync(path))) throw new Error('not_found: keyframe missing for contact sheet.');
   mkdirSync(dirname(input.outputPath), { recursive: true });
-  const filters = input.framePaths.map((_, index) => `[${index}:v]scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2:color=0x0c0e14[v${index}]`).join(';');
+  const filters = input.framePaths.map((_, index) => `[${index}:v]scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2:color=0x0c0e14,drawtext=text='${escapeContactLabel(input.labels[index] ?? '')}':x=8:y=8:fontsize=16:fontcolor=white:box=1:boxcolor=black@0.7[v${index}]`).join(';');
   const layout = input.framePaths.map((_, index) => `${(index % 4) * 320}_${Math.floor(index / 4) * 180}`).join('|');
   const streamLabels = input.framePaths.map((_, index) => `[v${index}]`).join('');
   const filter = `${filters};${streamLabels}xstack=inputs=${input.framePaths.length}:layout=${layout}:fill=0x0c0e14,format=yuv420p[out]`;

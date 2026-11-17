@@ -1,7 +1,7 @@
 import type { ProductionStageContext } from '../velix-production.js';
 
 /** What one item of a Studio stage (a game, an asset, a segment) produced. A skipped item is final, not a failure. */
-export type ItemOutcome<R> = { status: 'done'; result: R } | { status: 'skipped'; reason: string };
+export type ItemOutcome<R> = { status: 'done'; result: R } | { status: 'skipped'; reason: string; decisionStatus?: 'media_unavailable' | 'technical_blocked' | 'editorial_rejected'; diagnostics?: string[] };
 
 type CheckpointContext = Pick<ProductionStageContext, 'state' | 'saveState' | 'progress' | 'signal'>;
 

@@ -61,10 +61,12 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
       await visualRenderScheduler.run(async () => {
         await runCheckpointedItems(context, acquisitions, async (job) => {
           const result = job.result;
-          if (!result) return { status: 'skipped', reason: 'Acquisition result is missing.' };
+          if (!result) return { status: 'skipped', reason: 'media_unavailable: acquisition result is missing.', decisionStatus: 'media_unavailable', diagnostics: ['acquisition_result_missing'] };
           const asset = deps.asset(context.projectId, result.assetId);
           const provenance = deps.repository.provenance(result.assetId);
-          if (!asset || !provenance || provenance.usage === 'blocked') return { status: 'skipped', reason: 'Missing local asset/provenance or blocked media.' };
+          if (!asset) return { status: 'skipped', reason: 'media_unavailable: local asset is absent.', decisionStatus: 'media_unavailable', diagnostics: [`asset_id=${result.assetId}`] };
+          if (!provenance) return { status: 'skipped', reason: 'technical_blocked: provenance is absent.', decisionStatus: 'technical_blocked', diagnostics: [`asset_id=${result.assetId}`, 'provenance_missing'] };
+          if (provenance.usage === 'blocked') return { status: 'skipped', reason: 'editorial_rejected: media usage is blocked.', decisionStatus: 'editorial_rejected', diagnostics: [`asset_id=${result.assetId}`, 'provenance_usage_blocked'] };
           if (asset.sha256 !== result.contentHash) throw new Error('invalid: acquired asset hash changed; reacquire before indexing.');
           const previousIndex = deps.repository.brollIndex(result.assetId);
           if (previousIndex && canReuseBrollIndex(previousIndex, { sourceHash: asset.sha256, indexVersion: BROLL_INDEX_VERSION }) && previousIndex.segments.length > 0) {
@@ -100,7 +102,7 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
             const temporal = classifyTemporalSamples(temporalSamples);
             const continuity = validateBrollContinuity({ startMs: segment.startMs, endMs: segment.endMs, samples: temporalSamples });
             const safeFrameTimes = discardFlashKeyframeTimes(frames.map((frame) => frame.atMs ?? 0), temporal.flashFrameTimesMs);
-            const visionFrames = safeFrameTimes.length > 0 ? frames.filter((frame) => safeFrameTimes.includes(frame.atMs ?? -1)) : frames;
+            const visionFrames = frames.filter((frame) => safeFrameTimes.includes(frame.atMs));
             const request = { frames: visionFrames, policy: deps.policy, budgetKey: context.runId, signal: context.signal };
             const classified = await router.classify({ ...request, labels: segmentKinds });
             const described = await router.describe(request);
