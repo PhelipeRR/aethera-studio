@@ -333,3 +333,39 @@ inalterados; o duo continua `needs_review` e `humanReview.status=pending`.
   - (b) manter o reparo como **alternativa proposta**, com máscara, seed,
     prompt e diff, para escolha humana. Nesse caso o veredicto continua
     `needs_review` e a imagem escolhida pelo gate não muda sem aprovação.
+
+### CS10 — reparo de objeto como alternativa para revisão — `run-2026-11-17T1935` (duo)
+
+Decisão do usuário: reparos que o avaliador local não consegue verificar viram
+**alternativas propostas** para revisão humana. Nenhum threshold foi alterado.
+
+- **Status `proposed`.** Vale quando a única objeção da regressão é
+  `target_attribute_not_confirmed`. O reparo é salvo com máscara, seed, prompt,
+  imagem candidata e diff, mas **não é adotado**: a imagem escolhida e o
+  veredicto do gate não mudam. Qualquer outra objeção mantém `failed`: mudança
+  excessiva fora do bbox, atributo confirmado perdido, qualidade rejeitada ou o
+  novo `attribute_became_contradicted` (um critério passa a `failed`).
+- **Estratégia `object_inpaint`.** Um reparo por personagem cobre todos os seus
+  objetos não confirmados (por exemplo, katana e espada). Prompt: o prompt do
+  personagem + `holding <objeto>`. Negativo: acrescenta
+  `from behind, back view, …`. Máscara: corpo de 18% a 85% da altura da figura,
+  sem a cabeça, até ±0,5 da largura. Força: `0,60`.
+- **Prioridade.** Objetos obrigatórios de todos os personagens vêm antes de
+  roupa e pose. Corrigido um bug: ao montar candidatos, os critérios de objeto
+  eram marcados como tentados mesmo quando o reparo de escala vencia a
+  iteração. Por isso o `run-2026-11-17T1920` gastou o orçamento em armadura e
+  cachecol.
+- O script de aceitação passou a incluir o status do reparo no nome dos
+  arquivos (`repairN-<status>-…`).
+
+| Reparo | Resultado | Revisão visual do agente |
+|---|---|---|
+| `count:undersized_character:0` (`rescale_then_inpaint`, 0,42) | **aplicado** | personagem 1 na escala planejada, como no `T1837` |
+| `character-1-object-katana` (`object_inpaint`, 0,60, seed `1496267052`, bbox `105,221 531×366`) | **proposto**; CLIP `0,6403 → 0,6845`, não confirmável; fora do bbox `3,3%`; identidade `95` | duas lâminas visíveis (uma na mão, outra ao lado); rosto, cabelo, cachecol e vestido preservados; a pose "katana erguida" continua ausente |
+| `character-2-object-spear` (`object_inpaint`, 0,60, seed `1811965181`, bbox `832,178 292×425`) | **proposto**; CLIP `0,6152 → 0,6480`; fora do bbox `3,3%`; identidade `94` | lança visível, mas **fincada no chão ao lado**, não "em guarda"; armadura mais definida; identidade preservada |
+
+Cada proposta parte da imagem adotada (já com a escala corrigida), de forma
+independente. Para usar as duas armas, é preciso escolher e combinar na revisão
+humana. Arquivos: `artifacts/comfyui-character-gate-acceptance/run-2026-11-17T1935/`
+(`*-proposed-repaired-*`, `review-proposals.png`). Veredicto `needs_review`;
+`humanReview.status=pending`.

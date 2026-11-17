@@ -361,6 +361,76 @@ describe('Character Composition Gate runner', () => {
     expect(ids[2]).not.toMatch(/^count:/);
   });
 
+  it('repairs a missing object with the character prompt on a head-protected body mask', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairRequests } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    const repair = outcome.report.attempts[0]?.repairs[0];
+    const request = getRepairRequests()[0];
+    const figure = CLEAN_DUO.detectors.yolo_person.boxes[0]!;
+    expect(repair).toMatchObject({ criterionKind: 'object', strategy: 'object_inpaint', strength: 0.6 });
+    expect(request?.prompt).toContain('holding katana');
+    expect(request?.prompt).toContain(recipe.characterRegions[0]!.prompt!);
+    expect(request?.negativePrompt).toContain('back view');
+    expect(request?.bbox.y).toBeGreaterThanOrEqual(figure.y + figure.height * 0.15);
+    expect(request?.bbox.y! + request!.bbox.height).toBeLessThanOrEqual(figure.y + figure.height);
+  });
+
+  it('repairs objects of every character after a scale repair, before wardrobe or pose', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([UNDERSIZED_DUO, CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 3 },
+      },
+    });
+
+    const repairs = outcome.report.attempts[0]?.repairs ?? [];
+    expect(repairs.map((repair) => [repair.criterionKind, repair.regionIndex])).toEqual([['count', 0], ['object', 0], ['object', 1]]);
+  });
+
+  it('keeps an unverifiable object repair as a proposed alternative without adopting it', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    const attempt = outcome.report.attempts[0]!;
+    expect(attempt.repairs[0]).toMatchObject({
+      status: 'proposed',
+      regression: { reasons: ['target_attribute_not_confirmed'] },
+      repairedImageAsset: expect.objectContaining({ relativePath: expect.stringMatching(/\.png$/) }),
+    });
+    expect(attempt.imageAsset?.relativePath).not.toBe(attempt.repairs[0]?.repairedImageAsset?.relativePath);
+    expect(outcome.report.verdict).toBe('needs_review');
+  });
+
   it('keeps the pre-repair image when a regional repair loses a confirmed attribute', async () => {
     const { recipe, adapter, ingestion, baseRequest, getRepairCalls } = await fixture(3, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.05, repairMargin: -0.2, repairOffTopic: true });
     const outcome = await runCharacterCompositionGate({

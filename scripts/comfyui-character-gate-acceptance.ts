@@ -205,10 +205,10 @@ try {
           const evidenceAssets: Array<{ ref: { relativePath: string; originalName: string }; kind: string }> = [];
           if (attempt.imageAsset) evidenceAssets.push({ ref: attempt.imageAsset, kind: 'final' });
           for (const [repairIndex, repair] of (attempt.repairs ?? []).entries()) {
-            if (repair.maskAsset) evidenceAssets.push({ ref: repair.maskAsset, kind: `repair${repairIndex + 1}-mask` });
-            if (repair.originalImageAsset) evidenceAssets.push({ ref: repair.originalImageAsset, kind: `repair${repairIndex + 1}-original` });
-            if (repair.repairedImageAsset) evidenceAssets.push({ ref: repair.repairedImageAsset, kind: `repair${repairIndex + 1}-repaired` });
-            if (repair.differenceImageAsset) evidenceAssets.push({ ref: repair.differenceImageAsset, kind: `repair${repairIndex + 1}-difference` });
+            if (repair.maskAsset) evidenceAssets.push({ ref: repair.maskAsset, kind: `repair${repairIndex + 1}-${repair.status}-mask` });
+            if (repair.originalImageAsset) evidenceAssets.push({ ref: repair.originalImageAsset, kind: `repair${repairIndex + 1}-${repair.status}-original` });
+            if (repair.repairedImageAsset) evidenceAssets.push({ ref: repair.repairedImageAsset, kind: `repair${repairIndex + 1}-${repair.status}-repaired` });
+            if (repair.differenceImageAsset) evidenceAssets.push({ ref: repair.differenceImageAsset, kind: `repair${repairIndex + 1}-${repair.status}-difference` });
           }
           for (const entry of evidenceAssets) {
             const path = join(runDir, `${label}-attempt${attempt.attempt}-${entry.kind}-${attempt.overallVerdict ?? attempt.gate?.verdict ?? attempt.status}-seed${attempt.seed}.png`);

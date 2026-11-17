@@ -185,7 +185,11 @@ export interface CharacterGateVisualQualityReport {
 }
 
 export interface CharacterGateRepairReport {
-  status: 'not_requested' | 'skipped' | 'applied' | 'failed';
+  /**
+   * `proposed`: the repair passed every regression guard except attribute confirmation, which the local evaluator
+   * cannot provide for thin objects. It is kept as an alternative for human review and is never adopted automatically.
+   */
+  status: 'not_requested' | 'skipped' | 'applied' | 'proposed' | 'failed';
   criterionId: string | null;
   criterionKind: SemanticCriterion['kind'] | 'count' | 'quality' | null;
   regionIndex: number | null;
@@ -199,7 +203,7 @@ export interface CharacterGateRepairReport {
   afterAttribute: { status: string; score: number | null; margin: number | null } | null;
   regression: CharacterGateVisualRegressionReport;
   /** `rescale_then_inpaint` enlarges the detected figure inside its planned region before a blending inpaint. */
-  strategy?: 'inpaint' | 'rescale_then_inpaint';
+  strategy?: 'inpaint' | 'rescale_then_inpaint' | 'object_inpaint';
   strength?: number;
   /** Applied enlargement for `rescale_then_inpaint`; 1 means the figure could not be enlarged inside its region. */
   scaleFactor?: number;
@@ -463,6 +467,24 @@ async function compareRepairBuffers(before: Buffer, after: Buffer, bbox: { x: nu
   };
 }
 
+/**
+ * Object repairs (CS10 investigation 2026-11-17T1901): the bare "clearly shows: katana" prompt never added a weapon,
+ * while the character prompt plus "holding <object>" did; a mask that keeps the head outside it preserved identity at
+ * the strength a spear needed. The local CLIP evaluator cannot confirm thin objects, so these repairs end as proposals.
+ */
+const OBJECT_REPAIR_STRENGTH = 0.6;
+const OBJECT_REPAIR_NEGATIVE = 'from behind, back view, turned away, extra person, duplicate character';
+
+function objectRepairMask(region: GateRectLike, figure: GateRectLike | undefined): GateRectLike {
+  if (!figure) return region;
+  const left = Math.max(region.x, figure.x - figure.width * 0.5);
+  const right = Math.min(region.x + region.width, figure.x + figure.width * 1.5);
+  const top = Math.max(region.y, figure.y + figure.height * 0.18);
+  const bottom = Math.min(region.y + region.height, figure.y + figure.height * 0.85);
+  if (right - left < 8 || bottom - top < 8) return region;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
 /** Count repairs per undersized figure; the remaining repair budget stays available for semantic attributes. */
 const MAX_COUNT_REPAIRS_PER_FIGURE = 2;
 /** Blend strengths for the rescaled figure: low enough to keep identity, high enough to hide the paste seam. */
@@ -591,6 +613,8 @@ function repairRegression(
   if (beforeConfirmed.some((criterion) => afterById.get(criterion.id)?.status === 'failed')) reasons.push('confirmed_attribute_became_failed');
   const targetAfter = after.semantic?.criteria.find((criterion) => criterion.id === target.criterionId);
   if (target.kind !== 'count' && target.kind !== 'quality' && targetAfter?.status !== 'confirmed') reasons.push('target_attribute_not_confirmed');
+  const beforeById = new Map((before.semantic?.criteria ?? []).map((criterion) => [criterion.id, criterion]));
+  if ((after.semantic?.criteria ?? []).some((criterion) => criterion.status === 'failed' && beforeById.get(criterion.id)?.status !== 'failed')) reasons.push('attribute_became_contradicted');
   if (target.kind === 'count' && after.gate.reasons.some((reason) => reason.code === 'undersized_character')) reasons.push('count_placement_not_corrected');
   if (after.visualQuality?.verdict === 'rejected') reasons.push('post_repair_visual_quality_rejected');
   if ((diff.changedOutsideBboxFraction ?? 1) > 0.12 || (diff.meanAbsDiffOutsideBbox ?? 255) > 18) reasons.push('excessive_change_outside_repair_bbox');
@@ -798,13 +822,16 @@ export async function runCharacterCompositionGate(input: {
       const repairEvidence: PendingRepairEvidence[] = [];
       while (semanticEnabled && config.semanticGate?.localizedRepair && adapter.inpaintRegion && repairEvidence.length < maxLocalizedRepairs) {
         const repairUncertainAttributes = config.semanticGate.repairUncertainAttributes === true;
-        const semanticCandidate = (repairUncertainAttributes || currentEvaluation.overallVerdict === 'rejected')
-          ? currentEvaluation.semantic?.repairCandidates.find((candidate) => {
+        const eligibleSemantic = (repairUncertainAttributes || currentEvaluation.overallVerdict === 'rejected')
+          ? (currentEvaluation.semantic?.repairCandidates ?? []).filter((candidate) => {
               if (triedRepairs.has(candidate.criterionId)) return false;
               const criterion = criterionForRepair(currentEvaluation.semantic, candidate.criterionId);
               return criterion !== null && (criterion.status === 'failed' || (repairUncertainAttributes && criterion.status === 'uncertain'));
             })
-          : undefined;
+          : [];
+        // Required objects (weapons, props) of every character come before wardrobe/pose refinements.
+        const semanticCandidate = eligibleSemantic.find((candidate) => criterionForRepair(currentEvaluation.semantic, candidate.criterionId)?.kind === 'object')
+          ?? eligibleSemantic[0];
         const undersized = currentEvaluation.gate.reasons.some((reason) => reason.code === 'undersized_character')
           ? currentEvaluation.gate.figures.find((figure) => figure.regionIndex !== null && figure.regionIndex !== undefined && figure.height < 0.55 * regionRects[figure.regionIndex]!.height)
           : undefined;
@@ -826,9 +853,30 @@ export async function runCharacterCompositionGate(input: {
           : null;
         const qualityCandidate = currentEvaluation.visualQuality?.localizedDefects.find((defect) => defect.severity === 'severe' && !defect.repaired)
           ?? currentEvaluation.visualQuality?.localizedDefects.find((defect) => defect.severity === 'moderate' && !defect.repaired);
-        const semanticRepairCandidate = semanticCandidate
-          ? { criterionId: semanticCandidate.criterionId, criterionKind: criterionForRepair(currentEvaluation.semantic, semanticCandidate.criterionId)?.kind ?? 'quality' as const, regionIndex: criterionForRepair(currentEvaluation.semantic, semanticCandidate.criterionId)?.regionIndex ?? null, bbox: semanticCandidate.bbox, prompt: semanticCandidate.prompt, reason: semanticCandidate.reason }
-          : null;
+        const semanticCriterion = semanticCandidate ? criterionForRepair(currentEvaluation.semantic, semanticCandidate.criterionId) : null;
+        const objectRegion = semanticCriterion?.kind === 'object' && semanticCriterion.regionIndex !== null && regionRects[semanticCriterion.regionIndex] ? semanticCriterion.regionIndex : null;
+        const semanticRepairCandidate = semanticCandidate && objectRegion !== null
+          ? (() => {
+              // One repair per character covers all of its unverified objects (e.g. "katana" and "sword").
+              const objects = (currentEvaluation.semantic?.criteria ?? []).filter((criterion) => criterion.kind === 'object' && criterion.regionIndex === objectRegion && criterion.status !== 'confirmed' && !triedRepairs.has(criterion.id));
+              const terms = [...new Set(objects.map((criterion) => criterion.requirement))];
+              const characterPrompt = recipe.characterRegions[objectRegion]?.prompt ?? 'the planned character';
+              return {
+                criterionId: semanticCandidate.criterionId,
+                criterionKind: 'object' as const,
+                regionIndex: objectRegion,
+                bbox: objectRepairMask(regionRects[objectRegion]!, currentEvaluation.gate.figures.find((figure) => figure.regionIndex === objectRegion)),
+                prompt: `${characterPrompt}, ${terms.map((term) => `holding ${term}`).join(', ')}, ${terms.join(', ')} clearly visible`,
+                negativePrompt: `${recipe.negativePrompt}, ${OBJECT_REPAIR_NEGATIVE}`,
+                strength: OBJECT_REPAIR_STRENGTH,
+                objectTerms: terms,
+                coveredCriterionIds: objects.map((criterion) => criterion.id),
+                reason: semanticCandidate.reason,
+              };
+            })()
+          : semanticCandidate
+            ? { criterionId: semanticCandidate.criterionId, criterionKind: semanticCriterion?.kind ?? 'quality' as const, regionIndex: semanticCriterion?.regionIndex ?? null, bbox: semanticCandidate.bbox, prompt: semanticCandidate.prompt, reason: semanticCandidate.reason }
+            : null;
         const candidate = countCandidate
           ?? semanticRepairCandidate
           ?? (qualityCandidate && (currentEvaluation.overallVerdict === 'rejected' || currentEvaluation.visualQuality?.reasons.includes('localized_visual_defect'))
@@ -836,6 +884,7 @@ export async function runCharacterCompositionGate(input: {
             : null);
         if (!candidate) break;
         triedRepairs.add(candidate.criterionId);
+        if ('coveredCriterionIds' in candidate && Array.isArray(candidate.coveredCriterionIds)) for (const id of candidate.coveredCriterionIds as string[]) triedRepairs.add(id);
         const beforeImage = image;
         const beforeEvaluation = currentEvaluation;
         const repairSeed = createHash('sha256').update(`${seed}:${candidate.criterionId}:${candidate.bbox.x},${candidate.bbox.y},${candidate.bbox.width},${candidate.bbox.height}`).digest().readUInt32BE(0);
@@ -848,7 +897,7 @@ export async function runCharacterCompositionGate(input: {
         report.seed = repairSeed;
         report.beforeAttribute = attributeSnapshot(beforeEvaluation.semantic, candidate.criterionId);
         const repairStrength = 'strength' in candidate && typeof candidate.strength === 'number' ? candidate.strength : config.semanticGate.repairStrength ?? 0.48;
-        report.strategy = 'figure' in candidate && candidate.figure ? 'rescale_then_inpaint' : 'inpaint';
+        report.strategy = 'figure' in candidate && candidate.figure ? 'rescale_then_inpaint' : 'objectTerms' in candidate ? 'object_inpaint' : 'inpaint';
         report.strength = repairStrength;
         try {
           let inpaintBase = beforeImage;
@@ -863,7 +912,7 @@ export async function runCharacterCompositionGate(input: {
           const repairedImage = await adapter.inpaintRegion({
             imageBuffer: inpaintBase,
             prompt: candidate.prompt,
-            negativePrompt: recipe.negativePrompt,
+            negativePrompt: 'negativePrompt' in candidate && typeof candidate.negativePrompt === 'string' ? candidate.negativePrompt : recipe.negativePrompt,
             bbox: candidate.bbox,
             strength: repairStrength,
             seed: repairSeed,
@@ -890,6 +939,14 @@ export async function runCharacterCompositionGate(input: {
           report.regression = regression;
           const maskBuffer = await makeRepairMask(recipe.width, recipe.height, candidate.bbox);
           repairEvidence.push({ report, maskBuffer, originalBuffer: beforeImage, repairedBuffer: repairedImage, differenceBuffer: diff.differenceBuffer });
+          const onlyUnverified = regression.reasons.length === 1 && regression.reasons[0] === 'target_attribute_not_confirmed';
+          if (onlyUnverified) {
+            report.status = 'proposed';
+            report.reason = 'Repair passed the regression guards but the local evaluator cannot confirm the attribute; kept as an alternative for human review and not adopted.';
+            attempt.repairs.push(report);
+            attempt.repair = report;
+            continue;
+          }
           if (regression.status !== 'passed') {
             report.status = 'failed';
             report.reason = `Regional repair regression: ${regression.reasons.join(', ') || regression.status}.`;
