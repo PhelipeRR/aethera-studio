@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
+import { homedir } from 'node:os';
 import {
   applyTargetedRepair,
   evaluateEnsemble,
@@ -42,6 +43,7 @@ import {
   type MediaRelevanceDecision,
   type NarrativeBeat,
   type RealRenderResult,
+  type RealAudioAssetsInput,
   type RenderQualityProfile,
   type ResilientAcquisitionDeps,
   type ScriptSegmentExpectation,
@@ -91,6 +93,26 @@ import {
 } from '@neuralbridge/cinema';
 import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
 import { createProductionJobId } from './production-console.js';
+
+/** Reuses the already-installed MotionVelix audio kit; no files are copied or downloaded. */
+function localMotionVelixAudioAssets(): RealAudioAssetsInput | undefined {
+  const root = process.env['NB_VELIX_DIR'] ?? join(homedir(), '.claude', 'skills', 'motionvelix', 'assets', 'sfx');
+  const license = 'motionvelix-user-kit-original-synthesized';
+  const ambiencePath = join(root, 'chuva.wav');
+  const sfx = [
+    ['whoosh', 4_500],
+    ['glitch', 12_000],
+    ['impacto', 26_500],
+    ['whoosh_rapido', 39_500],
+  ]
+    .map(([id, atMs]) => ({ id: String(id), path: join(root, `${String(id)}.wav`), license, atMs: Number(atMs), gainDb: -18 }))
+    .filter((asset) => existsSync(asset.path));
+  if (!existsSync(ambiencePath) && sfx.length === 0) return undefined;
+  return {
+    ...(existsSync(ambiencePath) ? { ambience: { path: ambiencePath, license } } : {}),
+    ...(sfx.length > 0 ? { sfx } : {}),
+  };
+}
 
 export type ProductionStageState =
   | 'idle'
@@ -2530,6 +2552,7 @@ export class StagedCinemaPipeline {
       this.saveJob(job);
 
       const segmentCacheDir = join(projectPaths.tempDir, 'segment-cache');
+      const realAudioAssets = localMotionVelixAudioAssets();
       let render = await renderRealCinemaMp4({
         pkg,
         outputDir: projectPaths.rendersDir,
@@ -2547,6 +2570,7 @@ export class StagedCinemaPipeline {
         ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
         previewProfile: previewProfileForJob(job),
         segmentCacheDir,
+        ...(realAudioAssets ? { realAudioAssets } : {}),
         ...(job.genre ? { genre: job.genre } : {}),
         ...(job.language ? { language: job.language } : {}),
       });
@@ -2762,6 +2786,7 @@ export class StagedCinemaPipeline {
           ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
           previewProfile: previewProfileForJob(job),
           segmentCacheDir,
+          ...(realAudioAssets ? { realAudioAssets } : {}),
           ...(job.genre ? { genre: job.genre } : {}),
           ...(job.language ? { language: job.language } : {}),
         });
@@ -2810,6 +2835,7 @@ export class StagedCinemaPipeline {
             previewProfile: previewProfileForJob(job),
             previewQuality: 'standard',
             segmentCacheDir,
+            ...(realAudioAssets ? { realAudioAssets } : {}),
             ...(job.genre ? { genre: job.genre } : {}),
             ...(job.language ? { language: job.language } : {}),
           });
