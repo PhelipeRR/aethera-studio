@@ -50,6 +50,20 @@ export interface DistributedFrameAnalysis {
   confidence: number;
 }
 
+export interface VisionVerificationDiagnostics {
+  status: 'succeeded' | 'technical_blocked';
+  provider?: string | null;
+  model?: string | null;
+  reportedModel?: string | null;
+  durationMs?: number;
+  attempts: Array<{ provider: string; outcome: string; detail?: string; durationMs?: number }>;
+  error?: string;
+}
+
+export type DistributedFrameAnalysisResult = DistributedFrameAnalysis[] & {
+  diagnostics?: VisionVerificationDiagnostics;
+};
+
 export type MediaCorrespondenceLevel =
   | 'exact_match'
   | 'contextual_support'
@@ -419,6 +433,17 @@ function withDecisionStatus(
   };
 }
 
+function parseVisionProviderAttempts(error: string): VisionVerificationDiagnostics['attempts'] {
+  const summary = /\[([^\]]+)\]/.exec(error)?.[1];
+  if (!summary) return [];
+  return summary.split(/;\s*/).flatMap((entry) => {
+    const match = /^([^:]+):([^ (]+)(?:\((.*)\))?$/.exec(entry.trim());
+    return match
+      ? [{ provider: match[1]!, outcome: match[2]!, ...(match[3] ? { detail: match[3] } : {}) }]
+      : [];
+  });
+}
+
 /**
  * Media Relevance Gate: validates distributed frames + metadata + transcript + provenance
  * before allowing a clip into the editorial assembly.
@@ -431,7 +456,8 @@ export async function evaluateMediaRelevance(
       uri: string,
       timestampsSec: number[],
       segment: ScriptSegmentExpectation,
-    ) => Promise<DistributedFrameAnalysis[]>;
+    ) => Promise<DistributedFrameAnalysis[] | DistributedFrameAnalysisResult>;
+    onVisualVerification?: (diagnostics: VisionVerificationDiagnostics) => void;
     requireVisualVerification?: boolean;
     evolution?: AetheraEvolutionCore;
     animeProvenance?: AnimeProvenanceAdapter;
@@ -488,12 +514,23 @@ export async function evaluateMediaRelevance(
   // 2. Distributed frame analysis (VisionRouter / caller hook) + 2nd dense pass on promising intervals
   let frameAnalyses: DistributedFrameAnalysis[] = [];
   let visualVerificationError: string | undefined;
+  const notifyVisualVerification = (diagnostics: VisionVerificationDiagnostics) => {
+    options?.onVisualVerification?.(diagnostics);
+  };
   if (options?.analyzeFrames) {
     try {
-      frameAnalyses = await options.analyzeFrames(candidate.uri, sampledTimestampsSec, segment);
+      const initialAnalysis = await options.analyzeFrames(candidate.uri, sampledTimestampsSec, segment);
+      frameAnalyses = initialAnalysis;
+      notifyVisualVerification(('diagnostics' in initialAnalysis ? initialAnalysis.diagnostics : undefined) ?? { status: 'succeeded', attempts: [] });
     } catch (err) {
       frameAnalyses = [];
       visualVerificationError = (err as Error).message;
+      const diagnostics = (err as Error & { visionDiagnostics?: VisionVerificationDiagnostics }).visionDiagnostics ?? {
+        status: 'technical_blocked' as const,
+        attempts: parseVisionProviderAttempts(visualVerificationError),
+        error: visualVerificationError,
+      };
+      notifyVisualVerification({ ...diagnostics, error: diagnostics.error ?? visualVerificationError });
     }
 
     if (frameAnalyses.length > 0 && candidate.durationSec >= 5) {
@@ -537,6 +574,7 @@ export async function evaluateMediaRelevance(
         if (denseSet.length > 0) {
           try {
             const denseFrames = await options.analyzeFrames(candidate.uri, denseSet, segment);
+            notifyVisualVerification(('diagnostics' in denseFrames ? denseFrames.diagnostics : undefined) ?? { status: 'succeeded', attempts: [] });
             if (Array.isArray(denseFrames) && denseFrames.length > 0) {
               const merged = [...frameAnalyses];
               for (const df of denseFrames) {

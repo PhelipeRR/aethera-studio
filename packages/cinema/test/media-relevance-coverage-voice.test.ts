@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -926,6 +926,27 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(run1.funnelMetrics.failureReasons.timeout).toBe(1);
     expect(run1.funnelMetrics.visionDiagnostics.callsAttempted).toBe(1);
     expect(run1.funnelMetrics.visionDiagnostics.callsFailed).toBe(1);
+    const checkpoint1 = JSON.parse(readFileSync(join(mediaDir, '.acquisition-checkpoint.json'), 'utf8')) as {
+      funnelMetrics?: { counts?: Record<string, number> };
+      visionDiagnostics?: {
+        callsAttempted: number;
+        callsFailed: number;
+        records: Array<{ segmentId: string; status: string; error?: string; attempts: Array<{ provider: string; outcome: string }> }>;
+      };
+    };
+    expect(checkpoint1.funnelMetrics?.counts?.pending_visual_verification).toBe(1);
+    expect(checkpoint1.visionDiagnostics).toMatchObject({ callsAttempted: 1, callsFailed: 1 });
+    expect(checkpoint1.visionDiagnostics?.records).toEqual([
+      expect.objectContaining({
+        segmentId: 'slot_1',
+        status: 'technical_blocked',
+        error: expect.stringContaining('VisionRouter'),
+        attempts: expect.arrayContaining([
+          expect.objectContaining({ provider: 'claude', outcome: 'unavailable' }),
+          expect.objectContaining({ provider: 'codex', outcome: 'error' }),
+        ]),
+      }),
+    ]);
 
     // Run 2: resume pending_visual_verification ONLY from checkpoint without re-searching or re-downloading
     const searchBefore = searchCalls;
@@ -977,6 +998,57 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(run2.funnelMetrics.counts.contextual).toBe(1);
     expect(run2.funnelMetrics.counts.verified).toBe(0);
     expect(run2.funnelMetrics.conversionRates.downloadedToVerifiedRate).toBe(0);
+  });
+
+  it('records a shared query as a per-scene attempt without claiming a second search', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'nb-shared-query-audit-'));
+    const segments = [
+      {
+        segmentId: 'scene_a',
+        prompt: 'Cyberpunk 2077 Night City',
+        subject: 'Cyberpunk 2077 Night City',
+        narrationText: 'Night City brilha em Cyberpunk 2077.',
+        entities: ['Cyberpunk 2077', 'Night City'],
+        expectedDurationSec: 5,
+        preferredQueries: ['Cyberpunk 2077 Night City gameplay'],
+      },
+      {
+        segmentId: 'scene_b',
+        prompt: 'Cyberpunk 2077 Night City',
+        subject: 'Cyberpunk 2077 Night City',
+        narrationText: 'Night City volta em outro momento do vídeo.',
+        entities: ['Cyberpunk 2077', 'Night City'],
+        expectedDurationSec: 5,
+        preferredQueries: ['Cyberpunk 2077 Night City gameplay'],
+      },
+    ];
+    const report = await runAutonomousMediaAcquisition({
+      projectId: 'proj_shared_query_1',
+      prompt: 'Cyberpunk 2077 Night City',
+      projectDomain: 'game',
+      mediaDir: join(dir, 'media'),
+      stageMode: 'discover_only',
+      limits: { maxRounds: 1, maxDurationMs: 10_000 },
+      segments,
+      deps: {
+        ytDlpSearchFn: async () => [{
+          url: 'https://youtube.com/watch?v=cyberpunk-shared',
+          title: 'Cyberpunk 2077 Night City gameplay',
+          durationSec: 20,
+        }],
+      },
+    });
+
+    const sceneB = report.segmentMetrics.find((metric) => metric.segmentId === 'scene_b');
+    const sharedAttempt = report.recoveryAttempts.find((attempt) => attempt.segmentId === 'scene_b');
+    expect(sceneB).toMatchObject({ queriesExecuted: 0, sharedQueries: 1 });
+    expect(sceneB?.candidatesFound).toBeGreaterThan(0);
+    expect(sceneB?.sharedCandidates).toBe(sceneB?.candidatesFound);
+    expect(sharedAttempt).toMatchObject({
+      candidatesFound: sceneB?.candidatesFound,
+      sharedFromAttemptId: expect.stringMatching(/^recovery_/),
+    });
+    expect(report.unresolvedGapsForReview.find((gap) => gap.segmentId === 'scene_b')?.attempts).toBe(1);
   });
 
   it('selects only the specific timestamp interval where the narrated event visibly occurs and refines densely', async () => {

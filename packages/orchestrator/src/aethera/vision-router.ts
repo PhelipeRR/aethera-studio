@@ -10,7 +10,7 @@ export interface VisionDescription { description: string; tags: string[] }
 export interface VisualAnalysisProvider {
   id: string; model: string; capabilities: readonly VisionCapability[];
   limits: { maxImagesPerCall: number; vramMb?: number; costPerImageUsd?: number };
-  detect(): Promise<{ available: true } | { available: false; reason: string }>;
+  detect(signal?: AbortSignal): Promise<{ available: true } | { available: false; reason: string }>;
   classify?(input: { frames: readonly VisionFrame[]; labels: readonly SegmentKind[]; signal?: AbortSignal }): Promise<VisionClassification>;
   describe?(input: { frames: readonly VisionFrame[]; signal?: AbortSignal }): Promise<VisionDescription>;
   embedImage?(input: { frames: readonly VisionFrame[]; signal?: AbortSignal }): Promise<number[][]>;
@@ -38,7 +38,8 @@ export interface VisionProviderTelemetry {
 export function isVisionQuotaError(message: string): boolean {
   return /usage limit|quota|rate[- ]limit|too many requests|\b429\b|try again at|insufficient[_ ]quota|credit balance/i.test(message);
 }
-type Attempt = { provider: string; outcome: VisionAttemptOutcome; detail?: string; durationMs?: number };
+export type VisionAttempt = { provider: string; outcome: VisionAttemptOutcome; detail?: string; durationMs?: number };
+type Attempt = VisionAttempt;
 export interface VisionRouting extends VisionClassification { provider: string | null; model: string | null; band: ConfidenceBand; calibratedConfidence: number | null; costUsd: number; attempts: Attempt[] }
 export interface VisionResult<T> { value: T | null; provider: string | null; model: string | null; costUsd: number; attempts: Attempt[]; refs: string[]; reportedModel?: string | null; durationMs?: number }
 type Request = { frames?: readonly VisionFrame[]; texts?: readonly string[]; labels?: readonly SegmentKind[]; context?: string; policy: VisionPolicy; signal?: AbortSignal; budgetKey?: string };
@@ -51,9 +52,16 @@ class VisionOverBudgetError extends Error { constructor() { super('vision budget
 export class VisionRouter {
   private readonly providers: Map<string, VisualAnalysisProvider>;
   private readonly spend: VisionSpendPort;
-  private readonly consecutiveTimeouts = new Map<string, number>();
   private readonly telemetry = new Map<string, { calls: number; successes: number; failures: number; timeouts: number; totalLatencyMs: number; lastError?: string }>();
-  constructor(providers: readonly VisualAnalysisProvider[], private readonly cache: VisionCachePort, private readonly calibrations: readonly ConfidenceCalibration[] = [], spend?: VisionSpendPort, private readonly scheduler: VisualWorkScheduler = visionGpuScheduler, private readonly cooldowns: Map<string, VisionCooldownEntry> = new Map()) {
+  constructor(
+    providers: readonly VisualAnalysisProvider[],
+    private readonly cache: VisionCachePort,
+    private readonly calibrations: readonly ConfidenceCalibration[] = [],
+    spend?: VisionSpendPort,
+    private readonly scheduler: VisualWorkScheduler = visionGpuScheduler,
+    private readonly cooldowns: Map<string, VisionCooldownEntry> = new Map(),
+    private readonly timeoutFailures: Map<string, number> = new Map(),
+  ) {
     this.providers = new Map(providers.map((provider) => [provider.id, provider]));
     const amounts = new Map<string, number>();
     this.spend = spend ?? { get: (key) => amounts.get(key) ?? 0, add: (key, amount) => { const total = (amounts.get(key) ?? 0) + amount; amounts.set(key, total); return total; } };
@@ -127,16 +135,13 @@ export class VisionRouter {
     const indexOf = new Map(chain.map((id, idx) => [id, idx]));
     const scoreOf = (id: string): number => {
       if (id === 'ffmpeg-heuristics') return 10_000;
-      const st = this.telemetry.get(id);
-      if (!st || st.calls === 0) return 0;
-      // Penalize timeouts and failures so healthy low-latency providers (e.g. antigravity) run first
-      const failureRate = st.failures / st.calls;
-      return st.timeouts * 100 + failureRate * 50 + (st.successes > 0 ? Math.min(20, (st.totalLatencyMs / st.successes) / 5000) : 25);
+      // Only timeout history changes the order. Other provider errors remain
+      // retryable in the declared policy order, preserving fallback evidence.
+      return (this.telemetry.get(id)?.timeouts ?? 0) * 100;
     };
     return [...chain].sort((a, b) => {
       const diff = scoreOf(a) - scoreOf(b);
-      if (Math.abs(diff) > 0.5) return diff;
-      return (indexOf.get(a) ?? 0) - (indexOf.get(b) ?? 0);
+      return Math.abs(diff) > 0.5 ? diff : (indexOf.get(a) ?? 0) - (indexOf.get(b) ?? 0);
     });
   }
 
@@ -188,7 +193,14 @@ export class VisionRouter {
             if (value !== null && value !== undefined) { try { value = parse(value); } catch { value = undefined; } }
             if (value === null || value === undefined) {
               allCached = false;
-              if (!detected) { const availability = await provider.detect(); detected = true; if (!availability.available) { attempts.push({ provider: id, outcome: 'unavailable', detail: availability.reason }); return empty(); } }
+              if (!detected) {
+                const availability = await provider.detect(controller.signal);
+                detected = true;
+                if (!availability.available) {
+                  attempts.push({ provider: id, outcome: 'unavailable', detail: availability.reason });
+                  return empty();
+                }
+              }
               const cost = (provider.limits.costPerImageUsd ?? 0) * (capability === 'embed_text' ? texts.length : frames.length);
               if (cost < 0 || !Number.isFinite(cost)) { attempts.push({ provider: id, outcome: 'over_budget', detail: 'invalid provider cost' }); return empty(); }
               const call = async () => {
@@ -225,7 +237,7 @@ export class VisionRouter {
           else value = results.flat();
           const durationMs = Date.now() - attemptStart;
           if (!allCached) {
-            this.consecutiveTimeouts.delete(id);
+            this.timeoutFailures.delete(id);
             const t = this.telemetry.get(id) ?? { calls: 0, successes: 0, failures: 0, timeouts: 0, totalLatencyMs: 0 };
             t.calls += 1;
             t.successes += 1;
@@ -247,7 +259,7 @@ export class VisionRouter {
         if (error instanceof VisionOverBudgetError) attempts.push({ provider: id, outcome: 'over_budget', durationMs });
         else {
           const detail = error instanceof Error ? error.message : 'provider error';
-          const isTimeout = /vision provider timeout/i.test(detail);
+          const isTimeout = /vision provider timeout|timed out|timeout|ETIMEDOUT|deadline/i.test(detail);
           const t = this.telemetry.get(id) ?? { calls: 0, successes: 0, failures: 0, timeouts: 0, totalLatencyMs: 0 };
           t.calls += 1;
           t.failures += 1;
@@ -257,13 +269,13 @@ export class VisionRouter {
           if (isVisionQuotaError(detail)) {
             this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: detail.slice(-160) });
           } else if (isTimeout) {
-            const count = (this.consecutiveTimeouts.get(id) ?? 0) + 1;
-            this.consecutiveTimeouts.set(id, count);
+            const count = (this.timeoutFailures.get(id) ?? 0) + 1;
+            this.timeoutFailures.set(id, count);
             if (count >= 2) {
               this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: `timeouts consecutivos (${count}): ${detail}` });
             }
           } else {
-            this.consecutiveTimeouts.delete(id);
+            this.timeoutFailures.delete(id);
           }
           attempts.push({ provider: id, outcome: 'error', detail, durationMs });
         }

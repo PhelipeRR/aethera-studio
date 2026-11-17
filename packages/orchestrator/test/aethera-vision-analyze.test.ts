@@ -78,7 +78,10 @@ describe('TaskEngine vision provider analyze', () => {
     expect(requests[0]).toMatchObject({ agent: 'claude', model: 'sonnet', images: [{ path: paths[0] }, { path: paths[1] }], lean: { systemPrompt: expect.stringMatching(/untrusted|não confiável/iu) } });
     expect(requests[0]?.prompt).toMatch(/1500 ms[\s\S]*6000 ms/u);
     expect(requests[0]?.prompt).toMatch(/observed|observado/iu);
+    expect(requests[0]?.prompt).toMatch(/burnedTextRegion[\s\S]*(top|center|bottom|full|overlay)/iu);
     expect(JSON.stringify(requests[0]?.outputSchema)).toContain('"interface"');
+    const analysisSchema = requests[0]?.outputSchema as { properties?: { overlays?: { required?: string[] } } };
+    expect(analysisSchema.properties?.overlays?.required).toEqual(expect.arrayContaining(['burnedTextRegion']));
   });
 });
 

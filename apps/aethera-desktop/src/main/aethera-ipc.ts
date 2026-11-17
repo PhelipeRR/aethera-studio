@@ -74,6 +74,7 @@ import {
   extractVerificationFrames,
   extractWaveformData,
   type DistributedFrameAnalysis,
+  type VisionVerificationDiagnostics,
   type VisualCategory,
   extractWaveformPeaks,
   WaveformCache,
@@ -1964,6 +1965,7 @@ productionConsole,
     ]);
 
   const visionProviderCooldowns = new Map<string, VisionCooldownEntry>();
+  const visionProviderTimeoutFailures = new Map<string, number>();
   const ttsRegistry = new TtsProviderRegistry();
   ttsRegistry.register(new VoiceStudioProvider());
   const elevenLabsProvider = new ElevenLabsProvider(safeStorage, userDataDir);
@@ -2129,6 +2131,7 @@ productionConsole,
         undefined,
         undefined,
         visionProviderCooldowns,
+        visionProviderTimeoutFailures,
       );
       const policy: VisionPolicy = {
         schemaVersion: 1,
@@ -2158,9 +2161,14 @@ productionConsole,
         visibleText?: string[];
         confidence: number;
       }> = [];
-      // TaskEngine VisionProviders suportam no máximo 3 imagens por chamada: processar em lotes de 3 para cobrir todos os timestamps
-      for (let offset = 0; offset < allFramesPayload.length; offset += 3) {
-        const framesPayload = allFramesPayload.slice(offset, offset + 3);
+      const visionAttempts: VisionVerificationDiagnostics['attempts'] = [];
+      let lastProvider: string | null = null;
+      let lastModel: string | null = null;
+      let lastReportedModel: string | null = null;
+      let visionDurationMs = 0;
+      // VisionProviders support the four-frame Scene Grounding contract: keep one segment in one semantic call.
+      for (let offset = 0; offset < allFramesPayload.length; offset += 4) {
+        const framesPayload = allFramesPayload.slice(offset, offset + 4);
         const analyzed = await router.analyze({
           frames: framesPayload,
           // Expected work/characters are given as data so the model can say whether the frames are CONSISTENT
@@ -2169,12 +2177,29 @@ productionConsole,
           context: `Segmento "${segment.segmentId}": ${segment.narrationText.slice(0, 220)}${segment.expectedEntities?.length ? ` | Obra/personagens esperados (confirme apenas se houver evidência visual; caso contrário diga que não é possível confirmar): ${segment.expectedEntities.slice(0, 6).join(', ')}` : ''}`,
           policy,
         });
+        visionAttempts.push(...analyzed.attempts);
+        lastProvider = analyzed.provider;
+        lastModel = analyzed.model;
+        lastReportedModel = analyzed.reportedModel ?? null;
+        visionDurationMs += analyzed.durationMs ?? 0;
         // Nunca inventar correspondência visual a partir de heurística FFmpeg sem visão semântica real
         if (!analyzed.value || analyzed.provider === 'ffmpeg-heuristics') {
           const attemptsSummary = analyzed.attempts
             .map((a) => `${a.provider}:${a.outcome}${a.detail ? `(${a.detail.slice(-120)})` : ''}`)
             .join('; ');
-          throw new Error(`VisionRouter sem provedor visual válido [${attemptsSummary || 'sem tentativas'}]`);
+          const error = new Error(`VisionRouter sem provedor visual válido [${attemptsSummary || 'sem tentativas'}]`);
+          Object.assign(error, {
+            visionDiagnostics: {
+              status: 'technical_blocked' as const,
+              provider: lastProvider,
+              model: lastModel,
+              reportedModel: lastReportedModel,
+              attempts: [...visionAttempts],
+              durationMs: visionDurationMs,
+              error: error.message,
+            },
+          });
+          throw error;
         }
         const segVal = analyzed.value;
         const descLower = segVal.description.toLowerCase();
@@ -2250,7 +2275,16 @@ productionConsole,
           });
         }
       }
-      return results;
+      const output = results as DistributedFrameAnalysis[] & { diagnostics?: VisionVerificationDiagnostics };
+      output.diagnostics = {
+        status: 'succeeded',
+        provider: lastProvider,
+        model: lastModel,
+        reportedModel: lastReportedModel,
+        attempts: [...visionAttempts],
+        durationMs: visionDurationMs,
+      };
+      return output;
     },
     onProgress: (job: StagedProductionJob) => {
       // Identity of this execution: jobId + attempt. projectId only says which workspace the job writes to.
@@ -3000,6 +3034,7 @@ productionConsole,
           undefined,
           undefined,
           visionProviderCooldowns,
+          visionProviderTimeoutFailures,
         );
         const policy: VisionPolicy = {
           schemaVersion: 1,

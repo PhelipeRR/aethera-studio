@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { VisionPolicy } from '@neuralbridge/shared';
 import { VisionRouter, type VisionCachePort, type VisualAnalysisProvider } from '../src/aethera/vision-router.js';
-import { createVisionProviders, createTaskEngineVisionProvider } from '../src/aethera/vision-providers.js';
+import { createOllamaLocalVlmProvider, createVisionProviders, createTaskEngineVisionProvider } from '../src/aethera/vision-providers.js';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,97 @@ const policy: VisionPolicy = { schemaVersion: 1, task: 'classify', chain: ['synt
 const cache = (): VisionCachePort => { const values = new Map<string, unknown>(); return { get: (key) => values.get(JSON.stringify(key)), put: (key, value) => { values.set(JSON.stringify(key), value); } }; };
 
 describe('vision capabilities, batches and cache inputs (synthetic provider)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('runs one real Ollama multi-frame inference for the four Scene Grounding frames', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ollama-vision-'));
+    const paths = [1, 2, 3, 4].map((index) => {
+      const path = join(root, `frame-${index}.png`);
+      writeFileSync(path, Buffer.from(`frame-${index}`));
+      return path;
+    });
+    let tagsCalls = 0;
+    let chatCalls = 0;
+    vi.stubGlobal('fetch', async (input: string | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/api/tags')) {
+        tagsCalls += 1;
+        return new Response(JSON.stringify({ models: [{ name: 'qwen2.5vl:3b' }] }), { status: 200 });
+      }
+      chatCalls += 1;
+      expect(init?.method).toBe('POST');
+      const body = JSON.parse(String(init?.body));
+      expect(body.messages[0].images).toHaveLength(4);
+      return new Response(JSON.stringify({
+        model: 'qwen2.5vl:3b',
+        message: {
+          content: JSON.stringify({
+            schemaVersion: 1,
+            nature: 'action',
+            natureConfidence: 0.91,
+            frames: paths.map((_, index) => ({ atMs: index * 1_000, observed: `Cyberpunk frame ${index + 1}`, visibleText: [] })),
+            entities: [{ type: 'work', name: 'Cyberpunk 2077', basis: 'observed', confidence: 0.91, evidence: 'Night City visible in the frame.' }],
+            actions: [{ description: 'Gameplay in Night City', basis: 'observed', confidence: 0.88 }],
+            environment: { description: 'Night City', basis: 'observed', confidence: 0.9 },
+            overlays: { burnedText: false, watermark: false, webcam: false },
+            description: 'Cyberpunk 2077 gameplay in Night City.',
+            confidence: 0.91,
+            limitations: [],
+          }),
+        },
+      }), { status: 200 });
+    });
+
+    const provider = createOllamaLocalVlmProvider({ baseUrl: 'http://ollama.test', model: 'qwen2.5vl:3b' });
+    const router = new VisionRouter([provider], cache());
+    const request = {
+      frames: paths.map((path, index) => ({ path, hash: `frame-${index}`, atMs: index * 1_000 })),
+      context: 'Cyberpunk 2077 Night City gameplay',
+      policy: { schemaVersion: 1, task: 'describe', chain: ['local-vlm'], scope: 'project', thresholds: null, version: 'ollama-real-v1', maxLatencyMs: 1_000, budgetUsd: 0 } as VisionPolicy,
+    };
+    const result = await router.analyze(request);
+    expect(result.provider).toBe('local-vlm');
+    expect(result.value?.frames).toHaveLength(4);
+    expect(result.attempts).toContainEqual(expect.objectContaining({ provider: 'local-vlm', outcome: 'ok' }));
+    expect(tagsCalls).toBe(1);
+    expect(chatCalls).toBe(1);
+  });
+
+  it('shares timeout circuit state across router instances before retrying a slow provider', async () => {
+    let slowCalls = 0;
+    const slow: VisualAnalysisProvider = {
+      id: 'slow',
+      model: 'slow-v1',
+      capabilities: ['describe'],
+      limits: { maxImagesPerCall: 4 },
+      detect: async () => ({ available: true }),
+      describe: async ({ signal }) => {
+        slowCalls += 1;
+        return new Promise<never>((_, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+      },
+    };
+    const fallback: VisualAnalysisProvider = {
+      id: 'fallback',
+      model: 'fallback-v1',
+      capabilities: ['describe'],
+      limits: { maxImagesPerCall: 4 },
+      detect: async () => ({ available: true }),
+      describe: async () => ({ description: 'Cyberpunk gameplay', tags: ['cyberpunk'] }),
+    };
+    const cooldowns = new Map<string, { untilMs: number; reason: string }>();
+    const failures = new Map<string, number>();
+    const makeRouter = () => new VisionRouter([slow, fallback], cache(), [], undefined, undefined, cooldowns, failures);
+    const request = { frames: [frames[0]!], policy: { schemaVersion: 1, task: 'describe', chain: ['slow', 'fallback'], scope: 'project', thresholds: null, version: 'circuit-v1', maxLatencyMs: 10, budgetUsd: 0 } as VisionPolicy };
+
+    expect((await makeRouter().describe(request)).provider).toBe('fallback');
+    expect((await makeRouter().describe(request)).provider).toBe('fallback');
+    expect(slowCalls).toBe(2);
+    expect(cooldowns.has('slow')).toBe(true);
+    expect((await makeRouter().describe(request)).attempts[0]).toMatchObject({ provider: 'slow', outcome: 'unavailable' });
+    expect(slowCalls).toBe(2);
+  });
+
   it('routes Codex/Claude images only through the structured read-only TaskEngine seam', async () => {
     const root = mkdtempSync(join(tmpdir(), 'as05-agent-'));
     const path = join(root, 'synthetic.jpg'); writeFileSync(path, 'synthetic fixture; never sent externally');

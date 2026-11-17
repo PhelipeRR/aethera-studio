@@ -9,6 +9,8 @@ import {
   isAssemblyEligibleDecision,
   SCENE_GROUNDING_POLICY_VERSION,
   type DistributedFrameAnalysis,
+  type DistributedFrameAnalysisResult,
+  type VisionVerificationDiagnostics,
   type MediaCorrespondenceLevel,
   type MediaRelevanceDecision,
   type ScriptSegmentExpectation,
@@ -633,6 +635,10 @@ export interface SceneMediaDiagnostic {
   queries: string[];
   sourcesConsulted: string[];
   candidatesFound: number;
+  sharedQueries: number;
+  sharedCandidates: number;
+  attempts: number;
+  technicalBlocked: number;
   acquired: number;
   approved: Array<{ mediaId: string; title: string; origin: string; sourceUrl: string; rightsStatus: MediaRightsStatus }>;
   /** Identified/contextual media retained for editorial reference, never counted as scene footage. */
@@ -730,6 +736,10 @@ export interface SegmentAcquisitionMetrics {
   subject: string;
   queriesExecuted: number;
   candidatesFound: number;
+  /** Equivalent queries reused from another scene; not counted as local searches. */
+  sharedQueries?: number;
+  /** Candidate assignments received through an equivalent query. */
+  sharedCandidates?: number;
   downloadsAttempted: number;
   downloadsSucceeded: number;
   rejectedCount: number;
@@ -815,7 +825,21 @@ export interface AcquisitionFunnelMetrics {
     callsSucceeded: number;
     callsFailed: number;
     providerErrors: string[];
+    records: VisionVerificationRecord[];
   };
+}
+
+export interface VisionVerificationRecord {
+  mediaId: string;
+  segmentId: string;
+  status: 'succeeded' | 'technical_blocked';
+  provider?: string | null;
+  model?: string | null;
+  reportedModel?: string | null;
+  durationMs?: number;
+  attempts: Array<{ provider: string; outcome: string; detail?: string; durationMs?: number }>;
+  error?: string;
+  editorialDisposition?: 'approved' | 'contextual' | 'rejected';
 }
 
 export interface AutonomousAcquisitionAuditReport {
@@ -861,6 +885,8 @@ export interface AutonomousAcquisitionAuditReport {
     rejectedMediaIds: string[];
     rejectionReasons: string[];
     outcome: 'no_results' | 'download_failed' | 'rejected' | 'verified_interval' | 'contextual_only' | 'exhausted';
+    /** Present when this scene reused another scene's canonical query. */
+    sharedFromAttemptId?: string;
   }>;
   /** Segments whose uncovered intervals were actually targeted by this run. */
   affectedSegmentIds: string[];
@@ -1159,7 +1185,7 @@ export async function runAutonomousMediaAcquisition(input: {
     uri: string,
     timestampsSec: number[],
     segment: ScriptSegmentExpectation,
-  ) => Promise<DistributedFrameAnalysis[]>;
+  ) => Promise<DistributedFrameAnalysis[] | DistributedFrameAnalysisResult>;
   requireVisualVerification?: boolean;
   visionModelVersion?: string;
   evolution?: AetheraEvolutionCore;
@@ -1273,6 +1299,7 @@ export async function runAutonomousMediaAcquisition(input: {
   const recoveryAttempts: AutonomousAcquisitionAuditReport['recoveryAttempts'] = [];
   const recoveryAttemptIdByQueryKey = new Map<string, string>();
   const recoveryAttemptIdByCandidateKey = new Map<string, string>();
+  const recoveryAttemptIdByCandidateAndSegment = new Map<string, string>();
   const pendingLicenseReview: PendingLicenseReviewEntry[] = [];
 
   let candidatesFoundCount = 0;
@@ -1310,6 +1337,7 @@ export async function runAutonomousMediaAcquisition(input: {
     callsSucceeded: 0,
     callsFailed: 0,
     providerErrors: [],
+    records: [],
   };
   const visionCache = new Map<string, MediaRelevanceDecision>();
   const stageTimingsMs = {
@@ -1331,6 +1359,8 @@ export async function runAutonomousMediaAcquisition(input: {
       subject: s.subject,
       queriesExecuted: 0,
       candidatesFound: 0,
+      sharedQueries: 0,
+      sharedCandidates: 0,
       downloadsAttempted: 0,
       downloadsSucceeded: 0,
       rejectedCount: 0,
@@ -1344,6 +1374,27 @@ export async function runAutonomousMediaAcquisition(input: {
 
   const checkpointFile =
     input.checkpointPath === false ? null : (input.checkpointPath ?? join(input.mediaDir, '.acquisition-checkpoint.json'));
+  const candidateSegmentKey = (segmentId: string, candidateKey: string) => `${segmentId}::${candidateKey}`;
+  const upsertVisionVerificationRecord = (record: VisionVerificationRecord) => {
+    const existing = visionDiagnostics.records.find(
+      (item) => item.mediaId === record.mediaId && item.segmentId === record.segmentId,
+    );
+    if (!existing) {
+      visionDiagnostics.records.push({ ...record, attempts: [...record.attempts] });
+      return;
+    }
+    existing.status = record.status;
+    if (record.provider !== undefined) existing.provider = record.provider;
+    if (record.model !== undefined) existing.model = record.model;
+    if (record.reportedModel !== undefined) existing.reportedModel = record.reportedModel;
+    if (record.durationMs !== undefined) existing.durationMs = (existing.durationMs ?? 0) + record.durationMs;
+    existing.attempts = [...existing.attempts, ...record.attempts];
+    if (record.error) existing.error = record.error;
+    if (record.editorialDisposition) existing.editorialDisposition = record.editorialDisposition;
+  };
+  const recordVisualCallback = (mediaId: string, segmentId: string) => (diagnostics: VisionVerificationDiagnostics) => {
+    upsertVisionVerificationRecord({ mediaId, segmentId, ...diagnostics, attempts: [...diagnostics.attempts] });
+  };
   if (checkpointFile && existsSync(checkpointFile)) {
     try {
       const saved = JSON.parse(readFileSync(checkpointFile, 'utf8')) as {
@@ -1376,8 +1427,10 @@ export async function runAutonomousMediaAcquisition(input: {
         relevanceDecisions?: MediaRelevanceDecision[];
         mediaApprovals?: SceneMediaApproval[];
         recoveryAttempts?: AutonomousAcquisitionAuditReport['recoveryAttempts'];
+        recoveryAttemptAssignments?: Array<[string, string]>;
         segmentMetrics?: SegmentAcquisitionMetrics[];
         visionCacheEntries?: Array<[string, MediaRelevanceDecision]>;
+        visionDiagnostics?: AcquisitionFunnelMetrics['visionDiagnostics'];
         stageTimingsMs?: {
           discoveryMs?: number;
           acquisitionMs?: number;
@@ -1424,10 +1477,15 @@ export async function runAutonomousMediaAcquisition(input: {
         if (saved.mediaApprovals) mediaApprovals.push(...saved.mediaApprovals);
         if (saved.recoveryAttempts) {
           recoveryAttempts.push(...saved.recoveryAttempts);
-          for (const attempt of saved.recoveryAttempts) recoveryAttemptIdByQueryKey.set(canonicalQueryKey(attempt.query), attempt.attemptId);
+          for (const attempt of saved.recoveryAttempts) {
+            if (!attempt.sharedFromAttemptId) recoveryAttemptIdByQueryKey.set(canonicalQueryKey(attempt.query), attempt.attemptId);
+          }
+        }
+        for (const [key, attemptId] of saved.recoveryAttemptAssignments ?? []) {
+          recoveryAttemptIdByCandidateAndSegment.set(key, attemptId);
         }
         for (const sm of saved.segmentMetrics ?? []) {
-          segMetricsMap.set(sm.segmentId, sm);
+          segMetricsMap.set(sm.segmentId, { sharedQueries: 0, sharedCandidates: 0, ...sm });
         }
         for (const [k, dec] of saved.visionCacheEntries ?? []) {
           visionCache.set(k, dec);
@@ -1438,6 +1496,13 @@ export async function runAutonomousMediaAcquisition(input: {
           stageTimingsMs.verificationMs += saved.stageTimingsMs.verificationMs ?? 0;
           stageTimingsMs.coverageMs += saved.stageTimingsMs.coverageMs ?? 0;
         }
+        if (saved.visionDiagnostics) {
+          visionDiagnostics.callsAttempted = saved.visionDiagnostics.callsAttempted ?? 0;
+          visionDiagnostics.callsSucceeded = saved.visionDiagnostics.callsSucceeded ?? 0;
+          visionDiagnostics.callsFailed = saved.visionDiagnostics.callsFailed ?? 0;
+          visionDiagnostics.providerErrors.push(...(saved.visionDiagnostics.providerErrors ?? []));
+          visionDiagnostics.records.push(...(saved.visionDiagnostics.records ?? []));
+        }
         }
         reusedFilesFromCheckpoint = approvedAssets.length + pendingVerificationAssets.size;
       }
@@ -1445,6 +1510,31 @@ export async function runAutonomousMediaAcquisition(input: {
       // ignore corrupted checkpoint
     }
   }
+
+  const checkpointFunnel = () => {
+    const counts: Record<CandidateLifecycleState, number> = { discovered: 0, downloading: 0, downloaded: 0, pending_visual_verification: 0, contextual: 0, verified: 0, rejected: 0, failed: 0 };
+    for (const state of candidateStates.values()) counts[state] = (counts[state] ?? 0) + 1;
+    const failureReasons: Record<DownloadFailureReasonCode, number> = { timeout: 0, anti_bot: 0, http_error: 0, format_unavailable: 0, invalid_file: 0, cancelled: 0, other: 0 };
+    for (const failure of failedDownloads) failureReasons[failure.reasonCode] = (failureReasons[failure.reasonCode] ?? 0) + 1;
+    const rejectionReasons: Record<string, number> = {};
+    for (const rejection of rejectedCandidates) { const code = rejection.rejectionCode ?? 'other'; rejectionReasons[code] = (rejectionReasons[code] ?? 0) + 1; }
+    const attempted = [...segMetricsMap.values()].reduce((sum, metric) => sum + metric.downloadsAttempted, 0);
+    const rate = (num: number, den: number) => den > 0 ? Number((num / den).toFixed(3)) : 0;
+    return {
+      counts,
+      conversionRates: {
+        discoveryToDownloadAttemptRate: rate(attempted, candidatesFoundCount),
+        downloadAttemptToDownloadedRate: rate(acquiredFilesCount, attempted),
+        downloadedToVerifiedRate: rate(approvedAssets.length, acquiredFilesCount),
+        discoveredToVerifiedRate: rate(approvedAssets.length, candidatesFoundCount),
+      },
+      failureReasons,
+      rejectionReasons,
+      failedDownloads,
+      pendingVerificationCount: pendingVerificationAssets.size,
+      visionDiagnostics: { ...visionDiagnostics, records: visionDiagnostics.records.map((record) => ({ ...record, attempts: [...record.attempts] })) },
+    };
+  };
 
   const saveCheckpoint = () => {
     if (!checkpointFile) return;
@@ -1476,8 +1566,11 @@ export async function runAutonomousMediaAcquisition(input: {
             relevanceDecisions,
             mediaApprovals,
             recoveryAttempts,
+            recoveryAttemptAssignments: [...recoveryAttemptIdByCandidateAndSegment.entries()],
             segmentMetrics: [...segMetricsMap.values()],
             visionCacheEntries: [...visionCache.entries()],
+            visionDiagnostics,
+            funnelMetrics: checkpointFunnel(),
             stageTimingsMs,
           },
           null,
@@ -1505,13 +1598,20 @@ export async function runAutonomousMediaAcquisition(input: {
     requireRelevanceApproval: true,
   });
 
-  const findRecoveryAttempt = (candidateKey: string): AutonomousAcquisitionAuditReport['recoveryAttempts'][number] | undefined => {
-    const attemptId = recoveryAttemptIdByCandidateKey.get(candidateKey);
+  const findRecoveryAttempt = (candidateKey: string, segmentId?: string): AutonomousAcquisitionAuditReport['recoveryAttempts'][number] | undefined => {
+    const attemptId = segmentId
+      ? recoveryAttemptIdByCandidateAndSegment.get(candidateSegmentKey(segmentId, candidateKey)) ?? recoveryAttemptIdByCandidateKey.get(candidateKey)
+      : recoveryAttemptIdByCandidateKey.get(candidateKey);
     return attemptId ? recoveryAttempts.find((attempt) => attempt.attemptId === attemptId) : undefined;
   };
 
-  const noteRecoveryFailure = (candidateKey: string, reason: string, outcome: AutonomousAcquisitionAuditReport['recoveryAttempts'][number]['outcome'] = 'download_failed') => {
-    const attempt = findRecoveryAttempt(candidateKey);
+  const noteRecoveryFailure = (
+    candidateKey: string,
+    reason: string,
+    outcome: AutonomousAcquisitionAuditReport['recoveryAttempts'][number]['outcome'] = 'download_failed',
+    segmentId?: string,
+  ) => {
+    const attempt = findRecoveryAttempt(candidateKey, segmentId);
     if (!attempt) return;
     if (!attempt.rejectionReasons.includes(reason)) attempt.rejectionReasons.push(reason);
     if (attempt.outcome !== 'verified_interval' && attempt.outcome !== 'contextual_only') attempt.outcome = outcome;
@@ -1745,6 +1845,7 @@ export async function runAutonomousMediaAcquisition(input: {
               candidatesByProvider[cand.origin] = (candidatesByProvider[cand.origin] ?? 0) + 1;
               const candKey = `${cand.origin}:${cand.url}`;
               recoveryAttemptIdByCandidateKey.set(candKey, recoveryAttempt.attemptId);
+              recoveryAttemptIdByCandidateAndSegment.set(candidateSegmentKey(item.segment.segmentId, candKey), recoveryAttempt.attemptId);
               if (!keysForQuery.includes(candKey)) keysForQuery.push(candKey);
               if (seenCandidateKeys.has(candKey)) continue;
               seenCandidateKeys.add(candKey);
@@ -1767,7 +1868,7 @@ export async function runAutonomousMediaAcquisition(input: {
                   rejectionCode: 'duration_limit_exceeded',
                   reason: `Candidato excede limite de duração (${Math.round(cand.durationSec)}s > ${effectiveMaxDurationSec}s), evitando download longo bloqueante.`,
                 });
-                noteRecoveryFailure(candKey, 'duration_limit_exceeded', 'rejected');
+                noteRecoveryFailure(candKey, 'duration_limit_exceeded', 'rejected', item.segment.segmentId);
                 continue;
               }
 
@@ -1784,7 +1885,7 @@ export async function runAutonomousMediaAcquisition(input: {
                   rejectionCode: 'triage_irrelevant_metadata',
                   reason: triage.reason ?? 'Eliminado na triagem de metadados.',
                 });
-                noteRecoveryFailure(candKey, triage.reason ?? 'triage_irrelevant_metadata', 'rejected');
+                noteRecoveryFailure(candKey, triage.reason ?? 'triage_irrelevant_metadata', 'rejected', item.segment.segmentId);
                 continue;
               }
               const priorityScore = triage.score;
@@ -1807,12 +1908,34 @@ export async function runAutonomousMediaAcquisition(input: {
       }
       // Scenes whose query was equivalent to another scene's share that query's still-undownloaded candidates.
       for (const shared of sharedFromEquivalent) {
+        const sourceAttemptId = recoveryAttemptIdByQueryKey.get(shared.queryKey);
+        const sourceAttempt = sourceAttemptId
+          ? recoveryAttempts.find((attempt) => attempt.attemptId === sourceAttemptId)
+          : undefined;
+        const sharedAttemptId = sourceAttempt ? `${sourceAttempt.attemptId}:shared:${shared.segment.segmentId}` : undefined;
+        if (sourceAttempt && sharedAttemptId && !recoveryAttempts.some((attempt) => attempt.attemptId === sharedAttemptId)) {
+          recoveryAttempts.push({
+            ...sourceAttempt,
+            attemptId: sharedAttemptId,
+            segmentId: shared.segment.segmentId,
+            acquiredMediaIds: [],
+            approvedMediaIds: [],
+            rejectedMediaIds: [],
+            rejectionReasons: [],
+            sharedFromAttemptId: sourceAttempt.attemptId,
+          });
+        }
+        const sharedMetrics = segMetricsMap.get(shared.segment.segmentId)!;
+        sharedMetrics.sharedQueries = (sharedMetrics.sharedQueries ?? 0) + 1;
         for (const candKey of candKeysByQueryKey.get(shared.queryKey) ?? []) {
           const entry = discoveredPool.get(candKey);
           if (!entry || candidateStates.get(candKey) !== 'discovered') continue;
           const list = discoveredBySegment.get(shared.segment.segmentId) ?? [];
           if (list.some((x) => `${x.cand.origin}:${x.cand.url}` === candKey)) continue;
           list.push({ segment: shared.segment, cand: entry.cand, priorityScore: entry.priorityScore * 0.9 });
+          sharedMetrics.candidatesFound += 1;
+          sharedMetrics.sharedCandidates = (sharedMetrics.sharedCandidates ?? 0) + 1;
+          if (sharedAttemptId) recoveryAttemptIdByCandidateAndSegment.set(candidateSegmentKey(shared.segment.segmentId, candKey), sharedAttemptId);
           discoveredBySegment.set(shared.segment.segmentId, list);
         }
       }
@@ -1995,7 +2118,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 reasonCode: failure.reasonCode,
                 detail: failure.detail,
               });
-              noteRecoveryFailure(candKey, failure.detail, 'download_failed');
+              noteRecoveryFailure(candKey, failure.detail, 'download_failed', task.segment.segmentId);
               return;
             }
 
@@ -2010,7 +2133,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 reasonCode: 'invalid_file',
                 detail: `Arquivo inválido (${fileSizeBytes} bytes)`,
               });
-              noteRecoveryFailure(candKey, `Arquivo inválido (${fileSizeBytes} bytes)`, 'download_failed');
+              noteRecoveryFailure(candKey, `Arquivo inválido (${fileSizeBytes} bytes)`, 'download_failed', task.segment.segmentId);
               return;
             }
 
@@ -2027,7 +2150,7 @@ export async function runAutonomousMediaAcquisition(input: {
                 rejectionCode: 'duplicate_file_hash',
                 reason: `Arquivo duplicado idêntico (SHA-256 ${sha256.slice(0, 12)}) descartado para não inflar cobertura.`,
               });
-              noteRecoveryFailure(candKey, 'duplicate_file_hash', 'rejected');
+              noteRecoveryFailure(candKey, 'duplicate_file_hash', 'rejected', task.segment.segmentId);
               return;
             }
             seenFileHashes.add(sha256);
@@ -2134,6 +2257,7 @@ export async function runAutonomousMediaAcquisition(input: {
               },
               {
                 ...(input.analyzeFrames ? { analyzeFrames: input.analyzeFrames } : {}),
+                onVisualVerification: recordVisualCallback(item.mediaId, seg.segmentId),
                 ...(input.requireVisualVerification !== undefined
                   ? { requireVisualVerification: input.requireVisualVerification }
                   : {}),
@@ -2184,7 +2308,7 @@ export async function runAutonomousMediaAcquisition(input: {
           if (!canUseCachedDecision && input.analyzeFrames) visionDiagnostics.callsSucceeded += 1;
           pendingVerificationAssets.delete(candKey);
           relevanceDecisions.push(decision);
-          const recoveryAttemptForAsset = findRecoveryAttempt(candKey);
+          const recoveryAttemptForAsset = findRecoveryAttempt(candKey, seg.segmentId);
           if (recoveryAttemptForAsset && !recoveryAttemptForAsset.acquiredMediaIds.includes(item.mediaId)) {
             recoveryAttemptForAsset.acquiredMediaIds.push(item.mediaId);
           }
@@ -2226,6 +2350,8 @@ export async function runAutonomousMediaAcquisition(input: {
                 status: decision.editorialStatus,
                 reason: decision.reason,
               });
+              const visualRecord = visionDiagnostics.records.find((record) => record.mediaId === item.mediaId && record.segmentId === seg.segmentId);
+              if (visualRecord) visualRecord.editorialDisposition = 'contextual';
               if (recoveryAttemptForAsset) recoveryAttemptForAsset.outcome = 'contextual_only';
               return;
             }
@@ -2239,6 +2365,8 @@ export async function runAutonomousMediaAcquisition(input: {
               ...(decision.rejectionCode ? { rejectionCode: decision.rejectionCode } : {}),
               reason: decision.reason,
             });
+            const visualRecord = visionDiagnostics.records.find((record) => record.mediaId === item.mediaId && record.segmentId === seg.segmentId);
+            if (visualRecord) visualRecord.editorialDisposition = 'rejected';
             if (recoveryAttemptForAsset) {
               recoveryAttemptForAsset.rejectedMediaIds.push(item.mediaId);
               if (!recoveryAttemptForAsset.rejectionReasons.includes(decision.reason)) {
@@ -2288,6 +2416,8 @@ export async function runAutonomousMediaAcquisition(input: {
               rejectionCode: 'license_pending_human_review',
               reason: `Relevância aprovada, mas a licença requer revisão humana: ${item.cand.licenseDecision.reasons.join(' ')}`,
             });
+            const visualRecord = visionDiagnostics.records.find((record) => record.mediaId === item.mediaId && record.segmentId === seg.segmentId);
+            if (visualRecord) visualRecord.editorialDisposition = 'rejected';
             if (recoveryAttemptForAsset) {
               recoveryAttemptForAsset.rejectedMediaIds.push(item.mediaId);
               recoveryAttemptForAsset.rejectionReasons.push('license_pending_human_review');
@@ -2297,6 +2427,8 @@ export async function runAutonomousMediaAcquisition(input: {
           }
 
           candidateStates.set(candKey, 'verified');
+          const visualRecord = visionDiagnostics.records.find((record) => record.mediaId === item.mediaId && record.segmentId === seg.segmentId);
+          if (visualRecord) visualRecord.editorialDisposition = 'approved';
           sm.approvedCount += 1;
           approvedSegmentByMediaId.set(item.mediaId, seg.segmentId);
           approvedAssets.push({
@@ -2556,6 +2688,8 @@ export async function runAutonomousMediaAcquisition(input: {
       .filter((f) => f.segmentId === cov.segmentId)
       .map((f) => ({ title: f.title, url: f.url, reasonCode: f.reasonCode, detail: f.detail }));
     const pendingRights = approved.filter((a) => a.rightsStatus !== 'licensed').length;
+    const visualRecordsForScene = visionDiagnostics.records.filter((record) => record.segmentId === cov.segmentId);
+    const sceneAttempts = recoveryAttempts.filter((attempt) => attempt.segmentId === cov.segmentId);
     const pendingForScene = pendingLicenseReview.filter((pl) => pl.segmentId === cov.segmentId && !pl.usedInDraft);
     const unusedVerified = approvedMediaDetails.find(
       (d) => !d.coveredSegmentIds.includes(cov.segmentId) && d.matchedEntities.some((e) => cov.entities.includes(e)),
@@ -2575,6 +2709,10 @@ export async function runAutonomousMediaAcquisition(input: {
       queries: segQueries,
       sourcesConsulted: [...new Set(allStatuses.filter((st) => st.status !== 'skipped_disabled').map((st) => String(st.provider)))],
       candidatesFound: sm?.candidatesFound ?? 0,
+      sharedQueries: sm?.sharedQueries ?? 0,
+      sharedCandidates: sm?.sharedCandidates ?? 0,
+      attempts: sceneAttempts.length,
+      technicalBlocked: visualRecordsForScene.filter((record) => record.status === 'technical_blocked').length,
       acquired: sm?.downloadsSucceeded ?? 0,
       approved,
       contextual,
@@ -2633,6 +2771,10 @@ export async function runAutonomousMediaAcquisition(input: {
       visionDiagnostics: {
         ...visionDiagnostics,
         providerErrors: [...new Set(visionDiagnostics.providerErrors)].slice(0, 15),
+        records: visionDiagnostics.records.map((record) => ({
+          ...record,
+          attempts: [...record.attempts],
+        })),
       },
     },
     coverageReport: latestCoverage,
