@@ -183,4 +183,18 @@ describe('Character Composition Gate runner', () => {
     expect(outcome.report.verdict).toBe('passed_pending_human_review');
     expect(outcome.report.attempts[0]?.repair).toMatchObject({ status: 'applied', originalImageAsset: expect.objectContaining({ originalName: expect.stringContaining('original') }) });
   });
+
+  it('preserves a chosen rejected image as audit evidence when the attempt limit is reached', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(3, { semanticScore: 0.08, semanticMargin: -0.2, semanticOffTopic: true });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: { detector: scriptedDetector([CLEAN_TRIO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { enabled: true, localizedRepair: false } },
+    });
+
+    expect(outcome.report.verdict).toBe('rejected');
+    expect(outcome.report.attempts[0]?.imageAsset).toMatchObject({ originalName: 'ai-gate-rejected-attempt1-500.png', relativePath: expect.stringMatching(/\.png$/) });
+  });
 });

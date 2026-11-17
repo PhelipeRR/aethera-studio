@@ -237,5 +237,3 @@
 - Every new production path has a test step before implementation and a focused verification command.
 - Ambiguous evidence is explicitly tested as `needs_review`; unmentioned objects are not criteria.
 - Real GPU acceptance is isolated to the final task and cannot be replaced by fixtures in the completion report.
-
-

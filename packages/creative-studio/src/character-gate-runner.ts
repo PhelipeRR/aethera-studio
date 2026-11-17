@@ -530,10 +530,11 @@ export async function runCharacterCompositionGate(input: {
         const repairedAsset = await input.ingestion.ingestBuffer({ buffer: images.get(attempt.attempt)!, kind: 'image', extension: 'png', originalName: repairedName });
         attempt.repair.repairedImageAsset = { relativePath: repairedAsset.relativePath, originalName: repairedName };
       }
-      if (attempt === chosen) continue;
-      const originalName = `ai-gate-${attempt.overallVerdict ?? attempt.gate!.verdict}-attempt${attempt.attempt}-${attempt.seed}.png`;
-      const asset = await input.ingestion.ingestBuffer({ buffer: images.get(attempt.attempt)!, kind: 'image', extension: 'png', originalName });
-      attempt.imageAsset = { relativePath: asset.relativePath, originalName };
+      if (attempt !== chosen || attempt.overallVerdict === 'rejected') {
+        const originalName = `ai-gate-${attempt.overallVerdict ?? attempt.gate!.verdict}-attempt${attempt.attempt}-${attempt.seed}.png`;
+        const asset = await input.ingestion.ingestBuffer({ buffer: images.get(attempt.attempt)!, kind: 'image', extension: 'png', originalName });
+        attempt.imageAsset = { relativePath: asset.relativePath, originalName };
+      }
     }
     return {
       image: images.get(chosen.attempt)!,

@@ -145,5 +145,3 @@ scores e motivos. O acceptance script produz para os casos 2/3/8:
 - Preferir `needs_review` a `rejected` em qualquer ambiguidade.
 - Não instalar pesos ou alterar arquivos fora do escopo CS10 sem decisão
   explícita do usuário.
-
-
