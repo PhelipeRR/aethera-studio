@@ -74,6 +74,17 @@ describe('storyboard building and media selection', () => {
     expect(ranked[0]?.reason).toMatch(/combate|tipo/i);
   });
 
+  it('labels an uncalibrated raw confidence explicitly instead of calling it calibrated', () => {
+    const [scene] = buildScenes([{ chapter: null, narration: 'A exploração de uma rua neon.' }], [], 'standard', makeId);
+    if (!scene) throw new Error('sem cena');
+    const candidate = segmentCandidate('uncalibrated', 'exploration', 'exploração de rua neon', 'game-1', 'verified', 0.8);
+    candidate.segment.analysis = { ...candidate.segment.analysis!, calibratedConfidence: null };
+    const ranked = rankMedia(scene, [candidate], segmentContext('game-1'))[0];
+    expect(ranked?.confidenceBand).toBe('review');
+    expect(ranked?.reason).toMatch(/não calibrada|bruta|análise/i);
+    expect(ranked?.reason).not.toMatch(/confiança calibrada na faixa/iu);
+  });
+
   it('prefers exploration for an open-world exploration phrase', () => {
     const [scene] = buildScenes([{ chapter: null, narration: 'A exploração de mundo aberto mostra uma cidade antiga.' }], [], 'standard', makeId);
     if (!scene) throw new Error('sem cena');

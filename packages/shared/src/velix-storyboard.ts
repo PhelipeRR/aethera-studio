@@ -295,7 +295,7 @@ export function rankMediaSegments(scene: StoryboardScene, candidates: readonly M
           : !semanticAdequate ? 'A evidência semântica do intervalo está ausente ou tecnicamente bloqueada.'
             : !identityMatches ? 'Identidade do jogo não corresponde à cena; não será selecionado automaticamente.'
         : identity?.status !== 'verified' ? 'Identidade marcada para revisão humana; o trecho permanece visível, mas não é automático.'
-          : band !== 'automatic' ? `Confiança calibrada na faixa ${band}; a seleção automática está bloqueada.`
+          : band !== 'automatic' ? `${segment.analysis?.calibratedConfidence === null || segment.analysis?.calibratedConfidence === undefined ? 'Confiança bruta não calibrada' : 'Confiança calibrada'} na faixa ${band}; a seleção automática está bloqueada.`
             : breakdown.semantic <= 0 ? 'A descrição do trecho não explica relação com a frase.'
               : `Trecho do tipo ${segment.kind} entre ${segment.startMs} ms e ${segment.endMs} ms; semelhança semântica ${Math.round(breakdown.semantic * 100)}%.`;
     const match = sceneMatchSchema.parse({ sceneId: scene.id, sentenceIds: [scene.id], segmentId: segment.id, assetId: segment.assetId, sourceStartMs: segment.startMs, sourceEndMs: segment.endMs, subjectId: identity?.subjectId, confidence, confidenceBand: band, score, breakdown, reason, ...(segment.broll?.semanticEvidence?.length ? { evidence: segment.broll.semanticEvidence } : {}) });
