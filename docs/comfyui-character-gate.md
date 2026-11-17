@@ -187,3 +187,36 @@ pesos adicionais; todos os arquivos referenciados no relatório existem e
 `humanReview.status` permanece `pending`. A contact sheet mostra a melhora
 visual do caso de 8 personagens com composição em camadas, mas não substitui a
 aprovação visual final.
+
+### CS10 — evidência por atributo e reparo regional real — `run-2026-11-17T1611`
+
+Esta reexecução usa o schema `cs10-attribute-evidence-repair-v2`. As imagens
+originais foram avaliadas pelo mesmo `ProviderChainImageAdapter` usado pelo
+gate, corrigindo a lacuna da execução anterior em que os evaluators semântico e
+visual não estavam disponíveis no modo *before*. O relatório, o contact sheet
+e todas as imagens de auditoria estão em:
+
+`artifacts/comfyui-character-gate-acceptance/run-2026-11-17T1611/`
+
+`humanReview.status` continua `pending`. Os eixos abaixo são evidência de
+detector, não aprovação final:
+
+| Cenário | Original: contagem / semântica / qualidade | Gate final: contagem / semântica / qualidade | Resultado dos reparos | Motivo final de `needs_review` |
+|---|---|---|---|---|
+| 2 personagens (`31001`) | `needs_review` / `needs_review` / `passed_pending_human_review` | `needs_review` / `needs_review` / `passed_pending_human_review` | Katana localizada executada, **rejeitada** pela regressão: score `0,5625 → 0,5846`, ainda incerto | personagem 1 subdimensionado e evidência insuficiente para katana, espada, armadura, lenço, pose; também lança/armadura/guarda do personagem 2 |
+| 3 personagens (`31002`) | `passed_pending_human_review` / `needs_review` / `needs_review` | `passed_pending_human_review` / `needs_review` / `needs_review` | Rifle localizado **aplicado**: score `0,7190 → 0,7727`, margem `0,0335 → 0,0818`; casaco localizado executado e **rejeitado**: `0,7032 → 0,6629` | evidência do casaco permanece incerta e a qualidade visual continua abaixo do limite automático |
+| 8 personagens (`31003`) | `needs_review` / `needs_review` / `needs_review` | `needs_review` / `needs_review` / `passed_pending_human_review` | Techwear localizado executado e **rejeitado**: score `0,6954 → 0,6884`; composição em camadas foi preservada | contagem com baixa concordância, várias roupas/acessórios sem evidência localizada suficiente; a melhoria de qualidade não elimina a revisão humana |
+
+Detalhes verificáveis dos reparos:
+
+- `duo`: `character-1-object-katana`, região `0`, bbox `{x:84,97,y:112,60,w:563,06,h:554,70}`, seed `1505161448`; regressão `failed` somente por `target_attribute_not_confirmed`. A imagem reparada e a diferença foram preservadas, mas a imagem original continuou sendo a escolhida.
+- `trio`: `character-3-object-rifle`, região `2`, bbox `{x:893,85,y:112,60,w:371,30,h:554,70}`, seed `1925846911`; regressão `passed`, alteração fora do bbox `3,84%`, identidade `94`; reparo adotado. `character-3-wardrobe-coat`, seed `127411626`, regressão `failed` por atributo não confirmado.
+- `eight`: `character-1-wardrobe-techwear`, região `0`, bbox `{x:75,46,y:321,66,w:124,08,h:320,74}`, seed `1417852993`; regressão `failed` por atributo não confirmado. A placa em camadas não foi regenerada.
+
+Cada reparo possui máscara, imagem antes, imagem candidata, diferença antes/depois,
+seed, prompt localizado e referências persistidas no `report.json`. O reparo
+regional só é adotado quando o atributo-alvo é confirmado e a regressão fora da
+região permanece dentro da política; ausência ou score inconclusivo continua
+como `needs_review`, sem reduzir thresholds.
+
+Contact sheet: `contact-sheet-before-after-gate.png`.

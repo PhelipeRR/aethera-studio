@@ -768,6 +768,8 @@ export class AetheraCreativeStudioService {
       /** CS10 semantic/quality gate is on by default; set false only for an explicit compatibility run. */
       semantic?: boolean;
       localizedRepair?: boolean;
+      repairUncertainAttributes?: boolean;
+      maxLocalizedRepairs?: number;
     };
     /** Opt-in negative photobombing slider on multi-character scenes (off by default: it can erase the cast). */
     crowdSuppression?: boolean;
@@ -855,6 +857,8 @@ export class AetheraCreativeStudioService {
             semanticGate: {
               enabled: gateSettings.semantic !== false,
               localizedRepair: gateSettings.localizedRepair !== false,
+              repairUncertainAttributes: gateSettings.repairUncertainAttributes !== false,
+              maxLocalizedRepairs: gateSettings.maxLocalizedRepairs ?? 3,
             },
             ...(gateSettings.maxAttempts !== undefined ? { maxAttempts: gateSettings.maxAttempts } : {}),
             ...(gateSettings.retryOnNeedsReview ? { retryOnNeedsReview: gateSettings.retryOnNeedsReview } : {}),
