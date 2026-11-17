@@ -11,7 +11,7 @@ describe('LoRA install policy', () => {
       model: 'characters/goku.safetensors',
       source: 'huggingface',
       sourceUrl: 'https://huggingface.co/example/goku-lora/resolve/main/goku.safetensors',
-      license: 'OpenRAIL++',
+      license: 'CreativeML Open RAIL++',
       architecture: 'sdxl',
       sizeBytes: 420 * 1024 * 1024,
       sha256: 'a'.repeat(64),
@@ -56,6 +56,21 @@ describe('LoRA install policy', () => {
 
     expect(assessment.allowed).toBe(false);
     expect(assessment.reasons).toContain('A URL do Hugging Face precisa usar um host oficial confiável.');
+  });
+
+  it('rejects an unverified license identifier instead of treating any non-empty text as approval', () => {
+    const assessment = assessLoraInstallCandidate({
+      model: 'styles/manga.safetensors',
+      source: 'huggingface',
+      sourceUrl: 'https://huggingface.co/example/manga/resolve/main/manga.safetensors',
+      license: 'openrail++',
+      architecture: 'sdxl',
+      sizeBytes: 100 * 1024 * 1024,
+      sha256: 'c'.repeat(64),
+    });
+
+    expect(assessment.allowed).toBe(false);
+    expect(assessment.reasons).toContain('A licença do LoRA precisa usar um identificador canônico verificável antes da instalação.');
   });
 
   it('does not call the network before explicit confirmation', async () => {

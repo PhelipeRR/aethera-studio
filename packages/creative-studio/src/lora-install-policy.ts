@@ -59,6 +59,15 @@ const TRUSTED_HOSTS: Record<Exclude<LoraInstallSource, 'local' | 'unknown'>, str
   civitai: ['civitai.com', 'www.civitai.com'],
 };
 
+const CANONICAL_LICENSES = [
+  /^mit$/iu,
+  /^apache[- ]2\.0$/iu,
+  /^creative?ml open rail[- ]m$/iu,
+  /^creative?ml open rail\+\+$/iu,
+  /^cc[- ]by(?:[- ]sa)?[- ](?:[1234]\.0)$/iu,
+  /^gpl[- ]3\.0$/iu,
+];
+
 function hasTrustedUrl(source: LoraInstallSource, sourceUrl: string | undefined): boolean {
   if (source === 'local') return !sourceUrl;
   if (source === 'unknown' || !sourceUrl) return false;
@@ -91,7 +100,11 @@ export function assessLoraInstallCandidate(
           ? 'Um arquivo local não deve declarar uma URL externa.'
           : 'A fonte do LoRA precisa ser explicitamente Hugging Face, Civitai ou local.');
   }
-  if (!candidate.license?.trim()) reasons.push('A licença do LoRA precisa ser informada antes da instalação.');
+  const license = candidate.license?.trim() ?? '';
+  if (!license) reasons.push('A licença do LoRA precisa ser informada antes da instalação.');
+  else if (!CANONICAL_LICENSES.some((pattern) => pattern.test(license))) {
+    reasons.push('A licença do LoRA precisa usar um identificador canônico verificável antes da instalação.');
+  }
   if (!candidate.architecture || candidate.architecture === 'unknown' || checkpointArchitecture === 'unknown' || candidate.architecture !== checkpointArchitecture) {
     reasons.push(`A arquitetura do LoRA precisa ser compatível com o checkpoint (${checkpointArchitecture}).`);
   }
@@ -101,7 +114,7 @@ export function assessLoraInstallCandidate(
   if (!/^[a-f0-9]{64}$/iu.test(candidate.sha256 ?? '')) reasons.push('SHA-256 válido é obrigatório para verificar o arquivo baixado.');
 
   const external = candidate.source === 'huggingface' || candidate.source === 'civitai';
-  const licenseNeedsReview = /unknown|other|proprietary|non[- ]commercial/iu.test(candidate.license ?? '');
+  const licenseNeedsReview = /unknown|other|proprietary|non[- ]commercial/iu.test(license);
   const requiresConfirmation = external || licenseNeedsReview || reasons.length > 0;
   if (external && !reasons.includes('Download externo requer confirmação explícita antes da instalação.')) {
     reasons.unshift('Download externo requer confirmação explícita antes da instalação.');
