@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { AssetIngestionService } from '../src/asset-ingestion.js';
-import { nextCompositionStrategy, runCharacterCompositionGate, type CharacterGateDetector } from '../src/character-gate-runner.js';
-import type { ImageGenerationRequest, SemanticEvaluationResult, VisualQualityInspectionResult } from '../src/image-generation-adapter.js';
+import { evaluateCharacterGateCandidate, nextCompositionStrategy, runCharacterCompositionGate, type CharacterGateDetector } from '../src/character-gate-runner.js';
+import type { ImageGenerationRequest, LocalizedInpaintRequest, SemanticEvaluationRequest, SemanticEvaluationResult, VisualQualityInspectionResult } from '../src/image-generation-adapter.js';
 import { buildVisualRecipe } from '../src/visual-recipe.js';
 import evidence from './fixtures/character-gate-cs9-evidence.json' with { type: 'json' };
 
@@ -25,8 +25,14 @@ function scriptedDetector(sequence: unknown[]): CharacterGateDetector & { calls:
   };
 }
 
-async function fixture(characterCount = 3, options: { semanticScore?: number; semanticMargin?: number; semanticOffTopic?: boolean; quality?: Partial<VisualQualityInspectionResult> } = {}) {
-  const recipe = buildVisualRecipe({ artType: 'thumbnail', prompt: 'cyberpunk trio in a rainy city', characterCount, seed: 500 });
+async function fixture(characterCount = 3, options: { semanticScore?: number; semanticMargin?: number; semanticOffTopic?: boolean; repairScore?: number; repairMargin?: number; repairOffTopic?: boolean; quality?: Partial<VisualQualityInspectionResult> } = {}) {
+  const recipe = buildVisualRecipe({
+    artType: 'thumbnail',
+    prompt: 'cyberpunk trio in a rainy city',
+    characterCount,
+    characterDescriptions: Array.from({ length: characterCount }, (_, index) => index === 0 ? 'warrior with katana and armor' : 'warrior with spear and armor'),
+    seed: 500,
+  });
   const requests: ImageGenerationRequest[] = [];
   let provider = 'comfyui-native';
   const png = await sharp({ create: { width: recipe.width, height: recipe.height, channels: 3, background: '#335' } }).png().toBuffer();
@@ -40,14 +46,15 @@ async function fixture(characterCount = 3, options: { semanticScore?: number; se
     },
     getLastServedProvider: () => ({ providerId: provider, fallbackErrors: provider === 'comfyui-native' ? [] : ['comfyui-native: timeout'] }),
     getLastGenerationMetadata: () => ({ checkpoint: 'animagine-xl-3.1.safetensors' }),
-    evaluateImageSemantics: async (): Promise<SemanticEvaluationResult> => ({
+    evaluateImageSemantics: async (request: SemanticEvaluationRequest): Promise<SemanticEvaluationResult> => ({
       evaluatorId: 'test-local-clip',
-      positiveScore: repairCalls > 0 ? 0.84 : options.semanticScore ?? 0.84,
-      negativeScore: (repairCalls > 0 ? 0.84 : options.semanticScore ?? 0.84) - (repairCalls > 0 ? 0.42 : options.semanticMargin ?? 0.42),
-      margin: repairCalls > 0 ? 0.42 : options.semanticMargin ?? 0.42,
-      isOffTopic: repairCalls > 0 ? false : options.semanticOffTopic ?? false,
-      matchedLabel: 'test criterion',
+      positiveScore: repairCalls > 0 ? options.repairScore ?? 0.84 : options.semanticScore ?? 0.84,
+      negativeScore: (repairCalls > 0 ? options.repairScore ?? 0.84 : options.semanticScore ?? 0.84) - (repairCalls > 0 ? options.repairMargin ?? 0.42 : options.semanticMargin ?? 0.42),
+      margin: repairCalls > 0 ? options.repairMargin ?? 0.42 : options.semanticMargin ?? 0.42,
+      isOffTopic: repairCalls > 0 ? options.repairOffTopic ?? false : options.semanticOffTopic ?? false,
+      matchedLabel: request.positiveConcepts[0] ?? 'test criterion',
       rationale: 'controlled local evidence',
+      evidenceScope: request.evidenceBbox ? 'localized' : 'generic',
     }),
     inspectVisualQuality: async (): Promise<VisualQualityInspectionResult> => ({
       evaluatorId: 'test-local-quality',
@@ -58,9 +65,9 @@ async function fixture(characterCount = 3, options: { semanticScore?: number; se
       visualArtifactSeverity: options.quality?.visualArtifactSeverity ?? 8,
       localizedDefects: options.quality?.localizedDefects ?? [],
     }),
-    inpaintRegion: async (): Promise<Buffer> => {
+    inpaintRegion: async ({ bbox }: LocalizedInpaintRequest): Promise<Buffer> => {
       repairCalls += 1;
-      return png;
+      return sharp(png).composite([{ input: Buffer.from(`<svg width="${recipe.width}" height="${recipe.height}"><rect x="${Math.round(bbox.x)}" y="${Math.round(bbox.y)}" width="${Math.max(1, Math.round(bbox.width))}" height="${Math.max(1, Math.round(bbox.height))}" fill="#e56b6f"/></svg>`), blend: 'over' }]).png().toBuffer();
     },
   };
   const ingestion = new AssetIngestionService({ storageRoot: mkdtempSync(join(tmpdir(), 'gate-test-')) });
@@ -182,6 +189,70 @@ describe('Character Composition Gate runner', () => {
     expect(requests).toHaveLength(1);
     expect(outcome.report.verdict).toBe('passed_pending_human_review');
     expect(outcome.report.attempts[0]?.repair).toMatchObject({ status: 'applied', originalImageAsset: expect.objectContaining({ originalName: expect.stringContaining('original') }) });
+  });
+
+  it('evaluates an original candidate without invoking image generation', async () => {
+    const { recipe, adapter, ingestion, baseRequest, requests } = await fixture(3);
+    const evaluation = await evaluateCharacterGateCandidate({
+      adapter,
+      recipe,
+      imageBuffer: await adapter.generateImage!(baseRequest),
+      config: { detector: scriptedDetector([CLEAN_TRIO]), semanticGate: { enabled: true } },
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(evaluation.overallVerdict).toBe('passed_pending_human_review');
+    expect(evaluation.semantic?.criteria.length).toBeGreaterThan(0);
+    expect(evaluation.visualQuality?.evaluatorId).toBe('test-local-quality');
+  });
+
+  it('applies one uncertain-attribute repair with mask, diff and regression evidence', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairCalls } = await fixture(3, { semanticScore: 0.58, semanticMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([CLEAN_TRIO, CLEAN_TRIO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    expect(getRepairCalls()).toBe(1);
+    expect(outcome.report.verdict).toBe('passed_pending_human_review');
+    expect(outcome.report.attempts[0]?.repairs).toHaveLength(1);
+    expect(outcome.report.attempts[0]?.repairs[0]).toMatchObject({
+      status: 'applied',
+      criterionId: expect.stringContaining('object'),
+      maskAsset: expect.objectContaining({ originalName: expect.stringContaining('mask') }),
+      originalImageAsset: expect.objectContaining({ originalName: expect.stringContaining('original') }),
+      repairedImageAsset: expect.objectContaining({ originalName: expect.stringContaining('repaired') }),
+      differenceImageAsset: expect.objectContaining({ originalName: expect.stringContaining('diff') }),
+      regression: { status: 'passed' },
+    });
+  });
+
+  it('keeps the pre-repair image when a regional repair loses a confirmed attribute', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairCalls } = await fixture(3, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.05, repairMargin: -0.2, repairOffTopic: true });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([CLEAN_TRIO, CLEAN_TRIO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    expect(getRepairCalls()).toBe(1);
+    expect(outcome.report.verdict).toBe('needs_review');
+    expect(outcome.report.attempts[0]?.repairs[0]).toMatchObject({ status: 'failed', regression: { status: 'failed' }, reason: expect.stringContaining('regression') });
   });
 
   it('preserves a chosen rejected image as audit evidence when the attempt limit is reached', async () => {
