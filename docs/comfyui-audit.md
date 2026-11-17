@@ -72,6 +72,23 @@ The six baseline requests completed the structural gate: PNG, expected dimension
 
 The report now records `acceptanceStatus: structural_pass_pending_human_review` and a separate `humanReview.status: pending`. The visual recheck found the close-up usable; the two-character combat image was mostly silhouettes, the trio and eight-character cases were dominated by background/silhouettes, and the gamer thumbnail and NextWorth banner lacked a reliably readable focal subject. The baseline therefore proves the runtime path and VRAM envelope, not production visual quality.
 
+### Full Aethera path acceptance
+
+Report: `artifacts/comfyui-aethera-six-case-acceptance/report.json`; composed PNGs: `artifacts/comfyui-aethera-six-case-acceptance/*.png`.
+
+This pass exercised the real desktop service chain — creative direction, visual recipe, native ComfyUI generation, regional inpaint for multi-character cases, editable composition, persistence, and report generation — instead of calling the image adapter directly:
+
+| Case | Seed | Total time | Peak VRAM | Generated → document |
+| --- | ---: | ---: | ---: | ---: |
+| anime individual | 31000 | 50,444 ms | 7,630 MiB | 1024×576 → 1280×720 |
+| anime 2 | 31001 | 92,000 ms | 7,400 MiB | 1024×576 → 1280×720 |
+| cyberpunk trio | 31002 | 83,781 ms | 7,423 MiB | 1024×576 → 1280×720 |
+| cyberpunk group 8 | 31003 | 96,900 ms | 7,364 MiB | 1024×576 → 1280×720 |
+| gamer thumbnail | 31004 | 72,623 ms | 7,358 MiB | 1024×576 → 1280×720 |
+| NextWorth banner | 31005 | 86,555 ms | 7,395 MiB | 1024×576 → 2560×1440 |
+
+All six returned `generated` with the structural audit passed and `acceptanceStatus: structural_and_integration_pass_pending_human_review`. The visual inspection in this run found a strong anime close-up, a readable gamer focal subject, and a coherent panoramic banner; the two-character, trio, and banner outputs still showed character-count drift (extra visible figures), while the eight-character group was readable but still needs a human count/anatomy check. These are visual observations, not final human approval.
+
 ### Face refinement and upscale
 
 - Animagine direct generation: `artifacts/comfyui-bootstrap/animagine-first-generation.png` — 768×768, generated, 10,700 ms, peak observed 7,714 MiB; coherent but tightly cropped.
