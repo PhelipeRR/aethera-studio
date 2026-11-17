@@ -13,9 +13,9 @@ describe('real audio assets', () => {
     for (const file of [music, ambience, sfx]) writeFileSync(file, Buffer.alloc(2_048, 7));
 
     const result = await resolveRealAudioAssets({
-      music: { path: music, license: 'local_test' },
-      ambience: { path: ambience, license: 'local_test' },
-      sfx: [{ id: 'whoosh', path: sfx, license: 'local_test', atMs: 1_200, gainDb: -10 }],
+      music: { path: music, license: 'local_test', origin: 'local_test_library', useConditions: 'test reuse' },
+      ambience: { path: ambience, license: 'local_test', origin: 'local_test_library', useConditions: 'test reuse' },
+      sfx: [{ id: 'whoosh', path: sfx, license: 'local_test', origin: 'local_test_library', useConditions: 'test reuse', atMs: 1_200, gainDb: -10 }],
     }, { requireRealAudio: true });
 
     expect(result.valid).toBe(true);

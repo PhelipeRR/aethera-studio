@@ -62,7 +62,6 @@ export function validateAetheraAudioPlan(plan: AetheraAudioPlan): AetheraAudioPl
   const parsed = aetheraAudioPlanSchema.parse(plan);
   if (parsed.truePeakDb > -1) throw new Error('invalid: true peak da mixagem deve ser ≤ -1 dBTP.');
   if (parsed.music?.kind === 'generated') {
-    if (parsed.music.providerId !== 'ace-step-local') throw new Error('unsupported: música gerada sem provedor local autorizado.');
     if (!parsed.music.trackId || !parsed.music.outputSha256 || !parsed.music.generation) throw new Error('invalid: música gerada sem manifesto de origem, hash e evidência de licença.');
     if (parsed.music.generation.providerId !== parsed.music.providerId || parsed.music.generation.outputSha256 !== parsed.music.outputSha256) throw new Error('invalid: manifesto da música gerada não confere com a fonte da timeline.');
     const scope = parsed.music.license.scope.toLocaleLowerCase('pt-BR');

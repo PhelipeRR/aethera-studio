@@ -46,4 +46,22 @@ describe('Aethera AP-05 audio designer', () => {
     expect(plan.music).toMatchObject({ kind: 'generated', providerId: 'ace-step-local', outputSha256: 'a'.repeat(64) });
     expect(validateAetheraAudioPlan(plan)).toEqual(plan);
   });
+
+  it('accepts another authorized local generator when its manifest and license are complete', () => {
+    const timeline = assembleTimeline({ runId: 'run-audio', storyboard: storyboard(), format });
+    const generated = {
+      ...music,
+      id: 'local-provider:track-1',
+      license: { ...music.license, name: 'Local provider — uso não comercial', scope: 'não comercial; revisão comercial pendente' },
+      generation: {
+        providerId: 'local-music-provider', softwareVersion: '1.0.0', modelId: 'local-model', modelRevision: 'local-revision', lmModelId: null, lmBackend: 'pt' as const,
+        promptHash: 'c'.repeat(64), seed: 7, durationMs: 60_000, bpm: 120, inferenceSteps: 8, guidanceScale: 7, taskType: 'text2music' as const, outputSha256: 'c'.repeat(64), format: 'wav' as const, origin: 'local-only' as const,
+        timelineId: 'timeline:run-audio', sceneIds: ['scene-1'], createdAt: '2026-11-12T00:00:00.000Z',
+        licenseEvidence: { software: { name: 'Local provider', license: 'MIT', source: 'https://example.com/software-license' }, ditWeights: { model: 'local-model', license: 'MIT', source: 'https://example.com/model-license' }, lmWeights: null, outputStatement: 'Uso não comercial; revisão comercial pendente.', evidence: 'local-provider-manifest-v1' },
+      },
+    };
+    const plan = designAetheraAudio({ timeline, music: generated });
+
+    expect(validateAetheraAudioPlan(plan)).toEqual(plan);
+  });
 });

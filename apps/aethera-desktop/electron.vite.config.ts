@@ -53,7 +53,8 @@ export default defineConfig({
       alias: {
         '@': resolve('../../packages/desktop-shared/src/renderer/src'),
         '@neuralbridge/cinema/browser': resolve('../../packages/cinema/src/browser.ts'),
-        '@neuralbridge/cinema': resolve('../../packages/cinema/src/index.ts'),
+        // The renderer must never pull the Node/FFmpeg barrel into the browser bundle.
+        '@neuralbridge/cinema': resolve('../../packages/cinema/src/browser.ts'),
         '@neuralbridge/creative-studio': resolve('../../packages/creative-studio/src/index.ts'),
       },
     },

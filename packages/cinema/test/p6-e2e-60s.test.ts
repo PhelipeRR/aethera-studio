@@ -8,9 +8,9 @@ const evidenceDir = join(process.cwd(), 'artifacts', 'aethera-p6-e2e');
 const motionAudioRoot = join(process.env['USERPROFILE'] ?? '', '.claude', 'skills', 'motionvelix', 'assets', 'sfx');
 const realAudioAssets = existsSync(join(motionAudioRoot, 'chuva.wav'))
   ? {
-      ambience: { path: join(motionAudioRoot, 'chuva.wav'), license: 'motionvelix-user-kit-original-synthesized' },
+      ambience: { path: join(motionAudioRoot, 'chuva.wav'), license: 'motionvelix-user-kit-original-synthesized', origin: 'motionvelix-user-kit', useConditions: 'uso autorizado no escopo do kit' },
       sfx: ['whoosh', 'glitch', 'impacto', 'whoosh_rapido']
-        .map((id, index) => ({ id, path: join(motionAudioRoot, `${id}.wav`), license: 'motionvelix-user-kit-original-synthesized', atMs: [4_500, 12_000, 26_500, 39_500][index] ?? 0, gainDb: -18 }))
+        .map((id, index) => ({ id, path: join(motionAudioRoot, `${id}.wav`), license: 'motionvelix-user-kit-original-synthesized', origin: 'motionvelix-user-kit', useConditions: 'uso autorizado no escopo do kit', atMs: [4_500, 12_000, 26_500, 39_500][index] ?? 0, gainDb: -18 }))
         .filter((asset) => existsSync(asset.path)),
     }
   : undefined;
@@ -87,6 +87,8 @@ describe('P6 60-second production E2E', () => {
     expect(first.deliveryGate?.status).toBe(realAudioAssets ? 'needs_review' : 'approved');
     if (realAudioAssets) {
       expect(first.audioSources).toMatchObject({ ambience: 'asset', sfx: 'asset', music: 'missing' });
+      expect(first.musicSelection).toMatchObject({ source: 'none' });
+      expect(first.audioDiagnostics?.some((item) => item.includes('music_unavailable'))).toBe(true);
     }
     expect(second.narrationCacheHits).toBeGreaterThanOrEqual(1);
     expect(second.incrementalRenderStats?.cacheHits).toBeGreaterThanOrEqual(1);
@@ -106,6 +108,8 @@ describe('P6 60-second production E2E', () => {
       captionAlignment: first.captionAlignment,
       smartCaptions: first.smartCaptions,
       audioSources: first.audioSources,
+      audioDiagnostics: first.audioDiagnostics,
+      musicSelection: first.musicSelection,
       narration: {
         mode: first.narrationMode,
         measuredDurationMs: first.audioFirstTimeline?.measuredNarrationDurationMs,

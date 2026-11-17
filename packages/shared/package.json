@@ -55,6 +55,7 @@
     "./velix-derivatives": "./src/velix-derivatives.ts",
     "./path-glob": "./src/path-glob.ts"
     ,"./diagnostics": "./src/diagnostics.ts"
+    ,"./content-operating-system": "./src/content-operating-system.ts"
     ,"./core-api": "./src/core-api/index.ts"
     ,"./core-desktop": "./src/core-desktop.ts"
   },

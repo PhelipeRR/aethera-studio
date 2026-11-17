@@ -29,7 +29,7 @@ import {
   type AutonomyMode,
   type ChannelFormat,
   type ContentChannel,
-} from '@neuralbridge/shared';
+} from '@neuralbridge/shared/content-operating-system';
 import { SetupTutorialDrawer } from './SetupTutorialDrawer';
 import {
   buildEmptyChannelForm,

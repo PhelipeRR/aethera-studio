@@ -169,6 +169,8 @@ export interface RealRenderResult {
     style: SmartCaptionStyle;
   };
   audioSources?: ResolvedRealAudioAssets['sources'];
+  audioDiagnostics?: string[];
+  musicSelection?: ResolvedRealAudioAssets['musicSelection'];
   deliveryGate?: DeliveryQualityGateReport;
   deliveryValidation?: {
     valid: boolean;
@@ -1648,6 +1650,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       },
     } : {}),
     audioSources: resolvedRealAudio.sources,
+    audioDiagnostics: resolvedRealAudio.diagnostics,
+    musicSelection: resolvedRealAudio.musicSelection,
     deliveryGate,
     deliveryValidation,
   };

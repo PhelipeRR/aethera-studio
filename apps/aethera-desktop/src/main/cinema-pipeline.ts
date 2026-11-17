@@ -98,6 +98,8 @@ import { createProductionJobId } from './production-console.js';
 function localMotionVelixAudioAssets(): RealAudioAssetsInput | undefined {
   const root = process.env['NB_VELIX_DIR'] ?? join(homedir(), '.claude', 'skills', 'motionvelix', 'assets', 'sfx');
   const license = 'motionvelix-user-kit-original-synthesized';
+  const origin = 'motionvelix-user-kit';
+  const useConditions = 'uso autorizado no escopo do kit';
   const ambiencePath = join(root, 'chuva.wav');
   const sfx = [
     ['whoosh', 4_500],
@@ -105,11 +107,11 @@ function localMotionVelixAudioAssets(): RealAudioAssetsInput | undefined {
     ['impacto', 26_500],
     ['whoosh_rapido', 39_500],
   ]
-    .map(([id, atMs]) => ({ id: String(id), path: join(root, `${String(id)}.wav`), license, atMs: Number(atMs), gainDb: -18 }))
+    .map(([id, atMs]) => ({ id: String(id), path: join(root, `${String(id)}.wav`), license, origin, useConditions, atMs: Number(atMs), gainDb: -18 }))
     .filter((asset) => existsSync(asset.path));
   if (!existsSync(ambiencePath) && sfx.length === 0) return undefined;
   return {
-    ...(existsSync(ambiencePath) ? { ambience: { path: ambiencePath, license } } : {}),
+    ...(existsSync(ambiencePath) ? { ambience: { path: ambiencePath, license, origin, useConditions } } : {}),
     ...(sfx.length > 0 ? { sfx } : {}),
   };
 }
@@ -228,6 +230,8 @@ export interface StagedProductionJob {
   captionAlignment?: RealRenderResult['captionAlignment'];
   smartCaptions?: RealRenderResult['smartCaptions'];
   audioSources?: RealRenderResult['audioSources'];
+  audioDiagnostics?: RealRenderResult['audioDiagnostics'];
+  musicSelection?: RealRenderResult['musicSelection'];
   deliveryGate?: RealRenderResult['deliveryGate'];
   error?: string;
   startedAt?: string;
@@ -2598,6 +2602,8 @@ export class StagedCinemaPipeline {
       job.captionAlignment = render.captionAlignment;
       job.smartCaptions = render.smartCaptions;
       job.audioSources = render.audioSources;
+      job.audioDiagnostics = render.audioDiagnostics;
+      job.musicSelection = render.musicSelection;
       job.deliveryGate = render.deliveryGate;
       const previewEvidence = this.recordStageEvidence(
         job.contract,
@@ -2866,6 +2872,8 @@ export class StagedCinemaPipeline {
       job.captionAlignment = render.captionAlignment;
       job.smartCaptions = render.smartCaptions;
       job.audioSources = render.audioSources;
+      job.audioDiagnostics = render.audioDiagnostics;
+      job.musicSelection = render.musicSelection;
       job.deliveryGate = render.deliveryGate;
       this.deps.onRenderReady(job.projectId, render);
       job.completedStages = [...new Set([...job.completedStages, 'previa', 'editor'])] as ProductionStageState[];

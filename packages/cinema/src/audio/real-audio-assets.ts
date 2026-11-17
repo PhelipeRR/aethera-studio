@@ -1,9 +1,15 @@
 import { createHash } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+import type { MusicTrack } from '@neuralbridge/shared';
 
 export interface RealAudioAssetRef {
   path: string;
   license: string;
+  origin: string;
+  useConditions: string;
+  sourceKind?: 'generated' | 'library';
+  providerId?: string;
 }
 
 export interface RealSfxAssetRef extends RealAudioAssetRef {
@@ -14,6 +20,7 @@ export interface RealSfxAssetRef extends RealAudioAssetRef {
 
 export interface RealAudioAssetsInput {
   music?: RealAudioAssetRef;
+  musicLibrary?: readonly RealAudioAssetRef[];
   ambience?: RealAudioAssetRef;
   sfx?: readonly RealSfxAssetRef[];
 }
@@ -34,9 +41,27 @@ export interface ResolvedRealAudioAssets {
   missingRoles: Array<'music' | 'ambience' | 'sfx'>;
   diagnostics: string[];
   sources: { music: 'asset' | 'missing'; ambience: 'asset' | 'missing'; sfx: 'asset' | 'missing' };
+  musicSelection: { source: 'generated' | 'library' | 'none'; attempted: Array<'generated' | 'library'>; diagnostics: string[] };
   music?: ResolvedRealAudioAsset;
   ambience?: ResolvedRealAudioAsset;
   sfx: ResolvedRealAudioSfx[];
+}
+
+/** Adapts a persisted shared music-library record without weakening its provenance contract. */
+export function musicTrackToRealAudioAsset(track: MusicTrack, projectRoot: string): RealAudioAssetRef {
+  const absoluteRoot = resolve(projectRoot);
+  const absolutePath = resolve(absoluteRoot, track.relativePath);
+  const relativePath = relative(absoluteRoot, absolutePath);
+  if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) throw new Error('forbidden: a faixa musical precisa permanecer dentro do projeto.');
+  const generated = 'generation' in track;
+  return {
+    path: absolutePath,
+    license: `${track.license.name} — ${track.license.evidence}`,
+    origin: track.license.source,
+    useConditions: track.license.scope,
+    sourceKind: generated ? 'generated' : 'library',
+    ...(generated ? { providerId: track.generation.providerId } : {}),
+  };
 }
 
 function fingerprint(path: string, sizeBytes: number, mtimeMs: number): string {
@@ -46,6 +71,7 @@ function fingerprint(path: string, sizeBytes: number, mtimeMs: number): string {
 function resolveAsset(ref: RealAudioAssetRef | undefined, role: string): { asset?: ResolvedRealAudioAsset; diagnostic?: string } {
   if (!ref) return { diagnostic: `technical_blocked: asset de áudio ausente para ${role}.` };
   if (!ref.license.trim()) return { diagnostic: `technical_blocked: licença ausente para ${role}.` };
+  if (!ref.origin.trim() || !ref.useConditions.trim()) return { diagnostic: `provenance_missing: origem e condições de uso ausentes para ${role}.` };
   if (!existsSync(ref.path)) return { diagnostic: `technical_blocked: arquivo de áudio inexistente para ${role}: ${ref.path}.` };
   let stat: ReturnType<typeof statSync>;
   try {
@@ -60,11 +86,36 @@ function resolveAsset(ref: RealAudioAssetRef | undefined, role: string): { asset
 export async function resolveRealAudioAssets(input: RealAudioAssetsInput = {}, options: { requireRealAudio?: boolean } = {}): Promise<ResolvedRealAudioAssets> {
   const diagnostics: string[] = [];
   const missingRoles: Array<'music' | 'ambience' | 'sfx'> = [];
-  const musicResult = resolveAsset(input.music, 'music');
+  const musicCandidates: Array<{ ref: RealAudioAssetRef; kind: 'generated' | 'library' }> = [
+    ...(input.music ? [{ ref: input.music, kind: input.music.sourceKind ?? 'generated' as const }] : []),
+    ...(input.musicLibrary ?? []).map((ref) => ({ ref, kind: 'library' as const })),
+  ];
+  const musicAttempts: Array<'generated' | 'library'> = [];
+  const musicDiagnostics: string[] = [];
+  let musicResult: { asset?: ResolvedRealAudioAsset; diagnostic?: string } = {};
+  let musicSelection: ResolvedRealAudioAssets['musicSelection'] = { source: 'none', attempted: musicAttempts, diagnostics: musicDiagnostics };
+  for (const candidate of musicCandidates) {
+    musicAttempts.push(candidate.kind);
+    const result = resolveAsset(candidate.ref, `music:${candidate.kind}`);
+    if (result.asset) {
+      musicResult = result;
+      musicSelection = { source: candidate.kind, attempted: [...musicAttempts], diagnostics: [...musicDiagnostics] };
+      break;
+    }
+    if (result.diagnostic) {
+      musicDiagnostics.push(result.diagnostic);
+      diagnostics.push(result.diagnostic);
+    }
+  }
+  if (!musicResult.asset) {
+    const diagnostic = 'music_unavailable: nenhuma fonte musical autorizada está disponível; a música permanece ausente.';
+    musicDiagnostics.push(diagnostic);
+    diagnostics.push(diagnostic);
+    musicSelection = { source: 'none', attempted: [...musicAttempts], diagnostics: [...musicDiagnostics] };
+  }
   const ambienceResult = resolveAsset(input.ambience, 'ambience');
   if (!musicResult.asset) missingRoles.push('music');
   if (!ambienceResult.asset) missingRoles.push('ambience');
-  if (musicResult.diagnostic) diagnostics.push(musicResult.diagnostic);
   if (ambienceResult.diagnostic) diagnostics.push(ambienceResult.diagnostic);
 
   const sfx: ResolvedRealAudioSfx[] = [];
@@ -87,6 +138,7 @@ export async function resolveRealAudioAssets(input: RealAudioAssetsInput = {}, o
     missingRoles: [...new Set(missingRoles)],
     diagnostics,
     sources: { music: musicResult.asset ? 'asset' : 'missing', ambience: ambienceResult.asset ? 'asset' : 'missing', sfx: sfx.length > 0 ? 'asset' : 'missing' },
+    musicSelection,
     ...(musicResult.asset ? { music: musicResult.asset } : {}),
     ...(ambienceResult.asset ? { ambience: ambienceResult.asset } : {}),
     sfx,

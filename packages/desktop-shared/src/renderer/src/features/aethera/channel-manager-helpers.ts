@@ -5,7 +5,7 @@ import {
   type ChannelFormat,
   type ChannelIdentityConfig,
   type ContentChannel,
-} from '@neuralbridge/shared';
+} from '@neuralbridge/shared/content-operating-system';
 
 export interface ChannelFormState {
   id: string;
