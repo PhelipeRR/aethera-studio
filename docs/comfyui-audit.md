@@ -82,7 +82,8 @@ The Aethera path is now:
 3. `ComfyUiImageAdapter` validates the selected checkpoint and native nodes against `/object_info`;
 4. it queues a native txt2img or img2img graph through `/prompt`, waits on `/history`, and downloads `/view` output;
 5. the generated buffer receives a structural audit for dimensions and luminance variation;
-6. only a real output is composed; fallback reports remain visible in the panel and production console.
+6. a user-selected seed, render side (768/1024) or serial batch changes the persisted request rather than hiding parameters in process memory;
+7. only a real output is composed; fallback reports remain visible in the panel and production console.
 
 Reference images use `/upload/image` and a native `LoadImage → VAEEncode → KSampler` graph. Localized repair uses a bounded mask with `VAEEncodeForInpaint` when that node is exposed. Multi-character requests with two to eight planned regions use one environment pass followed by one bounded inpaint pass per region; a reference image deliberately remains on the single img2img path. The adapter also has a checkpoint-independent `LoadImage → UpscaleModelLoader → ImageUpscaleWithModel` graph; the desktop UI does not yet expose a user-facing upscale action. Jobs are serialized by a process-local GPU lease; memory can be released explicitly or after each generation.
 

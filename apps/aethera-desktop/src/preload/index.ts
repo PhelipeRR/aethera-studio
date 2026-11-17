@@ -210,6 +210,7 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeListProjects: (artType?: string) => ipcRenderer.invoke('creative:list-projects', artType),
   creativeLoadProject: (projectId: string) => ipcRenderer.invoke('creative:load-project', projectId),
   creativeCreateFromPrompt: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:create-from-prompt', input),
+  creativeGenerateBatch: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:generate-batch', input),
   creativeGenerationHistory: (limit?: number) => ipcRenderer.invoke('creative:generation-history', limit),
   creativeRegenerate: (id: string) => ipcRenderer.invoke('creative:regenerate', id),
   creativeThumbnailLab: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:thumbnail-lab', input),

@@ -34,6 +34,20 @@ interface CreativeBridge {
       generationRunId?: string;
     };
   }>;
+  creativeGenerateBatch?: (input: Record<string, unknown>) => Promise<Array<{
+    document: CreativeProjectDocument;
+    audit: QualityAuditReport;
+    previewDataUrl: string;
+    generation?: {
+      status: 'generated' | 'disabled' | 'unavailable' | 'failed' | 'skipped_existing_background';
+      engineId: string;
+      message: string;
+      durationMs?: number;
+      recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine' };
+      qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
+      generationRunId?: string;
+    };
+  }>>;
   creativeGenerationHistory?: (limit?: number) => Promise<Array<{
     id: string;
     projectId: string | null;
@@ -125,6 +139,9 @@ export function CreativeStudioPanel() {
   const [headline, setHeadline] = useState('');
   const [referencePath, setReferencePath] = useState('');
   const [characterCount, setCharacterCount] = useState(1);
+  const [generationSeed, setGenerationSeed] = useState('');
+  const [maxSide, setMaxSide] = useState(1024);
+  const [batchSize, setBatchSize] = useState(1);
   const [videoPath, setVideoPath] = useState('');
   const [engines, setEngines] = useState<string[]>([]);
   const [brandKits, setBrandKits] = useState<BrandKit[]>([]);
@@ -182,6 +199,7 @@ export function CreativeStudioPanel() {
     qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
   } | null>(null);
   const [generationBusy, setGenerationBusy] = useState(false);
+  const [batchPreviews, setBatchPreviews] = useState<Array<{ id: string; previewDataUrl: string }>>([]);
   const [engineStatus, setEngineStatus] = useState<Awaited<ReturnType<NonNullable<CreativeBridge['creativeImageEngineStatus']>>> | null>(null);
 
   const refreshLists = async () => {
@@ -219,9 +237,10 @@ export function CreativeStudioPanel() {
     setStatusMsg('Gerando composição editável...');
     setGenerationWarning('');
     setGenerationReport(null);
+    setBatchPreviews([]);
     setGenerationBusy(true);
     try {
-      const res = await bridge.creativeCreateFromPrompt({
+      const request: Record<string, unknown> = {
         artType,
         prompt: prompt.trim(),
         ...(headline.trim() ? { headline: headline.trim() } : {}),
@@ -231,13 +250,21 @@ export function CreativeStudioPanel() {
         professionalPreset,
         ...(referencePath.trim() ? { referenceImagePaths: [referencePath.trim()] } : {}),
         characterCount,
-      });
+        maxSide,
+        ...(generationSeed.trim() ? { seed: Number(generationSeed) } : {}),
+      };
+      const results = batchSize > 1 && bridge.creativeGenerateBatch
+        ? await bridge.creativeGenerateBatch({ ...request, batchSize })
+        : [await bridge.creativeCreateFromPrompt(request)];
+      const res = results[0];
+      if (!res) throw new Error('O lote de geração não retornou nenhum resultado.');
       setActiveDoc(res.document);
       setPreviewUrl(res.previewDataUrl);
       setAudit(res.audit);
       setSelectedLayerId(res.document.layers[res.document.layers.length - 1]?.id ?? '');
       const gen = res.generation;
       setGenerationReport(gen ?? null);
+      setBatchPreviews(results.map((result) => ({ id: result.document.id, previewDataUrl: result.previewDataUrl })));
       setStatusMsg(
         `Projeto criado (${res.document.width}×${res.document.height}) e salvo automaticamente.` +
           (gen?.status === 'generated' && gen.recipe
@@ -502,6 +529,31 @@ export function CreativeStudioPanel() {
             >
               {[1, 2, 3, 4, 5, 6, 7, 8].map((count) => <option key={count} value={count}>{count} personagem{count === 1 ? '' : 'ns'}</option>)}
             </select>
+            <select
+              aria-label="Resolução da geração IA"
+              value={maxSide}
+              onChange={(e) => setMaxSide(Number(e.target.value))}
+              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+            >
+              <option value={768}>IA 768 px (mais leve)</option>
+              <option value={1024}>IA 1024 px (qualidade)</option>
+            </select>
+            <input
+              aria-label="Seed da geração IA"
+              value={generationSeed}
+              onChange={(e) => setGenerationSeed(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
+              placeholder="Seed (opcional)"
+              inputMode="numeric"
+              style={{ width: 120, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+            />
+            <select
+              aria-label="Tamanho do lote de geração"
+              value={batchSize}
+              onChange={(e) => setBatchSize(Number(e.target.value))}
+              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+            >
+              {[1, 2, 3, 4].map((count) => <option key={count} value={count}>Lote {count}</option>)}
+            </select>
             <button disabled={generationBusy} onClick={handleCreate} style={{ padding: '8px 14px', background: generationBusy ? 'var(--muted)' : 'var(--brand-lime)', color: 'var(--brand-ink)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: generationBusy ? 'wait' : 'pointer' }}>
               {generationBusy ? 'Gerando…' : 'Gerar Arte Editável'}
             </button>
@@ -573,6 +625,11 @@ export function CreativeStudioPanel() {
                   {generationReport.qualityAudit.findings.length > 0 ? ` · ${generationReport.qualityAudit.findings.map((finding) => finding.message).join(' ')}` : ''}
                 </div>
               )}
+            </div>
+          )}
+          {batchPreviews.length > 1 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6 }}>
+              {batchPreviews.map((preview, index) => <button key={preview.id} onClick={() => setPreviewUrl(preview.previewDataUrl)} title={`Abrir variação ${index + 1}`} style={{ padding: 2, border: '1px solid var(--border)', background: 'var(--secondary)', cursor: 'pointer' }}><img src={preview.previewDataUrl} alt={`Variação ${index + 1}`} style={{ width: '100%', display: 'block' }} /></button>)}
             </div>
           )}
         </div>

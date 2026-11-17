@@ -28,6 +28,7 @@ export interface GenerateAiBackgroundInput {
   ingestion: AssetIngestionService;
   seed?: number;
   seedKey?: string;
+  maxSide?: number;
   professionalPreset?: ProfessionalPresetId;
   referenceImagePaths?: string[];
   characterCount?: number;
@@ -57,6 +58,7 @@ export async function generateAiBackground(
     direction: input.direction ?? null,
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
     ...(input.seedKey ? { seedKey: input.seedKey } : {}),
+    ...(input.maxSide !== undefined ? { maxSide: input.maxSide } : {}),
     ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
     ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
   });

@@ -282,6 +282,23 @@ export class AetheraCreativeStudioService {
     return this.withConsoleJob(input.title || input.prompt, input.sourceCinemaProjectId, () => this.createFromPromptImpl(input));
   }
 
+  generateBatch(input: Parameters<AetheraCreativeStudioService['createFromPromptImpl']>[0] & { batchSize?: number }) {
+    const batchSize = Math.max(1, Math.min(4, Math.floor(input.batchSize ?? 1)));
+    const { batchSize: ignoredBatchSize, ...base } = input;
+    void ignoredBatchSize;
+    return this.withConsoleJob(`${input.title || input.prompt} (batch ${batchSize})`, input.sourceCinemaProjectId, async () => {
+      const results: Array<Awaited<ReturnType<AetheraCreativeStudioService['createFromPromptImpl']>>> = [];
+      for (let index = 0; index < batchSize; index += 1) {
+        results.push(await this.createFromPromptImpl({
+          ...base,
+          ...(base.title ? { title: `${base.title} — ${index + 1}` } : {}),
+          ...(base.seed !== undefined ? { seed: base.seed + index } : {}),
+        }));
+      }
+      return results;
+    });
+  }
+
   runThumbnailLabFromVideo(input: Parameters<AetheraCreativeStudioService['runThumbnailLabFromVideoImpl']>[0]) {
     return this.withConsoleJob(input.title || input.prompt, input.sourceCinemaProjectId, () =>
       this.runThumbnailLabFromVideoImpl(input),
@@ -504,6 +521,8 @@ export class AetheraCreativeStudioService {
     sourceCinemaProjectId?: string;
     avatarBackdrop?: 'light' | 'dark' | 'transparent';
     useAiGeneration?: boolean;
+    seed?: number;
+    maxSide?: number;
     professionalPreset?: ProfessionalPresetId;
     referenceImagePaths?: string[];
     characterCount?: number;
@@ -553,6 +572,8 @@ export class AetheraCreativeStudioService {
         ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
         ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths } : {}),
         ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
+        ...(input.seed !== undefined ? { seed: input.seed } : {}),
+        ...(input.maxSide !== undefined ? { maxSide: input.maxSide } : {}),
       });
       generation = generated.report;
       this.reportGeneration(generation);
@@ -624,6 +645,8 @@ export class AetheraCreativeStudioService {
       ...(input.sourceCinemaProjectId ? { sourceCinemaProjectId: input.sourceCinemaProjectId } : {}),
       ...(input.avatarBackdrop ? { avatarBackdrop: input.avatarBackdrop } : {}),
       ...(input.useAiGeneration !== undefined ? { useAiGeneration: input.useAiGeneration } : {}),
+      ...(input.seed !== undefined ? { seed: input.seed } : {}),
+      ...(input.maxSide !== undefined ? { maxSide: input.maxSide } : {}),
       ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
       ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths.slice(0, 4) } : {}),
       ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
@@ -976,6 +999,9 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
 
   ipcMain.handle('creative:create-from-prompt', async (_ev, input: Parameters<AetheraCreativeStudioService['createFromPrompt']>[0]) => {
     return service.createFromPrompt(input);
+  });
+  ipcMain.handle('creative:generate-batch', async (_ev, input: Parameters<AetheraCreativeStudioService['generateBatch']>[0]) => {
+    return service.generateBatch(input);
   });
   ipcMain.handle('creative:generation-history', async (_ev, limit?: number) => service.listGenerationHistory(limit));
   ipcMain.handle('creative:regenerate', async (_ev, id: string) => service.regenerateGeneration(id));
