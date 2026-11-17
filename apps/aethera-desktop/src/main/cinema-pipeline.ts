@@ -225,6 +225,10 @@ export interface StagedProductionJob {
   isTechnicalSample?: boolean;
   /** Persisted audio-first render audit; credentials never enter this structure. */
   audioFirstTimeline?: RealRenderResult['audioFirstTimeline'];
+  captionAlignment?: RealRenderResult['captionAlignment'];
+  smartCaptions?: RealRenderResult['smartCaptions'];
+  audioSources?: RealRenderResult['audioSources'];
+  deliveryGate?: RealRenderResult['deliveryGate'];
   error?: string;
   startedAt?: string;
   updatedAt: string;
@@ -2591,6 +2595,10 @@ export class StagedCinemaPipeline {
         job.contractCompliance = evaluated.report;
       }
       job.audioFirstTimeline = render.audioFirstTimeline;
+      job.captionAlignment = render.captionAlignment;
+      job.smartCaptions = render.smartCaptions;
+      job.audioSources = render.audioSources;
+      job.deliveryGate = render.deliveryGate;
       const previewEvidence = this.recordStageEvidence(
         job.contract,
         'previa',
@@ -2854,6 +2862,11 @@ export class StagedCinemaPipeline {
       }
 
       job.isTechnicalSample = render.isTechnicalSample;
+      job.audioFirstTimeline = render.audioFirstTimeline;
+      job.captionAlignment = render.captionAlignment;
+      job.smartCaptions = render.smartCaptions;
+      job.audioSources = render.audioSources;
+      job.deliveryGate = render.deliveryGate;
       this.deps.onRenderReady(job.projectId, render);
       job.completedStages = [...new Set([...job.completedStages, 'previa', 'editor'])] as ProductionStageState[];
 
