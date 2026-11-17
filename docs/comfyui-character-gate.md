@@ -220,3 +220,34 @@ região permanece dentro da política; ausência ou score inconclusivo continua
 como `needs_review`, sem reduzir thresholds.
 
 Contact sheet: `contact-sheet-before-after-gate.png`.
+
+### CS10 — prioridade de escala e retentativa regional — `run-2026-11-17T1729`
+
+Após a auditoria do `run-2026-11-17T1611`, o runner passou a priorizar a falha
+objetiva `undersized_character` antes de atributos incertos e a repetir a mesma
+região com variante auditável (`:retryN`, seed e prompt próprios) quando a
+correção de escala é rejeitada (commit `79ac6dd`). Thresholds inalterados;
+`humanReview.status` continua `pending`. Artefatos em
+`artifacts/comfyui-character-gate-acceptance/run-2026-11-17T1729/`.
+
+| Cenário | Original: contagem / semântica / qualidade | Gate final | Reparos | Motivo final de `needs_review` |
+|---|---|---|---|---|
+| 2 personagens (`31001`) | `needs_review` (`undersized_character`) / `needs_review` / `passed_pending_human_review` | igual ao original; imagem final = original | 3 inpaints da região `0` (seeds `2709488337`, `2020167405`, `160546862`), todos **rejeitados** por `count_placement_not_corrected`; alteração fora do bbox ≈ 3,8–4,0% | personagem 1 continua subdimensionado; 11 critérios semânticos sem evidência |
+| 3 personagens (`31002`) | `passed_pending_human_review` / `needs_review` / `needs_review` | mesma contagem/semântica/qualidade | rifle **aplicado** (`0,7190 → 0,7727`, seed `1925846911`); casaco **rejeitado** (`0,7032 → 0,6629`) | casaco e jaquetas/acessórios sem evidência; `weak_visual_quality_metric` |
+| 8 personagens (`31003`) | `needs_review` (6 motivos de contagem) / `needs_review` / `needs_review` | `needs_review` (`low_detector_agreement`) / `needs_review` / `passed_pending_human_review` | techwear (`0,6954 → 0,6884`), visor (`0,7423 → 0,6627`) e jaqueta (`0,6320 → 0,6773`, abaixo do limite) **rejeitados**; composição em camadas preservada | baixa concordância dos detectores; roupas/acessórios sem evidência localizada |
+
+Conclusões técnicas desta rodada (não são aprovação):
+
+- **Inpaint regional não corrige escala.** Com `repairStrength` 0,48 o
+  inpaint preserva a silhueta original; as três variantes mantiveram a altura
+  do personagem 1 do duo. Corrigir escala exige outra estratégia (recompor a
+  camada do personagem ou inpaint com força/máscara maiores), não mais
+  retentativas iguais.
+- **As retentativas de contagem consomem todo o orçamento de reparo.** Com
+  `maxLocalizedRepairs = 3` e prioridade fixa da contagem, o duo nunca chegou a
+  reparar atributos incertos. A variante `retry2` chegou a acrescentar espadas
+  visíveis ao personagem 1, mas foi descartada porque o critério-alvo era a
+  escala. Pendência: limitar retentativas de contagem para liberar ao menos um
+  reparo semântico.
+- O ganho visual do caso de 8 personagens vem da composição em camadas; os
+  reparos de atributo nesse caso não confirmaram evidência e foram revertidos.
