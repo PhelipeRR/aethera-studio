@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "phase": "P2",
+  "kind": "broll-poc",
+  "runId": "2026-11-17T17-22-54-360Z",
+  "source": {
+    "path": "C:\\dev\\neuralbridge-studio\\artifacts\\creative-studio-cs6\\cyberpunk-2077-clip.mp4",
+    "copiedTo": "C:\\dev\\neuralbridge-studio\\artifacts\\aethera-p2-broll-poc\\2026-11-17T17-22-54-360Z\\media\\cyberpunk-2077-clip.mp4",
+    "bytes": 209067,
+    "sha256": "db64afb8c1f43b6efdad4029d820f2e7c04b3b0728f797818100638af3dc37bc",
+    "reusedWithoutDownload": true,
+    "downloads": 0
+  },
+  "mediaProbe": {
+    "durationMs": 2000,
+    "durationSec": 2,
+    "width": 1280,
+    "height": 720,
+    "fps": "24/1",
+    "codec": "h264"
+  },
+  "detection": {
+    "cutsSeconds": [
+      0,
+      2
+    ],
+    "windowCutsSeconds": [
+      0,
+      2
+    ],
+    "cutCount": 0,
+    "segmentCount": 1,
+    "elapsedMs": 89.8393
+  },
+  "segments": [
+    {
+      "id": "db64afb8c1f43b6e:0-2000",
+      "startMs": 0,
+      "endMs": 2000,
+      "durationMs": 2000,
+      "keyframes": [
+        {
+          "atMs": 500,
+          "hash": "a930e3b33baaf91f1fff00b3a1991b04c5a3eadd06cb3c58131145ab27691d37",
+          "path": "C:\\dev\\neuralbridge-studio\\artifacts\\aethera-p2-broll-poc\\2026-11-17T17-22-54-360Z\\.aethera-frames\\a930e3b33baaf91f1fff00b3a1991b04c5a3eadd06cb3c58131145ab27691d37.jpg",
+          "bytes": 12331
+        },
+        {
+          "atMs": 1500,
+          "hash": "30dcd723f8a20715c6a05c6807f70e6153e0c3ef03df17677cb4bcc254b95719",
+          "path": "C:\\dev\\neuralbridge-studio\\artifacts\\aethera-p2-broll-poc\\2026-11-17T17-22-54-360Z\\.aethera-frames\\30dcd723f8a20715c6a05c6807f70e6153e0c3ef03df17677cb4bcc254b95719.jpg",
+          "bytes": 12180
+        }
+      ],
+      "quality": {
+        "frames": 20,
+        "meanLuma": 96.44706,
+        "meanDiff": 6.007402631578948,
+        "black": false,
+        "frozen": false,
+        "motion": 0.6007402631578949
+      },
+      "timingsMs": {
+        "quality": 95.356,
+        "extractFirst": 160.1567,
+        "extractSecond": 152.3063
+      },
+      "cache": {
+        "firstPassFiles": 2,
+        "secondPassFiles": 2,
+        "reusedOnSecondPass": true
+      }
+    }
+  ],
+  "semantic": {
+    "status": "technical_blocked",
+    "provider": "local-vlm",
+    "model": "qwen2.5vl:3b",
+    "reason": "Local VLM (Ollama) offline: fetch failed",
+    "elapsedMs": 5.4039
+  },
+  "resources": {
+    "maxRssKb": 139880,
+    "userCpuMicros": 406000,
+    "systemCpuMicros": 531000,
+    "gpu": "NVIDIA GeForce RTX 4060 Ti, 1242, 2"
+  },
+  "comparison": {
+    "currentAetheraHas": [
+      "FFmpeg scene cuts",
+      "interior frame extraction",
+      "content-addressed frame hashes",
+      "black/freeze/motion probe",
+      "VisionRouter integration"
+    ],
+    "pocDoesNotClaim": [
+      "contact-sheet generation",
+      "flash-frame classifier",
+      "HDR-to-SDR transform",
+      "narrative interval selector"
+    ]
+  },
+  "limitation": "O arquivo local tem duração curta; a prova valida rastreabilidade, segmentação, keyframes, qualidade e cache, mas não substitui um benchmark longo com múltiplos cortes."
+}

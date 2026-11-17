@@ -715,7 +715,7 @@ composição, ritmo e coerência.
 - [ ] Os arquivos MP4 físicos não estavam presentes no workspace investigado; não foi feito novo download automático para reproduzir o teste anterior. A retomada deve procurar primeiro cache e artefatos locais.
 - [ ] Falta validar a retomada completa em um novo teste E2E, reutilizando os arquivos existentes quando encontrados.
 
-P1 — Audio-First Timeline foi autorizado para implementação. P2 permanece bloqueado até o aceite explícito de P1.
+P1 — Audio-First Timeline foi autorizado e aceito tecnicamente pelo usuário. O P2 completo permanece aguardando validação da arquitetura e da prova de conceito desta rodada.
 
 ## P1 — Audio-First Timeline (implementação concluída para aceite — 2026-11-17)
 
@@ -726,4 +726,12 @@ P1 — Audio-First Timeline foi autorizado para implementação. P2 permanece bl
 - [x] Testes focados: 7 arquivos / 23 testes passando; inclui áudio longo/curto, dois segmentos, atribuição por cena, stream final e cache.
 - [x] Evidência real: MP4 `C:\dev\neuralbridge-studio\artifacts\aethera-p1-audio-first\20261117170536\render\cyberpunk-audio-first.mp4`, arquivo Cyberpunk local reutilizado sem download, duas cenas/segmentos, H.264/AAC 48 kHz, `deliveryValidation.valid=true`, stream de áudio `19,565 ms`.
 - [x] Falhas técnicas de truncamento carregam `RealRenderError.audioFirstTimeline` para o checkpoint antes do estado `error`, preservando diagnóstico após reinício.
-- [ ] Aceite do usuário ainda pendente; P2 não iniciado.
+- [x] Aceite técnico do usuário registrado; P2 completo ainda não iniciado.
+
+## P2 — B-roll Intelligence: pesquisa e prova de conceito (2026-11-17)
+
+- [x] Pesquisa do `YoutubeFactory` concluída em `docs/aethera/cinema/P2-BROLL-RESEARCH.md`, incluindo `broll_tools.py`, dependências, algoritmos, erros, Windows, HDR/letterbox, contact sheets e licenciamento.
+- [x] Comparação com aquisição, VisionRouter, Scene Grounding, índice visual, cache, Scene Matching, timeline Audio-First e compositor FFmpeg do Aethera persistida no mesmo relatório.
+- [x] Prova de conceito real com `artifacts/creative-studio-cs6/cyberpunk-2077-clip.mp4`, sem download: 1 intervalo, 2 keyframes rastreáveis, `black=false`, `frozen=false`, cache reutilizado na segunda passagem.
+- [x] Indisponibilidade do Ollama registrada como `technical_blocked`, sem converter a falha em rejeição editorial.
+- [ ] P2 completo não iniciado; aguarda aprovação da arquitetura e do benchmark incremental.
