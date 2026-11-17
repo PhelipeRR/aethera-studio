@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { brollIndexSchema, type BrollIndex, type BrollTechnicalStatus } from '@neuralbridge/shared';
+import { brollIndexSchema, type BrollIndex, type BrollSemanticStatus, type BrollTechnicalStatus } from '@neuralbridge/shared';
 
 const exec = promisify(execFile);
 export const BROLL_INDEX_VERSION = 'p2.1';
@@ -18,6 +18,12 @@ export interface TemporalClassification {
 export interface BrollContinuity {
   valid: boolean;
   gapsMs: number[];
+}
+
+export interface BrollSemanticDecision {
+  technicalStatus: BrollTechnicalStatus;
+  semanticStatus: BrollSemanticStatus;
+  reason: string;
 }
 
 export function stableBrollSegmentId(input: { sourceHash: string; startMs: number; endMs: number; indexVersion: string }): string {
@@ -81,6 +87,27 @@ export function validateBrollContinuity(input: {
   const lastGap = input.endMs - sorted.at(-1)! - period;
   if (lastGap > edgeTolerance) gaps.push(Math.round(lastGap));
   return { valid: gaps.length === 0, gapsMs: gaps };
+}
+
+/**
+ * Keeps provider outages in the technical lane. Editorial rejection is only possible when an explicit editorial
+ * decision is supplied; absent visual evidence is never promoted to a rejection or an approval.
+ */
+export function classifyBrollSemanticDecision(input: {
+  mediaAvailable: boolean;
+  technicalBlocked: boolean;
+  semanticConfidence: number | null;
+  attempts: readonly { outcome: string }[];
+  editorialDecision?: 'accept' | 'reject' | 'review';
+}): BrollSemanticDecision {
+  if (!input.mediaAvailable) return { technicalStatus: 'media_unavailable', semanticStatus: 'not_evaluated', reason: 'media_unavailable' };
+  if (input.technicalBlocked || (!Number.isFinite(input.semanticConfidence) && input.attempts.length > 0 && input.attempts.every((attempt) => ['unavailable', 'error', 'over_budget'].includes(attempt.outcome)))) {
+    return { technicalStatus: 'technical_blocked', semanticStatus: 'not_evaluated', reason: 'vision_provider_unavailable' };
+  }
+  if (input.editorialDecision === 'reject') return { technicalStatus: 'technical_valid', semanticStatus: 'editorial_rejected', reason: 'editorial_decision_rejected' };
+  if (input.editorialDecision === 'review') return { technicalStatus: 'technical_valid', semanticStatus: 'needs_review', reason: 'editorial_review_required' };
+  if (input.semanticConfidence !== null && input.semanticConfidence > 0) return { technicalStatus: 'technical_valid', semanticStatus: 'semantic_adequate', reason: 'visual_evidence_available' };
+  return { technicalStatus: 'technical_valid', semanticStatus: 'needs_review', reason: 'semantic_evidence_insufficient' };
 }
 
 export function canReuseBrollIndex(index: BrollIndex, expected: { sourceHash: string; indexVersion: string }): boolean {

@@ -58,7 +58,8 @@ it('indexes real synthetic media through ProductionRunService and reindexes afte
   expect(segments.some((segment) => segment.broll?.technicalStatus === 'technical_blocked')).toBe(true);
   expect(segments.some((segment) => segment.broll?.technicalStatus === 'technical_valid')).toBe(true);
   expect(segments.every((segment) => segment.broll?.diagnostics.some((item) => item.startsWith('temporal_samples=')))).toBe(true);
-  expect(segments.every((segment) => segment.broll?.semanticStatus === 'semantic_adequate')).toBe(true);
+  expect(segments.filter((segment) => segment.broll?.technicalStatus === 'technical_valid').every((segment) => segment.broll?.semanticStatus === 'semantic_adequate')).toBe(true);
+  expect(segments.filter((segment) => segment.broll?.technicalStatus === 'technical_blocked').every((segment) => segment.broll?.semanticStatus !== 'editorial_rejected')).toBe(true);
   expect(segments.every((segment) => segment.analysis?.attempts.some((attempt) => attempt.task === 'analyze'))).toBe(true);
   expect(repository.listIdentities('game').every((identity) => identity.status === 'review_required')).toBe(true);
   expect(calls).toBeGreaterThan(0);

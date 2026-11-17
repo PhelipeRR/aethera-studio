@@ -15,6 +15,7 @@ export * from './editorial/editorial-audit.js';
 export * from './production-contract.js';
 export * from './comedy/comedy-director.js';
 export * from './edit/editorial-engine.js';
+export * from './edit/broll-timeline.js';
 export * from './edit/prompt-revision.js';
 export * from './vfx/vfx-typography.js';
 export * from './color/color-pipeline.js';

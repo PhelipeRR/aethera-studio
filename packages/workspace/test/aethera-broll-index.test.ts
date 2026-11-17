@@ -6,6 +6,7 @@ import {
   BROLL_INDEX_VERSION,
   canReuseBrollIndex,
   classifyTemporalSamples,
+  classifyBrollSemanticDecision,
   discardFlashKeyframeTimes,
   makeBrollContactSheet,
   representativeKeyframeTimes,
@@ -61,6 +62,13 @@ it('blocks incomplete temporal coverage but accepts ordinary CFR rounding', () =
   expect(validateBrollContinuity({ startMs: 0, endMs: 500, samples: [{ atMs: 0 }, { atMs: 100 }, { atMs: 200 }, { atMs: 300 }, { atMs: 400 }] })).toEqual({ valid: true, gapsMs: [] });
   expect(validateBrollContinuity({ startMs: 0, endMs: 1_000, samples: [{ atMs: 0 }, { atMs: 100 }, { atMs: 700 }, { atMs: 800 }, { atMs: 900 }] })).toEqual({ valid: false, gapsMs: [500] });
   expect(validateBrollContinuity({ startMs: 0, endMs: 500, samples: [] }).valid).toBe(false);
+});
+
+it('keeps provider outages technical and requires an explicit editorial decision for rejection', () => {
+  expect(classifyBrollSemanticDecision({ mediaAvailable: true, technicalBlocked: false, semanticConfidence: null, attempts: [{ outcome: 'unavailable' }, { outcome: 'timeout' }] })).toMatchObject({ technicalStatus: 'technical_valid', semanticStatus: 'needs_review' });
+  expect(classifyBrollSemanticDecision({ mediaAvailable: true, technicalBlocked: false, semanticConfidence: null, attempts: [{ outcome: 'unavailable' }, { outcome: 'error' }] })).toMatchObject({ technicalStatus: 'technical_blocked', semanticStatus: 'not_evaluated' });
+  expect(classifyBrollSemanticDecision({ mediaAvailable: true, technicalBlocked: false, semanticConfidence: 0.9, attempts: [{ outcome: 'ok' }], editorialDecision: 'reject' })).toMatchObject({ technicalStatus: 'technical_valid', semanticStatus: 'editorial_rejected' });
+  expect(classifyBrollSemanticDecision({ mediaAvailable: false, technicalBlocked: false, semanticConfidence: null, attempts: [] })).toMatchObject({ technicalStatus: 'media_unavailable', semanticStatus: 'not_evaluated' });
 });
 
 it('writes an inspectable contact sheet from cached keyframes without replacing source media', async () => {
