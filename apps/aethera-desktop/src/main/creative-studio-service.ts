@@ -858,7 +858,7 @@ export class AetheraCreativeStudioService {
               enabled: gateSettings.semantic !== false,
               localizedRepair: gateSettings.localizedRepair !== false,
               repairUncertainAttributes: gateSettings.repairUncertainAttributes !== false,
-              maxLocalizedRepairs: gateSettings.maxLocalizedRepairs ?? 3,
+              maxLocalizedRepairs: gateSettings.maxLocalizedRepairs ?? 5,
             },
             ...(gateSettings.maxAttempts !== undefined ? { maxAttempts: gateSettings.maxAttempts } : {}),
             ...(gateSettings.retryOnNeedsReview ? { retryOnNeedsReview: gateSettings.retryOnNeedsReview } : {}),

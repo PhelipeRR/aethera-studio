@@ -108,6 +108,8 @@ export interface LocalizedInpaintRequest {
   /** Optional localized negative prompt, used to constrain regional character passes. */
   negativePrompt?: string;
   bbox: { x: number; y: number; width: number; height: number };
+  /** Rectangles inside `bbox` that must stay untouched (e.g. a face next to a raised weapon). */
+  protectRects?: Array<{ x: number; y: number; width: number; height: number }>;
   strength?: number;
   /** Explicit sampler seed; defaults to a value derived from the bbox so separate repairs do not share noise. */
   seed?: number;

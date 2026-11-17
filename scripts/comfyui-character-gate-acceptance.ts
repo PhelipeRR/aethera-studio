@@ -177,7 +177,7 @@ try {
                   poseControlNetModel,
                   holdModels: (work) => service.comfyUiAdapter.withModelsHeld(work),
                   cutoutBatch: (paths) => service.batchCutout.cutout(paths),
-                  semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 3 },
+                  semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: Number(process.env.GATE_MAX_REPAIRS ?? 5) },
                 },
               }
             : {}),
@@ -209,6 +209,12 @@ try {
             if (repair.originalImageAsset) evidenceAssets.push({ ref: repair.originalImageAsset, kind: `repair${repairIndex + 1}-${repair.status}-original` });
             if (repair.repairedImageAsset) evidenceAssets.push({ ref: repair.repairedImageAsset, kind: `repair${repairIndex + 1}-${repair.status}-repaired` });
             if (repair.differenceImageAsset) evidenceAssets.push({ ref: repair.differenceImageAsset, kind: `repair${repairIndex + 1}-${repair.status}-difference` });
+          }
+          for (const node of attempt.proposalTree?.nodes ?? []) {
+            if (node.kind === 'repair') continue; // already written above
+            if (node.imageAsset) evidenceAssets.push({ ref: node.imageAsset, kind: `tree-${node.id}-${node.status}-image` });
+            if (node.maskAsset) evidenceAssets.push({ ref: node.maskAsset, kind: `tree-${node.id}-${node.status}-mask` });
+            if (node.differenceAsset) evidenceAssets.push({ ref: node.differenceAsset, kind: `tree-${node.id}-${node.status}-difference` });
           }
           for (const entry of evidenceAssets) {
             const path = join(runDir, `${label}-attempt${attempt.attempt}-${entry.kind}-${attempt.overallVerdict ?? attempt.gate?.verdict ?? attempt.status}-seed${attempt.seed}.png`);

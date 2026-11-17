@@ -389,7 +389,10 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     if (right <= x || bottom <= y) throw new Error('ComfyUI inpaint bounding box does not intersect the source image.');
 
     // White means editable for ComfyUI's VAEEncodeForInpaint mask; all other pixels remain black and protected.
-    const maskSvg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="black"/><rect x="${x}" y="${y}" width="${right - x}" height="${bottom - y}" fill="white"/></svg>`;
+    const protectedRects = (request.protectRects ?? [])
+      .map((rect) => `<rect x="${Math.round(rect.x)}" y="${Math.round(rect.y)}" width="${Math.max(1, Math.round(rect.width))}" height="${Math.max(1, Math.round(rect.height))}" fill="black"/>`)
+      .join('');
+    const maskSvg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="black"/><rect x="${x}" y="${y}" width="${right - x}" height="${bottom - y}" fill="white"/>${protectedRects}</svg>`;
     const maskBuffer = await sharp(Buffer.from(maskSvg)).png().toBuffer();
     const baseUpload = await this.gateway.uploadImage(request.imageBuffer, 'aethera-inpaint-base.png', 'aethera', true);
     const maskUpload = await this.gateway.uploadImage(maskBuffer, 'aethera-inpaint-mask.png', 'aethera', true);

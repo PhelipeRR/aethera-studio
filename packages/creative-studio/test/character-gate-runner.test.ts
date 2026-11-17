@@ -27,6 +27,30 @@ const UNDERSIZED_DUO = {
     yolo_person: { boxes: [{ x: 100, y: 380, width: 120, height: 240, confidence: 0.9 }, { x: 1050, y: 80, width: 160, height: 580, confidence: 0.9 }] },
   },
 };
+// Front-facing duo with OpenPose COCO-18 keypoints (index 4 = right wrist, 7 = left wrist).
+function personKeypoints(dx: number) {
+  const kp: Array<{ x: number; y: number; score: number } | null> = Array.from({ length: 18 }, () => null);
+  const set = (index: number, x: number, y: number) => { kp[index] = { x: x + dx, y, score: 0.9 }; };
+  set(0, 180, 110); set(1, 180, 150); set(2, 150, 160); set(3, 140, 240); set(4, 140, 330);
+  set(5, 210, 160); set(6, 220, 240); set(7, 220, 330); set(8, 160, 380); set(11, 200, 380);
+  set(9, 160, 500); set(10, 160, 620); set(12, 200, 500); set(13, 200, 620);
+  return { keypoints: kp, score: 20, parts: 14 };
+}
+const POSED_DUO = { ...CLEAN_DUO, detectors: { ...CLEAN_DUO.detectors, openpose: { people: [personKeypoints(0), personKeypoints(950)] } } };
+const POSED_DUO_EXTRA_PERSON = {
+  ...POSED_DUO,
+  detectors: {
+    ...POSED_DUO.detectors,
+    yolo_person: { boxes: [...POSED_DUO.detectors.yolo_person.boxes, { x: 640, y: 90, width: 150, height: 560, confidence: 0.92 }] },
+    openpose: { people: [...POSED_DUO.detectors.openpose.people, personKeypoints(530)] },
+  },
+};
+const RELATION_DUO = ['swordswoman with silver hair, katana raised', 'spear warrior with black hair, spear held in guard'];
+const KATANA_RAISED: Line = [140, 335, 150, 40];
+const KATANA_AWAY_FROM_HANDS: Line = [340, 60, 345, 330];
+const SPEAR_IN_GUARD: Line = [1070, 345, 1300, 180];
+const RELATION_GATE = { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 2 } as const;
+
 const EXTRA_TRIO = (evidence as Record<string, unknown>)['run-cs9-2026-11-17T1117/cyberpunk-trio-preview.png'];
 const ILLEGIBLE = (evidence as Record<string, unknown>)['run-cs9-2026-11-17T1050/cyberpunk-group-eight-preview.png'];
 
@@ -42,12 +66,15 @@ function scriptedDetector(sequence: unknown[]): CharacterGateDetector & { calls:
   };
 }
 
-async function fixture(characterCount = 3, options: { semanticScore?: number; semanticMargin?: number; semanticOffTopic?: boolean; repairScore?: number; repairMargin?: number; repairOffTopic?: boolean; quality?: Partial<VisualQualityInspectionResult> } = {}) {
+type Line = [number, number, number, number];
+type InpaintStep = { lines?: Line[]; erase?: { x: number; y: number; width: number; height: number } };
+
+async function fixture(characterCount = 3, options: { semanticScore?: number; semanticMargin?: number; semanticOffTopic?: boolean; repairScore?: number; repairMargin?: number; repairOffTopic?: boolean; quality?: Partial<VisualQualityInspectionResult>; descriptions?: string[]; inpaintSteps?: InpaintStep[] } = {}) {
   const recipe = buildVisualRecipe({
     artType: 'thumbnail',
     prompt: 'cyberpunk trio in a rainy city',
     characterCount,
-    characterDescriptions: Array.from({ length: characterCount }, (_, index) => index === 0 ? 'warrior with katana and armor' : 'warrior with spear and armor'),
+    characterDescriptions: options.descriptions ?? Array.from({ length: characterCount }, (_, index) => index === 0 ? 'warrior with katana and armor' : 'warrior with spear and armor'),
     seed: 500,
   });
   const requests: ImageGenerationRequest[] = [];
@@ -94,6 +121,13 @@ async function fixture(characterCount = 3, options: { semanticScore?: number; se
       const { bbox } = request;
       repairRequests.push(request);
       repairCalls += 1;
+      const step = options.inpaintSteps?.[repairCalls - 1];
+      if (options.inpaintSteps) {
+        // Draws thin weapons on the request's own image so sequential operations accumulate like a real inpaint.
+        const lines = (step?.lines ?? []).map(([x1, y1, x2, y2]) => `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#e8e8f0" stroke-width="6"/>`).join('');
+        const erase = step?.erase ? `<rect x="${step.erase.x}" y="${step.erase.y}" width="${step.erase.width}" height="${step.erase.height}" fill="#333355"/>` : '';
+        return sharp(request.imageBuffer).composite([{ input: Buffer.from(`<svg width="${recipe.width}" height="${recipe.height}">${erase}${lines}</svg>`), blend: 'over' }]).png().toBuffer();
+      }
       return sharp(png).composite([{ input: Buffer.from(`<svg width="${recipe.width}" height="${recipe.height}"><rect x="${Math.round(bbox.x)}" y="${Math.round(bbox.y)}" width="${Math.max(1, Math.round(bbox.width))}" height="${Math.max(1, Math.round(bbox.height))}" fill="#e56b6f"/></svg>`), blend: 'over' }]).png().toBuffer();
     },
   };
@@ -404,6 +438,83 @@ describe('Character Composition Gate runner', () => {
 
     const repairs = outcome.report.attempts[0]?.repairs ?? [];
     expect(repairs.map((repair) => [repair.criterionKind, repair.regionIndex])).toEqual([['count', 0], ['object', 0], ['object', 1]]);
+  });
+
+  it('fails an object repair whose weapon appears but is not held, recording presence and grip separately', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO, inpaintSteps: [{ lines: [KATANA_AWAY_FROM_HANDS] }, { lines: [KATANA_AWAY_FROM_HANDS] }] });
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { detector: scriptedDetector([POSED_DUO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { ...RELATION_GATE, maxLocalizedRepairs: 1 } } });
+
+    const repair = outcome.report.attempts[0]?.repairs[0];
+    expect(repair).toMatchObject({ criterionKind: 'object', status: 'failed', reason: expect.stringContaining('object_not_in_hand') });
+    expect(repair?.objectRelations?.[0]).toMatchObject({ relation: { object: 'katana', orientation: 'raised' }, assessment: { presence: 'detected', grip: 'violated', overall: 'violated' } });
+  });
+
+  it('plans the katana mask over the hands and above them while protecting the face', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairRequests } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO, inpaintSteps: [{ lines: [KATANA_RAISED] }] });
+    await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { detector: scriptedDetector([POSED_DUO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { ...RELATION_GATE, maxLocalizedRepairs: 1 } } });
+
+    const request = getRepairRequests()[0]!;
+    expect(request.prompt).toMatch(/holding katana/);
+    expect(request.prompt).toMatch(/raised overhead/);
+    expect(request.bbox.y).toBeLessThan(80);
+    expect(request.bbox.y + request.bbox.height).toBeGreaterThan(330);
+    expect(request.protectRects?.[0]).toMatchObject({ x: expect.any(Number), y: expect.any(Number) });
+    const face = request.protectRects![0]!;
+    expect(face.x).toBeLessThan(180);
+    expect(face.x + face.width).toBeGreaterThan(180);
+  });
+
+  it('combines two valid proposals sequentially on a copy and records the proposal tree without adopting it', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, {
+      semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO,
+      inpaintSteps: [{ lines: [KATANA_RAISED] }, { lines: [SPEAR_IN_GUARD] }, { lines: [SPEAR_IN_GUARD] }],
+    });
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { detector: scriptedDetector([POSED_DUO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: RELATION_GATE } });
+
+    const attempt = outcome.report.attempts[0]!;
+    expect(attempt.repairs.map((repair) => [repair.status, repair.objectRelations?.[0]?.assessment.overall])).toEqual([['proposed', 'satisfied'], ['proposed', 'satisfied']]);
+    const tree = attempt.proposalTree!;
+    const base = tree.nodes.find((node) => node.kind === 'base')!;
+    const proposals = tree.nodes.filter((node) => node.kind === 'repair');
+    const combination = tree.nodes.find((node) => node.kind === 'combination')!;
+    expect(proposals.every((node) => node.parentId === base.id && node.status === 'proposed')).toBe(true);
+    expect(combination).toMatchObject({ status: 'proposed', parentId: proposals[0]!.id, dependsOn: proposals.map((node) => node.id), requiresHumanApproval: true });
+    expect(combination.operations).toHaveLength(2);
+    expect(combination.operations[1]).toMatchObject({ seed: expect.any(Number), prompt: expect.stringContaining('guard stance'), bbox: expect.any(Object) });
+    expect(combination.imageAsset?.relativePath).toMatch(/\.png$/);
+    expect(combination.differenceAsset?.relativePath).toMatch(/\.png$/);
+    expect(base.imageAsset?.relativePath).toMatch(/\.png$/);
+    expect(outcome.report.verdict).toBe('needs_review');
+  });
+
+  it('rejects the combination when the second operation removes the first weapon and keeps both proposals', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, {
+      semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO,
+      inpaintSteps: [{ lines: [KATANA_RAISED] }, { lines: [SPEAR_IN_GUARD] }, { lines: [SPEAR_IN_GUARD], erase: { x: 120, y: 20, width: 60, height: 330 } }],
+    });
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { detector: scriptedDetector([POSED_DUO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: RELATION_GATE } });
+
+    const tree = outcome.report.attempts[0]!.proposalTree!;
+    const combination = tree.nodes.find((node) => node.kind === 'combination')!;
+    expect(combination.status).toBe('rejected');
+    expect(combination.reasons.join(' ')).toMatch(/object_removed/);
+    expect(tree.nodes.filter((node) => node.kind === 'repair').map((node) => node.status)).toEqual(['proposed', 'proposed']);
+  });
+
+  it('rejects a combination that regresses even though both individual proposals are valid', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, {
+      semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO,
+      inpaintSteps: [{ lines: [KATANA_RAISED] }, { lines: [SPEAR_IN_GUARD] }, { lines: [SPEAR_IN_GUARD] }],
+    });
+    // Evaluations: generated image, katana proposal, spear proposal, then the combined image grows an extra person.
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { detector: scriptedDetector([POSED_DUO, POSED_DUO, POSED_DUO, POSED_DUO_EXTRA_PERSON]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: RELATION_GATE } });
+
+    const tree = outcome.report.attempts[0]!.proposalTree!;
+    const combination = tree.nodes.find((node) => node.kind === 'combination')!;
+    expect(combination.status).toBe('rejected');
+    expect(combination.reasons).toContain('combined_count_regressed');
+    expect(tree.nodes.filter((node) => node.kind === 'repair').every((node) => node.status === 'proposed')).toBe(true);
+    expect(outcome.report.verdict).toBe('needs_review');
   });
 
   it('keeps an unverifiable object repair as a proposed alternative without adopting it', async () => {

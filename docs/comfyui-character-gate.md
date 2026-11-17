@@ -369,3 +369,56 @@ independente. Para usar as duas armas, é preciso escolher e combinar na revisã
 humana. Arquivos: `artifacts/comfyui-character-gate-acceptance/run-2026-11-17T1935/`
 (`*-proposed-repaired-*`, `review-proposals.png`). Veredicto `needs_review`;
 `humanReview.status=pending`.
+
+### CS10 — relação personagem↔arma e árvore de propostas — `run-2026-11-17T2003` / `T2021` (duo)
+
+**O que mudou** (`src/object-relations.ts`, `src/character-gate-runner.ts`):
+
+- **Relações do prompt original.** `parseObjectRelations` lê, por personagem, objeto, colocação (`in_hand`/`on_shoulder`/`on_back`/`sheathed`), orientação (`raised`/`guard`/`lowered`/`aimed`) e mão (`left`/`right`/`both`). Não inventa relação: "warrior with katana" fica sem pose exigida.
+- **Presença ≠ pose.** `assessObjectRelation` separa `presence` (`detected`/`weak`/`not_detected`) de `grip`, `hand` e `orientation`. O objeto é localizado como uma nova estrutura reta (Sobel + Hough, deduplicada por proximidade de segmento) dentro da máscara. O pulso vem do OpenPose.
+  - Katana `raised`: a lâmina precisa estar na mão (distância ao pulso ≤ 0,06 h), com a ponta acima dos ombros e até 50° da vertical. Apontar para baixo é `violated`.
+  - Lança `guard`: precisa estar na mão, entre 12° e 70° da horizontal, com a ponta para cima. Lança em pé (> 80°) é `violated`.
+  - Mão errada, quando o prompt nomeia a mão, é `violated`.
+  - Um segmento mais curto que a extensão mínima do objeto vira `presence: weak`, e a relação fica `uncertain` (não confirma nem rejeita). A extensão mínima é katana/espada 0,30 h e lança 0,45 h.
+- **Máscara regional orientada pela relação.** `planObjectRepairMask` cobre mãos e empunhadura (±0,09 h), mais o espaço que a orientação exige: coluna acima da cabeça para `raised`, faixa lateral para `guard`. O rosto entra em `protectRects` (YOLO face ou nariz do OpenPose, ×1,3), e o ComfyUI o pinta de preto na máscara. Sem pose, cai para a máscara do corpo (`maskBasis: 'figure'`).
+- **Prompt e negativos derivados da relação.** Exemplos: "holding katana … raised overhead, blade pointing up" e "spear held diagonally across the body in guard stance". Os negativos incluem sheathed, empty hands e planted in the ground.
+- **Reparo de objeto com relação violada → `failed`** (`object_relation_violated:*`). Ganha uma segunda seed por personagem (`:retry1`), dentro do orçamento. O teto do runner passou para 6 reparos, e o padrão do serviço para 5.
+- **Combinação sequencial.** Considera as propostas de objeto de personagens diferentes, calculadas a partir da imagem adotada e sem relação violada. São reaplicadas, com as mesmas seed, máscara e prompt, sobre uma cópia da base. Depois de cada passo, o runner reavalia:
+  - todos os atributos confirmados antes (`confirmed_attribute_lost`);
+  - a sobrevivência das armas anteriores pelo suporte de borda do segmento (≥ 60%; senão `object_removed`);
+  - as relações reavaliadas (`combined_relation_violated`);
+  - a contagem (`combined_count_regressed`);
+  - a qualidade.
+  Qualquer regressão rejeita a combinação. As propostas individuais ficam intactas.
+- **Árvore de propostas** em `attempt.proposalTree`. Nós `base`, `repair` e `combination`, cada um com `parentId`, `dependsOn`, `operations` (prompt, negativo, bbox, protectRects, seed, strength), imagem, máscara, diff, relações, status e motivos. Todo nó tem `requiresHumanApproval: true`. Nenhuma proposta ou combinação é adotada. O veredito fica `needs_review`, e o relatório mantém `humanReview.status=pending`.
+
+**Testes (primeiro, todos verdes):** `object-relations.test.ts` (15) e `character-gate-runner.test.ts` (26). Cobrem:
+- objeto presente mas não empunhado;
+- arma na mão errada;
+- orientação contrária ao prompt (katana para baixo, lança fincada);
+- segmento curto demais (cabelo/braço);
+- máscara sobre as mãos com o rosto protegido;
+- combinação válida registrada na árvore;
+- segunda operação que apaga a primeira arma (`object_removed`);
+- duas propostas válidas cuja combinação regride (`combined_count_regressed`).
+
+Conjunto do gate: 64/64 (`character-gate-runner`, `character-gate`, `layered-composition`, `quality-gate-visual-focus`, `semantic-scene-gate`, `object-relations`). `tsc --noEmit` limpo.
+
+**Execução real (mesma seed 31001, mesma base corrigida na escala):**
+
+| Nó | T2003 (antes da extensão mínima) | T2021 (final) | Revisão visual |
+|---|---|---|---|
+| base (escala aplicada) | adotada | adotada | personagem ampliada e integrada; sem armas |
+| katana (`repair-2`) | proposed, relação `satisfied` | proposed, `presence: weak` → `uncertain` | **sem katana**: armadura e cachecol refeitos. O segmento de 113 px (0,21 h) era a borda do cabelo |
+| lança (`repair-3`) | failed, `object_upright_not_in_guard` | proposed, `presence: weak` → `uncertain` | **sem lança**: armadura de placas e um cabo curto na mão. O segmento era a borda do braço |
+| lança retry (`repair-4`, só T2003) | failed, upright + grip ambíguo | — | haste fina do quadril ao chão (fincada) |
+| combinação 2+3 (só T2021) | — | proposed, sem regressão | as duas edições coexistem; **nenhuma arma visível** |
+
+Comparação visual: `run-2026-11-17T2021/proposal-tree-comparison.png`.
+
+**Conclusões e limites:**
+- O T2003 mostrou um falso positivo geométrico: uma borda curta de cabelo junto às mãos "satisfazia" a katana erguida. A correção endureceu a verificação (extensão mínima por objeto) em vez de afrouxá-la. Nenhum threshold de CLIP ou do gate foi alterado.
+- A infraestrutura (relações, máscara, combinação, árvore) funciona. O gargalo continua sendo o inpaint do animagine-xl a 0,6 de denoise, que não desenha uma arma longa e fina na máscara. Ele reinterpreta "holding X" como armadura e acessórios. O duo **não** cumpre katana erguida nem lança em guarda.
+- A localização por bordas retas pode confundir o objeto com bordas do corpo. Por isso, sem extensão suficiente, o resultado é `uncertain` e vai para revisão humana. O CLIP ViT-B/32 continua incapaz de confirmar armas finas.
+- O `protectRects` reduz, mas não elimina, mudanças no cabelo: o `growMaskBy` e a mistura do VAE ainda tocam a borda do rosto.
+- Próximo passo técnico sugerido: guiar a forma da arma (ControlNet de linha/OpenPose com a haste desenhada, ou colagem de um recorte de arma seguida de harmonização) em vez de pedir só por texto.

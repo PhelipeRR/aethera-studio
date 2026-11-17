@@ -10,11 +10,25 @@ import {
   characterGateRank,
   evaluateCharacterComposition,
   type CharacterGateEvidence,
+  type CharacterGateFigure,
   type CharacterGateOptions,
   type CharacterGateResult,
 } from './character-gate.js';
 import type { CompositionStrategyParams, ExternalImageAdapter, ImageGenerationRequest, VisualQualityInspectionResult } from './image-generation-adapter.js';
 import { generateLayeredComposition } from './layered-composition.js';
+import {
+  assessObjectRelation,
+  buildObjectRepairPrompt,
+  detectNewLinearObjects,
+  parseObjectRelations,
+  planObjectRepairMask,
+  poseFromOpenPose,
+  segmentEdgeSupport,
+  type ObjectRelation,
+  type ObjectRelationAssessment,
+  type PoseKeypoints,
+  type Segment,
+} from './object-relations.js';
 import { cropSemanticEvidence, evaluateSemanticSceneGate, type SemanticCriterion, type SemanticSceneGateOptions, type SemanticSceneGateResult } from './semantic-scene-gate.js';
 import type { VisualRecipe } from './visual-recipe.js';
 import sharp from 'sharp';
@@ -210,7 +224,61 @@ export interface CharacterGateRepairReport {
   rescaleSkippedReason?: string;
   /** Luminance step along the pasted rectangle before/after a `rescale_then_inpaint` repair. */
   pasteSeam?: { before: number; after: number };
+  prompt?: string;
+  negativePrompt?: string;
+  /** Rectangles inside `bbox` kept out of the inpaint mask (e.g. the face). */
+  protectRects?: Array<{ x: number; y: number; width: number; height: number }>;
+  /** Prompt relations (grip, hand, orientation) and their geometric assessment after an object repair. */
+  objectRelations?: CharacterGateObjectRelationReport[];
   reason?: string;
+}
+
+export interface CharacterGateObjectRelationReport {
+  relation: ObjectRelation;
+  assessment: ObjectRelationAssessment;
+  /** New straight structures localized inside the repair mask (candidate objects). */
+  segments: Segment[];
+  maskBasis: 'pose' | 'figure';
+}
+
+export interface CharacterGateProposalOperation {
+  repairIndex: number;
+  criterionId: string | null;
+  strategy: CharacterGateRepairReport['strategy'];
+  prompt: string;
+  negativePrompt: string;
+  bbox: { x: number; y: number; width: number; height: number };
+  protectRects: Array<{ x: number; y: number; width: number; height: number }>;
+  seed: number;
+  strength: number;
+}
+
+/**
+ * Proposal tree (CS10): `base` is the adopted image, every `repair` proposal is an alternative computed from it, and a
+ * `combination` re-applies proposals sequentially on a copy of the base. Nothing in the tree is ever adopted
+ * automatically; each node waits for human approval.
+ */
+export interface CharacterGateProposalNode {
+  id: string;
+  kind: 'base' | 'repair' | 'combination';
+  parentId: string | null;
+  dependsOn: string[];
+  repairIndex: number | null;
+  criterionIds: string[];
+  regionIndexes: number[];
+  operations: CharacterGateProposalOperation[];
+  imageAsset: { relativePath: string; originalName: string } | null;
+  maskAsset: { relativePath: string; originalName: string } | null;
+  differenceAsset: { relativePath: string; originalName: string } | null;
+  objectRelations: CharacterGateObjectRelationReport[];
+  status: 'base' | 'proposed' | 'failed' | 'rejected';
+  reasons: string[];
+  requiresHumanApproval: true;
+}
+
+export interface CharacterGateProposalTree {
+  baseImageSha256: string;
+  nodes: CharacterGateProposalNode[];
 }
 
 export interface CharacterGateVisualRegressionReport {
@@ -238,6 +306,7 @@ export interface CharacterGateAttempt {
   /** Managed-storage path of the image when it was not the chosen one (rejected / superseded evidence). */
   imageAsset: { relativePath: string; originalName: string } | null;
   layered: { plateSeed: number; layers: Array<{ regionIndex: number; seed: number }>; harmonizeStrength: number } | null;
+  proposalTree: CharacterGateProposalTree | null;
   error?: string;
   durationMs: number;
 }
@@ -267,6 +336,8 @@ export interface CharacterGateCandidateEvaluation {
   visualQuality: CharacterGateVisualQualityReport | null;
   overallVerdict: CharacterGateResult['verdict'];
   detector: { device: string; loadMs: number; peakTorchMiB: number; durationMs: number } | null;
+  /** Raw detector evidence (boxes, OpenPose keypoints) used for relation checks. */
+  evidence?: CharacterGateEvidence | null;
 }
 
 interface PendingRepairEvidence {
@@ -406,12 +477,13 @@ function criterionForRepair(result: SemanticSceneGateResult | null, criterionId:
   return result?.criteria.find((criterion) => criterion.id === criterionId) ?? null;
 }
 
-async function makeRepairMask(width: number, height: number, bbox: { x: number; y: number; width: number; height: number }): Promise<Buffer> {
+async function makeRepairMask(width: number, height: number, bbox: { x: number; y: number; width: number; height: number }, protect: Array<{ x: number; y: number; width: number; height: number }> = []): Promise<Buffer> {
   const x = Math.max(0, Math.min(width - 1, Math.round(bbox.x)));
   const y = Math.max(0, Math.min(height - 1, Math.round(bbox.y)));
   const right = Math.max(x + 1, Math.min(width, Math.round(bbox.x + bbox.width)));
   const bottom = Math.max(y + 1, Math.min(height, Math.round(bbox.y + bbox.height)));
-  const svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="black"/><rect x="${x}" y="${y}" width="${right - x}" height="${bottom - y}" fill="white"/></svg>`;
+  const protectedRects = protect.map((rect) => `<rect x="${Math.round(rect.x)}" y="${Math.round(rect.y)}" width="${Math.max(1, Math.round(rect.width))}" height="${Math.max(1, Math.round(rect.height))}" fill="black"/>`).join('');
+  const svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="black"/><rect x="${x}" y="${y}" width="${right - x}" height="${bottom - y}" fill="white"/>${protectedRects}</svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
@@ -473,16 +545,47 @@ async function compareRepairBuffers(before: Buffer, after: Buffer, bbox: { x: nu
  * the strength a spear needed. The local CLIP evaluator cannot confirm thin objects, so these repairs end as proposals.
  */
 const OBJECT_REPAIR_STRENGTH = 0.6;
-const OBJECT_REPAIR_NEGATIVE = 'from behind, back view, turned away, extra person, duplicate character';
+/** One extra seed per character when the geometric relation check rejects the first object repair. */
+const MAX_OBJECT_REPAIRS_PER_CHARACTER = 2;
+/** A later operation "removes" an earlier object when its edge support falls below this share of the original. */
+const OBJECT_SURVIVAL_RATIO = 0.6;
 
-function objectRepairMask(region: GateRectLike, figure: GateRectLike | undefined): GateRectLike {
-  if (!figure) return region;
-  const left = Math.max(region.x, figure.x - figure.width * 0.5);
-  const right = Math.min(region.x + region.width, figure.x + figure.width * 1.5);
-  const top = Math.max(region.y, figure.y + figure.height * 0.18);
-  const bottom = Math.min(region.y + region.height, figure.y + figure.height * 0.85);
-  if (right - left < 8 || bottom - top < 8) return region;
-  return { x: left, y: top, width: right - left, height: bottom - top };
+function poseForFigure(evidence: CharacterGateEvidence | null | undefined, figure: GateRectLike | undefined): PoseKeypoints | null {
+  if (!figure) return null;
+  const people = evidence?.detectors.openpose?.people ?? [];
+  const inside = (point: { x: number; y: number } | null | undefined) => !!point && point.x >= figure.x - figure.width * 0.25 && point.x <= figure.x + figure.width * 1.25 && point.y >= figure.y - figure.height * 0.1 && point.y <= figure.y + figure.height;
+  const person = people.find((candidate) => inside(candidate.keypoints[1]) || inside(candidate.keypoints[0]));
+  return person ? poseFromOpenPose(person.keypoints) : null;
+}
+
+function faceForFigure(evidence: CharacterGateEvidence | null | undefined, figure: GateRectLike | undefined): GateRectLike | null {
+  if (!figure) return null;
+  return (evidence?.detectors.yolo_face?.boxes ?? []).find((box) => box.x + box.width / 2 >= figure.x && box.x + box.width / 2 <= figure.x + figure.width && box.y + box.height / 2 <= figure.y + figure.height * 0.35) ?? null;
+}
+
+/** The relation to enforce for a character: the most specific one among its unconfirmed object terms. */
+function relationForTerms(characterPrompt: string, terms: string[]): ObjectRelation {
+  const relations = parseObjectRelations(characterPrompt);
+  const detail = (relation: ObjectRelation) => [relation.placement, relation.orientation, relation.hand].filter(Boolean).length;
+  const matching = relations.filter((relation) => terms.includes(relation.object)).sort((a, b) => detail(b) - detail(a));
+  return matching[0] ?? { object: terms[0] ?? 'object', placement: null, orientation: null, hand: null, clause: '' };
+}
+
+async function assessObjectRepair(input: {
+  before: Buffer;
+  after: Buffer;
+  mask: GateRectLike;
+  relation: ObjectRelation;
+  evaluation: CharacterGateCandidateEvaluation;
+  figure: GateRectLike | undefined;
+  maskBasis: 'pose' | 'figure';
+}): Promise<CharacterGateObjectRelationReport> {
+  const figure = input.evaluation.gate.figures.find((candidate) => input.figure && Math.abs(candidate.x + candidate.width / 2 - (input.figure.x + input.figure.width / 2)) < input.figure.width) ?? input.figure;
+  const segments = figure ? await detectNewLinearObjects(input.before, input.after, input.mask, { minLength: Math.max(40, figure.height * 0.2) }) : [];
+  const assessment = figure
+    ? assessObjectRelation({ relation: input.relation, segments, pose: poseForFigure(input.evaluation.evidence, figure), figure })
+    : { presence: 'not_detected' as const, grip: 'uncertain' as const, hand: 'uncertain' as const, orientation: 'uncertain' as const, overall: 'uncertain' as const, segment: null, holdingHand: null, reasons: ['figure_not_detected'] };
+  return { relation: input.relation, assessment, segments, maskBasis: input.maskBasis };
 }
 
 /** Count repairs per undersized figure; the remaining repair budget stays available for semantic attributes. */
@@ -694,10 +797,177 @@ export async function evaluateCharacterGateCandidate(input: {
       }
       visualQuality = inspectVisualQuality(inspected, true);
     }
-    return { gate, semantic, visualQuality, overallVerdict: combinedVerdict(gate, semantic, visualQuality), detector };
+    return { gate, semantic, visualQuality, overallVerdict: combinedVerdict(gate, semantic, visualQuality), detector, evidence: evidence ?? null };
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
+}
+
+interface PendingTreeEvidence {
+  base: Buffer;
+  combinations: Map<string, { image: Buffer; mask: Buffer; difference: Buffer }>;
+}
+
+function operationOf(report: CharacterGateRepairReport, repairIndex: number): CharacterGateProposalOperation | null {
+  if (!report.bbox || report.seed === null || !report.prompt) return null;
+  return {
+    repairIndex,
+    criterionId: report.criterionId,
+    strategy: report.strategy,
+    prompt: report.prompt,
+    negativePrompt: report.negativePrompt ?? '',
+    bbox: report.bbox,
+    protectRects: report.protectRects ?? [],
+    seed: report.seed,
+    strength: report.strength ?? 0.48,
+  };
+}
+
+/**
+ * Records every repair as a node of the proposal tree and, when two or more object proposals of different characters
+ * have no relation violation, re-applies them sequentially on a copy of the adopted image. After every step all
+ * attributes confirmed before, every earlier object (edge survival and relation) and the count/quality axes are
+ * re-checked; any regression rejects the combination while the individual proposals stay untouched.
+ */
+async function buildProposalTree(input: {
+  adapter: ExternalImageAdapter;
+  recipe: VisualRecipe;
+  config: CharacterGateConfig;
+  base: Buffer;
+  baseEvaluation: CharacterGateCandidateEvaluation;
+  repairs: PendingRepairEvidence[];
+}): Promise<{ tree: CharacterGateProposalTree; pending: PendingTreeEvidence }> {
+  const { adapter, recipe, base, baseEvaluation } = input;
+  const evalConfig = { detector: input.config.detector, ...(input.config.options ? { options: input.config.options } : {}), ...(input.config.semanticGate ? { semanticGate: input.config.semanticGate } : {}) };
+  const nodes: CharacterGateProposalNode[] = [];
+  const pending: PendingTreeEvidence = { base, combinations: new Map() };
+  const baseNode: CharacterGateProposalNode = {
+    id: 'base', kind: 'base', parentId: null, dependsOn: [], repairIndex: null, criterionIds: [], regionIndexes: [], operations: [],
+    imageAsset: null, maskAsset: null, differenceAsset: null, objectRelations: [], status: 'base', reasons: [], requiresHumanApproval: true,
+  };
+  nodes.push(baseNode);
+  const proposalNodes: Array<{ node: CharacterGateProposalNode; evidence: PendingRepairEvidence }> = [];
+  input.repairs.forEach((evidence, repairIndex) => {
+    const { report } = evidence;
+    if (report.status === 'applied') return; // already part of the base image
+    const operation = operationOf(report, repairIndex);
+    const node: CharacterGateProposalNode = {
+      id: `repair-${repairIndex + 1}`,
+      kind: 'repair',
+      parentId: evidence.originalBuffer.equals(base) ? baseNode.id : null,
+      dependsOn: [],
+      repairIndex,
+      criterionIds: report.criterionId ? [report.criterionId] : [],
+      regionIndexes: report.regionIndex !== null ? [report.regionIndex] : [],
+      operations: operation ? [operation] : [],
+      imageAsset: null,
+      maskAsset: null,
+      differenceAsset: null,
+      objectRelations: report.objectRelations ?? [],
+      status: report.status === 'proposed' ? 'proposed' : 'failed',
+      reasons: report.regression.reasons,
+      requiresHumanApproval: true,
+    };
+    nodes.push(node);
+    if (node.status === 'proposed') proposalNodes.push({ node, evidence });
+  });
+
+  // Latest viable object proposal per character, computed from the adopted image.
+  const byRegion = new Map<number, { node: CharacterGateProposalNode; evidence: PendingRepairEvidence }>();
+  for (const entry of proposalNodes) {
+    const relation = entry.node.objectRelations[0];
+    if (entry.evidence.report.criterionKind !== 'object' || entry.node.parentId !== baseNode.id || entry.node.regionIndexes.length !== 1 || entry.node.operations.length !== 1) continue;
+    if (relation && relation.assessment.overall === 'violated') continue;
+    byRegion.set(entry.node.regionIndexes[0]!, entry);
+  }
+  const combinable = [...byRegion.values()].sort((a, b) => a.node.repairIndex! - b.node.repairIndex!);
+  if (combinable.length >= 2 && input.adapter.inpaintRegion) {
+    const node: CharacterGateProposalNode = {
+      id: `combination-${combinable.map((entry) => entry.node.repairIndex! + 1).join('-')}`,
+      kind: 'combination',
+      parentId: combinable[0]!.node.id,
+      dependsOn: combinable.map((entry) => entry.node.id),
+      repairIndex: null,
+      criterionIds: combinable.flatMap((entry) => entry.node.criterionIds),
+      regionIndexes: combinable.flatMap((entry) => entry.node.regionIndexes),
+      operations: combinable.map((entry) => entry.node.operations[0]!),
+      imageAsset: null,
+      maskAsset: null,
+      differenceAsset: null,
+      objectRelations: [],
+      status: 'proposed',
+      reasons: [],
+      requiresHumanApproval: true,
+    };
+    // Step 1 reuses the first proposal (it was computed from this exact base); later steps re-run their operation.
+    let current = combinable[0]!.evidence.repairedBuffer;
+    let previousEvaluation: CharacterGateCandidateEvaluation | null = null;
+    const confirmedBefore = new Set((baseEvaluation.semantic?.criteria ?? []).filter((criterion) => criterion.status === 'confirmed').map((criterion) => criterion.id));
+    const reasons: string[] = [];
+    try {
+      for (let step = 1; step < combinable.length && reasons.length === 0; step += 1) {
+        const operation = combinable[step]!.node.operations[0]!;
+        current = await input.adapter.inpaintRegion({
+          imageBuffer: current,
+          prompt: operation.prompt,
+          negativePrompt: operation.negativePrompt,
+          bbox: operation.bbox,
+          ...(operation.protectRects.length > 0 ? { protectRects: operation.protectRects } : {}),
+          strength: operation.strength,
+          seed: operation.seed,
+        });
+        const evaluation = await evaluateCharacterGateCandidate({ adapter, recipe, imageBuffer: current, compareBeforeBuffer: base, config: evalConfig });
+        previousEvaluation = evaluation;
+        const afterById = new Map((evaluation.semantic?.criteria ?? []).map((criterion) => [criterion.id, criterion]));
+        for (const id of confirmedBefore) if (afterById.get(id)?.status !== 'confirmed') reasons.push(`confirmed_attribute_lost:${id}`);
+        if (characterGateRank(evaluation.gate) < characterGateRank(baseEvaluation.gate)) reasons.push('combined_count_regressed');
+        if (evaluation.visualQuality?.verdict === 'rejected') reasons.push('combined_visual_quality_rejected');
+        // Every earlier object must survive and keep its relation.
+        for (let earlier = 0; earlier <= step; earlier += 1) {
+          const entry = combinable[earlier]!;
+          const relationReport = entry.node.objectRelations[0];
+          const segment = relationReport?.assessment.segment;
+          if (earlier < step && segment) {
+            const original = await segmentEdgeSupport(entry.evidence.repairedBuffer, segment);
+            const now = await segmentEdgeSupport(current, segment);
+            if (original > 0 && now < OBJECT_SURVIVAL_RATIO * original) reasons.push(`object_removed:${entry.node.criterionIds[0] ?? entry.node.id}`);
+          }
+          if (relationReport) {
+            const operation = entry.node.operations[0]!;
+            const reassessed = await assessObjectRepair({
+              before: base,
+              after: current,
+              mask: operation.bbox,
+              relation: relationReport.relation,
+              evaluation,
+              figure: baseEvaluation.gate.figures.find((figure) => figure.regionIndex === entry.node.regionIndexes[0]),
+              maskBasis: relationReport.maskBasis,
+            });
+            node.objectRelations[earlier] = reassessed;
+            if (reassessed.assessment.overall === 'violated') reasons.push(`combined_relation_violated:${entry.node.criterionIds[0] ?? entry.node.id}`);
+          }
+        }
+      }
+    } catch (error) {
+      reasons.push(`combination_failed:${error instanceof Error ? error.message : String(error)}`);
+    }
+    node.status = reasons.length > 0 ? 'rejected' : 'proposed';
+    node.reasons = reasons.length > 0 ? reasons : previousEvaluation ? ['combined_attributes_not_confirmable_requires_human_review'] : [];
+    const union = combinable.map((entry) => entry.node.operations[0]!.bbox);
+    const unionBox = {
+      x: Math.min(...union.map((rect) => rect.x)),
+      y: Math.min(...union.map((rect) => rect.y)),
+      width: Math.max(...union.map((rect) => rect.x + rect.width)) - Math.min(...union.map((rect) => rect.x)),
+      height: Math.max(...union.map((rect) => rect.y + rect.height)) - Math.min(...union.map((rect) => rect.y)),
+    };
+    const svgMasks = await Promise.all(combinable.map((entry) => makeRepairMask(recipe.width, recipe.height, entry.node.operations[0]!.bbox, entry.node.operations[0]!.protectRects)));
+    let mask = svgMasks[0]!;
+    for (const next of svgMasks.slice(1)) mask = await sharp(mask).composite([{ input: next, blend: 'lighten' }]).png().toBuffer();
+    const diff = await compareRepairBuffers(base, current, unionBox);
+    pending.combinations.set(node.id, { image: current, mask, difference: diff.differenceBuffer });
+    nodes.push(node);
+  }
+  return { tree: { baseImageSha256: createHash('sha256').update(base).digest('hex'), nodes }, pending };
 }
 
 /**
@@ -722,6 +992,7 @@ export async function runCharacterCompositionGate(input: {
   const attempts: CharacterGateAttempt[] = [];
   const images = new Map<number, Buffer>();
   const originalImages = new Map<number, Buffer>();
+  const pendingTrees = new Map<number, PendingTreeEvidence>();
   const pendingRepairs = new Map<number, PendingRepairEvidence[]>();
   const tried: string[] = [];
   let stopReason: CharacterGateReport['stopReason'] = 'max_attempts';
@@ -767,6 +1038,7 @@ export async function runCharacterCompositionGate(input: {
         detector: null,
         imageAsset: null,
         layered: null,
+        proposalTree: null,
         durationMs: 0,
       };
       attempts.push(attempt);
@@ -818,14 +1090,18 @@ export async function runCharacterCompositionGate(input: {
       });
       applyEvaluation(currentEvaluation);
       const triedRepairs = new Set<string>();
-      const maxLocalizedRepairs = Math.min(3, Math.max(1, Math.floor(config.semanticGate?.maxLocalizedRepairs ?? 3)));
+      const maxLocalizedRepairs = Math.min(6, Math.max(1, Math.floor(config.semanticGate?.maxLocalizedRepairs ?? 3)));
+      const objectRepairsByRegion = new Map<number, number>();
+      const objectRegionsDone = new Set<number>();
       const repairEvidence: PendingRepairEvidence[] = [];
       while (semanticEnabled && config.semanticGate?.localizedRepair && adapter.inpaintRegion && repairEvidence.length < maxLocalizedRepairs) {
         const repairUncertainAttributes = config.semanticGate.repairUncertainAttributes === true;
         const eligibleSemantic = (repairUncertainAttributes || currentEvaluation.overallVerdict === 'rejected')
           ? (currentEvaluation.semantic?.repairCandidates ?? []).filter((candidate) => {
-              if (triedRepairs.has(candidate.criterionId)) return false;
               const criterion = criterionForRepair(currentEvaluation.semantic, candidate.criterionId);
+              if (criterion?.kind === 'object' && criterion.regionIndex !== null) {
+                if (objectRegionsDone.has(criterion.regionIndex) || (objectRepairsByRegion.get(criterion.regionIndex) ?? 0) >= MAX_OBJECT_REPAIRS_PER_CHARACTER) return false;
+              } else if (triedRepairs.has(candidate.criterionId)) return false;
               return criterion !== null && (criterion.status === 'failed' || (repairUncertainAttributes && criterion.status === 'uncertain'));
             })
           : [];
@@ -858,18 +1134,29 @@ export async function runCharacterCompositionGate(input: {
         const semanticRepairCandidate = semanticCandidate && objectRegion !== null
           ? (() => {
               // One repair per character covers all of its unverified objects (e.g. "katana" and "sword").
-              const objects = (currentEvaluation.semantic?.criteria ?? []).filter((criterion) => criterion.kind === 'object' && criterion.regionIndex === objectRegion && criterion.status !== 'confirmed' && !triedRepairs.has(criterion.id));
+              const objects = (currentEvaluation.semantic?.criteria ?? []).filter((criterion) => criterion.kind === 'object' && criterion.regionIndex === objectRegion && criterion.status !== 'confirmed');
               const terms = [...new Set(objects.map((criterion) => criterion.requirement))];
               const characterPrompt = recipe.characterRegions[objectRegion]?.prompt ?? 'the planned character';
+              const relation = relationForTerms(characterPrompt, terms);
+              const figure = currentEvaluation.gate.figures.find((candidateFigure) => candidateFigure.regionIndex === objectRegion);
+              const plan = figure
+                ? planObjectRepairMask({ relation, region: regionRects[objectRegion]!, figure, pose: poseForFigure(currentEvaluation.evidence, figure), face: faceForFigure(currentEvaluation.evidence, figure) })
+                : { bbox: regionRects[objectRegion]!, protect: [], basis: 'figure' as const };
+              const wording = buildObjectRepairPrompt(characterPrompt, relation);
+              const previous = objectRepairsByRegion.get(objectRegion) ?? 0;
               return {
-                criterionId: semanticCandidate.criterionId,
+                criterionId: previous === 0 ? semanticCandidate.criterionId : `${semanticCandidate.criterionId}:retry${previous}`,
                 criterionKind: 'object' as const,
                 regionIndex: objectRegion,
-                bbox: objectRepairMask(regionRects[objectRegion]!, currentEvaluation.gate.figures.find((figure) => figure.regionIndex === objectRegion)),
-                prompt: `${characterPrompt}, ${terms.map((term) => `holding ${term}`).join(', ')}, ${terms.join(', ')} clearly visible`,
-                negativePrompt: `${recipe.negativePrompt}, ${OBJECT_REPAIR_NEGATIVE}`,
+                bbox: plan.bbox,
+                protectRects: plan.protect,
+                maskBasis: plan.basis,
+                figure,
+                prompt: wording.prompt,
+                negativePrompt: `${recipe.negativePrompt}, ${wording.negative}`,
                 strength: OBJECT_REPAIR_STRENGTH,
                 objectTerms: terms,
+                relation,
                 coveredCriterionIds: objects.map((criterion) => criterion.id),
                 reason: semanticCandidate.reason,
               };
@@ -885,6 +1172,10 @@ export async function runCharacterCompositionGate(input: {
         if (!candidate) break;
         triedRepairs.add(candidate.criterionId);
         if ('coveredCriterionIds' in candidate && Array.isArray(candidate.coveredCriterionIds)) for (const id of candidate.coveredCriterionIds as string[]) triedRepairs.add(id);
+        const objectCandidate = 'relation' in candidate && candidate.regionIndex !== null
+          ? (candidate as typeof candidate & { relation: ObjectRelation; figure: CharacterGateFigure | undefined; maskBasis: 'pose' | 'figure' })
+          : null;
+        if (objectCandidate) objectRepairsByRegion.set(objectCandidate.regionIndex!, (objectRepairsByRegion.get(objectCandidate.regionIndex!) ?? 0) + 1);
         const beforeImage = image;
         const beforeEvaluation = currentEvaluation;
         const repairSeed = createHash('sha256').update(`${seed}:${candidate.criterionId}:${candidate.bbox.x},${candidate.bbox.y},${candidate.bbox.width},${candidate.bbox.height}`).digest().readUInt32BE(0);
@@ -897,12 +1188,17 @@ export async function runCharacterCompositionGate(input: {
         report.seed = repairSeed;
         report.beforeAttribute = attributeSnapshot(beforeEvaluation.semantic, candidate.criterionId);
         const repairStrength = 'strength' in candidate && typeof candidate.strength === 'number' ? candidate.strength : config.semanticGate.repairStrength ?? 0.48;
-        report.strategy = 'figure' in candidate && candidate.figure ? 'rescale_then_inpaint' : 'objectTerms' in candidate ? 'object_inpaint' : 'inpaint';
+        report.strategy = candidate.criterionKind === 'count' ? 'rescale_then_inpaint' : 'objectTerms' in candidate ? 'object_inpaint' : 'inpaint';
+        const protectRects = 'protectRects' in candidate && Array.isArray(candidate.protectRects) ? (candidate.protectRects as GateRectLike[]) : [];
+        const negativePrompt = 'negativePrompt' in candidate && typeof candidate.negativePrompt === 'string' ? candidate.negativePrompt : recipe.negativePrompt;
+        report.prompt = candidate.prompt;
+        report.negativePrompt = negativePrompt;
+        if (protectRects.length > 0) report.protectRects = protectRects;
         report.strength = repairStrength;
         try {
           let inpaintBase = beforeImage;
           let pastedRect: GateRectLike | null = null;
-          if ('figure' in candidate && candidate.figure) {
+          if (candidate.criterionKind === 'count' && 'figure' in candidate && candidate.figure) {
             const rescaled = await rescaleFigureIntoRegion(adapter, beforeImage, candidate.figure, candidate.bbox, COUNT_REPAIR_TARGET_FRACTION);
             inpaintBase = rescaled.buffer;
             pastedRect = rescaled.pastedRect;
@@ -912,8 +1208,9 @@ export async function runCharacterCompositionGate(input: {
           const repairedImage = await adapter.inpaintRegion({
             imageBuffer: inpaintBase,
             prompt: candidate.prompt,
-            negativePrompt: 'negativePrompt' in candidate && typeof candidate.negativePrompt === 'string' ? candidate.negativePrompt : recipe.negativePrompt,
+            negativePrompt,
             bbox: candidate.bbox,
+            ...(protectRects.length > 0 ? { protectRects } : {}),
             strength: repairStrength,
             seed: repairSeed,
           });
@@ -935,12 +1232,29 @@ export async function runCharacterCompositionGate(input: {
               regression.status = 'failed';
             }
           }
+          if (objectCandidate) {
+            const relationReport = await assessObjectRepair({
+              before: beforeImage,
+              after: repairedImage,
+              mask: candidate.bbox,
+              relation: objectCandidate.relation,
+              evaluation: afterEvaluation,
+              figure: objectCandidate.figure,
+              maskBasis: objectCandidate.maskBasis,
+            });
+            report.objectRelations = [relationReport];
+            if (relationReport.assessment.overall === 'violated') {
+              regression.reasons.push(...relationReport.assessment.reasons.map((reason) => `object_relation_violated:${reason}`));
+              regression.status = 'failed';
+            }
+          }
           report.afterAttribute = attributeSnapshot(afterEvaluation.semantic, candidate.criterionId);
           report.regression = regression;
-          const maskBuffer = await makeRepairMask(recipe.width, recipe.height, candidate.bbox);
+          const maskBuffer = await makeRepairMask(recipe.width, recipe.height, candidate.bbox, protectRects);
           repairEvidence.push({ report, maskBuffer, originalBuffer: beforeImage, repairedBuffer: repairedImage, differenceBuffer: diff.differenceBuffer });
           const onlyUnverified = regression.reasons.length === 1 && regression.reasons[0] === 'target_attribute_not_confirmed';
           if (onlyUnverified) {
+            if (objectCandidate) objectRegionsDone.add(objectCandidate.regionIndex!);
             report.status = 'proposed';
             report.reason = 'Repair passed the regression guards but the local evaluator cannot confirm the attribute; kept as an alternative for human review and not adopted.';
             attempt.repairs.push(report);
@@ -948,12 +1262,15 @@ export async function runCharacterCompositionGate(input: {
             continue;
           }
           if (regression.status !== 'passed') {
+            // Only a relation violation (wrong grip/hand/orientation) earns the object a second seed.
+            if (objectCandidate && report.objectRelations?.[0]?.assessment.overall !== 'violated') objectRegionsDone.add(objectCandidate.regionIndex!);
             report.status = 'failed';
             report.reason = `Regional repair regression: ${regression.reasons.join(', ') || regression.status}.`;
             attempt.repairs.push(report);
             attempt.repair = report;
             continue;
           }
+          if (objectCandidate) objectRegionsDone.add(objectCandidate.regionIndex!);
           image = repairedImage;
           images.set(attempt.attempt, image);
           currentEvaluation = afterEvaluation;
@@ -970,6 +1287,11 @@ export async function runCharacterCompositionGate(input: {
         }
       }
       pendingRepairs.set(attempt.attempt, repairEvidence);
+      if (semanticEnabled && repairEvidence.length > 0) {
+        const built = await buildProposalTree({ adapter, recipe, config, base: image, baseEvaluation: currentEvaluation, repairs: repairEvidence });
+        attempt.proposalTree = built.tree;
+        pendingTrees.set(attempt.attempt, built.pending);
+      }
       attempt.durationMs = Date.now() - started;
       if (attempt.overallVerdict === 'passed_pending_human_review') {
         stopReason = 'passed';
@@ -1004,6 +1326,29 @@ export async function runCharacterCompositionGate(input: {
         pending.report.originalImageAsset = { relativePath: originalAsset.relativePath, originalName };
         pending.report.repairedImageAsset = { relativePath: repairedAsset.relativePath, originalName: repairedName };
         pending.report.differenceImageAsset = { relativePath: differenceAsset.relativePath, originalName: diffName };
+      }
+      const tree = attempt.proposalTree;
+      const pendingTree = pendingTrees.get(attempt.attempt);
+      if (tree && pendingTree) {
+        const ingest = async (buffer: Buffer, originalName: string) => {
+          const asset = await input.ingestion.ingestBuffer({ buffer, kind: 'image', extension: 'png', originalName });
+          return { relativePath: asset.relativePath, originalName };
+        };
+        for (const node of tree.nodes) {
+          if (node.kind === 'base') node.imageAsset = await ingest(pendingTree.base, `ai-gate-proposal-base-attempt${attempt.attempt}-${attempt.seed}.png`);
+          else if (node.kind === 'repair' && node.repairIndex !== null) {
+            const report = pendingRepairs.get(attempt.attempt)?.[node.repairIndex]?.report;
+            node.imageAsset = report?.repairedImageAsset ?? null;
+            node.maskAsset = report?.maskAsset ?? null;
+            node.differenceAsset = report?.differenceImageAsset ?? null;
+          } else if (node.kind === 'combination') {
+            const combined = pendingTree.combinations.get(node.id);
+            if (!combined) continue;
+            node.imageAsset = await ingest(combined.image, `ai-gate-proposal-${node.id}-${node.status}-attempt${attempt.attempt}-${attempt.seed}.png`);
+            node.maskAsset = await ingest(combined.mask, `ai-gate-proposal-${node.id}-mask-attempt${attempt.attempt}.png`);
+            node.differenceAsset = await ingest(combined.difference, `ai-gate-proposal-${node.id}-diff-attempt${attempt.attempt}-${attempt.seed}.png`);
+          }
+        }
       }
       if (attempt !== chosen || attempt.overallVerdict === 'rejected') {
         const originalName = `ai-gate-${attempt.overallVerdict ?? attempt.gate!.verdict}-attempt${attempt.attempt}-${attempt.seed}.png`;
