@@ -4,7 +4,8 @@
  * same graph execution, so "basic vs refined" compares identical noise. Earlier runs (canonical v1 at the folder root,
  * run-regional-v1/, run-crowd-negative-rejected/) are never overwritten: each run writes to its own run-cs9-* folder.
  *
- * Optional: CS9_CASES=anime-two,cyberpunk-trio limits the run to some cases.
+ * Optional: CS9_CASES=anime-two,cyberpunk-trio limits the run to some cases; CS9_PROFILES=preview limits profiles;
+ * CS9_CROWD=on enables the opt-in crowd-suppression LoRA; CS9_SEED_OFFSET=100 shifts every seed; CS9_LORA=file.safetensors:-1.5 applies one LoRA (manual mode) to the multi-character cases only.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -18,12 +19,21 @@ import type { GenerationQualityProfileId, ProfessionalPresetId } from '../packag
 const execFileAsync = promisify(execFile);
 const root = resolve(import.meta.dirname, '..');
 const baseDir = join(root, 'artifacts', 'comfyui-aethera-six-case-acceptance');
-const runId = `run-cs9-${new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)}`;
+const runId = `run-cs9-${process.env.CS9_LORA ? 'lora-' : ''}${new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)}`;
 const runDir = join(baseDir, runId);
 const userDataDir = join(baseDir, 'userData');
 const dbDir = join(userDataDir, 'db');
 const migrationsFolder = resolve(import.meta.dirname, '../packages/database/migrations');
 const onlyCases = process.env.CS9_CASES?.split(',').filter(Boolean);
+const seedOffset = Number(process.env.CS9_SEED_OFFSET ?? 0);
+const profiles = (process.env.CS9_PROFILES?.split(',').filter(Boolean) ?? ['preview', 'professional']) as GenerationQualityProfileId[];
+const loraSpec = process.env.CS9_LORA
+  ? (() => {
+      // file.safetensors:modelStrength[:clipStrength]
+      const [model = '', strengthModel = '1', strengthClip = strengthModel] = process.env.CS9_LORA!.split(':');
+      return { model, strengthModel: Number(strengthModel), strengthClip: Number(strengthClip) };
+    })()
+  : null;
 
 async function vramMiB(): Promise<number | null> {
   try {
@@ -156,7 +166,7 @@ try {
 
   const results: Array<Record<string, unknown> & { id: string; profile: GenerationQualityProfileId; files?: RunFiles }> = [];
   for (const testCase of cases.filter((item) => !onlyCases || onlyCases.includes(item.id))) {
-    for (const profile of ['preview', 'professional'] as const) {
+    for (const profile of profiles) {
       const label = `${testCase.id}-${profile}`;
       const started = Date.now();
       const vramBeforeMiB = await vramMiB();
@@ -178,9 +188,10 @@ try {
           ...(testCase.characterDescriptions ? { characterDescriptions: testCase.characterDescriptions } : {}),
           qualityProfile: profile,
           spatialControl: 'auto',
-          seed: testCase.seed,
+          crowdSuppression: process.env.CS9_CROWD === 'on',
+          seed: testCase.seed + seedOffset,
           maxAttempts: 1,
-          loraMode: 'off',
+          ...(loraSpec && testCase.characterCount > 1 ? { loraMode: 'manual' as const, loras: [loraSpec] } : { loraMode: 'off' as const }),
         });
         const ms = Date.now() - started;
         const after = await vramMiB();
@@ -215,11 +226,13 @@ try {
           workflow: spatialMode === 'openpose'
             ? 'aethera-regional-openpose'
             : spatialMode === 'area_only' ? 'aethera-regional-area' : 'aethera-single-pass',
+          lora: loraSpec && testCase.characterCount > 1 ? loraSpec : null,
+          crowdSuppression: result.generation.crowdSuppression ?? null,
           refinedWith: engineParameters?.faceDetailer ? 'faceDetailer' : 'none',
           refinement: result.generation.refinement ?? null,
           engineParameters,
           preset: testCase.preset,
-          seed: testCase.seed,
+          seed: testCase.seed + seedOffset,
           characterCount: testCase.characterCount,
           characterDescriptions: testCase.characterDescriptions ?? null,
           documentResolution: `${result.document.width}x${result.document.height}`,
@@ -302,7 +315,7 @@ try {
     preservedRuns: ['root (canonical v1)', 'run-regional-v1/', 'run-crowd-negative-rejected/ (v2, rejected)', 'previous-run-fallback-2026-11-17T0025/'],
     limitations: [
       'The structural quality audit does not prove semantic fidelity or production aesthetics.',
-      'LoRA mode is off: no LoRA is installed without explicit user authorization.',
+      'Style LoRA mode is off. The user-authorized crowd-suppression slider is opt-in (CS9_CROWD=on / CS9_LORA) because it can erase the cast.',
       'OpenPose SDXL (thibaud) has an "other" license that still needs commercial review.',
     ],
   };

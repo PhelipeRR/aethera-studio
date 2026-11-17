@@ -147,6 +147,76 @@ The real advanced pass used the installed Animagine checkpoint and the Aethera F
 
 The panel therefore defaults IP-Adapter weight to `0.35`. This is an evidence-based starting point, not a guarantee of identity fidelity for arbitrary references, and the visual review in this run is not a human production approval. The structural audit still does not replace human semantic review.
 
+### CS9 — stabilization and visual acceptance (2026-11-17)
+
+**Status: awaiting the user's visual approval.** Nothing below is a human approval; automated tests and structural audits are not a substitute.
+
+#### Why extra figures appeared and characters were lost
+
+Measured on the v1 prompts plus three scratchpad experiment rounds (1344×768, Animagine XL 3.1):
+
+1. The global prompt carried the whole cast and applied to the entire canvas, so the model drew the cast again outside the regions.
+2. Every region prompt contained all cast descriptions, so regions competed for the same people.
+3. `ConditioningSetArea` is only a soft bias; it does not constrain how many bodies appear.
+4. The 8-character grid gave each figure about 192 px of width.
+5. A "no humans" background mask leaked through global attention and erased characters (rejected).
+
+| Experiment | 2 chars | 3 chars | 8 chars |
+| --- | --- | --- | --- |
+| Area conditioning only (v1) | 2 + 1 background silhouette | 3 + crowd | ~8 + crowd |
+| Crowd negative prompt (v2, rejected) | abstract duel | dropped to 2 | better count |
+| One OpenPose skeleton per region (thibaud SDXL OpenPose, 0.75 / end 0.7; 0.9 / end 0.85 for 4+) | exactly 2 | exactly 3, distinct | ~8 separated, faces small |
+| Depth silhouettes | unreliable | unreliable | unreliable |
+
+Chosen architecture (commit 3587b38): cast removed from the global prompt; one `solo, single character, full body, <description>` prompt per region; one synthetic COCO-18 OpenPose skeleton per region when the OpenPose ControlNet is installed (otherwise `area_only`, recorded with a reason); a masked scene-background prompt outside the figure boxes; a staged two-row layout for 4+ characters; banner characters forced to the edges with a calm masked prompt over the title safe area. Single-character cases keep the plain single-pass graph.
+
+#### Bugs found and fixed during CS9
+
+- **FaceDetailer returned the unrefined image.** History outputs iterate in node order, so "first image" was the base at node 7, not the FaceDetailer output at node 22. The adapter now picks node 22 and exposes the base from the same execution (`getLastUnrefinedImage`).
+- **False SDXL-Turbo fallback.** A single `/history` poll exceeded the 15 s request timeout while ComfyUI was loading the checkpoint and ControlNet; the job finished in 61 s, but the chain fell back to the local worker. Poll timeouts are now retried until the overall deadline.
+- **Same seed is not the same prompt.** The creative director (LLM) rewrites style text on every run, so `preview` and `professional` runs differ even with the same seed. The valid basic-vs-refined comparison is the professional base against the refined image from the same graph execution.
+
+#### Six cases — run `run-cs9-2026-11-17T1050`
+
+All 12 generations were served by `comfyui-native` with no fallback, `animagine-xl-3.1.safetensors`, Euler a, 24 steps, 1344×768, peak VRAM 7,084–7,509 MiB. Report: `artifacts/comfyui-aethera-six-case-acceptance/run-cs9-2026-11-17T1050/report.json`; contact sheet: `contact-sheet-basic-vs-refined.png`.
+
+| Case | Workflow | preview / professional | Observation (not approval) |
+| --- | --- | ---: | --- |
+| anime individual | single pass | 63 / 76 s | clean close-up |
+| anime 2 | regional + OpenPose | 87 / 112 s | preview: 2 + two tiny background figures; professional: exactly 2 |
+| cyberpunk trio | regional + OpenPose | 96 / 99 s | 3 main characters plus small pedestrians and one extra figure |
+| cyberpunk 8 | regional + OpenPose (staged) | 104 / 120 s | about 8 figures but abstract and glitchy; **fails** distinguishability |
+| gamer thumbnail | single pass | 69 / 72 s | strong expressive face |
+| NextWorth banner | regional + OpenPose + calm zone | 106 / 143 s | characters at the edges, calm central area; upscaled 1344×768 → 2560×1440 with 4x-UltraSharp in 11 s |
+
+**Refinement verdict.** FaceDetailer changed 0% of pixels on the 2/3/8-character scenes (faces below the detector's reach). It changed 8.5% on the anime close-up with a marginal visual gain and 4.9% on the gamer close-up, where the eyes got worse. FaceDetailer is therefore **opt-in** in the `professional` profile. Model upscale stays on, but only runs when the document is larger than the generation (banner yes, 1280×720 thumbnails no).
+
+#### Crowd-suppression LoRA (user-authorized, 2026-11-17)
+
+No LoRA "counts" characters. The closest targeted model found is the ntc-ai SDXL slider [`photobombing`](https://huggingface.co/ntc-ai/SDXL-LoRA-slider.photobombing): MIT, SDXL 1.0, 8,789,076 bytes, SHA-256 `505c1062a1611758b8e3b58fab724dd687acc8a2064979b9008f2dcfd09e0b31` (verified after download). It is installed as `models/loras/ntc-sdxl-slider-photobombing.safetensors` and used with a negative weight. It adds no relevant VRAM on the 8 GB card.
+
+| Seed | Case | Without LoRA | LoRA −1.5 (model and CLIP) |
+| --- | --- | --- | --- |
+| 31001 | duo | 2 + two tiny extras | exactly 2 |
+| 31002 | trio | 3 + extras | exactly 3, clean background |
+| 31003 | 8 | chaotic | still chaotic |
+| 31101 | duo | exactly 2 | **0 characters (cast erased)** |
+| 31102 | trio | 3 + 1 extra + pedestrians | 3 + 1 extra, pedestrians gone |
+
+| Seed | Case | LoRA UNet −1.0, CLIP 0 |
+| --- | --- | --- |
+| 31101 | duo | **0 characters (figures turned into monoliths)** |
+| 31102 | trio | 3 + 1 extra, fewer pedestrians |
+
+**Verdict: rejected as a default.** The slider suppresses people in general, not only extras: on one of two duo seeds it erased the whole cast at both strengths. It stays installed and available as an opt-in control (`crowdSuppression: true` in the service, `CS9_CROWD=on` or `CS9_LORA=…` in the acceptance script), reported in `generation.crowdSuppression`. Runs: `run-cs9-lora-2026-11-17T1109`, `run-cs9-2026-11-17T1117`, `run-cs9-lora-2026-11-17T1121`, `run-cs9-lora-2026-11-17T1125` (with the `lora-vs-nolora*.png` and `none-vs-1.5-vs-mild.png` comparisons).
+
+#### Still open
+
+- **8 characters** remain abstract and glitchy at 1344×768 (about 168 px per figure). This needs either a larger canvas with tiled or second-pass detail, or fewer characters per frame.
+- **Extra background figures** still appear in some trio seeds. The next robust step is an automatic person-count gate: run a person detector on the result, then reject and regenerate with a new seed when the count differs. This needs no LoRA, just a detector model.
+- Character descriptions are only partially followed; for example, the brawler's chrome arms and the sniper's pink hair did not come through reliably.
+- The OpenPose SDXL model (thibaud) has an "other" license that still needs commercial review.
+
 ## Remaining work / blockers
 
 1. Add semantic/human-review recording to the six-case acceptance so subject count, anatomy, focal point, text-safe area, and “empty composition” become explicit acceptance criteria.

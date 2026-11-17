@@ -33,6 +33,8 @@ export interface AiGenerationReport {
   servedBy?: { providerId: string; fallbackErrors: string[] };
   /** Effective engine parameters after checkpoint-profile adjustments, when the serving engine reports them. */
   engineParameters?: unknown;
+  /** Technical negative LoRA used against extra background figures in multi-character scenes (set by the caller). */
+  crowdSuppression?: { applied: boolean; lora: LoraStackItem | null; reason: string };
   /** Quality profile and the refinement steps that actually ran. */
   refinement?: {
     profile: GenerationQualityProfileId;

@@ -26,6 +26,8 @@ import {
   creativeProjectDocumentSchema,
   generateAiBackground,
   resolveGenerationQualityProfile,
+  resolveCrowdSuppression,
+  type CrowdSuppressionDecision,
   type GenerationQualityOverrides,
   type GenerationQualityProfileId,
   generateTypographyConceptLab,
@@ -740,6 +742,8 @@ export class AetheraCreativeStudioService {
     /** Per-request refinement switches, e.g. `{ faceDetailer: false }` when a case is hurt by it. */
     qualityOverrides?: GenerationQualityOverrides;
     spatialControl?: 'auto' | 'none';
+    /** Opt-in negative photobombing slider on multi-character scenes (off by default: it can erase the cast). */
+    crowdSuppression?: boolean;
     assetManifest?: Record<string, ManagedAssetRef>;
   }): Promise<{
     document: CreativeProjectDocument;
@@ -799,6 +803,20 @@ export class AetheraCreativeStudioService {
         message: 'Fundo fornecido pelo usuário; geração por IA não executada.',
       };
     } else {
+      let crowdSuppression: CrowdSuppressionDecision = { lora: null, reason: 'single-character scene' };
+      if ((input.characterCount ?? 1) > 1 && input.crowdSuppression === true) {
+        try {
+          const installed = (await this.imageEngineStatus()).loraCatalog.map((entry) => entry.model);
+          crowdSuppression = resolveCrowdSuppression(input.characterCount, installed, true);
+        } catch (error) {
+          crowdSuppression = { lora: null, reason: `LoRA discovery failed: ${error instanceof Error ? error.message : String(error)}` };
+        }
+      } else if ((input.characterCount ?? 1) > 1) {
+        crowdSuppression = resolveCrowdSuppression(input.characterCount, []);
+      }
+      const generationLoras = crowdSuppression.lora && !selectedLoras.some((item) => item.model === crowdSuppression.lora?.model)
+        ? [...selectedLoras, crowdSuppression.lora]
+        : selectedLoras;
       const generated = await generateAiBackground({
         artType: input.artType,
         prompt: input.prompt,
@@ -811,7 +829,7 @@ export class AetheraCreativeStudioService {
         ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths } : {}),
         ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),
         ...(input.maxAttempts !== undefined ? { maxAttempts: input.maxAttempts } : {}),
-        ...(selectedLoras.length ? { loras: selectedLoras } : {}),
+        ...(generationLoras.length ? { loras: generationLoras } : {}),
         loraSelection,
         ...(input.controlNet ? { controlNet: input.controlNet } : {}),
         ...(input.ipAdapter ? { ipAdapter: input.ipAdapter } : {}),
@@ -824,7 +842,7 @@ export class AetheraCreativeStudioService {
         ...(input.maxSide !== undefined ? { maxSide: input.maxSide } : {}),
         ...(input.stylization !== undefined ? { stylization: input.stylization } : {}),
       });
-      generation = generated.report;
+      generation = { ...generated.report, crowdSuppression: { applied: Boolean(crowdSuppression.lora), lora: crowdSuppression.lora, reason: crowdSuppression.reason } };
       this.reportGeneration(generation);
       const generatedAsset = generated.asset;
       if (generatedAsset && input.artType === 'avatar' && !subjectAsset) {
@@ -917,6 +935,7 @@ export class AetheraCreativeStudioService {
       ...(input.qualityProfile ? { qualityProfile: input.qualityProfile } : {}),
       ...(input.qualityOverrides ? { qualityOverrides: input.qualityOverrides } : {}),
       ...(input.spatialControl ? { spatialControl: input.spatialControl } : {}),
+      ...(input.crowdSuppression !== undefined ? { crowdSuppression: input.crowdSuppression } : {}),
     };
     this.repo.saveGenerationRun({
       id: generationRunId,

@@ -34,3 +34,4 @@ export * from './lora-install-policy.js';
 export * from './checkpoint-profiles.js';
 export * from './generation-profiles.js';
 export * from './spatial-guides.js';
+export * from './crowd-suppression.js';
