@@ -41,6 +41,8 @@ import { recomputeTimelineFingerprints, type CanonicalTimeline } from '../ir/tim
 import type { AetheraEvolutionCore, ProductionDirectives } from '../evolution/evolution-core.js';
 import { resolveDeliveryProfile, type DeliveryQualityProfile, type ResolvedDeliveryProfile } from '../director/aethera-format-catalog.js';
 import { compileSmartCaptions, type CaptionWord, type SmartCaptionArtifact, type SmartCaptionStyle } from '../captions/smart-captions.js';
+import { resolveRealAudioAssets, type RealAudioAssetsInput, type ResolvedRealAudioAssets } from '../audio/real-audio-assets.js';
+import { evaluateDeliveryQualityGate, type DeliveryQualityGateReport } from '../qc/delivery-quality-gate.js';
 
 const execFileAsync = promisify(execFile);
 type NarrationMode = 'voicestudio_tts' | 'elevenlabs_tts' | 'windows_sapi_tts' | 'procedural_voice_fallback';
@@ -96,6 +98,9 @@ export interface RealRenderInput {
   captionStyle?: SmartCaptionStyle;
   captionKeywords?: readonly string[];
   captionPlacement?: 'bottom' | 'top';
+  /** Optional local, licensed music/ambience/SFX. Strict production requires all three roles. */
+  realAudioAssets?: RealAudioAssetsInput;
+  requireRealAudioAssets?: boolean;
 }
 
 export type AudioFirstRenderAudit = AudioFirstDurationAudit & {
@@ -160,6 +165,8 @@ export interface RealRenderResult {
     coverage: SmartCaptionArtifact['coverage'];
     style: SmartCaptionStyle;
   };
+  audioSources?: ResolvedRealAudioAssets['sources'];
+  deliveryGate?: DeliveryQualityGateReport;
   deliveryValidation?: {
     valid: boolean;
     target: 'preview' | 'master';
@@ -170,7 +177,7 @@ export interface RealRenderResult {
 }
 
 export class RealRenderError extends Error {
-  readonly code: 'audio_truncated' | 'render_failed';
+  readonly code: 'audio_truncated' | 'render_failed' | 'audio_assets_blocked';
   readonly audioFirstTimeline: AudioFirstRenderAudit | undefined;
 
   constructor(message: string, options: { code: RealRenderError['code']; audioFirstTimeline?: AudioFirstRenderAudit }) {
@@ -642,6 +649,10 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const mp4Path = join(input.outputDir, input.fileName ?? `${input.pkg.timeline.projectId}.mp4`);
   const workDir = join(input.outputDir, '_work');
   mkdirSync(workDir, { recursive: true });
+  const resolvedRealAudio = await resolveRealAudioAssets(input.realAudioAssets, { ...(input.requireRealAudioAssets !== undefined ? { requireRealAudio: input.requireRealAudioAssets } : {}) });
+  if (input.requireRealAudioAssets && !resolvedRealAudio.valid) {
+    throw new RealRenderError(resolvedRealAudio.diagnostics.join(' | '), { code: 'audio_assets_blocked' });
+  }
   const fallbackPresetId = input.pkg.timeline.resolution.height > input.pkg.timeline.resolution.width ? 'shorts' : 'youtube-1080p';
   const deliveryProfile: ResolvedDeliveryProfile = input.deliveryPresetId
     ? resolveDeliveryProfile({ presetId: input.deliveryPresetId, ...(input.previewProfile ? { previewProfile: input.previewProfile } : {}) })
@@ -1260,28 +1271,51 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const sfxDelay2Ms = Math.min(11200, Math.max(250, Math.round(totalDur * 500)));
   const sfxDelay3Ms = Math.min(16800, Math.max(400, Math.round(totalDur * 750)));
 
-  // Generate warm chord music bed + ambience room tone + SFX whoosh/impact cues synced to stems & mixer gains
+  const ffmpegAudioInputs: string[] = ['-i', narrationWav];
+  let nextAudioInputIndex = 1;
+  const musicInputIndex = resolvedRealAudio.music ? nextAudioInputIndex++ : null;
+  if (resolvedRealAudio.music) ffmpegAudioInputs.push('-i', resolvedRealAudio.music.path);
+  const ambienceInputIndex = resolvedRealAudio.ambience ? nextAudioInputIndex++ : null;
+  if (resolvedRealAudio.ambience) ffmpegAudioInputs.push('-i', resolvedRealAudio.ambience.path);
+  const sfxInputIndexes = resolvedRealAudio.sfx.map((asset) => {
+    const index = nextAudioInputIndex++;
+    ffmpegAudioInputs.push('-i', asset.path);
+    return { asset, index };
+  });
+
+  const musicChain = musicInputIndex !== null
+    ? `[${musicInputIndex}:a]aresample=48000,atrim=duration=${totalDur},asetpts=PTS-STARTPTS,volume=${musicVol},apad=whole_dur=${totalDur}[music]`
+    : `sine=frequency=110:sample_rate=48000:duration=${totalDur},volume=0.14[m1];sine=frequency=164.81:sample_rate=48000:duration=${totalDur},volume=0.09[m2];sine=frequency=220:sample_rate=48000:duration=${totalDur},volume=0.07[m3];[m1][m2][m3]amix=inputs=3:normalize=0,afade=t=in:st=0:d=1.2,afade=t=out:st=${Math.max(0.2, totalDur - 1.5)}:d=1.5,volume=${musicVol}[music]`;
+  const ambienceChain = ambienceInputIndex !== null
+    ? `[${ambienceInputIndex}:a]aresample=48000,atrim=duration=${totalDur},asetpts=PTS-STARTPTS,volume=${ambienceVol},apad=whole_dur=${totalDur},asplit=2[amb][amb_stem]`
+    : `anoisesrc=color=pink:sample_rate=48000:duration=${totalDur},volume=0.015,volume=${ambienceVol},asplit=2[amb][amb_stem]`;
+  const sfxChains = sfxInputIndexes.length > 0
+    ? sfxInputIndexes.map(({ asset, index }, sfxIndex) => `[${index}:a]aresample=48000,asetpts=PTS-STARTPTS,volume=${sfxVol},adelay=${asset.atMs}|${asset.atMs}[sfx_asset_${sfxIndex}]`)
+    : [
+        `sine=frequency=520:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.32,volume=${sfxVol},adelay=${sfxDelay1Ms}|${sfxDelay1Ms}[sfx1]`,
+        `sine=frequency=780:sample_rate=48000:duration=0.22,afade=t=out:st=0.04:d=0.18,volume=0.35,volume=${sfxVol},adelay=${sfxDelay2Ms}|${sfxDelay2Ms}[sfx2]`,
+        `sine=frequency=440:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.30,volume=${sfxVol},adelay=${sfxDelay3Ms}|${sfxDelay3Ms}[sfx3]`,
+      ];
+  const sfxMixInputs = sfxInputIndexes.length > 0
+    ? sfxInputIndexes.map((_entry, index) => `[sfx_asset_${index}]`).join('')
+    : '[sfx1][sfx2][sfx3]';
+  const sfxMix = `${sfxMixInputs}amix=inputs=${Math.max(1, sfxInputIndexes.length || 3)}:duration=longest:normalize=0,apad=whole_dur=${totalDur},asplit=2[sfx_mix][sfx_stem]`;
+
+  // Real local assets are used when provided; generated tones remain only as a diagnostic legacy fixture fallback.
   const audioComplex = [
     `[0:a]apad=whole_dur=${totalDur},volume=${voiceVol},asplit=2[nar_sc][nar_mix]`,
-    `sine=frequency=110:sample_rate=48000:duration=${totalDur},volume=0.14[m1]`,
-    `sine=frequency=164.81:sample_rate=48000:duration=${totalDur},volume=0.09[m2]`,
-    `sine=frequency=220:sample_rate=48000:duration=${totalDur},volume=0.07[m3]`,
-    `[m1][m2][m3]amix=inputs=3:normalize=0,afade=t=in:st=0:d=1.2,afade=t=out:st=${Math.max(0.2, totalDur - 1.5)}:d=1.5,volume=${musicVol}[music]`,
+    musicChain,
     `[music][nar_sc]sidechaincompress=threshold=0.03:ratio=${duckRatio}:attack=25:release=250,asplit=2[ducked_music][ducked_music_stem]`,
-    `anoisesrc=color=pink:sample_rate=48000:duration=${totalDur},volume=0.015,volume=${ambienceVol},asplit=2[amb][amb_stem]`,
-    // SFX impacts synced to scene transitions
-    `sine=frequency=520:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.32,volume=${sfxVol},adelay=${sfxDelay1Ms}|${sfxDelay1Ms}[sfx1]`,
-    `sine=frequency=780:sample_rate=48000:duration=0.22,afade=t=out:st=0.04:d=0.18,volume=0.35,volume=${sfxVol},adelay=${sfxDelay2Ms}|${sfxDelay2Ms}[sfx2]`,
-    `sine=frequency=440:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.30,volume=${sfxVol},adelay=${sfxDelay3Ms}|${sfxDelay3Ms}[sfx3]`,
-    `[sfx1][sfx2][sfx3]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=${totalDur},asplit=2[sfx_mix][sfx_stem]`,
+    ambienceChain,
+    ...sfxChains,
+    sfxMix,
     `[nar_mix][ducked_music][amb][sfx_mix]amix=inputs=4:duration=longest:normalize=0,loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}[aout]`,
   ].join(';');
 
   const rawAudioMixPath = join(workDir, 'audio_master_raw.wav');
   await execFileAsync('ffmpeg', [
     '-y',
-    '-i',
-    narrationWav,
+    ...ffmpegAudioInputs,
     '-filter_complex',
     audioComplex,
     '-map',
@@ -1459,6 +1493,15 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     actual: { width: probe.width, height: probe.height, fps: probe.fps, durationSec: probe.durationSec, audioCodec: probe.audioCodec, videoCodec: probe.videoCodec, audioSampleRate: probe.audioSampleRate, audioDurationSec: finalAudioStreamDurationMs / 1000 },
     errors: validationErrors,
   } as const;
+  const deliveryGate = evaluateDeliveryQualityGate({
+    probe: { width: probe.width, height: probe.height, fps: probe.fps, durationSec: probe.durationSec, audioCodec: probe.audioCodec, audioSampleRate: probe.audioSampleRate },
+    expected: { width: targetWidth, height: targetHeight, fps: targetFps, durationSec: totalDur, durationToleranceMs: audioFirstBase.durationToleranceMs },
+    audioFirst: { completeNarrationPreserved: audioFirstBase.completeNarrationPreserved, measuredNarrationDurationMs: measuredNarMs, finalAudioStreamDurationMs },
+    ...(smartCaptionArtifact ? { captions: { enabled: true, coverageEndMs: smartCaptionArtifact.coverage.endMs, measuredNarrationDurationMs: measuredNarMs, wordCount: measuredCaptionWords.length } } : {}),
+    audioSources: resolvedRealAudio.sources,
+    technicalSample: isTechnicalSample,
+  }, { ...(input.requireRealAudioAssets !== undefined ? { requireRealAudio: input.requireRealAudioAssets } : {}) });
+  writeFileSync(`${mp4Path}.delivery.json`, JSON.stringify(deliveryGate, null, 2), 'utf8');
   const waveformPeaks = await extractWaveformPeaks(audioMixPath, 80);
 
   return {
@@ -1526,6 +1569,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
         style: smartCaptionArtifact.style,
       },
     } : {}),
+    audioSources: resolvedRealAudio.sources,
+    deliveryGate,
     deliveryValidation,
   };
 }
