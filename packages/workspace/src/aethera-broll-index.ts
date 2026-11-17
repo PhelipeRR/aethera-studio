@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { brollIndexSchema, type BrollIndex, type BrollSemanticStatus, type BrollTechnicalStatus } from '@neuralbridge/shared';
+import { brollIndexSchema, type BrollIndex, type BrollSemanticStatus, type BrollTechnicalStatus, type MediaSegment } from '@neuralbridge/shared';
 
 const exec = promisify(execFile);
 export const BROLL_INDEX_VERSION = 'p2.1';
@@ -113,6 +113,13 @@ export function classifyBrollSemanticDecision(input: {
 export function canReuseBrollIndex(index: BrollIndex, expected: { sourceHash: string; indexVersion: string }): boolean {
   const parsed = brollIndexSchema.safeParse(index);
   return parsed.success && parsed.data.status === 'complete' && parsed.data.sourceHash === expected.sourceHash && parsed.data.indexVersion === expected.indexVersion;
+}
+
+/** Partial indexes survive an interrupted run. Only deterministic, source-matching intervals are resumed. */
+export function resumableBrollSegments(index: BrollIndex, expected: { sourceHash: string; indexVersion: string }): Map<string, MediaSegment> {
+  const parsed = brollIndexSchema.safeParse(index);
+  if (!parsed.success || parsed.data.status !== 'indexing' || parsed.data.sourceHash !== expected.sourceHash || parsed.data.indexVersion !== expected.indexVersion) return new Map();
+  return new Map(parsed.data.segments.filter((segment) => segment.broll?.sourceHash === expected.sourceHash && segment.broll.indexVersion === expected.indexVersion && segment.id === stableBrollSegmentId({ sourceHash: expected.sourceHash, startMs: segment.startMs, endMs: segment.endMs, indexVersion: expected.indexVersion })).map((segment) => [segment.id, segment]));
 }
 
 export async function makeBrollContactSheet(input: { ffmpeg: string; framePaths: readonly string[]; outputPath: string; labels: readonly string[] }): Promise<void> {

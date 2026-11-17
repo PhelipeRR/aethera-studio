@@ -11,6 +11,7 @@ import {
   makeBrollContactSheet,
   representativeKeyframeTimes,
   stableBrollSegmentId,
+  resumableBrollSegments,
   validateBrollContinuity,
 } from '../src/aethera-broll-index.js';
 
@@ -56,6 +57,15 @@ it('reuses only a complete index with the same source fingerprint and index vers
   expect(canReuseBrollIndex(base, { sourceHash: 'a'.repeat(64), indexVersion: BROLL_INDEX_VERSION })).toBe(true);
   expect(canReuseBrollIndex(base, { sourceHash: 'b'.repeat(64), indexVersion: BROLL_INDEX_VERSION })).toBe(false);
   expect(canReuseBrollIndex({ ...base, status: 'indexing' }, { sourceHash: base.sourceHash, indexVersion: base.indexVersion })).toBe(false);
+});
+
+it('resumes only compatible partial intervals and never resumes a completed provider outage', () => {
+  const segment = {
+    schemaVersion: 1 as const, id: stableBrollSegmentId({ sourceHash: 'a'.repeat(64), startMs: 0, endMs: 2_000, indexVersion: BROLL_INDEX_VERSION }), assetId: 'asset', startMs: 0, endMs: 2_000, frameHashes: ['frame'], kind: 'unknown' as const, description: 'observed', tags: [], embeddingRefs: [], quality: { blur: 0, motion: 0.5, overlayText: false, watermark: false, black: false, frozen: false }, analyzedBy: { provider: 'test', model: 'test', confidence: 0 }, broll: { indexVersion: BROLL_INDEX_VERSION, sourceHash: 'a'.repeat(64), keyframes: [{ atMs: 1_000, hash: 'frame', relativePath: 'frame.jpg' }], technicalStatus: 'technical_valid' as const, semanticStatus: 'semantic_adequate' as const, flashFrameTimesMs: [], continuity: { valid: true, gapsMs: [] }, diagnostics: [] },
+  };
+  const partial = { schemaVersion: 1 as const, indexVersion: BROLL_INDEX_VERSION, assetId: 'asset', sourceHash: 'a'.repeat(64), sourcePath: 'media/a.mp4', durationMs: 2_000, cutsSeconds: [0, 2], contactSheetPath: null, segments: [segment], status: 'indexing' as const, diagnostics: [] };
+  expect([...resumableBrollSegments(partial, { sourceHash: 'a'.repeat(64), indexVersion: BROLL_INDEX_VERSION }).keys()]).toEqual([segment.id]);
+  expect(resumableBrollSegments({ ...partial, status: 'technical_blocked' }, { sourceHash: partial.sourceHash, indexVersion: partial.indexVersion })).toEqual(new Map());
 });
 
 it('blocks incomplete temporal coverage but accepts ordinary CFR rounding', () => {

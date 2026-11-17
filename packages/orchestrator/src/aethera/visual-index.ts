@@ -1,6 +1,6 @@
 import type { AetheraStudioRepository } from '@neuralbridge/database';
 import { normalizeGameTitle, segmentKinds, type IdentitySignal, type MediaSegment, type VerifiedSubject, type VisionPolicy } from '@neuralbridge/shared';
-import { BROLL_INDEX_VERSION, canReuseBrollIndex, classifyBrollSemanticDecision, classifyTemporalSamples, detectSegmentCuts, discardFlashKeyframeTimes, extractSegmentFrames, makeBrollContactSheet, probeSegmentQuality, probeSegmentTemporalSamples, segmentsFromCuts, selectVisualAnalysisFfmpeg, stableBrollSegmentId, validateBrollContinuity, windowCuts } from '@neuralbridge/workspace';
+import { BROLL_INDEX_VERSION, canReuseBrollIndex, classifyBrollSemanticDecision, classifyTemporalSamples, detectSegmentCuts, discardFlashKeyframeTimes, extractSegmentFrames, makeBrollContactSheet, probeSegmentQuality, probeSegmentTemporalSamples, resumableBrollSegments, segmentsFromCuts, selectVisualAnalysisFfmpeg, stableBrollSegmentId, validateBrollContinuity, windowCuts } from '@neuralbridge/workspace';
 import { join, relative } from 'node:path';
 import type { ProductionStageAdapter } from '../velix-production.js';
 import { runCheckpointedItems } from './item-checkpoint.js';
@@ -76,9 +76,10 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
           const base = segmentsFromCuts(result.assetId, windowCuts(cuts), () => ({ frames: 0, meanLuma: 0, meanDiff: 0, black: false, frozen: false, motion: 0 }));
           const segments: MediaSegment[] = [];
           let indexedSegments: MediaSegment[] = [];
+          const resumed = previousIndex ? resumableBrollSegments(previousIndex, { sourceHash: asset.sha256, indexVersion: BROLL_INDEX_VERSION }) : new Map<string, MediaSegment>();
           const contactSheetName = stableBrollSegmentId({ sourceHash: asset.sha256, startMs: 0, endMs: Math.max(1, result.durationMs), indexVersion: BROLL_INDEX_VERSION });
           const contactSheetRelativePath = `artifacts/aethera/broll/${contactSheetName}.jpg`;
-          deps.repository.saveBrollIndex({ schemaVersion: 1, indexVersion: BROLL_INDEX_VERSION, assetId: result.assetId, sourceHash: asset.sha256, sourcePath: asset.path, durationMs: result.durationMs, cutsSeconds: windowCuts(cuts), contactSheetPath: null, segments: [], status: 'indexing', diagnostics: [] });
+          deps.repository.saveBrollIndex({ schemaVersion: 1, indexVersion: BROLL_INDEX_VERSION, assetId: result.assetId, sourceHash: asset.sha256, sourcePath: asset.path, durationMs: result.durationMs, cutsSeconds: windowCuts(cuts), contactSheetPath: null, segments: [...resumed.values()], status: 'indexing', diagnostics: resumed.size > 0 ? [`resumed_segments=${resumed.size}`] : [] });
           const identities = [];
           const subject = subjects.find((subject) => subject.id === job.subjectId);
           const candidates = deps.repository.listCandidates(context.runId).filter((candidate) => candidate.referenceId === job.referenceId);
@@ -88,6 +89,12 @@ export function createVisualIndexStageAdapter(deps: VisualIndexDeps): Production
           for (const segment of base) {
             context.signal.throwIfAborted();
             const segmentId = stableBrollSegmentId({ sourceHash: asset.sha256, startMs: segment.startMs, endMs: segment.endMs, indexVersion: BROLL_INDEX_VERSION });
+            const resumedSegment = resumed.get(segmentId);
+            if (resumedSegment) {
+              segments.push(resumedSegment);
+              indexedSegments = [...segments];
+              continue;
+            }
             const frames = await extractSegmentFrames({ root, relativePath: asset.path, startMs: segment.startMs, endMs: segment.endMs, ffmpeg: analysisFfmpeg, signal: context.signal });
             const temporalSamples = await probeSegmentTemporalSamples({ ffmpeg: analysisFfmpeg, root, relativePath: asset.path, startMs: segment.startMs, endMs: segment.endMs, signal: context.signal });
             const temporal = classifyTemporalSamples(temporalSamples);
