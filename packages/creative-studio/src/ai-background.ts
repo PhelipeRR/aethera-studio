@@ -1,6 +1,8 @@
 import type { AssetIngestionService } from './asset-ingestion.js';
+import sharp from 'sharp';
 import type { ExternalImageAdapter } from './image-generation-adapter.js';
-import type { BrandKit, CreativeArtType, ManagedAssetRef } from './schemas.js';
+import type { GenerationQualityProfile, GenerationQualityProfileId } from './generation-profiles.js';
+import { ART_SPECIFICATIONS, type BrandKit, type CreativeArtType, type ManagedAssetRef } from './schemas.js';
 import { buildVisualRecipe, type CreativeDirectionNotes, type VisualRecipe } from './visual-recipe.js';
 import type { ProfessionalPresetId } from './creative-presets.js';
 import { auditGeneratedImage, type GeneratedImageQualityAudit } from './generated-image-quality.js';
@@ -31,6 +33,12 @@ export interface AiGenerationReport {
   servedBy?: { providerId: string; fallbackErrors: string[] };
   /** Effective engine parameters after checkpoint-profile adjustments, when the serving engine reports them. */
   engineParameters?: unknown;
+  /** Quality profile and the refinement steps that actually ran. */
+  refinement?: {
+    profile: GenerationQualityProfileId;
+    faceDetailer: boolean;
+    upscale: { model: string; from: string; to: string; durationMs: number } | { skipped: string } | null;
+  };
 }
 
 export interface GenerateAiBackgroundInput {
@@ -56,6 +64,14 @@ export interface GenerateAiBackgroundInput {
   ipAdapter?: { model: string; clipVisionModel: string; referenceImagePath?: string; weight?: number };
   faceDetailer?: { detectorModel: string; guideSize?: number; maxSize?: number; denoise?: number };
   characterCount?: number;
+  /** One description per character; otherwise the recipe derives them from the creative direction. */
+  characterDescriptions?: string[];
+  /** `preview` (default) runs a single pass; `professional` adds FaceDetailer and model upscale. */
+  qualityProfile?: GenerationQualityProfile;
+  /** Final document size (defaults to the art type size); the upscale only runs when it is larger than the generation. */
+  upscaleTarget?: { width: number; height: number };
+  /** Multi-character spatial control; defaults to `auto` (OpenPose skeletons when installed). */
+  spatialControl?: 'auto' | 'none';
 }
 
 export async function generateAiBackground(
@@ -93,7 +109,9 @@ export async function generateAiBackground(
     ...(input.stylization !== undefined ? { stylization: input.stylization } : {}),
     ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
     ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
+    ...(input.characterDescriptions?.length ? { characterDescriptions: input.characterDescriptions } : {}),
   });
+  const faceDetailer = input.faceDetailer ?? input.qualityProfile?.faceDetailer ?? undefined;
   const maxAttempts = Math.min(3, Math.max(1, Math.floor(input.maxAttempts ?? 1)));
   const started = Date.now();
   let lastRecipe = recipe;
@@ -141,26 +159,46 @@ export async function generateAiBackground(
               },
             }
           : {}),
-        ...(input.faceDetailer ? { faceDetailer: input.faceDetailer } : {}),
+        ...(faceDetailer ? { faceDetailer } : {}),
         ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
-        ...(attemptRecipe.characterRegions.length > 1 ? { characterRegions: attemptRecipe.characterRegions } : {}),
+        ...(attemptRecipe.characterRegions.length > 1 ? { characterRegions: attemptRecipe.characterRegions, spatialControl: input.spatialControl ?? 'auto' } : {}),
+        ...(attemptRecipe.scenePrompt ? { scenePrompt: attemptRecipe.scenePrompt } : {}),
+        ...(attemptRecipe.calmZones?.length ? { calmZones: attemptRecipe.calmZones } : {}),
       });
       const qualityAudit = await auditGeneratedImage(buffer, { expectedWidth: attemptRecipe.width, expectedHeight: attemptRecipe.height });
       lastAudit = qualityAudit;
       if (!qualityAudit.passed) continue;
-
-      const asset = await input.ingestion.ingestBuffer({
-        buffer,
-        kind: 'image',
-        extension: 'png',
-        originalName: `ai-gen-${attemptRecipe.preset}-${attemptRecipe.seed}.png`,
-      });
+      // Metadata is read before any upscale call, which would overwrite the adapter's last-generation record.
       const servedReporter = input.imageAdapter as ExternalImageAdapter & {
         getLastServedProvider?: () => { providerId: string; fallbackErrors: string[] } | null;
         getLastGenerationMetadata?: () => unknown;
       };
       const servedBy = servedReporter.getLastServedProvider?.() ?? { providerId: engineId, fallbackErrors: [] };
       const engineParameters = servedReporter.getLastGenerationMetadata?.() ?? null;
+      let finalBuffer = buffer;
+      let upscaleReport: NonNullable<AiGenerationReport['refinement']>['upscale'] = null;
+      const upscaleModel = input.qualityProfile?.upscale?.model;
+      if (upscaleModel) {
+        const spec = ART_SPECIFICATIONS[input.artType];
+        const target = input.upscaleTarget ?? { width: spec.width, height: spec.height };
+        if (!target || (target.width <= attemptRecipe.width && target.height <= attemptRecipe.height)) {
+          upscaleReport = { skipped: 'document is not larger than the generation' };
+        } else if (!input.imageAdapter.upscaleImage) {
+          upscaleReport = { skipped: 'the image engine does not support model upscale' };
+        } else {
+          const upscaleStarted = Date.now();
+          const upscaled = await input.imageAdapter.upscaleImage({ imageBuffer: buffer, model: upscaleModel });
+          finalBuffer = await sharp(upscaled).resize(target.width, target.height, { fit: 'cover', kernel: 'lanczos3' }).png().toBuffer();
+          upscaleReport = { model: upscaleModel, from: `${attemptRecipe.width}x${attemptRecipe.height}`, to: `${target.width}x${target.height}`, durationMs: Date.now() - upscaleStarted };
+        }
+      }
+
+      const asset = await input.ingestion.ingestBuffer({
+        buffer: finalBuffer,
+        kind: 'image',
+        extension: 'png',
+        originalName: `ai-gen-${attemptRecipe.preset}-${attemptRecipe.seed}.png`,
+      });
       return {
         asset,
         report: {
@@ -177,7 +215,8 @@ export async function generateAiBackground(
           ...(input.loraSelection ? { loraSelection: { ...input.loraSelection, warnings: input.loraSelection.warnings ?? [] } } : {}),
           ...(input.controlNet ? { controlNet: { model: input.controlNet.model, strength: input.controlNet.strength ?? 0.65, imagePath: input.controlNet.imagePath } } : {}),
           ...(input.ipAdapter ? { ipAdapter: { model: input.ipAdapter.model, clipVisionModel: input.ipAdapter.clipVisionModel, weight: input.ipAdapter.weight ?? 0.8, ...(input.ipAdapter.referenceImagePath ? { referenceImagePath: input.ipAdapter.referenceImagePath } : {}) } } : {}),
-          ...(input.faceDetailer ? { faceDetailer: input.faceDetailer } : {}),
+          ...(faceDetailer ? { faceDetailer } : {}),
+          refinement: { profile: input.qualityProfile?.id ?? 'preview', faceDetailer: Boolean(faceDetailer), upscale: upscaleReport },
           qualityAudit,
         },
       };

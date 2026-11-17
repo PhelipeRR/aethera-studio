@@ -32,3 +32,5 @@ export * from './multi-character-composition.js';
 export * from './lora-catalog.js';
 export * from './lora-install-policy.js';
 export * from './checkpoint-profiles.js';
+export * from './generation-profiles.js';
+export * from './spatial-guides.js';

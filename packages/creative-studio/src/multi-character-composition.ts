@@ -15,7 +15,7 @@ export interface MultiCharacterCompositionPlan {
   width: number;
   height: number;
   characterCount: number;
-  layout: 'single' | 'duo' | 'trio' | 'grid';
+  layout: 'single' | 'duo' | 'trio' | 'staged' | 'edges';
   regions: CharacterRegion[];
 }
 
@@ -24,14 +24,65 @@ export interface CharacterPlanValidation {
   errors: string[];
 }
 
-function anchorFor(centerX: number, centerY: number, columns: number): CharacterAnchor {
-  if (columns === 2) return centerX < 0.5 ? 'left' : 'right';
-  if (columns === 3) return centerX < 0.34 ? 'left' : centerX > 0.66 ? 'right' : 'center';
-  if (centerY < 0.5) return centerX < 0.5 ? 'upper-left' : 'upper-right';
+export interface PlanCompositionInput {
+  width: number;
+  height: number;
+  characterCount: number;
+  /**
+   * Area that must stay free of characters (e.g. the banner title safe area, in generation pixels). When given,
+   * characters are split between the columns left and right of it.
+   */
+  keepOut?: { x: number; y: number; width: number; height: number };
+}
+
+interface Column {
+  x0: number;
+  x1: number;
+  count: number;
+}
+
+/**
+ * One column per character. Up to three characters stand on one line; from four on, alternate columns form a smaller,
+ * higher back row so figures never share a column. Stacking two rows of half-height cells (the former grid) left
+ * ~190 px per figure on a 768 px canvas and the figures fused (CS9 experiment, docs/comfyui-audit.md).
+ */
+function columnsRegions(columns: Column[], height: number, total: number, startIndex: number): CharacterRegion[] {
+  const regions: CharacterRegion[] = [];
+  let index = startIndex;
+  const staged = total >= 4;
+  for (const column of columns) {
+    const gap = column.count > 1 ? (column.x1 - column.x0) * 0.01 : 0;
+    const cell = (column.x1 - column.x0 - gap * (column.count - 1)) / column.count;
+    for (let slot = 0; slot < column.count; slot += 1) {
+      const back = staged && index % 2 === 1;
+      const top = staged ? (back ? 0.12 : 0.26) : 0.08;
+      const tall = staged ? (back ? 0.6 : 0.72) : 0.84;
+      const x = column.x0 + slot * (cell + gap);
+      regions.push({
+        id: `character-region-${index + 1}`,
+        index,
+        role: index === 0 ? 'primary' : 'supporting',
+        anchor: 'center',
+        x: Math.round(x),
+        y: Math.round(top * height),
+        width: Math.round(cell),
+        height: Math.round(tall * height),
+      });
+      index += 1;
+    }
+  }
+  return regions;
+}
+
+function anchorForRegion(region: CharacterRegion, width: number, height: number, total: number): CharacterAnchor {
+  const centerX = (region.x + region.width / 2) / width;
+  if (total <= 3) return centerX < 0.34 ? 'left' : centerX > 0.66 ? 'right' : total === 2 ? (centerX < 0.5 ? 'left' : 'right') : 'center';
+  const upper = (region.y + region.height / 2) / height < 0.45;
+  if (upper) return centerX < 0.5 ? 'upper-left' : 'upper-right';
   return centerX < 0.5 ? 'lower-left' : 'lower-right';
 }
 
-export function planMultiCharacterComposition(input: { width: number; height: number; characterCount: number }): MultiCharacterCompositionPlan {
+export function planMultiCharacterComposition(input: PlanCompositionInput): MultiCharacterCompositionPlan {
   if (!Number.isInteger(input.characterCount) || input.characterCount < 1 || input.characterCount > 8) {
     throw new Error('Character count must be between 1 and 8.');
   }
@@ -40,38 +91,31 @@ export function planMultiCharacterComposition(input: { width: number; height: nu
   }
 
   const count = input.characterCount;
-  const columns = count === 1 ? 1 : count === 2 ? 2 : count === 3 ? 3 : Math.ceil(Math.sqrt(count));
-  const rows = count === 1 ? 1 : count === 2 || count === 3 ? 1 : Math.ceil(count / columns);
-  const marginX = 0.05;
-  const marginY = 0.08;
-  const gapX = columns > 1 ? 0.035 : 0;
-  const gapY = rows > 1 ? 0.045 : 0;
-  const cellWidth = (1 - marginX * 2 - gapX * (columns - 1)) / columns;
-  const cellHeight = (1 - marginY * 2 - gapY * (rows - 1)) / rows;
-  const regions: CharacterRegion[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const column = index % columns;
-    const row = Math.floor(index / columns);
-    const x = marginX + column * (cellWidth + gapX);
-    const y = marginY + row * (cellHeight + gapY);
-    regions.push({
-      id: `character-region-${index + 1}`,
-      index,
-      role: index === 0 ? 'primary' : 'supporting',
-      anchor: anchorFor(x + cellWidth / 2, y + cellHeight / 2, columns),
-      x: Math.round(x * input.width),
-      y: Math.round(y * input.height),
-      width: Math.round(cellWidth * input.width),
-      height: Math.round(cellHeight * input.height),
-    });
+  const marginX = 0.05 * input.width;
+  let columns: Column[];
+  let layout: MultiCharacterCompositionPlan['layout'];
+  if (input.keepOut && count >= 2) {
+    const leftEnd = input.keepOut.x - 0.01 * input.width;
+    const rightStart = input.keepOut.x + input.keepOut.width + 0.01 * input.width;
+    const edge = 0.02 * input.width;
+    if (leftEnd - edge < 0.08 * input.width || input.width - edge - rightStart < 0.08 * input.width) {
+      throw new Error('The keep-out area leaves no room for characters at the edges.');
+    }
+    const leftCount = Math.ceil(count / 2);
+    columns = [
+      { x0: edge, x1: leftEnd, count: leftCount },
+      { x0: rightStart, x1: input.width - edge, count: count - leftCount },
+    ];
+    layout = 'edges';
+  } else {
+    columns = [{ x0: marginX, x1: input.width - marginX, count }];
+    layout = count === 1 ? 'single' : count === 2 ? 'duo' : count === 3 ? 'trio' : 'staged';
   }
-  return {
-    width: input.width,
-    height: input.height,
-    characterCount: count,
-    layout: count === 1 ? 'single' : count === 2 ? 'duo' : count === 3 ? 'trio' : 'grid',
-    regions,
-  };
+  const regions = columnsRegions(columns, input.height, count, 0).map((region) => ({
+    ...region,
+    anchor: anchorForRegion(region, input.width, input.height, count),
+  }));
+  return { width: input.width, height: input.height, characterCount: count, layout, regions };
 }
 
 export function validateCharacterRegions(plan: MultiCharacterCompositionPlan): CharacterPlanValidation {

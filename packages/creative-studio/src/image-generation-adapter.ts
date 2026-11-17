@@ -45,6 +45,15 @@ export interface ImageGenerationRequest {
   characterCount?: number;
   /** Per-character pixel regions; `prompt` is the solo description bound to that area by regional conditioning. */
   characterRegions?: Array<{ id: string; anchor: string; x: number; y: number; width: number; height: number; prompt?: string }>;
+  /**
+   * Spatial control for multi-character scenes. `auto` adds one synthetic OpenPose skeleton per region when an OpenPose
+   * ControlNet is installed (hard count constraint); `none` keeps area prompts only.
+   */
+  spatialControl?: 'auto' | 'none';
+  /** Scene-only prompt (no cast) used around the character figures. */
+  scenePrompt?: string;
+  /** Areas that must stay calm (e.g. banner title safe area), in generation pixels. */
+  calmZones?: Array<{ x: number; y: number; width: number; height: number }>;
 }
 
 export interface BackgroundRemovalRequest {

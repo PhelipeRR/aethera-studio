@@ -1,17 +1,29 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+/**
+ * CS9 six-case acceptance: every case runs twice with the same seed — `preview` (single pass) and `professional`
+ * (FaceDetailer + 4x-UltraSharp to the document size). The professional run also returns its unrefined base from the
+ * same graph execution, so "basic vs refined" compares identical noise. Earlier runs (canonical v1 at the folder root,
+ * run-regional-v1/, run-crowd-negative-rejected/) are never overwritten: each run writes to its own run-cs9-* folder.
+ *
+ * Optional: CS9_CASES=anime-two,cyberpunk-trio limits the run to some cases.
+ */
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import sharp from 'sharp';
 import { openDatabase } from '@neuralbridge/database';
 import { AetheraCreativeStudioService } from '../apps/aethera-desktop/src/main/creative-studio-service.js';
-import type { ProfessionalPresetId } from '../packages/creative-studio/src/index.js';
+import type { GenerationQualityProfileId, ProfessionalPresetId } from '../packages/creative-studio/src/index.js';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(import.meta.dirname, '..');
-const artifactDir = join(root, 'artifacts', 'comfyui-aethera-six-case-acceptance');
-const userDataDir = join(artifactDir, 'userData');
+const baseDir = join(root, 'artifacts', 'comfyui-aethera-six-case-acceptance');
+const runId = `run-cs9-${new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)}`;
+const runDir = join(baseDir, runId);
+const userDataDir = join(baseDir, 'userData');
 const dbDir = join(userDataDir, 'db');
 const migrationsFolder = resolve(import.meta.dirname, '../packages/database/migrations');
+const onlyCases = process.env.CS9_CASES?.split(',').filter(Boolean);
 
 async function vramMiB(): Promise<number | null> {
   try {
@@ -23,15 +35,18 @@ async function vramMiB(): Promise<number | null> {
   }
 }
 
-const cases: Array<{
+interface AcceptanceCase {
   id: string;
   artType: 'thumbnail' | 'banner';
   preset: ProfessionalPresetId;
   prompt: string;
   headline?: string;
   characterCount: number;
+  characterDescriptions?: string[];
   seed: number;
-}> = [
+}
+
+const cases: AcceptanceCase[] = [
   {
     id: 'anime-individual',
     artType: 'thumbnail',
@@ -46,6 +61,10 @@ const cases: Array<{
     preset: 'anime_premium_cinematic',
     prompt: 'two distinct original anime warriors in a readable combat exchange, one on the left and one on the right, separated silhouettes, controlled energy clash',
     characterCount: 2,
+    characterDescriptions: [
+      'young swordswoman with long silver hair and red scarf, white and crimson armor, katana raised',
+      'tall spear warrior with short black hair, dark blue plated armor, spear held in guard',
+    ],
     seed: 31001,
   },
   {
@@ -54,14 +73,29 @@ const cases: Array<{
     preset: 'cyberpunk_neon',
     prompt: 'three distinct cyberpunk heroes in separate readable positions, rain-slick futuristic city, cyan and magenta rim light, clear foreground midground background depth',
     characterCount: 3,
+    characterDescriptions: [
+      'hooded hacker with glowing cyan visor and black techwear jacket',
+      'muscular brawler with chrome cybernetic arms and red jacket',
+      'female sniper with pink bob hair, long white coat and rifle on shoulder',
+    ],
     seed: 31002,
   },
   {
     id: 'cyberpunk-group-eight',
     artType: 'thumbnail',
     preset: 'cyberpunk_neon',
-    prompt: 'eight distinct cyberpunk heroes arranged in a readable two-row group, separated silhouettes, varied poses, cinematic city depth, no fused bodies',
+    prompt: 'eight distinct cyberpunk heroes as a team lineup, separated silhouettes, varied poses, cinematic city depth',
     characterCount: 8,
+    characterDescriptions: [
+      'hooded hacker with cyan visor, black techwear',
+      'woman with pink bob hair and white coat',
+      'big brawler with chrome arms, red jacket',
+      'young man with green mohawk and leather vest',
+      'woman with long blue hair and purple bodysuit',
+      'old mercenary with grey beard and armored vest',
+      'girl with twin buns and yellow raincoat',
+      'tall android with white plating and orange visor',
+    ],
     seed: 31003,
   },
   {
@@ -79,12 +113,37 @@ const cases: Array<{
     headline: 'NEXTWORTH',
     prompt: 'NextWorth geek channel banner with two original tech heroes at opposite edges, layered futuristic skyline, cyan and magenta energy, calm central safe area reserved for editor typography',
     characterCount: 2,
+    characterDescriptions: [
+      'tech hero with cyan holographic visor and white jacket',
+      'tech heroine with magenta hair and dark armored suit',
+    ],
     seed: 31005,
   },
 ];
 
+interface RunFiles {
+  generated: string | null;
+  unrefinedBase: string | null;
+  composed: string | null;
+}
+
+function dataUrlToBuffer(dataUrl: string): Buffer {
+  return Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
+}
+
+function save(name: string, buffer: Buffer | null): string | null {
+  if (!buffer) return null;
+  const path = join(runDir, name);
+  writeFileSync(path, buffer);
+  return path;
+}
+
+function escapeXml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 mkdirSync(dbDir, { recursive: true });
-mkdirSync(artifactDir, { recursive: true });
+mkdirSync(runDir, { recursive: true });
 const handle = openDatabase(join(dbDir, 'creative.db'), { migrationsFolder });
 
 try {
@@ -95,110 +154,161 @@ try {
     releaseMemoryAfterGeneration: true,
   });
 
-  const results: Array<Record<string, unknown>> = [];
-  for (const testCase of cases) {
-    const started = Date.now();
-    const vramBeforeMiB = await vramMiB();
-    let vramPeakMiB = vramBeforeMiB;
-    const sampler = setInterval(() => {
-      void vramMiB().then((current) => {
-        if (current !== null && (vramPeakMiB === null || current > vramPeakMiB)) vramPeakMiB = current;
-      });
-    }, 500);
-
-    try {
-      const result = await service.createFromPrompt({
-        artType: testCase.artType,
-        title: `Aethera ComfyUI acceptance — ${testCase.id}`,
-        prompt: testCase.prompt,
-        ...(testCase.headline ? { headline: testCase.headline } : {}),
-        professionalPreset: testCase.preset,
-        useAiGeneration: true,
-        characterCount: testCase.characterCount,
-        seed: testCase.seed,
-        // No maxSide: the recipe picks the native SDXL bucket (1344x768 for 16:9).
-        maxAttempts: 1,
-        loraMode: 'off',
-      });
-      const after = await vramMiB();
-      if (after !== null && (vramPeakMiB === null || after > vramPeakMiB)) vramPeakMiB = after;
-      const generatedAsset = Object.values(result.document.assetManifest).find((asset) => asset.originalName.startsWith('ai-gen-'));
-      const absoluteAssetPath = generatedAsset
-        ? join(userDataDir, 'creative-studio', generatedAsset.relativePath)
-        : null;
-      const copiedOutput = absoluteAssetPath && existsSync(absoluteAssetPath)
-        ? (() => {
-            const outputPath = join(artifactDir, `${testCase.id}.png`);
-            writeFileSync(outputPath, readFileSync(absoluteAssetPath));
-            return outputPath;
-          })()
-        : null;
-      const servedBy = result.generation.servedBy ?? null;
-      const engineParameters = (result.generation.engineParameters ?? null) as { checkpoint?: string } | null;
-      // A chain fallback (e.g. local SDXL-Turbo) must never be reported as an Animagine/ComfyUI result.
-      const servedByComfyUi = servedBy?.providerId === 'comfyui-native';
-      results.push({
-        id: testCase.id,
-        status: result.generation.status === 'generated' && !servedByComfyUi ? 'failed_wrong_provider' : result.generation.status,
-        structuralStatus: result.generation.qualityAudit?.passed ? 'passed' : 'not_passed_or_unavailable',
-        servedBy,
-        model: servedByComfyUi ? engineParameters?.checkpoint ?? null : null,
-        engineParameters,
-        workflow: 'aethera-direction-recipe-comfyui-composition',
-        preset: testCase.preset,
-        seed: testCase.seed,
-        characterCount: testCase.characterCount,
-        documentResolution: `${result.document.width}x${result.document.height}`,
-        generatedResolution: result.generation.recipe ? `${result.generation.recipe.width}x${result.generation.recipe.height}` : null,
-        ms: Date.now() - started,
-        vramBeforeMiB,
-        vramAfterMiB: after,
-        vramPeakMiB,
-        file: copiedOutput,
-        generation: result.generation,
-        qualityAudit: result.audit,
-      });
-    } catch (error) {
-      const after = await vramMiB();
-      if (after !== null && (vramPeakMiB === null || after > vramPeakMiB)) vramPeakMiB = after;
-      results.push({
-        id: testCase.id,
-        status: 'failed',
-        workflow: 'aethera-direction-recipe-comfyui-composition',
-        seed: testCase.seed,
-        characterCount: testCase.characterCount,
-        ms: Date.now() - started,
-        vramBeforeMiB,
-        vramAfterMiB: after,
-        vramPeakMiB,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      clearInterval(sampler);
+  const results: Array<Record<string, unknown> & { id: string; profile: GenerationQualityProfileId; files?: RunFiles }> = [];
+  for (const testCase of cases.filter((item) => !onlyCases || onlyCases.includes(item.id))) {
+    for (const profile of ['preview', 'professional'] as const) {
+      const label = `${testCase.id}-${profile}`;
+      const started = Date.now();
+      const vramBeforeMiB = await vramMiB();
+      let vramPeakMiB = vramBeforeMiB;
+      const sampler = setInterval(() => {
+        void vramMiB().then((current) => {
+          if (current !== null && (vramPeakMiB === null || current > vramPeakMiB)) vramPeakMiB = current;
+        });
+      }, 500);
+      try {
+        const result = await service.createFromPrompt({
+          artType: testCase.artType,
+          title: `Aethera CS9 acceptance — ${label}`,
+          prompt: testCase.prompt,
+          ...(testCase.headline ? { headline: testCase.headline } : {}),
+          professionalPreset: testCase.preset,
+          useAiGeneration: true,
+          characterCount: testCase.characterCount,
+          ...(testCase.characterDescriptions ? { characterDescriptions: testCase.characterDescriptions } : {}),
+          qualityProfile: profile,
+          spatialControl: 'auto',
+          seed: testCase.seed,
+          maxAttempts: 1,
+          loraMode: 'off',
+        });
+        const ms = Date.now() - started;
+        const after = await vramMiB();
+        if (after !== null && (vramPeakMiB === null || after > vramPeakMiB)) vramPeakMiB = after;
+        const generatedAsset = Object.values(result.document.assetManifest).find((asset) => asset.originalName.startsWith('ai-gen-'));
+        const generatedBuffer = generatedAsset
+          ? await sharp(join(userDataDir, 'creative-studio', generatedAsset.relativePath)).png().toBuffer().catch(() => null)
+          : null;
+        const servedBy = result.generation.servedBy ?? null;
+        const engineParameters = (result.generation.engineParameters ?? null) as {
+          checkpoint?: string;
+          spatialControl?: { mode: string };
+          faceDetailer?: boolean;
+        } | null;
+        const servedByComfyUi = servedBy?.providerId === 'comfyui-native';
+        const unrefined = profile === 'professional' && engineParameters?.faceDetailer ? service.comfyUiAdapter.getLastUnrefinedImage() : null;
+        const files: RunFiles = {
+          generated: save(`${label}.png`, generatedBuffer),
+          unrefinedBase: save(`${testCase.id}-professional-base.png`, unrefined),
+          composed: save(`${label}-composed.png`, dataUrlToBuffer(result.previewDataUrl)),
+        };
+        const spatialMode = engineParameters?.spatialControl?.mode ?? 'not_applicable';
+        results.push({
+          id: testCase.id,
+          profile,
+          // A chain fallback (e.g. local SDXL-Turbo) must never be reported as an Animagine/ComfyUI result.
+          status: result.generation.status === 'generated' && !servedByComfyUi ? 'failed_wrong_provider' : result.generation.status,
+          structuralStatus: result.generation.qualityAudit?.passed ? 'passed' : 'not_passed_or_unavailable',
+          servedBy,
+          fallbackUsed: !servedByComfyUi || (servedBy?.fallbackErrors?.length ?? 0) > 0,
+          model: servedByComfyUi ? engineParameters?.checkpoint ?? null : null,
+          workflow: spatialMode === 'openpose'
+            ? 'aethera-regional-openpose'
+            : spatialMode === 'area_only' ? 'aethera-regional-area' : 'aethera-single-pass',
+          refinedWith: engineParameters?.faceDetailer ? 'faceDetailer' : 'none',
+          refinement: result.generation.refinement ?? null,
+          engineParameters,
+          preset: testCase.preset,
+          seed: testCase.seed,
+          characterCount: testCase.characterCount,
+          characterDescriptions: testCase.characterDescriptions ?? null,
+          documentResolution: `${result.document.width}x${result.document.height}`,
+          generatedResolution: result.generation.recipe ? `${result.generation.recipe.width}x${result.generation.recipe.height}` : null,
+          ms,
+          vramBeforeMiB,
+          vramAfterMiB: after,
+          vramPeakMiB,
+          files,
+          recipe: result.generation.recipe ?? null,
+          documentAudit: { passed: result.audit.passed, findings: result.audit.findings },
+        });
+      } catch (error) {
+        results.push({
+          id: testCase.id,
+          profile,
+          status: 'failed',
+          seed: testCase.seed,
+          characterCount: testCase.characterCount,
+          ms: Date.now() - started,
+          vramBeforeMiB,
+          vramPeakMiB,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        clearInterval(sampler);
+      }
+      const last = results.at(-1);
+      console.log(`[cs9] ${label}: ${String(last?.status)} in ${String(last?.ms)} ms${last?.error ? ` — ${String(last.error)}` : ''}`);
     }
   }
 
+  // Contact sheet: one row per case — preview | professional unrefined base | professional refined.
+  const cellW = 640;
+  const cellH = 360;
+  const header = 40;
+  const ids = [...new Set(results.map((result) => result.id))];
+  const composites: sharp.OverlayOptions[] = [];
+  const labelSvg = (text: string, width: number) =>
+    Buffer.from(`<svg width="${width}" height="${header}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#111"/><text x="10" y="27" font-family="Segoe UI, Arial" font-size="20" fill="#eee">${escapeXml(text)}</text></svg>`);
+  const fileOf = (id: string, profile: GenerationQualityProfileId, key: keyof RunFiles) =>
+    results.find((result) => result.id === id && result.profile === profile)?.files?.[key] ?? null;
+  const columns: Array<{ title: string; pick: (id: string) => string | null }> = [
+    { title: 'preview (basic)', pick: (id) => fileOf(id, 'preview', 'generated') },
+    { title: 'professional base (same run, pre-FaceDetailer)', pick: (id) => fileOf(id, 'professional', 'unrefinedBase') },
+    { title: 'professional (FaceDetailer + upscale)', pick: (id) => fileOf(id, 'professional', 'generated') },
+  ];
+  for (const [column, def] of columns.entries()) composites.push({ input: labelSvg(def.title, cellW), left: column * cellW, top: 0 });
+  for (const [row, id] of ids.entries()) {
+    const top = header + row * (cellH + header);
+    composites.push({ input: labelSvg(`${id} — seed ${String(results.find((result) => result.id === id)?.seed)}`, cellW * 3), left: 0, top });
+    for (const [column, def] of columns.entries()) {
+      const path = def.pick(id);
+      const tile = path
+        ? await sharp(path).resize(cellW, cellH, { fit: 'contain', background: '#000' }).png().toBuffer()
+        : await sharp({ create: { width: cellW, height: cellH, channels: 3, background: '#300' } }).png().toBuffer();
+      composites.push({ input: tile, left: column * cellW, top: top + header });
+    }
+  }
+  const sheetPath = join(runDir, 'contact-sheet-basic-vs-refined.png');
+  await sharp({ create: { width: cellW * 3, height: header + ids.length * (cellH + header), channels: 3, background: '#000' } })
+    .composite(composites)
+    .png()
+    .toFile(sheetPath);
+
+  const allGenerated = results.every((result) => result.status === 'generated');
   const report = {
+    runId,
     generatedAt: new Date().toISOString(),
     endpoint: 'http://127.0.0.1:8000',
     checkpoint: 'animagine-xl-3.1.safetensors',
-    acceptanceStatus: results.every((result) => result.status === 'generated')
-      ? 'structural_and_integration_pass_pending_human_review'
-      : 'failed',
+    acceptanceStatus: allGenerated ? 'integration_pass_pending_human_visual_review' : 'failed',
+    contactSheet: sheetPath,
     results,
     humanReview: {
       status: 'pending' as const,
-      criteria: ['identity', 'anatomy', 'subject count', 'focal hierarchy', 'text-safe area', 'empty/generic composition'],
+      note: 'CS9 is not approved until the user reviews the images; automated checks are not a substitute.',
+      criteria: ['requested character count', 'no relevant extra figures', 'distinguishable characters', 'no severe anatomical fusion', 'banner central safe area', 'refinement benefit'],
     },
+    preservedRuns: ['root (canonical v1)', 'run-regional-v1/', 'run-crowd-negative-rejected/ (v2, rejected)', 'previous-run-fallback-2026-11-17T0025/'],
     limitations: [
       'The structural quality audit does not prove semantic fidelity or production aesthetics.',
-      'The six cases use LoRA mode off because no verified LoRA file is installed in the runtime.',
-      'Character count is steered by native area conditioning, not guaranteed; count drift must be checked by a human.',
+      'LoRA mode is off: no LoRA is installed without explicit user authorization.',
+      'OpenPose SDXL (thibaud) has an "other" license that still needs commercial review.',
     ],
   };
-  writeFileSync(join(artifactDir, 'report.json'), JSON.stringify(report, null, 2), 'utf8');
-  console.log(JSON.stringify(report, null, 2));
-  process.exitCode = results.every((result) => result.status === 'generated') ? 0 : 1;
+  writeFileSync(join(runDir, 'report.json'), JSON.stringify(report, null, 2), 'utf8');
+  console.log(JSON.stringify({ runId, acceptanceStatus: report.acceptanceStatus, sheetPath }, null, 2));
+  process.exitCode = allGenerated ? 0 : 1;
 } finally {
   handle.close();
 }

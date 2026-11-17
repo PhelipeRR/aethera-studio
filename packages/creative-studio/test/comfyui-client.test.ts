@@ -81,6 +81,29 @@ describe('ComfyUiClient', () => {
     await expect(errorClient.waitForCompletion('prompt-err', { pollMs: 1, timeoutMs: 100 })).rejects.toThrow(/bad graph/);
   });
 
+  it('keeps waiting when one history poll times out while ComfyUI is busy loading models', async () => {
+    let historyCalls = 0;
+    const client = new ComfyUiClient({
+      baseUrl: 'http://localhost:8188',
+      requestTimeoutMs: 5,
+      fetchImpl: async (input, init) => {
+        if (!String(input).endsWith('/history/prompt-busy')) return jsonResponse({});
+        historyCalls += 1;
+        if (historyCalls === 1) {
+          // The server event loop is blocked: the request only ends when the client aborts it.
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+          });
+        }
+        return jsonResponse({ 'prompt-busy': { status: { completed: true }, outputs: {} } });
+      },
+      sleep: async () => undefined,
+    });
+
+    await expect(client.waitForCompletion('prompt-busy', { pollMs: 1, timeoutMs: 1_000 })).resolves.toMatchObject({ status: { completed: true } });
+    expect(historyCalls).toBe(2);
+  });
+
   it('uploads a reference image through ComfyUI multipart transport', async () => {
     let sawMultipart = false;
     const client = new ComfyUiClient({

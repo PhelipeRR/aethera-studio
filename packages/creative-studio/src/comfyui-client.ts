@@ -76,6 +76,14 @@ export function normalizeComfyUiBaseUrl(value: string): string {
   return url.origin;
 }
 
+/** A single HTTP request exceeded `requestTimeoutMs`; the prompt itself may still be running. */
+export class ComfyUiRequestTimeoutError extends Error {
+  constructor(readonly path: string, cause: unknown) {
+    super(`ComfyUI request timed out: ${path}`, { cause });
+    this.name = 'ComfyUiRequestTimeoutError';
+  }
+}
+
 export class ComfyUiRequestError extends Error {
   readonly status: number;
   readonly url: string;
@@ -178,7 +186,16 @@ export class ComfyUiClient {
     const timeoutMs = options?.timeoutMs ?? 10 * 60_000;
     const startedAt = Date.now();
     while (Date.now() - startedAt <= timeoutMs) {
-      const entry = await this.getHistory(promptId);
+      let entry: ComfyUiHistoryEntry | undefined;
+      try {
+        entry = await this.getHistory(promptId);
+      } catch (error) {
+        // While ComfyUI loads a checkpoint/ControlNet its HTTP loop can stall past the per-request timeout. One slow
+        // poll is not a failed prompt: abandoning it here used to trigger a provider fallback for a job that finished.
+        if (!(error instanceof ComfyUiRequestTimeoutError)) throw error;
+        await this.sleep(pollMs);
+        continue;
+      }
       if (entry) {
         const error = executionErrorMessage(entry);
         if (error) throw new Error(error);
@@ -255,7 +272,7 @@ export class ComfyUiClient {
     } catch (error) {
       if (error instanceof ComfyUiRequestError) throw error;
       if (error instanceof DOMException && error.name === 'AbortError') {
-        throw new Error(`ComfyUI request timed out: ${path}`, { cause: error });
+        throw new ComfyUiRequestTimeoutError(path, error);
       }
       throw new Error(error instanceof Error ? error.message : String(error), { cause: error });
     } finally {

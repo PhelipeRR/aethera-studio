@@ -25,6 +25,9 @@ import {
   brandKitSchema,
   creativeProjectDocumentSchema,
   generateAiBackground,
+  resolveGenerationQualityProfile,
+  type GenerationQualityOverrides,
+  type GenerationQualityProfileId,
   generateTypographyConceptLab,
   type AiGenerationReport,
   type AlignTarget,
@@ -730,6 +733,13 @@ export class AetheraCreativeStudioService {
     ipAdapter?: { model: string; clipVisionModel: string; referenceImagePath?: string; weight?: number };
     faceDetailer?: { detectorModel: string; guideSize?: number; maxSize?: number; denoise?: number };
     characterCount?: number;
+    /** One description per character for multi-character scenes (overrides the creative-direction cast). */
+    characterDescriptions?: string[];
+    /** `preview` = single pass; `professional` = FaceDetailer + model upscale to the document size. */
+    qualityProfile?: GenerationQualityProfileId;
+    /** Per-request refinement switches, e.g. `{ faceDetailer: false }` when a case is hurt by it. */
+    qualityOverrides?: GenerationQualityOverrides;
+    spatialControl?: 'auto' | 'none';
     assetManifest?: Record<string, ManagedAssetRef>;
   }): Promise<{
     document: CreativeProjectDocument;
@@ -807,6 +817,9 @@ export class AetheraCreativeStudioService {
         ...(input.ipAdapter ? { ipAdapter: input.ipAdapter } : {}),
         ...(input.faceDetailer ? { faceDetailer: input.faceDetailer } : {}),
         ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
+        ...(input.characterDescriptions?.length ? { characterDescriptions: input.characterDescriptions } : {}),
+        ...(input.qualityProfile ? { qualityProfile: resolveGenerationQualityProfile(input.qualityProfile, input.qualityOverrides) } : {}),
+        ...(input.spatialControl ? { spatialControl: input.spatialControl } : {}),
         ...(input.seed !== undefined ? { seed: input.seed } : {}),
         ...(input.maxSide !== undefined ? { maxSide: input.maxSide } : {}),
         ...(input.stylization !== undefined ? { stylization: input.stylization } : {}),
@@ -900,6 +913,10 @@ export class AetheraCreativeStudioService {
       ...(input.ipAdapter ? { ipAdapter: input.ipAdapter } : {}),
       ...(input.faceDetailer ? { faceDetailer: input.faceDetailer } : {}),
       ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
+      ...(input.characterDescriptions?.length ? { characterDescriptions: input.characterDescriptions.slice(0, 8) } : {}),
+      ...(input.qualityProfile ? { qualityProfile: input.qualityProfile } : {}),
+      ...(input.qualityOverrides ? { qualityOverrides: input.qualityOverrides } : {}),
+      ...(input.spatialControl ? { spatialControl: input.spatialControl } : {}),
     };
     this.repo.saveGenerationRun({
       id: generationRunId,

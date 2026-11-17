@@ -31,6 +31,8 @@ export interface CreativeDirectionNotes {
   lighting?: string;
   camera?: string;
   style?: string;
+  /** One short description per character when the brief has a cast (multi-character scenes). */
+  characters?: string[];
 }
 
 export interface TextSafeZone {
@@ -62,6 +64,12 @@ export interface VisualRecipe {
   characterCount: number;
   /** Regions carry a solo prompt each; the engine binds it to the region with native area conditioning. */
   characterRegions: Array<CharacterRegion & { prompt?: string }>;
+  /** Scene-only prompt (style, setting, lighting; no cast) for the area around the characters. */
+  scenePrompt?: string;
+  /** Where each per-character description came from: the brief, the creative direction, or generic traits. */
+  characterSource?: 'explicit' | 'direction' | 'derived_from_subject' | 'generic_traits';
+  /** Generation-pixel areas kept calm and free of characters (banner title safe area). */
+  calmZones?: TextSafeZone[];
 }
 
 export interface VisualRecipeInput {
@@ -82,6 +90,8 @@ export interface VisualRecipeInput {
   characterCount?: number;
   /** 0 = restrained/content-faithful, 1 = strongly stylized; mapped to explicit prompt vocabulary. */
   stylization?: number;
+  /** Explicit per-character descriptions (one per character); takes precedence over the creative direction. */
+  characterDescriptions?: string[];
 }
 
 /** Ordered pt-BR/EN visual vocabulary → English phrase. Longer, more specific patterns first. */
@@ -189,6 +199,10 @@ export function parseCreativeDirectionNotes(text: string): CreativeDirectionNote
       }
       const h = sanitizeNote(raw['headline'], 42);
       if (h) notes.headline = h;
+      if (Array.isArray(raw['characters'])) {
+        const characters = raw['characters'].slice(0, 8).map((value) => sanitizeNote(value, 120)).filter((value): value is string => Boolean(value));
+        if (characters.length) notes.characters = characters;
+      }
     } catch {
       // not JSON: fall through to the legacy line format
     }
@@ -270,6 +284,23 @@ const DISTINCT_TRAITS = [
   'purple hair, cool smirk',
 ];
 
+/**
+ * Splits a cast description such as "Three heroes: left hooded hacker crouching, center armored brawler, right sniper"
+ * into one description per character. Returns null when the split does not match the requested count, so a region
+ * never receives the whole cast.
+ */
+export function splitCastDescription(subject: string, count: number): string[] | null {
+  if (count < 2) return null;
+  const body = subject.includes(':') ? subject.slice(subject.indexOf(':') + 1) : subject;
+  const positional = /(?:^|[;,]\s*|\s+and\s+)(?=(?:the\s+)?(?:far\s+)?(?:left|right|center|centre|middle|front|back|first|second|third)\b)/i;
+  let pieces = body.split(positional);
+  if (pieces.length !== count) pieces = body.split(/;/);
+  const cleaned = pieces
+    .map((piece) => piece.trim().replace(/^(?:the\s+)?(?:far\s+)?(?:left|right|center|centre|middle|front|back|first|second|third)\b\s*(?:one|fighter|character|figure)?\s*(?:is|:|-)?\s*/i, '').replace(/[.;,\s]+$/g, '').trim())
+    .filter((piece) => piece.split(/\s+/).length >= 2);
+  return cleaned.length === count ? cleaned : null;
+}
+
 const COUNT_WORDS = /\b(?:two|three|four|five|six|seven|eight|nine|ten|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez|\d+)\s+/gi;
 
 /** Removes group/count wording so a per-region prompt describes one character instead of the whole cast. */
@@ -325,18 +356,21 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
     : '';
 
   const subject = direction?.subject ?? DEFAULT_SUBJECT[preset];
+  const multi = characterCount > 1;
+  // Multi-character scenes keep the cast out of the global prompt: the global conditioning covers the whole canvas,
+  // so a cast description there re-rendered the group outside the regions (CS9 root cause). The cast lives only in
+  // the per-region prompts, and the global prompt states the count plus the scene.
   const parts = [
     input.professionalPreset ? professionalPreset.promptPrefix : undefined,
     direction?.style ?? PRESET_STYLE[preset],
     stylization < 0.4 ? 'restrained stylization, grounded proportions, content-faithful details' : stylization > 0.8 ? 'highly stylized artistic treatment, bold visual exaggeration' : undefined,
-    subject,
-    COMPOSITION[input.artType],
+    multi ? `${characterCount} characters, each clearly separated` : subject,
+    multi ? undefined : COMPOSITION[input.artType],
     direction?.setting,
     direction?.effects,
-    subjectTerms.join(', '),
+    multi ? subjectTerms.filter((term) => !/warrior|heroes|villain|samurai|ninja|original characters/i.test(term)).join(', ') : subjectTerms.join(', '),
     direction?.lighting ?? (preset === 'logo_element' ? undefined : 'dramatic rim lighting, volumetric light'),
     direction?.camera,
-    characterCount > 1 ? `exactly ${characterCount} characters, each clearly separated, no fused bodies, no duplicate faces` : undefined,
     paletteText,
     preset === 'logo_element' || preset === 'avatar' ? undefined : 'highly detailed, depth of field',
   ]
@@ -354,19 +388,35 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
   const scale = input.maxSide !== undefined ? Math.min(1, input.maxSide / Math.max(spec.width, spec.height)) : 1;
   const width = input.maxSide !== undefined ? Math.max(256, Math.round((spec.width * scale) / 8) * 8) : bucket.width;
   const height = input.maxSide !== undefined ? Math.max(256, Math.round((spec.height * scale) / 8) * 8) : bucket.height;
-  const characterPlan = planMultiCharacterComposition({ width, height, characterCount });
+  // Banner: the title safe area (in generation pixels) is a keep-out zone for characters and a calm zone for the scene.
+  const calmZones = input.artType === 'banner' && spec.safeArea
+    ? [{
+        x: Math.round((spec.safeArea.x / spec.width) * width),
+        y: Math.round((spec.safeArea.y / spec.height) * height),
+        width: Math.round((spec.safeArea.width / spec.width) * width),
+        height: Math.round((spec.safeArea.height / spec.height) * height),
+      }]
+    : undefined;
+  const characterPlan = planMultiCharacterComposition({ width, height, characterCount, ...(calmZones?.[0] ? { keepOut: calmZones[0] } : {}) });
   const characterStyle = stripBrandTokens(direction?.style ?? PRESET_STYLE[preset], banned);
-  const characterSubject = stripBrandTokens(stripGroupWording(subject), banned);
-  const characterRegions = characterCount > 1
+  const scenePrompt = capWords(
+    [characterStyle, direction?.setting, direction?.effects, direction?.lighting ?? 'dramatic rim lighting'].filter(Boolean).map((v) => stripBrandTokens(v as string, banned)).join(', '),
+    MAX_PROMPT_WORDS,
+  );
+  const explicit = input.characterDescriptions?.length === characterCount ? input.characterDescriptions : undefined;
+  const fromDirection = direction?.characters?.length === characterCount ? direction.characters : undefined;
+  const derived = multi ? splitCastDescription(subject, characterCount) : null;
+  const castDescriptions = explicit ?? fromDirection ?? derived ?? undefined;
+  const characterSource: VisualRecipe['characterSource'] = explicit ? 'explicit' : fromDirection ? 'direction' : derived ? 'derived_from_subject' : 'generic_traits';
+  const genericRole = subjectTerms.filter((term) => !/epic battle|city|night|rain|fire|explosion|sunset|ruins/i.test(term)).join(', ') || DEFAULT_SUBJECT[preset];
+  const characterRegions = multi
     ? characterPlan.regions.map((region) => ({
         ...region,
         prompt: capWords(
           [
             'solo, single character, full body',
-            DISTINCT_TRAITS[region.index % DISTINCT_TRAITS.length],
-            characterSubject,
-            characterStyle,
-            direction?.lighting ?? 'dramatic rim lighting',
+            castDescriptions ? stripBrandTokens(stripGroupWording(castDescriptions[region.index] ?? ''), banned) : `${DISTINCT_TRAITS[region.index % DISTINCT_TRAITS.length]}, ${genericRole}`,
+            scenePrompt,
           ].filter(Boolean).join(', '),
           MAX_PROMPT_WORDS,
         ),
@@ -392,6 +442,8 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
     stylization,
     characterCount,
     characterRegions,
+    ...(multi ? { scenePrompt, characterSource } : {}),
+    ...(calmZones ? { calmZones } : {}),
   };
 }
 
@@ -401,7 +453,8 @@ export function buildCreativeDirectionPrompt(artType: CreativeArtType, safeBrief
     `[Aethera Creative Studio :: creative_direction] ArtType=${artType}. UserBrief=${JSON.stringify(safeBrief)}.`,
     'You are the art director. Describe ONE strong image for a diffusion model, in English.',
     'Reply with a single JSON object and nothing else, keys: headline (max 3 words, for the editor overlay),',
-    'subject (who/what, pose, action), setting (environment, depth layers), effects (vfx), lighting, camera (shot, lens, angle), style.',
+    'subject (who/what, pose, action), setting (environment, depth layers), effects (vfx), lighting, camera (shot, lens, angle), style,',
+    'characters (array with one short visual description per character, only when the brief has two or more characters).',
     'Each value under 25 words. Do not ask for any text, letters, logo or channel name inside the image.',
   ].join(' ');
 }

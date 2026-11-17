@@ -14,7 +14,10 @@ import {
   type ComfyUiControlNetInput,
   type ComfyUiIpAdapterInput,
   type ComfyUiRegionalPrompt,
+  type ComfyUiMaskedPrompt,
+  controlNetNames,
 } from './comfyui-workflow.js';
+import { figureBox, renderOpenPoseGuide, renderZoneMask } from './spatial-guides.js';
 import type {
   ExternalImageAdapter,
   ImageUpscaleRequest,
@@ -66,6 +69,11 @@ export interface ComfyUiGenerationMetadata {
   checkpointProfile: Pick<AppliedCheckpointProfile, 'family' | 'evidence' | 'adjustments'>;
   regionalComposition: boolean;
   regionCount: number;
+  /** How the character count was enforced: OpenPose skeletons (hard) or area prompts only (soft bias). */
+  spatialControl: { mode: 'openpose'; model: string; strength: number; endPercent: number } | { mode: 'area_only'; reason: string } | { mode: 'not_applicable' };
+  maskedPrompts: Array<{ purpose: 'scene_background' | 'calm_zone'; strength: number }>;
+  /** True when the returned image is the FaceDetailer output (node 22). */
+  faceDetailer: boolean;
 }
 
 export class ComfyUiImageAdapter implements ExternalImageAdapter {
@@ -86,6 +94,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
   private activePromptId: string | null = null;
   private availabilityError: string | null = null;
   private lastGeneration: ComfyUiGenerationMetadata | null = null;
+  private lastUnrefinedImage: Buffer | null = null;
 
   constructor(options?: ComfyUiImageAdapterOptions) {
     this.requestTimeoutMs = options?.requestTimeoutMs;
@@ -136,6 +145,14 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       this.availabilityError = error instanceof Error ? error.message : String(error);
       return false;
     }
+  }
+
+  /**
+   * Unrefined base image of the last FaceDetailer generation. It comes from the same graph execution as the refined
+   * result (same seed, same noise), so it is the exact "basic" counterpart for a basic-versus-refined comparison.
+   */
+  getLastUnrefinedImage(): Buffer | null {
+    return this.lastUnrefinedImage;
   }
 
   /** Effective parameters of the last successful native generation (after checkpoint profile adjustments). */
@@ -233,33 +250,88 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       scheduler: profiled.scheduler,
     };
     const regions = request.characterRegions?.slice(0, 8) ?? [];
-    // Multi-character txt2img uses native area conditioning in a single pass. The previous background + per-region
-    // inpaint loop let the background pass draw the whole group and then repainted every region with the group prompt,
-    // which multiplied the character count (see docs/comfyui-audit.md, 2026-11-17 regional composition fix).
+    // Multi-character txt2img: scene-only global prompt, one solo prompt per region (core ConditioningSetArea), the
+    // scene prompt masked around the figures, and, when installed, one synthetic OpenPose skeleton per region. Area
+    // prompts alone are only a bias: in the CS9 experiments they dropped or added figures; the skeletons fix the count.
     const regionalComposition = regions.length > 1 && !uploadedReference;
-    const workflowRequest = regionalComposition
+    const maskedPrompts: ComfyUiMaskedPrompt[] = [];
+    const maskedReport: ComfyUiGenerationMetadata['maskedPrompts'] = [];
+    let spatialControl: ComfyUiGenerationMetadata['spatialControl'] = { mode: 'not_applicable' };
+    let poseControlNet: ComfyUiControlNetInput | undefined;
+    const uploadGuide = async (buffer: Buffer, name: string): Promise<ComfyUiImageRef> => {
+      if (!this.gateway.uploadImage) throw new Error('ComfyUI gateway does not support guide image upload.');
+      const uploaded = await this.gateway.uploadImage(buffer, name, 'aethera', true);
+      return { filename: uploaded.name, ...(uploaded.subfolder ? { subfolder: uploaded.subfolder } : {}), type: uploaded.type };
+    };
+    if (regionalComposition) {
+      const scene = request.scenePrompt ?? request.prompt;
+      const backgroundMask = await renderZoneMask(request.width, request.height, regions.map(figureBox), { invert: true, blur: 12, padX: 0.15 });
+      maskedPrompts.push({ prompt: `${qualityPrefix}scenery, detailed background, ${scene}`, mask: await uploadGuide(backgroundMask, 'aethera-scene-mask.png'), strength: 0.6 });
+      maskedReport.push({ purpose: 'scene_background', strength: 0.6 });
+      const poseModel = request.spatialControl === 'none' || controlNet ? undefined : controlNetNames(objectInfo).find((name) => /openpose/i.test(name));
+      if (poseModel) {
+        const dense = regions.length >= 4;
+        const strength = dense ? 0.9 : 0.75;
+        const endPercent = dense ? 0.85 : 0.7;
+        const guide = await uploadGuide(await renderOpenPoseGuide(request.width, request.height, regions), 'aethera-pose-guide.png');
+        poseControlNet = {
+          model: poseModel,
+          image: guide,
+          strength,
+          startPercent: 0,
+          endPercent,
+          nodeType: Object.prototype.hasOwnProperty.call(objectInfo, 'ControlNetApplyAdvanced') ? 'ControlNetApplyAdvanced' as const : 'ControlNetApply' as const,
+        };
+        spatialControl = { mode: 'openpose', model: poseModel, strength, endPercent };
+      } else {
+        spatialControl = {
+          mode: 'area_only',
+          reason: request.spatialControl === 'none'
+            ? 'disabled by request'
+            : controlNet
+              ? 'a caller-supplied ControlNet takes precedence'
+              : 'no OpenPose ControlNet reported by ComfyUI; character count is not enforced',
+        };
+      }
+    }
+    if (request.calmZones?.length && !uploadedReference) {
+      const calmMask = await renderZoneMask(request.width, request.height, request.calmZones, { blur: 16 });
+      maskedPrompts.push({ prompt: `${qualityPrefix}open empty sky, soft haze, smooth gradient light, minimal detail`, mask: await uploadGuide(calmMask, 'aethera-calm-mask.png'), strength: 0.8 });
+      maskedReport.push({ purpose: 'calm_zone', strength: 0.8 });
+    }
+    const effectiveControlNet = controlNet ?? poseControlNet;
+    const workflowRequest = regionalComposition || maskedPrompts.length
       ? {
           ...request,
-          regions: regions.map((region, index) => ({
-            prompt: `${qualityPrefix}${region.prompt ?? `solo, single character ${index + 1} of ${regions.length}, full body, distinct face and outfit, ${request.prompt}`}`,
-            x: region.x,
-            y: region.y,
-            width: region.width,
-            height: region.height,
-          })),
+          ...(regionalComposition
+            ? {
+                regions: regions.map((region, index) => ({
+                  prompt: `${qualityPrefix}${region.prompt ?? `solo, single character ${index + 1} of ${regions.length}, full body, distinct face and outfit, ${request.prompt}`}`,
+                  x: region.x,
+                  y: region.y,
+                  width: region.width,
+                  height: region.height,
+                  strength: poseControlNet ? 1 : 0.8,
+                })),
+              }
+            : {}),
+          maskedPrompts,
         }
       : request;
     const workflow = uploadedReference
       ? request.faceDetailer
         ? (() => { throw new Error('ComfyUI FaceDetailer is currently supported only for native txt2img.'); })()
         : this.img2imgWorkflowFor(request, uploadedReference, controlNet, ipAdapter)
-      : this.workflowFor(workflowRequest, controlNet, ipAdapter);
+      : this.workflowFor(workflowRequest, effectiveControlNet, ipAdapter);
     const validation = validateComfyUiWorkflow(workflow, objectInfo);
     if (!validation.ok) {
       this.availabilityError = validation.errors.join(' ');
       throw new Error(`ComfyUI is not configured for image generation: ${this.availabilityError}`);
     }
-    const image = await this.runWorkflow(workflow);
+    // FaceDetailer graphs save the base at node 7 and the refined image at node 22.
+    const refined = Boolean(request.faceDetailer) && !uploadedReference;
+    this.lastUnrefinedImage = null;
+    const image = refined ? await this.runWorkflow(workflow, '22', '7') : await this.runWorkflow(workflow);
     this.lastGeneration = {
       checkpoint,
       width: request.width,
@@ -271,6 +343,9 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       checkpointProfile: { family: profiled.family, evidence: profiled.evidence, adjustments: profiled.adjustments },
       regionalComposition,
       regionCount: regionalComposition ? regions.length : 0,
+      spatialControl,
+      maskedPrompts: maskedReport,
+      faceDetailer: refined,
     };
     return image;
   }
@@ -339,16 +414,26 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     return this.runWorkflow(workflow);
   }
 
-  private async runWorkflow(workflow: ComfyUiWorkflow): Promise<Buffer> {
+  /**
+   * Runs a graph and returns the image of `preferredOutput` when that node produced one. Graphs with a refiner save the
+   * base image too; numeric node ids iterate in ascending order, so "first image" used to return the unrefined base
+   * ('7') instead of the FaceDetailer result ('22').
+   */
+  private async runWorkflow(workflow: ComfyUiWorkflow, preferredOutput?: string, secondaryOutput?: string): Promise<Buffer> {
     const queued = await this.gateway.queuePrompt(workflow);
     this.activePromptId = queued.prompt_id;
     try {
       const history = await this.gateway.waitForCompletion(queued.prompt_id, { timeoutMs: this.timeoutMs });
-      const images = extractComfyUiImages(history);
-      const firstImage = images[0];
-      if (!firstImage) throw new Error('ComfyUI completed the prompt without a SaveImage output.');
-      const bytes = await this.gateway.getImage(firstImage);
+      const fromNode = (nodeId: string | undefined) => {
+        const output = nodeId ? history.outputs?.[nodeId] : undefined;
+        return output ? extractComfyUiImages({ ...history, outputs: { [nodeId as string]: output } })[0] : undefined;
+      };
+      const chosen = fromNode(preferredOutput) ?? extractComfyUiImages(history)[0];
+      if (!chosen) throw new Error('ComfyUI completed the prompt without a SaveImage output.');
+      const bytes = await this.gateway.getImage(chosen);
       if (bytes.byteLength === 0) throw new Error('ComfyUI returned an empty image.');
+      const secondary = fromNode(secondaryOutput);
+      if (secondaryOutput !== undefined) this.lastUnrefinedImage = secondary ? await this.gateway.getImage(secondary) : null;
       return bytes;
     } finally {
       this.activePromptId = null;
@@ -368,7 +453,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     return true;
   }
 
-  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora' | 'loras' | 'faceDetailer'> & { regions?: ComfyUiRegionalPrompt[] }, controlNet?: ComfyUiControlNetInput, ipAdapter?: ComfyUiIpAdapterInput): ComfyUiWorkflow {
+  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora' | 'loras' | 'faceDetailer'> & { regions?: ComfyUiRegionalPrompt[]; maskedPrompts?: ComfyUiMaskedPrompt[] }, controlNet?: ComfyUiControlNetInput, ipAdapter?: ComfyUiIpAdapterInput): ComfyUiWorkflow {
     const loras = request.loras?.length ? request.loras : request.lora ? [request.lora] : undefined;
     const input = {
       checkpoint: request.model ?? this.checkpoint,
@@ -386,6 +471,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       ...(ipAdapter ? { ipAdapter } : {}),
       ...(request.faceDetailer ? { faceDetailer: request.faceDetailer } : {}),
       ...(request.regions?.length ? { regions: request.regions } : {}),
+      ...(request.maskedPrompts?.length ? { maskedPrompts: request.maskedPrompts } : {}),
       filenamePrefix: this.filenamePrefix,
     };
     return request.faceDetailer ? buildComfyUiFaceDetailerWorkflow(input) : buildComfyUiTxt2ImgWorkflow(input);

@@ -9,11 +9,11 @@ export type LoraInstallSource = 'huggingface' | 'civitai' | 'local' | 'unknown';
 export interface LoraInstallCandidate {
   model: string;
   source: LoraInstallSource;
-  sourceUrl?: string;
-  license?: string;
-  architecture?: LoraArchitecture;
-  sizeBytes?: number;
-  sha256?: string;
+  sourceUrl?: string | undefined;
+  license?: string | undefined;
+  architecture?: LoraArchitecture | undefined;
+  sizeBytes?: number | undefined;
+  sha256?: string | undefined;
 }
 
 export const loraInstallCandidateSchema = z.object({

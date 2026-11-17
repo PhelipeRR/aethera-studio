@@ -10,7 +10,7 @@ function readyObjectInfo(): Record<string, unknown> {
   return {
     CheckpointLoaderSimple: { input: { required: { ckpt_name: [['sdxl.safetensors']] } } },
     CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {}, VAEEncodeForInpaint: {}, UpscaleModelLoader: {}, ImageUpscaleWithModel: {},
-    ImageToMask: {}, GrowMask: {}, SetLatentNoiseMask: {}, ConditioningSetArea: {}, ConditioningCombine: {},
+    ImageToMask: {}, GrowMask: {}, SetLatentNoiseMask: {}, ConditioningSetArea: {}, ConditioningCombine: {}, ConditioningSetMask: {},
   };
 }
 
@@ -75,6 +75,29 @@ describe('ComfyUiImageAdapter', () => {
     expect(gateway.queued?.['20']).toMatchObject({ class_type: 'UltralyticsDetectorProvider', inputs: { model_name: 'bbox/face_yolov8m.pt' } });
     expect(gateway.queued?.['21']).toMatchObject({ class_type: 'FaceDetailer', inputs: { bbox_detector: ['20', 0], denoise: 0.3 } });
     expect(gateway.queued?.['22']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['21', 0] } });
+  });
+
+  it('returns the FaceDetailer output, not the unrefined base image saved by the same graph', async () => {
+    const gateway = fakeGateway();
+    gateway.getObjectInfo = async () => ({
+      ...readyObjectInfo(),
+      UltralyticsDetectorProvider: { input: { required: { model_name: [['bbox/face_yolov8m.pt']] } } },
+      FaceDetailer: {},
+    });
+    gateway.waitForCompletion = async () => ({
+      outputs: {
+        '7': { images: [{ filename: 'base.png', subfolder: '', type: 'output' }] },
+        '22': { images: [{ filename: 'refined.png', subfolder: '', type: 'output' }] },
+      },
+      status: { completed: true },
+    });
+    gateway.getImage = async (image) => Buffer.from(image.filename);
+    const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
+
+    const result = await adapter.generateImage({
+      prompt: 'anime portrait', width: 768, height: 768, seed: 12, faceDetailer: { detectorModel: 'bbox/face_yolov8m.pt' },
+    });
+    expect(result.toString()).toBe('refined.png');
   });
 
   it('queues a native LoRA loader only when the selected model is reported by ComfyUI', async () => {
@@ -264,6 +287,8 @@ describe('ComfyUiImageAdapter', () => {
       gateway.queued = prompt;
       return { prompt_id: `prompt-${queueCount}` };
     };
+    const uploads: string[] = [];
+    gateway.uploadImage = async (_buffer, filename) => { uploads.push(filename); return { name: filename, subfolder: 'aethera', type: 'input' }; };
     const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
 
     await adapter.generateImage({
@@ -284,7 +309,37 @@ describe('ComfyUiImageAdapter', () => {
     expect(gateway.queued?.['region_1_area']).toMatchObject({ class_type: 'ConditioningSetArea', inputs: { conditioning: ['region_1_text', 0], x: 0, y: 0, width: 64, height: 72, strength: 0.8 } });
     expect(gateway.queued?.['region_2_combine']).toMatchObject({ class_type: 'ConditioningCombine', inputs: { conditioning_1: ['region_1_combine', 0], conditioning_2: ['region_2_area', 0] } });
     expect(gateway.queued?.['5']).toMatchObject({ class_type: 'KSampler', inputs: { positive: ['region_2_combine', 0] } });
-    expect(adapter.getLastGenerationMetadata()).toMatchObject({ regionalComposition: true, regionCount: 2 });
+    expect(gateway.queued?.['masked_1_set']).toMatchObject({ class_type: 'ConditioningSetMask', inputs: { strength: 0.6 } });
+    expect(uploads).toEqual(['aethera-scene-mask.png']);
+    expect(adapter.getLastGenerationMetadata()).toMatchObject({
+      regionalComposition: true,
+      regionCount: 2,
+      spatialControl: { mode: 'area_only', reason: expect.stringContaining('no OpenPose ControlNet') },
+    });
+  });
+
+  it('enforces the character count with one OpenPose skeleton per region when the ControlNet is installed', async () => {
+    const gateway = fakeGateway();
+    gateway.getObjectInfo = async () => ({
+      ...readyObjectInfo(),
+      ControlNetLoader: { input: { required: { control_net_name: [['xinsir-depth.safetensors', 'thibaud-controlnet-openpose-sdxl-1.0.safetensors']] } } },
+      ControlNetApplyAdvanced: {},
+    });
+    const uploaded = new Map<string, Buffer>();
+    gateway.uploadImage = async (buffer, filename) => { uploaded.set(filename, buffer); return { name: filename, subfolder: 'aethera', type: 'input' }; };
+    const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
+    const regions = Array.from({ length: 8 }, (_, index) => ({ id: `r${index}`, anchor: 'center', x: 64 + index * 150, y: index % 2 ? 90 : 200, width: 140, height: index % 2 ? 460 : 550 }));
+
+    await adapter.generateImage({ prompt: 'scene', width: 1344, height: 768, characterRegions: regions, calmZones: [{ x: 400, y: 280, width: 540, height: 220 }] });
+    expect(gateway.queued?.['13']).toMatchObject({ class_type: 'ControlNetApplyAdvanced', inputs: { strength: 0.9, end_percent: 0.85 } });
+    expect(gateway.queued?.['11']).toMatchObject({ class_type: 'ControlNetLoader', inputs: { control_net_name: 'thibaud-controlnet-openpose-sdxl-1.0.safetensors' } });
+    expect(gateway.queued?.['region_8_area']).toMatchObject({ inputs: { strength: 1 } });
+    expect([...uploaded.keys()].sort()).toEqual(['aethera-calm-mask.png', 'aethera-pose-guide.png', 'aethera-scene-mask.png']);
+    await expect(sharp(uploaded.get('aethera-pose-guide.png')!).metadata()).resolves.toMatchObject({ width: 1344, height: 768 });
+    expect(adapter.getLastGenerationMetadata()).toMatchObject({
+      spatialControl: { mode: 'openpose', model: 'thibaud-controlnet-openpose-sdxl-1.0.safetensors', strength: 0.9 },
+      maskedPrompts: [{ purpose: 'scene_background', strength: 0.6 }, { purpose: 'calm_zone', strength: 0.8 }],
+    });
   });
 
   it('moves Animagine generations into the model-card sampling envelope and records the adjustment', async () => {

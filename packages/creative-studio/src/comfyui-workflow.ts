@@ -31,6 +31,17 @@ export interface ComfyUiTxt2ImgInput {
    * `ConditioningSetArea`, then combined with the global prompt. One sampling pass keeps lighting and scene coherent.
    */
   regions?: ComfyUiRegionalPrompt[];
+  /**
+   * Prompts bound to an uploaded soft mask with core `ConditioningSetMask` (white = conditioned). Used for the scene
+   * prompt around the characters and for calm title safe areas.
+   */
+  maskedPrompts?: ComfyUiMaskedPrompt[];
+}
+
+export interface ComfyUiMaskedPrompt {
+  prompt: string;
+  mask: ComfyUiImageRef;
+  strength: number;
 }
 
 export interface ComfyUiRegionalPrompt {
@@ -282,7 +293,9 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
     };
     samplerNode.inputs['model'] = [ipApplyId, 0];
   }
-  if (input.regions?.length) applyRegionalConditioning(workflow, input.regions, clipRef, width, height);
+  if (input.regions?.length || input.maskedPrompts?.length) {
+    applyRegionalConditioning(workflow, input.regions ?? [], input.maskedPrompts ?? [], clipRef, width, height);
+  }
   return workflow;
 }
 
@@ -292,8 +305,11 @@ export function buildComfyUiFaceDetailerWorkflow(input: ComfyUiTxt2ImgInput): Co
   void _faceDetailer;
   const workflow = buildComfyUiTxt2ImgWorkflow(baseInput);
   const sampler = workflow['5'];
-  const positive = sampler?.inputs['positive'];
-  const negative = sampler?.inputs['negative'];
+  // With regional/masked conditioning the sampler's positive carries pixel areas and a pose guide that are meaningless
+  // inside a face crop, so FaceDetailer refines with the scene prompt instead.
+  const regional = Boolean(baseInput.regions?.length || baseInput.maskedPrompts?.length);
+  const positive = regional ? ['2', 0] : sampler?.inputs['positive'];
+  const negative = regional ? ['3', 0] : sampler?.inputs['negative'];
   const model = sampler?.inputs['model'];
   const clip = workflow['2']?.inputs['clip'];
   if (!sampler || !positive || !negative || !model || !clip) throw new Error('Base ComfyUI graph is incomplete for FaceDetailer.');
@@ -379,12 +395,28 @@ export function buildComfyUiImg2ImgWorkflow(input: ComfyUiImg2ImgInput): ComfyUi
 function applyRegionalConditioning(
   workflow: ComfyUiWorkflow,
   regions: ComfyUiRegionalPrompt[],
+  maskedPrompts: ComfyUiMaskedPrompt[],
   clipRef: [string, number],
   width: number,
   height: number,
 ): void {
   let positiveRef: [string, number] = ['2', 0];
   const regionNodeIds = new Set<string>();
+  for (const [index, masked] of maskedPrompts.slice(0, 4).entries()) {
+    const prefix = `masked_${index + 1}`;
+    const maskName = masked.mask.subfolder ? `${masked.mask.subfolder}/${masked.mask.filename}` : masked.mask.filename;
+    workflow[`${prefix}_image`] = { class_type: 'LoadImage', inputs: { image: maskName }, _meta: { title: `Aethera masked prompt ${index + 1} mask` } };
+    workflow[`${prefix}_mask`] = { class_type: 'ImageToMask', inputs: { image: [`${prefix}_image`, 0], channel: 'red' }, _meta: { title: `Aethera masked prompt ${index + 1} channel` } };
+    workflow[`${prefix}_text`] = { class_type: 'CLIPTextEncode', inputs: { text: masked.prompt, clip: clipRef }, _meta: { title: `Aethera masked prompt ${index + 1}` } };
+    workflow[`${prefix}_set`] = {
+      class_type: 'ConditioningSetMask',
+      inputs: { conditioning: [`${prefix}_text`, 0], mask: [`${prefix}_mask`, 0], strength: Math.max(0, Math.min(10, masked.strength)), set_cond_area: 'default' },
+      _meta: { title: `Aethera masked prompt ${index + 1} area` },
+    };
+    workflow[`${prefix}_combine`] = { class_type: 'ConditioningCombine', inputs: { conditioning_1: positiveRef, conditioning_2: [`${prefix}_set`, 0] }, _meta: { title: `Aethera masked prompt ${index + 1} combine` } };
+    for (const suffix of ['image', 'mask', 'text', 'set', 'combine']) regionNodeIds.add(`${prefix}_${suffix}`);
+    positiveRef = [`${prefix}_combine`, 0];
+  }
   for (const [index, region] of regions.slice(0, 8).entries()) {
     const x = Math.max(0, Math.min(width - 64, Math.floor(region.x / 8) * 8));
     const y = Math.max(0, Math.min(height - 64, Math.floor(region.y / 8) * 8));
@@ -492,7 +524,7 @@ function checkpointNames(objectInfo: Record<string, unknown>): string[] {
   return values[0].filter((value): value is string => typeof value === 'string');
 }
 
-function controlNetNames(objectInfo: Record<string, unknown>): string[] {
+export function controlNetNames(objectInfo: Record<string, unknown>): string[] {
   const loader = objectInfo['ControlNetLoader'];
   if (!loader || typeof loader !== 'object') return [];
   const input = (loader as Record<string, unknown>)['input'];
