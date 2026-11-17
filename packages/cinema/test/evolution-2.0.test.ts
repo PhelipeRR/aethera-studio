@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   AetheraEvolutionCore,
+  buildEditorialScript,
   detectMediaAnomalies,
   evaluateRenderedVisualCritic,
   matchNarrationSegmentsToMedia,
@@ -85,6 +86,21 @@ describe('Aethera Studio Evolution 2.0 (Etapas A, B, C)', () => {
 
     // Limit to 2 scenes for fast deterministic test render
     pkg.timeline.clips = pkg.timeline.clips.slice(0, 2);
+    pkg.direction.narrativeBeats = pkg.direction.narrativeBeats.slice(0, 2).map((beat, idx) => ({
+      ...beat,
+      summary: `Cena curta de cache ${idx + 1}.`,
+    }));
+    pkg.editorialScript = buildEditorialScript({
+      scriptId: 'evolution_cache_short_script',
+      source: 'user_edited',
+      treatment: 'Validação curta de cache.',
+      segments: pkg.direction.narrativeBeats.map((beat) => ({
+        beatId: beat.beatId,
+        stage: beat.stage,
+        spokenText: beat.summary,
+        estimatedDurationSec: 5,
+      })),
+    });
 
     const first = await renderRealCinemaMp4({
       pkg,
@@ -282,6 +298,21 @@ describe('Aethera Studio Evolution 2.0 (Etapas A, B, C)', () => {
       humorIntensity: 10,
     });
     pkg.timeline.clips = pkg.timeline.clips.slice(0, 3);
+    pkg.direction.narrativeBeats = pkg.direction.narrativeBeats.slice(0, 3).map((beat, idx) => ({
+      ...beat,
+      summary: `Narração curta da cena ${idx + 1}.`,
+    }));
+    pkg.editorialScript = buildEditorialScript({
+      scriptId: 'evolution_incremental_short_script',
+      source: 'user_edited',
+      treatment: 'Validação curta de render incremental.',
+      segments: pkg.direction.narrativeBeats.map((beat) => ({
+        beatId: beat.beatId,
+        stage: beat.stage,
+        spokenText: beat.summary,
+        estimatedDurationSec: 6,
+      })),
+    });
     while (pkg.direction.narrativeBeats.length < 3) {
       pkg.direction.narrativeBeats.push({
         beatId: `beat_${pkg.direction.narrativeBeats.length + 1}`,

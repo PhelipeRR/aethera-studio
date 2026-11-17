@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   applyAudioMixerUpdates,
   applyPromptRevisionToPackage,
+  buildEditorialScript,
   produceCinemaPackage,
   renderRealCinemaMp4,
   validateSoundMix,
@@ -92,7 +93,7 @@ describe('Audio Mixer, Prompt Revision & Real Render Integration', () => {
     const pkg = produceCinemaPackage({
       projectId: 'real_render_check',
       prompt: 'Teste de renderização audiovisual',
-      targetDurationSec: 12,
+      targetDurationSec: 60,
       humorIntensity: 35,
     });
     const outDir = makeTempDir('aethera-render-test-');
@@ -119,6 +120,16 @@ describe('Audio Mixer, Prompt Revision & Real Render Integration', () => {
         ffmpegColorFilterChain: 'colorspace=all=bt709:iall=bt709:fast=1,eq=contrast=1.08:saturation=1.05',
       },
     };
+    // Keep this mixer-focused render small; long/short narration-vs-plan behavior is covered by P1's dedicated test.
+    pkgWithCustomMix.timeline.clips = pkgWithCustomMix.timeline.clips.slice(0, 1);
+    pkgWithCustomMix.direction.shots = pkgWithCustomMix.direction.shots.slice(0, 1);
+    pkgWithCustomMix.direction.narrativeBeats = pkgWithCustomMix.direction.narrativeBeats.slice(0, 1);
+    pkgWithCustomMix.editorialScript = buildEditorialScript({
+      scriptId: 'real_render_check_short_script',
+      source: 'user_edited',
+      treatment: 'Validação curta do mixer.',
+      segments: [{ beatId: 'beat_1', stage: 'hook', spokenText: 'Teste curto do mixer de áudio.', estimatedDurationSec: 2 }],
+    });
 
     const rendered = await renderRealCinemaMp4({
       pkg: pkgWithCustomMix,

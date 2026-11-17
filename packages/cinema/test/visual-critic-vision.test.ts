@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   AetheraEvolutionCore,
+  buildEditorialScript,
   evaluateRenderedVisualCritic,
   produceCinemaPackage,
   recordProductionCorrectionLesson,
@@ -156,6 +157,22 @@ describe('AI Visual Critic with real vision & targeted repairs', () => {
       humorIntensity: 15,
     });
     pkg.timeline.clips = pkg.timeline.clips.slice(0, 3);
+    pkg.direction.narrativeBeats = pkg.direction.narrativeBeats.slice(0, 3).map((beat, idx) => ({
+      ...beat,
+      summary: `Cena curta de validação ${idx + 1}.`,
+    }));
+    pkg.editorialScript = buildEditorialScript({
+      scriptId: 'visual_critic_short_script',
+      source: 'user_edited',
+      treatment: 'Validação curta do cache visual.',
+      segments: pkg.direction.narrativeBeats.map((beat, idx) => ({
+        beatId: beat.beatId,
+        stage: beat.stage,
+        spokenText: beat.summary,
+        estimatedDurationSec: 4,
+        title: `Cena ${idx + 1}`,
+      })),
+    });
 
     const first = await renderRealCinemaMp4({
       pkg,

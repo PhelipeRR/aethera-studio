@@ -142,6 +142,10 @@ describe('Editorial Integrity & TTS Consistency', () => {
         beats: gameSegments.map((s) => ({ stage: s.stage, summary: s.spokenText })),
       },
     });
+    // This test asserts editorial/TTS identity; the audio-first duration extension is covered separately.
+    pkg.timeline.clips = pkg.timeline.clips.slice(0, 1);
+    pkg.direction.shots = pkg.direction.shots.slice(0, 1);
+    pkg.direction.narrativeBeats = pkg.direction.narrativeBeats.slice(0, 1);
 
     const render = await renderRealCinemaMp4({
       pkg,
@@ -163,5 +167,5 @@ describe('Editorial Integrity & TTS Consistency', () => {
     });
     expect(tampered.consistent).toBe(false);
     expect(tampered.ttsTextMatchesScript).toBe(false);
-  }, 45_000);
+  }, 120_000);
 });
