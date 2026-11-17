@@ -57,6 +57,7 @@ export interface VisualRecipe {
   cfg: number;
   samplerName: string;
   scheduler: string;
+  stylization: number;
   characterCount: number;
   characterRegions: CharacterRegion[];
 }
@@ -74,6 +75,8 @@ export interface VisualRecipeInput {
   maxSide?: number;
   professionalPreset?: ProfessionalPresetId;
   characterCount?: number;
+  /** 0 = restrained/content-faithful, 1 = strongly stylized; mapped to explicit prompt vocabulary. */
+  stylization?: number;
 }
 
 /** Ordered pt-BR/EN visual vocabulary → English phrase. Longer, more specific patterns first. */
@@ -268,6 +271,7 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
   const professionalPresetId = input.professionalPreset ?? resolveProfessionalPreset(input.artType, input.prompt);
   const professionalPreset = getProfessionalPreset(professionalPresetId);
   const direction = input.direction ?? null;
+  const stylization = Math.max(0, Math.min(1, input.stylization ?? 0.7));
   const recognised: string[] = [];
   for (const [pattern, phrase] of VISUAL_GLOSSARY) {
     if (pattern.test(input.prompt) && !recognised.includes(phrase)) recognised.push(phrase);
@@ -291,6 +295,7 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
   const parts = [
     input.professionalPreset ? professionalPreset.promptPrefix : undefined,
     direction?.style ?? PRESET_STYLE[preset],
+    stylization < 0.4 ? 'restrained stylization, grounded proportions, content-faithful details' : stylization > 0.8 ? 'highly stylized artistic treatment, bold visual exaggeration' : undefined,
     subject,
     COMPOSITION[input.artType],
     direction?.setting,
@@ -334,6 +339,7 @@ export function buildVisualRecipe(input: VisualRecipeInput): VisualRecipe {
     cfg: professionalPreset.cfg,
     samplerName: professionalPreset.samplerName,
     scheduler: professionalPreset.scheduler,
+    stylization,
     characterCount,
     characterRegions: characterPlan.regions,
   };

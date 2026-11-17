@@ -8,6 +8,7 @@ import type {
   BackgroundRemovalRequest,
   ExternalImageAdapter,
   ImageGenerationRequest,
+  ImageUpscaleRequest,
   LocalizedInpaintRequest,
   SemanticEvaluationRequest,
   SemanticEvaluationResult,
@@ -380,5 +381,23 @@ export class ProviderChainImageAdapter implements ExternalImageAdapter {
       }
     }
     throw new Error('Nenhum provedor de reparo localizado (inpainting) disponível.');
+  }
+
+  async upscaleImage(request: ImageUpscaleRequest): Promise<Buffer> {
+    const errors: string[] = [];
+    for (const p of this.providers) {
+      if (!p.upscaleImage) continue;
+      if (!(await p.isAvailable())) continue;
+      try {
+        return await p.upscaleImage(request);
+      } catch (err) {
+        errors.push(`${p.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    throw new Error(
+      errors.length > 0
+        ? `Todos os provedores de upscale falharam: ${errors.join(' | ')}`
+        : 'Nenhum provedor de upscale disponível.',
+    );
   }
 }

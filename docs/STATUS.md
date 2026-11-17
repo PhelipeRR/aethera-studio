@@ -9,7 +9,7 @@
 - [x] **Harness de aceitação:** `npx tsx scripts/comfyui-acceptance.ts` e variante `--reference`; no estado atual encerra como bloqueado, sem fabricar seis resultados.
 - [x] **Histórico persistente:** migração aditiva `0122_aethera_creative_generation_runs.sql`, IPC de listagem/regeneração e painel com regeneração explícita; o pedido armazenado exclui o manifesto transitório de assets.
 - [x] **Múltiplos personagens:** regiões não sobrepostas (1–8) entram na receita; com ComfyUI real, dois ou mais personagens executam um passe de ambiente e inpaint delimitado por região, sem alegar contagem correta antes da revisão visual humana.
-- [x] **Operação no painel:** seed opcional, resolução IA (768/1024 px), batch serializado (1–4), prévias de lote e regeneração pelo histórico; fidelidade estética/contagem/anatomia continuam gates de revisão humana.
+- [x] **Operação no painel:** seed opcional, resolução IA (768/1024 px), batch serializado (1–4), prévias de lote, regeneração pelo histórico e ação explícita de upscale do fundo; fidelidade estética/contagem/anatomia continuam gates de revisão humana.
 - [ ] **Bloqueio operacional:** iniciar o ComfyUI e instalar/aprovar pelo menos um checkpoint compatível. ControlNet/IP-Adapter, LoRA, upscale e face-detail continuam não validados enquanto os modelos/nodes não existirem no runtime.
 - [x] **Validação de código:** testes focados dos módulos novos passando; `npm run build:aethera` passando. O typecheck node ainda reproduz somente o JSX6142 preexistente em `apps/aethera-desktop/test/delete-prompt-dialog.test.ts`.
 

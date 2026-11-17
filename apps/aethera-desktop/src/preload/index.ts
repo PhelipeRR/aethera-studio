@@ -228,6 +228,7 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeImageEngineStatus: () => ipcRenderer.invoke('creative:image-engine-status'),
   creativeCancelGeneration: () => ipcRenderer.invoke('creative:cancel-generation'),
   creativeReleaseImageMemory: () => ipcRenderer.invoke('creative:release-image-memory'),
+  creativeUpscaleProjectBackground: (input: { projectId: string; model: string }) => ipcRenderer.invoke('creative:upscale-project-background', input),
   creativeImageEngineSettings: () => ipcRenderer.invoke('creative:image-engine-settings'),
   creativeSaveImageEngineSettings: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:save-image-engine-settings', input),
 });

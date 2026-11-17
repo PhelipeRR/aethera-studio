@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { IpcMain } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
@@ -204,6 +205,42 @@ export class AetheraCreativeStudioService {
 
   async releaseImageMemory(): Promise<boolean> {
     return this.comfyUiAdapter.releaseMemory();
+  }
+
+  async upscaleProjectBackground(input: { projectId: string; model: string }): Promise<{
+    document: CreativeProjectDocument;
+    audit: QualityAuditReport;
+    previewDataUrl: string;
+  }> {
+    const doc = this.loadDocument(input.projectId);
+    if (!doc) throw new Error(`Creative project not found: ${input.projectId}`);
+    const background = doc.layers.find((layer): layer is Extract<CreativeLayer, { type: 'background' }> => layer.type === 'background' && Boolean(layer.assetId));
+    if (!background?.assetId) throw new Error('O projeto não possui um fundo de imagem para upscale.');
+    const sourceRef = doc.assetManifest[background.assetId];
+    if (!sourceRef) throw new Error('O asset do fundo não está disponível no manifesto do projeto.');
+    if (!this.imageAdapter.upscaleImage) throw new Error('Nenhum provedor de upscale está configurado.');
+    const sourcePath = this.ingestion.resolvePortablePath(sourceRef.relativePath);
+    const upscaled = await this.imageAdapter.upscaleImage({ imageBuffer: readFileSync(sourcePath), model: input.model });
+    const upscaledRef = await this.ingestion.ingestBuffer({
+      buffer: upscaled,
+      kind: 'image',
+      extension: 'png',
+      originalName: `${sourceRef.originalName.replace(/\.[^.]+$/u, '')}-upscaled.png`,
+    });
+    const updated = {
+      ...doc,
+      assetManifest: { ...doc.assetManifest, [upscaledRef.id]: upscaledRef },
+      layers: doc.layers.map((layer) => layer.id === background.id ? { ...layer, assetId: upscaledRef.id, source: 'asset' as const, generatedByAi: true } : layer),
+      updatedAt: new Date().toISOString(),
+    };
+    const saved = this.saveDocument(updated);
+    this.editors.set(saved.id, new LayeredDocumentEditor(saved));
+    const brandKit = saved.brandKitId ? this.brandKits.get(saved.brandKitId) : null;
+    const [previewDataUrl, audit] = await Promise.all([
+      this.renderPreviewDataUrl(saved),
+      this.qualityGate.auditProject(saved, { brandKit }),
+    ]);
+    return { document: saved, audit, previewDataUrl };
   }
 
   async getImageEngineSettings(): Promise<{
@@ -523,6 +560,7 @@ export class AetheraCreativeStudioService {
     useAiGeneration?: boolean;
     seed?: number;
     maxSide?: number;
+    stylization?: number;
     professionalPreset?: ProfessionalPresetId;
     referenceImagePaths?: string[];
     characterCount?: number;
@@ -574,6 +612,7 @@ export class AetheraCreativeStudioService {
         ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
         ...(input.seed !== undefined ? { seed: input.seed } : {}),
         ...(input.maxSide !== undefined ? { maxSide: input.maxSide } : {}),
+        ...(input.stylization !== undefined ? { stylization: input.stylization } : {}),
       });
       generation = generated.report;
       this.reportGeneration(generation);
@@ -647,6 +686,7 @@ export class AetheraCreativeStudioService {
       ...(input.useAiGeneration !== undefined ? { useAiGeneration: input.useAiGeneration } : {}),
       ...(input.seed !== undefined ? { seed: input.seed } : {}),
       ...(input.maxSide !== undefined ? { maxSide: input.maxSide } : {}),
+      ...(input.stylization !== undefined ? { stylization: input.stylization } : {}),
       ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
       ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths.slice(0, 4) } : {}),
       ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
@@ -1183,6 +1223,7 @@ export function registerCreativeStudioIpc(ipcMain: IpcMain, service: AetheraCrea
   ipcMain.handle('creative:image-engine-status', async () => service.imageEngineStatus());
   ipcMain.handle('creative:cancel-generation', async () => service.cancelImageGeneration());
   ipcMain.handle('creative:release-image-memory', async () => service.releaseImageMemory());
+  ipcMain.handle('creative:upscale-project-background', async (_ev, input: { projectId: string; model: string }) => service.upscaleProjectBackground(input));
   ipcMain.handle('creative:image-engine-settings', async () => service.getImageEngineSettings());
   ipcMain.handle('creative:save-image-engine-settings', async (_ev, input: unknown) => service.saveImageEngineSettings(input));
 }

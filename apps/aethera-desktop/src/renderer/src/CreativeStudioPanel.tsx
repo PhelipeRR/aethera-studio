@@ -29,7 +29,7 @@ interface CreativeBridge {
       engineId: string;
       message: string;
       durationMs?: number;
-      recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine' };
+      recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine'; stylization?: number };
       qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
       generationRunId?: string;
     };
@@ -43,7 +43,7 @@ interface CreativeBridge {
       engineId: string;
       message: string;
       durationMs?: number;
-      recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine' };
+      recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine'; stylization?: number };
       qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
       generationRunId?: string;
     };
@@ -108,7 +108,7 @@ interface CreativeBridge {
       endpoint?: string;
       version?: string;
       reason?: string;
-      models: { checkpoints: string[]; loras: string[]; controlnet: string[] };
+      models: { checkpoints: string[]; loras: string[]; controlnet: string[]; upscale_models: string[] };
       capabilities: { nativeTxt2Img: boolean; nativeImg2Img: boolean; inpaint: boolean; controlNet: boolean; ipAdapter: boolean; faceDetailer: boolean; upscale: boolean; lora: boolean };
     };
     localAvailable: boolean;
@@ -127,6 +127,11 @@ interface CreativeBridge {
   }>;
   creativeCancelGeneration?: () => Promise<boolean>;
   creativeReleaseImageMemory?: () => Promise<boolean>;
+  creativeUpscaleProjectBackground?: (input: { projectId: string; model: string }) => Promise<{
+    document: CreativeProjectDocument;
+    audit: QualityAuditReport;
+    previewDataUrl: string;
+  }>;
 }
 
 function getBridge(): CreativeBridge | undefined {
@@ -141,6 +146,7 @@ export function CreativeStudioPanel() {
   const [characterCount, setCharacterCount] = useState(1);
   const [generationSeed, setGenerationSeed] = useState('');
   const [maxSide, setMaxSide] = useState(1024);
+  const [stylization, setStylization] = useState(0.7);
   const [batchSize, setBatchSize] = useState(1);
   const [videoPath, setVideoPath] = useState('');
   const [engines, setEngines] = useState<string[]>([]);
@@ -161,6 +167,7 @@ export function CreativeStudioPanel() {
   const [useAiGeneration, setUseAiGeneration] = useState<boolean>(true);
   const [professionalPreset, setProfessionalPreset] = useState<ProfessionalPresetId>('youtube_thumbnail_1280x720');
   const [selectedCheckpoint, setSelectedCheckpoint] = useState('');
+  const [selectedUpscaleModel, setSelectedUpscaleModel] = useState('');
   const [releaseMemoryAfterGeneration, setReleaseMemoryAfterGeneration] = useState(false);
   const [fidelityMode, setFidelityMode] = useState<'conceptual_art' | 'content_faithful' | 'authentic_gameplay'>(
     'conceptual_art',
@@ -195,7 +202,7 @@ export function CreativeStudioPanel() {
     engineId: string;
     message: string;
     durationMs?: number;
-    recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine' };
+    recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine'; stylization?: number };
     qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
   } | null>(null);
   const [generationBusy, setGenerationBusy] = useState(false);
@@ -224,7 +231,11 @@ export function CreativeStudioPanel() {
       setSelectedCheckpoint(persistedImageEngine.settings.checkpoint);
       setProfessionalPreset(persistedImageEngine.settings.preferredPreset);
       setReleaseMemoryAfterGeneration(persistedImageEngine.settings.releaseMemoryAfterGeneration);
-    } else if (imageEngine) setEngineStatus(imageEngine);
+      setSelectedUpscaleModel(persistedImageEngine.status.comfyUi.models.upscale_models[0] ?? '');
+    } else if (imageEngine) {
+      setEngineStatus(imageEngine);
+      setSelectedUpscaleModel(imageEngine.comfyUi.models.upscale_models[0] ?? '');
+    }
   };
 
   useEffect(() => {
@@ -251,6 +262,7 @@ export function CreativeStudioPanel() {
         ...(referencePath.trim() ? { referenceImagePaths: [referencePath.trim()] } : {}),
         characterCount,
         maxSide,
+        stylization,
         ...(generationSeed.trim() ? { seed: Number(generationSeed) } : {}),
       };
       const results = batchSize > 1 && bridge.creativeGenerateBatch
@@ -287,6 +299,25 @@ export function CreativeStudioPanel() {
     if (!bridge?.creativeCancelGeneration) return;
     const cancelled = await bridge.creativeCancelGeneration();
     setStatusMsg(cancelled ? 'Cancelamento solicitado ao motor de imagem.' : 'Nenhuma geração ComfyUI ativa para cancelar.');
+  };
+
+  const handleUpscale = async () => {
+    const bridge = getBridge();
+    if (!bridge?.creativeUpscaleProjectBackground || !activeDoc || !selectedUpscaleModel) return;
+    setGenerationBusy(true);
+    setStatusMsg('Executando upscale no ComfyUI...');
+    try {
+      const res = await bridge.creativeUpscaleProjectBackground({ projectId: activeDoc.id, model: selectedUpscaleModel });
+      setActiveDoc(res.document);
+      setPreviewUrl(res.previewDataUrl);
+      setAudit(res.audit);
+      setStatusMsg(`Upscale concluído com ${selectedUpscaleModel}.`);
+      await refreshLists();
+    } catch (err) {
+      setStatusMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerationBusy(false);
+    }
   };
 
   const handleRegenerate = async (id: string) => {
@@ -441,6 +472,16 @@ export function CreativeStudioPanel() {
                 {engineStatus.comfyUi.models.checkpoints.map((checkpoint) => <option key={checkpoint} value={checkpoint}>{checkpoint}</option>)}
               </select>
             )}
+            {engineStatus.comfyUi.models.upscale_models.length > 0 && (
+              <select
+                aria-label="Modelo de upscale ComfyUI"
+                value={selectedUpscaleModel}
+                onChange={(e) => setSelectedUpscaleModel(e.target.value)}
+                style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
+              >
+                {engineStatus.comfyUi.models.upscale_models.map((model) => <option key={model} value={model}>{model}</option>)}
+              </select>
+            )}
             <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <input
                 type="checkbox"
@@ -538,6 +579,16 @@ export function CreativeStudioPanel() {
               <option value={768}>IA 768 px (mais leve)</option>
               <option value={1024}>IA 1024 px (qualidade)</option>
             </select>
+            <select
+              aria-label="Intensidade de estilização"
+              value={stylization}
+              onChange={(e) => setStylization(Number(e.target.value))}
+              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+            >
+              <option value={0.3}>Estilo contido</option>
+              <option value={0.7}>Estilo equilibrado</option>
+              <option value={0.95}>Estilo intenso</option>
+            </select>
             <input
               aria-label="Seed da geração IA"
               value={generationSeed}
@@ -562,6 +613,14 @@ export function CreativeStudioPanel() {
                 Cancelar geração
               </button>
             )}
+            <button
+              disabled={generationBusy || !activeDoc || !selectedUpscaleModel || !engineStatus?.comfyUi.capabilities.upscale}
+              onClick={() => void handleUpscale()}
+              title={!selectedUpscaleModel ? 'Instale um modelo em ComfyUI/models/upscale_models' : 'Executar upscale no fundo do projeto ativo'}
+              style={{ padding: '8px 12px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6, cursor: generationBusy ? 'wait' : 'pointer', opacity: !activeDoc || !selectedUpscaleModel || !engineStatus?.comfyUi.capabilities.upscale ? 0.55 : 1 }}
+            >
+              Upscale do fundo
+            </button>
             {artType === 'thumbnail' && (
               <>
                 <select
@@ -616,7 +675,7 @@ export function CreativeStudioPanel() {
               <div style={{ color: 'var(--muted-foreground)', marginTop: 4 }}>{generationReport.message}</div>
               {generationReport.recipe && (
                 <div style={{ color: 'var(--muted-foreground)', marginTop: 4 }}>
-                  preset {generationReport.recipe.preset} · seed {generationReport.recipe.seed} · origem {generationReport.recipe.source}
+                  preset {generationReport.recipe.preset} · seed {generationReport.recipe.seed} · estilização {generationReport.recipe.stylization !== undefined ? Math.round(generationReport.recipe.stylization * 100) : '—'}% · origem {generationReport.recipe.source}
                 </div>
               )}
               {generationReport.qualityAudit && (
