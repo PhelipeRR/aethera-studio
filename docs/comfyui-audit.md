@@ -14,7 +14,7 @@ Status checked on 2026-11-16/17. This document records the operational evidence 
 | Binding | localhost-only (`--listen 127.0.0.1 --port 8000`) |
 | Runtime paths | base directory `C:\Users\Pheli\Documents\ComfyUI`; extra paths from `extra_models_config.yaml` |
 
-The Aethera discovery path now probes both 8000 and 8188, then retargets the native adapter to the discovered ready endpoint. The existing `Start-ComfyUI.ps1` starts the server hidden and writes status/log files. Aethera now exposes an opt-in “iniciar ComfyUI se offline” setting: it invokes that fixed local script once, waits for readiness, reports missing/failed startup, and never retries indefinitely. The default remains off.
+The Aethera discovery path now probes both 8000 and 8188, then retargets the native adapter to the discovered ready endpoint. The existing `Start-ComfyUI.ps1` starts the server hidden and writes status/log files. Aethera now exposes an opt-in “iniciar ComfyUI se offline” setting: it invokes that fixed local script once, waits for readiness, reports missing/failed startup, and never retries indefinitely. The default remains off. The real recovery acceptance stopped the two verified ComfyUI processes and then reached `ready` through the Aethera service; evidence is `artifacts/comfyui-autostart-acceptance/report.json`.
 
 ## Models and licenses
 
@@ -88,6 +88,5 @@ The panel therefore defaults IP-Adapter weight to `0.35`. This is an evidence-ba
 
 1. Add semantic/human-review recording to the six-case acceptance so subject count, anatomy, focal point, text-safe area, and “empty composition” become explicit acceptance criteria.
 2. Improve multi-character and banner quality with regional composition/conditioning; do not mark the structural baseline as visually accepted.
-3. Add a full Aethera UI E2E for the opt-in auto-start and verify recovery after stopping the live server; the service path and settings validation are implemented, but this desktop-level recovery scenario is still pending.
-4. Evaluate production-safe OpenPose licensing before shipping that model in a commercial distribution, and install/validate a LoRA only if a concrete style requirement needs it.
-5. Decide whether the duplicate dependency installation in the unused Comfy Desktop venv should be cleaned up. The live server uses the Documents venv and is not affected.
+3. Evaluate production-safe OpenPose licensing before shipping that model in a commercial distribution, and install/validate a LoRA only if a concrete style requirement needs it.
+4. Decide whether the duplicate dependency installation in the unused Comfy Desktop venv should be cleaned up. The live server uses the Documents venv and is not affected.

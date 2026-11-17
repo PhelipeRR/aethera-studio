@@ -1,18 +1,22 @@
 # Status de qualidade e segurança
 
-## ComfyUI image engine — audit and native integration (2026-11-16)
+## ComfyUI image engine — audit and native integration (2026-11-17)
 
-- [x] **Diagnóstico reproduzível:** `npx tsx scripts/comfyui-audit.ts` encontrou ComfyUI `0.20.1` em `C:\Users\Pheli\AppData\Local\Programs\ComfyUI`, mas os endpoints `127.0.0.1:8188`/`:8000` estão offline e o inventário de checkpoints, VAE, LoRA, ControlNet e upscale está vazio. Evidência completa: `docs/comfyui-audit.md`.
+- [x] **Diagnóstico reproduzível:** `npx tsx scripts/comfyui-audit.ts` confirma ComfyUI `0.20.1` em `C:\Users\Pheli\AppData\Local\Programs\ComfyUI`, endpoint local `http://127.0.0.1:8000`, Python 3.12.11, PyTorch `2.10.0+cu130`, CUDA 13.0 e RTX 4060 Ti com 8,585,216,000 bytes de VRAM. Evidência completa: `docs/comfyui-audit.md`.
 - [x] **Engine real:** cliente loopback (`/system_stats`, `/object_info`, `/prompt`, `/history`, `/view`, `/upload/image`, `/interrupt`, `/free`), discovery, workflows nativos txt2img/img2img/inpaint/upscale e adapter integrado antes do fallback SDXL local.
 - [x] **Controles profissionais:** presets Anime Premium, Anime Cinematic, Gaming Cinematic, Cyberpunk Neon, YouTube Thumbnail e Banner; seed, resolução, steps, CFG, sampler, scheduler, checkpoint persistido, referência img2img com intensidade de preservação, LoRA nativa opcional, ControlNet e IP-Adapter opcionais com imagem de condicionamento, e reparo localizado (`VAEEncodeForInpaint`) quando disponíveis.
 - [x] **Segurança de qualidade/VRAM:** lease serial de GPU, liberação explícita/opcional de memória, relatório visível no painel, rejeição de buffers inválidos/quase uniformes por dimensão e `σ` de luminância.
 - [x] **Gate contra fallback vazio:** documentos de produção de thumbnail/banner marcam `visualFocusRequired`; sem sujeito ou fundo de imagem asset-backed, o `QualityGateService` emite `THUMBNAIL_NO_VISUAL_FOCUS`/`BANNER_NO_VISUAL_FOCUS` crítico. Coberto por regressão dedicada; fixtures técnicas de layout continuam sem essa exigência.
-- [x] **Harness de aceitação:** `npx tsx scripts/comfyui-acceptance.ts` e variante `--reference`; no estado atual encerra como bloqueado, sem fabricar seis resultados.
+- [x] **Harness de aceitação:** `npx tsx scripts/comfyui-acceptance.ts` executou os seis casos baseline reais e `scripts/comfyui-advanced-acceptance.ts` executou Depth, OpenPose e IP-Adapter com seeds, tempos, picos de VRAM, PNGs e `report.json` reais; nenhum resultado foi fabricado.
 - [x] **Histórico persistente:** migração aditiva `0122_aethera_creative_generation_runs.sql`, IPC de listagem/regeneração e painel com regeneração explícita; o pedido armazenado exclui o manifesto transitório de assets.
 - [x] **Múltiplos personagens:** regiões não sobrepostas (1–8) entram na receita; com ComfyUI real, dois ou mais personagens executam um passe de ambiente e inpaint delimitado por região, sem alegar contagem correta antes da revisão visual humana.
 - [x] **Operação no painel:** seed opcional, resolução IA (768/1024 px), batch serializado (1–4), prévias de lote, regeneração pelo histórico e ação explícita de upscale do fundo; fidelidade estética/contagem/anatomia continuam gates de revisão humana.
-- [ ] **Bloqueio operacional:** iniciar o ComfyUI e instalar/aprovar pelo menos um checkpoint compatível. ControlNet/IP-Adapter, upscale, face-detail e os grafos LoRA/ControlNet/IP-Adapter recém-integrados continuam sem validação visual/runtime enquanto os modelos/nodes não existirem no ambiente.
-- [x] **Validação de código:** testes focados dos módulos novos passando; `npm run build:aethera` passando. O typecheck node ainda reproduz somente o JSX6142 preexistente em `apps/aethera-desktop/test/delete-prompt-dialog.test.ts`.
+- [x] **Bootstrap operacional:** Animagine XL 3.1, Illustrious XL v2, 4x-UltraSharp, Impact Pack/Subpack/Manager, detector FaceDetailer, ControlNet Depth/OpenPose, `controlnet_aux`, IP-Adapter Plus e CLIP Vision foram instalados e conferidos por hash; as capacidades foram redescobertas no `/object_info`.
+- [x] **Validação visual/runtime avançada:** Depth e OpenPose produziram condições reais e gerações coerentes; IP-Adapter `0.35` passou revisão humana, enquanto `0.80` foi rejeitado por superexposição apesar do gate estrutural. O painel agora parte de `0.35` e expõe o modelo disponível.
+- [x] **Auto-start opcional:** configuração persistente e checkbox no painel invocam `Start-ComfyUI.ps1` uma única vez quando o endpoint está offline, com estados `starting/ready/missing/failed`; o default permanece desligado.
+- [x] **Recuperação real:** `scripts/comfyui-autostart-acceptance.ts` parou os processos ComfyUI verificados, ativou o auto-start pelo serviço Aethera e confirmou endpoint/provider `ready`; evidência em `artifacts/comfyui-autostart-acceptance/report.json`.
+- [ ] **Pendências operacionais:** revisão comercial da licença “other” do OpenPose. LoRA continua indisponível porque nenhum modelo LoRA foi instalado.
+- [x] **Validação de código:** settings focados 2/2, renderer TypeScript e main TypeScript isolado passaram; `npm run typecheck` agregado ainda reproduz somente o JSX6142 preexistente em `apps/aethera-desktop/test/delete-prompt-dialog.test.ts`.
 
 ## Fontes de mídia do Aethera (2026-11-15)
 
