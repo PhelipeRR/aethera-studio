@@ -37,7 +37,13 @@ export function evaluateDeliveryQualityGate(input: DeliveryGateInput, options: {
   if (!input.probe.audioCodec || !input.probe.audioSampleRate) findings.push({ id: 'audio', severity: 'block', message: 'O MP4 não possui stream de áudio mensurável.' });
   if (input.audioFirst && (!input.audioFirst.completeNarrationPreserved || input.audioFirst.finalAudioStreamDurationMs === null || input.audioFirst.finalAudioStreamDurationMs + toleranceMs < input.audioFirst.measuredNarrationDurationMs)) findings.push({ id: 'narration', severity: 'block', message: 'A narração medida não está integralmente presente no stream final.' });
   if (input.captions && (!input.captions.enabled || input.captions.wordCount <= 0 || input.captions.coverageEndMs + toleranceMs < input.captions.measuredNarrationDurationMs)) findings.push({ id: 'captions', severity: 'review', message: 'A cobertura de captions não alcança todas as palavras medidas; requer revisão humana.' });
-  if (options.requireRealAudio && (!input.audioSources || Object.values(input.audioSources).some((source) => source !== 'asset'))) findings.push({ id: 'real-audio', severity: 'block', message: 'Produção estrita exige assets reais de música, ambience e SFX.' });
+  if (input.audioSources && Object.values(input.audioSources).some((source) => source !== 'asset')) {
+    findings.push({
+      id: 'real-audio',
+      severity: options.requireRealAudio ? 'block' : 'review',
+      message: options.requireRealAudio ? 'Produção estrita exige assets reais de música, ambience e SFX.' : 'Um ou mais papéis de áudio real estão ausentes; o fallback gerado permanece visível e requer revisão humana.',
+    });
+  }
   if (input.technicalSample) findings.push({ id: 'sample', severity: 'review', message: 'O resultado é uma amostra técnica e não representa a produção completa.' });
   const blocked = findings.some((finding) => finding.severity === 'block');
   return { passed: findings.length === 0, status: blocked ? 'technical_blocked' : findings.length > 0 ? 'needs_review' : 'approved', findings };

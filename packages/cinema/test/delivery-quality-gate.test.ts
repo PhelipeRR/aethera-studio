@@ -34,4 +34,11 @@ describe('delivery quality gate', () => {
     expect(report.status).toBe('needs_review');
     expect(report.findings.find((finding) => finding.id === 'captions')?.severity).toBe('review');
   });
+
+  it('keeps optional generated audio visible as review instead of approving a partial real-audio mix', () => {
+    const report = evaluateDeliveryQualityGate({ ...base, audioSources: { music: 'missing', ambience: 'asset', sfx: 'asset' } });
+    expect(report.passed).toBe(false);
+    expect(report.status).toBe('needs_review');
+    expect(report.findings.find((finding) => finding.id === 'real-audio')?.severity).toBe('review');
+  });
 });

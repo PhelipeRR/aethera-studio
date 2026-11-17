@@ -84,7 +84,7 @@ describe('P6 60-second production E2E', () => {
     expect(first.smartCaptions?.enabled).toBe(true);
     expect(first.smartCaptions?.wordCount).toBe(first.captionAlignment?.wordCount);
     expect(first.smartCaptions?.coverage.endMs).toBeGreaterThan(first.audioFirstTimeline!.measuredNarrationDurationMs - 1_000);
-    expect(first.deliveryGate?.status).toBe('approved');
+    expect(first.deliveryGate?.status).toBe(realAudioAssets ? 'needs_review' : 'approved');
     if (realAudioAssets) {
       expect(first.audioSources).toMatchObject({ ambience: 'asset', sfx: 'asset', music: 'missing' });
     }
