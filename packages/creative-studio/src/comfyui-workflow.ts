@@ -248,6 +248,9 @@ export function buildComfyUiImg2ImgWorkflow(input: ComfyUiImg2ImgInput): ComfyUi
     '2': node('2'),
     '3': node('3'),
     ...(base['10'] ? { '10': base['10'] } : {}),
+    ...(base['11'] ? { '11': base['11'] } : {}),
+    ...(base['12'] ? { '12': base['12'] } : {}),
+    ...(base['13'] ? { '13': base['13'] } : {}),
     ...(base['14'] ? { '14': base['14'] } : {}),
     ...(base['15'] ? { '15': base['15'] } : {}),
     ...(base['16'] ? { '16': base['16'] } : {}),
@@ -365,6 +368,15 @@ function loraNames(objectInfo: Record<string, unknown>): string[] {
   return [];
 }
 
+function referencedNodeIds(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    if (value.length === 2 && typeof value[0] === 'string' && typeof value[1] === 'number') return [value[0]];
+    return value.flatMap((item) => referencedNodeIds(item));
+  }
+  if (value && typeof value === 'object') return Object.values(value).flatMap((item) => referencedNodeIds(item));
+  return [];
+}
+
 export function validateComfyUiWorkflow(workflow: ComfyUiWorkflow, objectInfo: Record<string, unknown>): ComfyUiWorkflowValidation {
   const errors: string[] = [];
   const requiredNodeTypes = new Set<string>();
@@ -424,6 +436,11 @@ export function validateComfyUiWorkflow(workflow: ComfyUiWorkflow, objectInfo: R
   }
   for (const [nodeId, node] of Object.entries(workflow)) {
     if (!node.class_type || !node.inputs) errors.push(`Workflow node ${nodeId} is missing class_type or inputs.`);
+    for (const value of Object.values(node.inputs ?? {})) {
+      for (const referencedId of referencedNodeIds(value)) {
+        if (!workflow[referencedId]) errors.push(`Workflow node ${nodeId} references missing node ${referencedId}.`);
+      }
+    }
   }
   return { ok: errors.length === 0, errors };
 }

@@ -121,6 +121,68 @@ describe('ComfyUI workflow registry', () => {
     expect(workflow['8']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['7', 0] } });
   });
 
+  it('preserves ControlNet nodes when an img2img reference is combined with conditioning', () => {
+    const workflow = buildComfyUiImg2ImgWorkflow({
+      checkpoint: 'sdxl.safetensors',
+      positivePrompt: 'hero portrait with controlled pose',
+      negativePrompt: 'text, deformed anatomy',
+      width: 768,
+      height: 768,
+      seed: 8,
+      steps: 10,
+      cfg: 5,
+      samplerName: 'euler',
+      scheduler: 'normal',
+      denoise: 0.42,
+      inputImage: { filename: 'reference.png', subfolder: 'aethera', type: 'input' },
+      filenamePrefix: 'Aethera/reference-controlnet',
+      controlNet: {
+        model: 'control-lora-pose.safetensors',
+        image: { filename: 'pose.png', subfolder: 'aethera', type: 'input' },
+        strength: 0.7,
+        nodeType: 'ControlNetApplyAdvanced',
+      },
+    });
+
+    expect(workflow['11']).toMatchObject({ class_type: 'ControlNetLoader' });
+    expect(workflow['12']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/pose.png' } });
+    expect(workflow['13']).toMatchObject({ class_type: 'ControlNetApplyAdvanced' });
+    expect(workflow['6']?.inputs['positive']).toEqual(['13', 0]);
+    expect(workflow['6']?.inputs['negative']).toEqual(['13', 1]);
+  });
+
+  it('rejects workflows with dangling node references before queueing them', () => {
+    const workflow = buildComfyUiTxt2ImgWorkflow({
+      checkpoint: 'sdxl.safetensors',
+      positivePrompt: 'controlled pose',
+      negativePrompt: 'text',
+      width: 768,
+      height: 768,
+      seed: 8,
+      steps: 8,
+      cfg: 5,
+      samplerName: 'euler',
+      scheduler: 'normal',
+      filenamePrefix: 'Aethera/dangling',
+      controlNet: {
+        model: 'control-lora-pose.safetensors',
+        image: { filename: 'pose.png', subfolder: 'aethera', type: 'input' },
+        nodeType: 'ControlNetApplyAdvanced',
+      },
+    });
+    delete workflow['13'];
+
+    const result = validateComfyUiWorkflow(workflow, {
+      CheckpointLoaderSimple: { input: { required: { ckpt_name: [['sdxl.safetensors']] } } },
+      CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {},
+      ControlNetLoader: { input: { required: { control_net_name: [['control-lora-pose.safetensors']] } } },
+      ControlNetApplyAdvanced: {},
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContain('Workflow node 5 references missing node 13.');
+  });
+
   it('adds a discovered ControlNet apply path and validates the conditioning model', () => {
     const workflow = buildComfyUiTxt2ImgWorkflow({
       checkpoint: 'sdxl.safetensors',

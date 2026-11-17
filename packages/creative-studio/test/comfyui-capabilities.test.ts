@@ -4,7 +4,7 @@ import { inspectComfyUiCapabilities } from '../src/comfyui-capabilities.js';
 describe('ComfyUI capability inspection', () => {
   it('reports only capabilities backed by nodes and model inventory', () => {
     const capabilities = inspectComfyUiCapabilities(
-      { CheckpointLoaderSimple: {}, CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {}, VAEEncodeForInpaint: {}, ControlNetLoader: {}, ControlNetApplyAdvanced: {}, IPAdapterModelLoader: {}, CLIPVisionLoader: {}, IPAdapterAdvanced: {}, FaceDetailer: {}, ImageUpscaleWithModel: {}, LoraLoader: {} },
+      { CheckpointLoaderSimple: {}, CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {}, VAEEncode: {}, VAEEncodeForInpaint: {}, ControlNetLoader: {}, ControlNetApplyAdvanced: {}, IPAdapterModelLoader: {}, CLIPVisionLoader: {}, IPAdapterAdvanced: {}, FaceDetailer: {}, UltralyticsDetectorProvider: {}, UpscaleModelLoader: {}, ImageUpscaleWithModel: {}, LoraLoader: {} },
       { checkpoints: ['sdxl.safetensors'], controlnet: ['canny.safetensors'], ipadapter: ['ipadapter.safetensors'], clip_vision: ['clip.safetensors'], diffusion_models: [], loras: ['style.safetensors'], vae: [], upscale_models: ['4x.pth'], embeddings: [] },
     );
     expect(capabilities).toEqual({
@@ -30,5 +30,25 @@ describe('ComfyUI capability inspection', () => {
       upscale: false,
       lora: false,
     });
+  });
+
+  it('does not advertise face detail from a detector provider without a detailer executor', () => {
+    const capabilities = inspectComfyUiCapabilities(
+      { CheckpointLoaderSimple: {}, UltralyticsDetectorProvider: {} },
+      { checkpoints: ['base.safetensors'], controlnet: [], ipadapter: [], clip_vision: [], diffusion_models: [], loras: [], vae: [], upscale_models: [], embeddings: [] },
+    );
+
+    expect(capabilities.faceDetailer).toBe(false);
+  });
+
+  it('does not advertise native paths when the graph is missing core or loader nodes', () => {
+    const capabilities = inspectComfyUiCapabilities(
+      { CheckpointLoaderSimple: {}, LoadImage: {}, VAEEncode: {}, VAEEncodeForInpaint: {}, ImageUpscaleWithModel: {} },
+      { checkpoints: ['base.safetensors'], controlnet: [], ipadapter: [], clip_vision: [], diffusion_models: [], loras: [], vae: [], upscale_models: ['4x.pth'], embeddings: [] },
+    );
+
+    expect(capabilities.nativeImg2Img).toBe(false);
+    expect(capabilities.inpaint).toBe(false);
+    expect(capabilities.upscale).toBe(false);
   });
 });
