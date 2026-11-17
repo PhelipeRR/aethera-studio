@@ -194,4 +194,19 @@ describe('VisionRouter', () => {
     expect(r4.provider).toBe('antigravity');
     expect(slowCalls).toBe(1);
   });
+
+  it('bounds provider health checks even when detect ignores the abort signal', async () => {
+    const blocked: VisualAnalysisProvider = {
+      id: 'blocked-health',
+      model: 'blocked-v1',
+      capabilities: ['describe'],
+      limits: { maxImagesPerCall: 1 },
+      detect: async () => new Promise(() => undefined),
+    };
+    const router = new Router([blocked], memoryCache(), [], undefined, undefined, undefined, undefined, 15);
+    const startedAt = Date.now();
+    const health = await router.checkProvidersHealth(['blocked-health']);
+    expect(Date.now() - startedAt).toBeLessThan(250);
+    expect(health).toEqual([{ provider: 'blocked-health', available: false, reason: expect.stringMatching(/timeout/i) }]);
+  });
 });

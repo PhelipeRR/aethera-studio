@@ -25,7 +25,7 @@ export type VisionCacheKey = { frameHash: string; provider: string; model: strin
 export interface VisionCachePort { get(key: VisionCacheKey): unknown; put(key: VisionCacheKey, value: unknown): void }
 export interface VisionSpendPort { get(key: string): number; add(key: string, amount: number): number }
 export type VisionAttemptOutcome = 'ok' | 'cached' | 'low_confidence' | 'unavailable' | 'over_budget' | 'error';
-export interface VisionCooldownEntry { untilMs: number; reason: string }
+export interface VisionCooldownEntry { untilMs: number; reason: string; kind?: 'quota' | 'timeout' }
 export interface VisionProviderTelemetry {
   provider: string;
   calls: number;
@@ -61,6 +61,7 @@ export class VisionRouter {
     private readonly scheduler: VisualWorkScheduler = visionGpuScheduler,
     private readonly cooldowns: Map<string, VisionCooldownEntry> = new Map(),
     private readonly timeoutFailures: Map<string, number> = new Map(),
+    private readonly healthTimeoutMs = 1_500,
   ) {
     this.providers = new Map(providers.map((provider) => [provider.id, provider]));
     const amounts = new Map<string, number>();
@@ -72,7 +73,7 @@ export class VisionRouter {
     for (const id of chain) {
       const cd = this.cooldowns.get(id);
       if (cd && cd.untilMs > Date.now()) {
-        out.push({ provider: id, available: false, reason: `quota_cooldown: ${cd.reason}` });
+        out.push({ provider: id, available: false, reason: `${cd.kind === 'timeout' ? 'timeout_cooldown' : 'quota_cooldown'}: ${cd.reason}` });
         continue;
       }
       const provider = this.providers.get(id);
@@ -81,8 +82,23 @@ export class VisionRouter {
         continue;
       }
       try {
-        const res = await provider.detect();
-        out.push(res.available ? { provider: id, available: true } : { provider: id, available: false, reason: res.reason });
+        const controller = new AbortController();
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const detectPromise = provider.detect(controller.signal);
+          const res = await Promise.race([
+            detectPromise,
+            new Promise<{ available: false; reason: string }>((resolve) => {
+              timeoutHandle = setTimeout(() => {
+                controller.abort();
+                resolve({ available: false, reason: `provider health timeout after ${this.healthTimeoutMs}ms` });
+              }, this.healthTimeoutMs);
+            }),
+          ]);
+          out.push(res.available ? { provider: id, available: true } : { provider: id, available: false, reason: res.reason });
+        } finally {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        }
       } catch (err) {
         out.push({ provider: id, available: false, reason: err instanceof Error ? err.message : 'detect failed' });
       }
@@ -154,7 +170,7 @@ export class VisionRouter {
       if (input.signal?.aborted) throw new Error('cancelled: visual analysis interrupted.');
       const cd = this.cooldowns.get(id);
       if (cd && cd.untilMs > Date.now()) {
-        attempts.push({ provider: id, outcome: 'unavailable', detail: `quota_cooldown: ${cd.reason}` });
+        attempts.push({ provider: id, outcome: 'unavailable', detail: `${cd.kind === 'timeout' ? 'timeout_cooldown' : 'quota_cooldown'}: ${cd.reason}` });
         continue;
       }
       const provider = this.providers.get(id);
@@ -267,12 +283,12 @@ export class VisionRouter {
           t.lastError = detail.slice(-160);
           this.telemetry.set(id, t);
           if (isVisionQuotaError(detail)) {
-            this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: detail.slice(-160) });
+            this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: detail.slice(-160), kind: 'quota' });
           } else if (isTimeout) {
             const count = (this.timeoutFailures.get(id) ?? 0) + 1;
             this.timeoutFailures.set(id, count);
             if (count >= 2) {
-              this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: `timeouts consecutivos (${count}): ${detail}` });
+              this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: `timeouts consecutivos (${count}): ${detail}`, kind: 'timeout' });
             }
           } else {
             this.timeoutFailures.delete(id);

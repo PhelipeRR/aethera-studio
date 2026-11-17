@@ -1000,6 +1000,144 @@ describe('AI Voice Director, Pronunciation Dictionary & Audio Quality Gate', () 
     expect(run2.funnelMetrics.conversionRates.downloadedToVerifiedRate).toBe(0);
   });
 
+  it('does not expose a provider outage as an editorial rejection', async () => {
+    const error = Object.assign(new Error('VisionRouter technical_blocked: codex:timeout'), {
+      visionDiagnostics: { status: 'technical_blocked' as const, attempts: [{ provider: 'codex', outcome: 'timeout' as const }], error: 'codex timeout' },
+    });
+    const decision = await evaluateMediaRelevance(
+      { mediaId: 'technical-media', uri: 'C:/tmp/technical-media.mp4', title: 'Cyberpunk 2077 gameplay', origin: 'steam', durationSec: 12 },
+      { segmentId: 'technical-scene', prompt: 'Cyberpunk 2077', narrationText: 'Night City em Cyberpunk 2077.', expectedEntities: ['Cyberpunk 2077'] },
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async () => { throw error; },
+      },
+    );
+    expect(decision.visualVerificationError).toContain('VisionRouter technical_blocked');
+    expect(decision.editorialStatus).toBe('candidate');
+    expect(decision.rejectionCode).toBeUndefined();
+    expect(decision.technicalStatus).toBe('technical_blocked');
+    const unavailable = Object.assign(new Error('frame file missing'), {
+      visionDiagnostics: { status: 'media_unavailable' as const, attempts: [], error: 'frame file missing' },
+    });
+    const unavailableDecision = await evaluateMediaRelevance(
+      { mediaId: 'unavailable-media', uri: 'C:/tmp/unavailable-media.mp4', title: 'Cyberpunk 2077 gameplay', origin: 'steam', durationSec: 12 },
+      { segmentId: 'unavailable-scene', prompt: 'Cyberpunk 2077', narrationText: 'Night City em Cyberpunk 2077.', expectedEntities: ['Cyberpunk 2077'] },
+      { requireVisualVerification: true, analyzeFrames: async () => { throw unavailable; } },
+    );
+    expect(unavailableDecision.technicalStatus).toBe('media_unavailable');
+    expect(unavailableDecision.rejectionCode).toBeUndefined();
+    const returnedUnavailable = await evaluateMediaRelevance(
+      { mediaId: 'returned-unavailable', uri: 'C:/tmp/returned-unavailable.mp4', title: 'Cyberpunk 2077 gameplay', origin: 'steam', durationSec: 12 },
+      { segmentId: 'returned-unavailable-scene', prompt: 'Cyberpunk 2077', narrationText: 'Night City em Cyberpunk 2077.', expectedEntities: ['Cyberpunk 2077'] },
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async () => Object.assign([], { diagnostics: { status: 'media_unavailable' as const, attempts: [], error: 'returned media unavailable' } }),
+      },
+    );
+    expect(returnedUnavailable.technicalStatus).toBe('media_unavailable');
+    expect(returnedUnavailable.visualVerificationError).toContain('returned media unavailable');
+    expect(returnedUnavailable.rejectionCode).toBeUndefined();
+  });
+
+  it('keeps a successful initial semantic pass while persisting a failed dense refinement as partial diagnostics', async () => {
+    const statuses: string[] = [];
+    let calls = 0;
+    const decision = await evaluateMediaRelevance(
+      { mediaId: 'dense-partial', uri: 'C:/tmp/dense-partial.mp4', title: 'Cyberpunk 2077 battle', origin: 'yt_dlp', durationSec: 30 },
+      { segmentId: 'dense-scene', prompt: 'Cyberpunk 2077', narrationText: 'V luta em Cyberpunk 2077.', expectedEntities: ['Cyberpunk 2077'] },
+      {
+        requireVisualVerification: true,
+        onVisualVerification: (diagnostics) => statuses.push(diagnostics.status),
+        analyzeFrames: async (_uri, timestampsSec) => {
+          calls += 1;
+          if (calls > 1) throw Object.assign(new Error('dense refinement timeout'), { visionDiagnostics: { status: 'technical_blocked' as const, attempts: [{ provider: 'codex', outcome: 'timeout' }], error: 'dense refinement timeout' } });
+          return timestampsSec.map((timestampSec) => ({ timestampSec, visualCategory: 'gameplay' as const, detectedEntities: ['Cyberpunk 2077'], detectedActions: ['batalha_confronto'], description: 'Cyberpunk 2077 mostra V em combate visível.', confidence: 0.95 }));
+        },
+      },
+    );
+    expect(calls).toBe(2);
+    expect(statuses).toEqual(['succeeded', 'partial']);
+    expect(decision.visualVerificationStatus).toBe('visually_verified');
+    expect(decision.accepted).toBe(true);
+  });
+
+  it('keeps a shared downloaded candidate independently verifiable for every scene that reused the query', async () => {
+    const seenScenes: string[] = [];
+    const mediaPath = join(tmpdir(), 'shared-cyberpunk-fixture.mp4');
+    writeFileSync(mediaPath, Buffer.from('shared-cyberpunk-fixture'));
+    const sharedCandidate = {
+      url: 'https://example.test/shared-cyberpunk.mp4',
+      title: 'Cyberpunk shared gameplay',
+      origin: 'yt_dlp' as const,
+      durationSec: 12,
+    };
+    const result = await runAutonomousMediaAcquisition({
+      projectId: 'shared-scenes',
+      prompt: 'Cyberpunk 2077 gameplay',
+      mediaDir: mkdtempSync(join(tmpdir(), 'shared-scenes-')),
+      segments: [
+        { segmentId: 'scene_a', subject: 'Cyberpunk 2077', narrationText: 'V mostra a cidade', entities: ['Cyberpunk 2077'], expectedDurationSec: 6, preferredQueries: ['Cyberpunk 2077 gameplay'] },
+        { segmentId: 'scene_b', subject: 'Cyberpunk 2077', narrationText: 'V atravessa a cidade', entities: ['Cyberpunk 2077'], expectedDurationSec: 6, preferredQueries: ['Cyberpunk 2077 gameplay'] },
+      ],
+      limits: { maxRounds: 1, maxQueriesTotal: 2, maxDurationMs: 10_000 },
+      requireVisualVerification: true,
+      deps: {
+        ytDlpSearchFn: async () => [{ url: sharedCandidate.url, title: sharedCandidate.title, durationSec: sharedCandidate.durationSec }],
+        ytDlpAcquireFn: async () => mediaPath,
+      },
+      analyzeFrames: async (_uri, stamps, segment) => {
+        seenScenes.push(segment.segmentId);
+        return stamps.map((timestampSec) => ({ timestampSec, description: `Cyberpunk 2077 visible in ${segment.segmentId}`, detectedEntities: ['Cyberpunk 2077'], detectedActions: [], confidence: 0.95, visualCategory: 'gameplay' as const }));
+      },
+    });
+    expect(seenScenes).toEqual(expect.arrayContaining(['scene_a', 'scene_b']));
+    expect(new Set(seenScenes).size).toBe(2);
+    const sceneB = result.sceneDiagnostics?.find((scene) => scene.segmentId === 'scene_b');
+    expect(sceneB).toMatchObject({ sharedQueries: 1, visualAttempts: expect.any(Number) });
+    expect(sceneB?.sharedCandidates).toBeGreaterThan(0);
+  }, 30_000);
+
+  it('keeps a missing checkpoint file explicitly unavailable instead of silently running an empty resume', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'missing-media-resume-'));
+    const missingPath = join(dir, 'media', 'missing-cyberpunk.mp4');
+    const checkpointPath = join(dir, 'media', '.acquisition-checkpoint.json');
+    mkdirSync(join(dir, 'media'), { recursive: true });
+    writeFileSync(checkpointPath, JSON.stringify({
+      projectId: 'missing-resume',
+      policyVersion: SCENE_GROUNDING_POLICY_VERSION,
+      pendingVerificationEntries: [[
+        'scene_missing::yt_dlp:https://example.test/missing.mp4',
+        {
+          candidateKey: 'yt_dlp:https://example.test/missing.mp4',
+          segmentId: 'scene_missing',
+          cand: { url: 'https://example.test/missing.mp4', title: 'Cyberpunk missing', origin: 'yt_dlp', durationSec: 10 },
+          filePath: missingPath,
+          fileSizeBytes: 10,
+          sha256: 'missing-sha',
+          durationSec: 10,
+          mediaId: 'auto_missing_1',
+          round: 1,
+        },
+      ]],
+    }));
+    const report = await runAutonomousMediaAcquisition({
+      projectId: 'missing-resume',
+      prompt: 'Cyberpunk 2077',
+      mediaDir: join(dir, 'media'),
+      checkpointPath,
+      stageMode: 'verify_pending_only',
+      limits: { maxRounds: 1, maxDurationMs: 5_000 },
+      requireVisualVerification: true,
+      segments: [{ segmentId: 'scene_missing', subject: 'Cyberpunk 2077', narrationText: 'Night City', entities: ['Cyberpunk 2077'], expectedDurationSec: 5 }],
+      deps: {},
+      analyzeFrames: async () => { throw new Error('must not analyze a missing file'); },
+    });
+    expect(report.funnelMetrics.mediaUnavailableCount).toBe(1);
+    expect(report.funnelMetrics.pendingVerificationCount).toBe(1);
+    expect(report.sceneDiagnostics?.find((scene) => scene.segmentId === 'scene_missing')).toMatchObject({ mediaUnavailable: 1, technicalBlocked: 0 });
+    expect(report.funnelMetrics.visionDiagnostics.records).toContainEqual(expect.objectContaining({ status: 'media_unavailable', mediaId: 'auto_missing_1' }));
+  });
+
   it('records a shared query as a per-scene attempt without claiming a second search', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'nb-shared-query-audit-'));
     const segments = [

@@ -122,7 +122,16 @@ const analyzeFrames = async (uri: string, timestampsSec: number[], segment: { na
 };
 
 const checkpoint = JSON.parse(readFileSync(checkpointPath, 'utf8')) as { pendingVerificationEntries?: PendingEntry[] };
-const pending = (checkpoint.pendingVerificationEntries ?? []).map(([, entry]) => entry).filter((entry) => existsSync(entry.filePath));
+const expectedExistingMedia = 7;
+const pending = [...new Map(
+  (checkpoint.pendingVerificationEntries ?? [])
+    .map(([, entry]) => entry)
+    .filter((entry) => existsSync(entry.filePath))
+    .map((entry) => [entry.filePath, entry] as const),
+).values()];
+if (pending.length !== expectedExistingMedia) {
+  throw new Error(`P0/P0.5 blocked: expected ${expectedExistingMedia} existing Cyberpunk media files, found ${pending.length}; refusing to search or download.`);
+}
 const uniqueSegments = [...new Map(pending.map((entry) => [entry.segmentId, entry])).values()].map((entry) => ({
   segmentId: entry.segmentId,
   subject: 'Cyberpunk 2077',

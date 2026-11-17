@@ -51,7 +51,7 @@ export interface DistributedFrameAnalysis {
 }
 
 export interface VisionVerificationDiagnostics {
-  status: 'succeeded' | 'technical_blocked';
+  status: 'succeeded' | 'partial' | 'technical_blocked' | 'media_unavailable';
   provider?: string | null;
   model?: string | null;
   reportedModel?: string | null;
@@ -102,6 +102,8 @@ export interface MediaRelevanceDecision {
   correspondenceLevel?: MediaCorrespondenceLevel;
   visualVerificationStatus?: VisualVerificationStatus;
   visualVerificationError?: string;
+  /** Infrastructure/media availability state, never an editorial rejection. */
+  technicalStatus?: 'technical_blocked' | 'media_unavailable';
   visualConfidence?: number;
   visualEvidence?: Array<{
     timestampSec: number;
@@ -514,6 +516,7 @@ export async function evaluateMediaRelevance(
   // 2. Distributed frame analysis (VisionRouter / caller hook) + 2nd dense pass on promising intervals
   let frameAnalyses: DistributedFrameAnalysis[] = [];
   let visualVerificationError: string | undefined;
+  let visualVerificationTechnicalStatus: 'technical_blocked' | 'media_unavailable' | undefined;
   const notifyVisualVerification = (diagnostics: VisionVerificationDiagnostics) => {
     options?.onVisualVerification?.(diagnostics);
   };
@@ -521,7 +524,13 @@ export async function evaluateMediaRelevance(
     try {
       const initialAnalysis = await options.analyzeFrames(candidate.uri, sampledTimestampsSec, segment);
       frameAnalyses = initialAnalysis;
-      notifyVisualVerification(('diagnostics' in initialAnalysis ? initialAnalysis.diagnostics : undefined) ?? { status: 'succeeded', attempts: [] });
+      const initialDiagnostics = ('diagnostics' in initialAnalysis ? initialAnalysis.diagnostics : undefined) ?? { status: 'succeeded' as const, attempts: [] };
+      if (initialDiagnostics.status === 'media_unavailable' || initialDiagnostics.status === 'technical_blocked') {
+        visualVerificationTechnicalStatus = initialDiagnostics.status;
+        visualVerificationError = initialDiagnostics.error ?? `Vision verification ${initialDiagnostics.status}.`;
+        frameAnalyses = [];
+      }
+      notifyVisualVerification(initialDiagnostics);
     } catch (err) {
       frameAnalyses = [];
       visualVerificationError = (err as Error).message;
@@ -530,6 +539,7 @@ export async function evaluateMediaRelevance(
         attempts: parseVisionProviderAttempts(visualVerificationError),
         error: visualVerificationError,
       };
+      visualVerificationTechnicalStatus = diagnostics.status === 'media_unavailable' ? 'media_unavailable' : 'technical_blocked';
       notifyVisualVerification({ ...diagnostics, error: diagnostics.error ?? visualVerificationError });
     }
 
@@ -585,8 +595,15 @@ export async function evaluateMediaRelevance(
               merged.sort((a, b) => a.timestampSec - b.timestampSec);
               frameAnalyses = merged;
             }
-          } catch {
-            // Keep initial distributed frames if dense refinement fails
+          } catch (err) {
+            // The initial semantic pass remains usable, but the failed refinement must stay visible in diagnostics.
+            const error = err instanceof Error ? err.message : String(err);
+            const diagnostics = (err as Error & { visionDiagnostics?: VisionVerificationDiagnostics }).visionDiagnostics ?? {
+              status: 'partial' as const,
+              attempts: parseVisionProviderAttempts(error),
+              error,
+            };
+            notifyVisualVerification({ ...diagnostics, status: 'partial', error: diagnostics.error ?? error });
           }
         }
       }
@@ -862,13 +879,13 @@ export async function evaluateMediaRelevance(
       mediaId: candidate.mediaId,
       accepted: false,
       score: 0.3,
-      relevanceTier: 'rejected',
-      correspondenceLevel: 'unverified',
+      ...(visualVerificationTechnicalStatus ? { technicalStatus: visualVerificationTechnicalStatus } : {}),
+      ...(visualVerificationError ? {} : { relevanceTier: 'rejected' as const, correspondenceLevel: 'unverified' as const }),
       visualVerificationStatus,
       ...(visualVerificationError ? { visualVerificationError } : {}),
       visualConfidence: 0,
       visualEvidence: [],
-      rejectionCode: 'unverified_no_visual_evidence',
+      ...(visualVerificationError ? {} : { rejectionCode: 'unverified_no_visual_evidence' as const }),
       reason: visualVerificationError
         ? `Falha na verificação visual (${visualVerificationError.slice(0, 160)}): mídia mantida sem aprovação.`
         : 'Não verificada visualmente: apenas metadados disponíveis sem análise de frames distribuídos.',

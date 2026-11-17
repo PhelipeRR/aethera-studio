@@ -168,7 +168,7 @@ export function createOllamaLocalVlmProvider(options?: {
         if (!res.ok) return { available: false, reason: `Ollama HTTP ${res.status}` };
         const data = (await res.json()) as { models?: Array<{ name?: string }> };
         const models = (data.models ?? []).map((m) => m.name ?? '');
-        const hasModel = models.some((m) => m === model || m.startsWith(`${model.split(':')[0]}:`));
+        const hasModel = models.some((m) => m === model);
         if (!hasModel) {
           return { available: false, reason: `Ollama ativo, mas modelo ${model} não instalado (execute: ollama pull ${model}).` };
         }

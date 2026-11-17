@@ -638,7 +638,10 @@ export interface SceneMediaDiagnostic {
   sharedQueries: number;
   sharedCandidates: number;
   attempts: number;
+  /** Number of semantic-provider attempts attributed to this scene. */
+  visualAttempts: number;
   technicalBlocked: number;
+  mediaUnavailable: number;
   acquired: number;
   approved: Array<{ mediaId: string; title: string; origin: string; sourceUrl: string; rightsStatus: MediaRightsStatus }>;
   /** Identified/contextual media retained for editorial reference, never counted as scene footage. */
@@ -820,6 +823,7 @@ export interface AcquisitionFunnelMetrics {
     detail: string;
   }>;
   pendingVerificationCount: number;
+  mediaUnavailableCount: number;
   visionDiagnostics: {
     callsAttempted: number;
     callsSucceeded: number;
@@ -832,7 +836,7 @@ export interface AcquisitionFunnelMetrics {
 export interface VisionVerificationRecord {
   mediaId: string;
   segmentId: string;
-  status: 'succeeded' | 'technical_blocked';
+  status: 'succeeded' | 'partial' | 'technical_blocked' | 'media_unavailable';
   provider?: string | null;
   model?: string | null;
   reportedModel?: string | null;
@@ -1321,6 +1325,7 @@ export async function runAutonomousMediaAcquisition(input: {
     { segmentId: string; cand: MediaSourceCandidate; priorityScore: number }
   >();
   interface PendingVerificationAsset {
+    candidateKey: string;
     segmentId: string;
     cand: MediaSourceCandidate;
     filePath: string;
@@ -1375,6 +1380,10 @@ export async function runAutonomousMediaAcquisition(input: {
   const checkpointFile =
     input.checkpointPath === false ? null : (input.checkpointPath ?? join(input.mediaDir, '.acquisition-checkpoint.json'));
   const candidateSegmentKey = (segmentId: string, candidateKey: string) => `${segmentId}::${candidateKey}`;
+  const hasPendingForCandidate = (candidateKey: string) => [...pendingVerificationAssets.values()].some((asset) => asset.candidateKey === candidateKey);
+  const setCandidateVerificationState = (candidateKey: string, terminalState: CandidateLifecycleState) => {
+    candidateStates.set(candidateKey, hasPendingForCandidate(candidateKey) ? 'pending_visual_verification' : terminalState);
+  };
   const upsertVisionVerificationRecord = (record: VisionVerificationRecord) => {
     const existing = visionDiagnostics.records.find(
       (item) => item.mediaId === record.mediaId && item.segmentId === record.segmentId,
@@ -1392,8 +1401,34 @@ export async function runAutonomousMediaAcquisition(input: {
     if (record.error) existing.error = record.error;
     if (record.editorialDisposition) existing.editorialDisposition = record.editorialDisposition;
   };
+  const mergeApprovedDecision = (previous: MediaRelevanceDecision, next: MediaRelevanceDecision): MediaRelevanceDecision => {
+    const correspondenceLevel = previous.correspondenceLevel === 'exact_match' || next.correspondenceLevel === 'exact_match'
+      ? 'exact_match' as const
+      : next.correspondenceLevel ?? previous.correspondenceLevel;
+    const relevanceTier = previous.relevanceTier === 'exact_segment_match' || next.relevanceTier === 'exact_segment_match'
+      ? 'exact_segment_match' as const
+      : next.relevanceTier ?? previous.relevanceTier;
+    return {
+      ...previous,
+      ...next,
+      accepted: previous.accepted || next.accepted,
+      assemblyEligible: previous.assemblyEligible === true || next.assemblyEligible === true,
+      eligibleSegmentIds: [...new Set([...(previous.eligibleSegmentIds ?? []), ...(next.eligibleSegmentIds ?? [])])],
+      matchedIntervals: [...(previous.matchedIntervals ?? []), ...(next.matchedIntervals ?? [])],
+      visualEvidence: [...(previous.visualEvidence ?? []), ...(next.visualEvidence ?? [])],
+      matchedEntities: [...new Set([...previous.matchedEntities, ...next.matchedEntities])],
+      matchedActions: [...new Set([...(previous.matchedActions ?? []), ...(next.matchedActions ?? [])])],
+      ...(correspondenceLevel ? { correspondenceLevel } : {}),
+      ...(relevanceTier ? { relevanceTier } : {}),
+    };
+  };
   const recordVisualCallback = (mediaId: string, segmentId: string) => (diagnostics: VisionVerificationDiagnostics) => {
     upsertVisionVerificationRecord({ mediaId, segmentId, ...diagnostics, attempts: [...diagnostics.attempts] });
+    if (diagnostics.status === 'partial') {
+      visionDiagnostics.callsAttempted += 1;
+      visionDiagnostics.callsFailed += 1;
+      if (diagnostics.error) visionDiagnostics.providerErrors.push(diagnostics.error.slice(0, 900));
+    }
   };
   if (checkpointFile && existsSync(checkpointFile)) {
     try {
@@ -1451,7 +1486,9 @@ export async function runAutonomousMediaAcquisition(input: {
         for (const [k, st] of saved.candidateStateEntries ?? []) candidateStates.set(k, st);
         for (const [k, d] of saved.discoveredPoolEntries ?? []) discoveredPool.set(k, d);
         for (const [k, p] of saved.pendingVerificationEntries ?? []) {
-          if (existsSync(p.filePath)) pendingVerificationAssets.set(k, p);
+          const candidateKey = p.candidateKey ?? (k.includes('::') ? k.slice(k.indexOf('::') + 2) : k);
+          const pendingKey = candidateSegmentKey(p.segmentId, candidateKey);
+          pendingVerificationAssets.set(pendingKey, { ...p, candidateKey });
         }
         if (saved.failedDownloads) failedDownloads.push(...saved.failedDownloads);
         if (saved.queriesExecuted) {
@@ -1504,7 +1541,8 @@ export async function runAutonomousMediaAcquisition(input: {
           visionDiagnostics.records.push(...(saved.visionDiagnostics.records ?? []));
         }
         }
-        reusedFilesFromCheckpoint = approvedAssets.length + pendingVerificationAssets.size;
+        reusedFilesFromCheckpoint = approvedAssets.filter((asset) => existsSync(asset.uri)).length +
+          [...pendingVerificationAssets.values()].filter((asset) => existsSync(asset.filePath)).length;
       }
     } catch {
       // ignore corrupted checkpoint
@@ -1532,6 +1570,7 @@ export async function runAutonomousMediaAcquisition(input: {
       rejectionReasons,
       failedDownloads,
       pendingVerificationCount: pendingVerificationAssets.size,
+      mediaUnavailableCount: visionDiagnostics.records.filter((record) => record.status === 'media_unavailable').length,
       visionDiagnostics: { ...visionDiagnostics, records: visionDiagnostics.records.map((record) => ({ ...record, attempts: [...record.attempts] })) },
     };
   };
@@ -1952,7 +1991,7 @@ export async function runAutonomousMediaAcquisition(input: {
         for (const list of discoveredBySegment.values()) {
           list.sort((a, b) => b.priorityScore - a.priorityScore);
         }
-        const acquisitionQueue: Array<{ segment: ScriptCoverageSegment; cand: MediaSourceCandidate }> = [];
+        const acquisitionQueue: Array<{ segment: ScriptCoverageSegment; cand: MediaSourceCandidate; candKey: string }> = [];
         const maxPerSegThisRound = round === 1 ? (targetSegments.length > 6 ? 1 : 2) : 2;
         const queuedCandKeys = new Set<string>();
         for (let rank = 0; rank < maxPerSegThisRound; rank += 1) {
@@ -1961,8 +2000,9 @@ export async function runAutonomousMediaAcquisition(input: {
             // Next candidate of this segment not already queued by another segment sharing the same results.
             const entry = list.find((e, i) => i >= rank && !queuedCandKeys.has(`${e.cand.origin}:${e.cand.url}`));
             if (entry) {
-              queuedCandKeys.add(`${entry.cand.origin}:${entry.cand.url}`);
-              acquisitionQueue.push({ segment: entry.segment, cand: entry.cand });
+              const candKey = `${entry.cand.origin}:${entry.cand.url}`;
+              queuedCandKeys.add(candKey);
+              acquisitionQueue.push({ segment: entry.segment, cand: entry.cand, candKey });
             }
           }
         }
@@ -2168,16 +2208,24 @@ export async function runAutonomousMediaAcquisition(input: {
               }
             }
             localPathByMediaId.set(mediaId, filePath);
-            pendingVerificationAssets.set(candKey, {
-              segmentId: task.segment.segmentId,
-              cand,
-              filePath,
-              fileSizeBytes,
-              sha256,
-              durationSec,
-              mediaId,
-              round,
-            });
+            const assignedSegments = [...discoveredBySegment.entries()]
+              .flatMap(([segmentId, entries]) => entries.some((entry) => `${entry.cand.origin}:${entry.cand.url}` === candKey) ? [segmentId] : [])
+              .filter((segmentId, index, all) => all.indexOf(segmentId) === index);
+            if (!assignedSegments.includes(task.segment.segmentId)) assignedSegments.unshift(task.segment.segmentId);
+            for (const segmentId of assignedSegments) {
+              const pendingKey = candidateSegmentKey(segmentId, candKey);
+              pendingVerificationAssets.set(pendingKey, {
+                candidateKey: candKey,
+                segmentId,
+                cand,
+                filePath,
+                fileSizeBytes,
+                sha256,
+                durationSec,
+                mediaId,
+                round,
+              });
+            }
           } finally {
             sm.timeConsumedMs += Date.now() - aStart;
           }
@@ -2188,19 +2236,29 @@ export async function runAutonomousMediaAcquisition(input: {
 
       // STAGE 3: Visual Verification Queue (resumes pending_visual_verification assets FIRST)
       const verStageStartedAt = Date.now();
-      const verificationQueue = [...pendingVerificationAssets.entries()].map(([candKey, item]) => ({
-        candKey,
+      const verificationQueue = [...pendingVerificationAssets.entries()].map(([pendingKey, item]) => ({
+        pendingKey,
         item,
       }));
-      await runWithConcurrency(verificationQueue, verificationConcurrency, async ({ candKey, item }) => {
+      await runWithConcurrency(verificationQueue, verificationConcurrency, async ({ pendingKey, item }) => {
         if (input.signal?.aborted) {
           // Preserve file & keep state as pending_visual_verification (NEVER classify as editorial rejection!)
           return;
         }
+        const candKey = item.candidateKey;
         const seg = segmentById.get(item.segmentId);
         if (!seg) return;
         const vStart = Date.now();
         const sm = segMetricsMap.get(item.segmentId)!;
+        if (!existsSync(item.filePath)) {
+          recordVisualCallback(item.mediaId, seg.segmentId)({
+            status: 'media_unavailable',
+            attempts: [],
+            error: `Arquivo reutilizado no checkpoint não está disponível: ${item.filePath}`,
+          });
+          candidateStates.set(candKey, 'pending_visual_verification');
+          return;
+        }
         const cacheTimestamps = [
           0,
           Number((item.durationSec * 0.5).toFixed(2)),
@@ -2306,7 +2364,7 @@ export async function runAutonomousMediaAcquisition(input: {
           }
 
           if (!canUseCachedDecision && input.analyzeFrames) visionDiagnostics.callsSucceeded += 1;
-          pendingVerificationAssets.delete(candKey);
+          pendingVerificationAssets.delete(pendingKey);
           relevanceDecisions.push(decision);
           const recoveryAttemptForAsset = findRecoveryAttempt(candKey, seg.segmentId);
           if (recoveryAttemptForAsset && !recoveryAttemptForAsset.acquiredMediaIds.includes(item.mediaId)) {
@@ -2340,7 +2398,7 @@ export async function runAutonomousMediaAcquisition(input: {
 
           if (!isAssemblyEligibleDecision(decision)) {
             if (decision.editorialStatus === 'contextual' || decision.editorialStatus === 'visually_verified') {
-              candidateStates.set(candKey, 'contextual');
+              setCandidateVerificationState(candKey, 'contextual');
               contextualCandidates.push({
                 mediaId: item.mediaId,
                 segmentId: seg.segmentId,
@@ -2355,7 +2413,7 @@ export async function runAutonomousMediaAcquisition(input: {
               if (recoveryAttemptForAsset) recoveryAttemptForAsset.outcome = 'contextual_only';
               return;
             }
-            candidateStates.set(candKey, 'rejected');
+            setCandidateVerificationState(candKey, 'rejected');
             sm.rejectedCount += 1;
             noteRejected(item.mediaId, seg.segmentId, item.cand.url);
             rejectedCandidates.push({
@@ -2395,7 +2453,7 @@ export async function runAutonomousMediaAcquisition(input: {
           } else if (item.cand.licenseDecision?.status === 'pending_human_review') {
             // The relevance gate approved it, but the license is not known to allow this use: keep both results and
             // send the media to human review instead of approving it automatically.
-            candidateStates.set(candKey, 'rejected');
+            setCandidateVerificationState(candKey, 'rejected');
             sm.rejectedCount += 1;
             pendingLicenseReview.push({
               mediaId: item.mediaId,
@@ -2426,21 +2484,28 @@ export async function runAutonomousMediaAcquisition(input: {
             return;
           }
 
-          candidateStates.set(candKey, 'verified');
+          setCandidateVerificationState(candKey, 'verified');
           const visualRecord = visionDiagnostics.records.find((record) => record.mediaId === item.mediaId && record.segmentId === seg.segmentId);
           if (visualRecord) visualRecord.editorialDisposition = 'approved';
           sm.approvedCount += 1;
           approvedSegmentByMediaId.set(item.mediaId, seg.segmentId);
-          approvedAssets.push({
-            mediaId: item.mediaId,
-            uri: item.filePath,
-            ...(item.cand.title ? { title: item.cand.title } : {}),
-            origin: item.cand.origin,
-            durationSec: item.durationSec,
-            compatible: true,
-            relevantToEntities: decision.matchedEntities,
-            ...(decision.editorialStatus ? { editorialStatus: decision.editorialStatus } : {}),
-          });
+          const existingApproved = approvedAssets.find((asset) => asset.mediaId === item.mediaId);
+          if (existingApproved) {
+            existingApproved.relevantToEntities = [...new Set([...(existingApproved.relevantToEntities ?? []), ...decision.matchedEntities])];
+            if (decision.editorialStatus) existingApproved.editorialStatus = decision.editorialStatus;
+          } else {
+            approvedAssets.push({
+              mediaId: item.mediaId,
+              uri: item.filePath,
+              ...(item.cand.title ? { title: item.cand.title } : {}),
+              origin: item.cand.origin,
+              durationSec: item.durationSec,
+              compatible: true,
+              relevantToEntities: decision.matchedEntities,
+              ...(decision.editorialStatus ? { editorialStatus: decision.editorialStatus } : {}),
+            });
+          }
+          const previousApprovedMeta = approvedMetaById.get(item.mediaId);
           approvedMetaById.set(item.mediaId, {
             title: item.cand.title ?? item.filePath,
             origin: item.cand.origin,
@@ -2449,7 +2514,7 @@ export async function runAutonomousMediaAcquisition(input: {
             fileSizeBytes: item.fileSizeBytes,
             sha256: item.sha256,
             durationSec: item.durationSec,
-            decision,
+            decision: previousApprovedMeta ? mergeApprovedDecision(previousApprovedMeta.decision, decision) : decision,
             ...(item.cand.providerItem ? { providerItem: item.cand.providerItem } : {}),
             ...(item.cand.licenseDecision ? { licenseDecision: item.cand.licenseDecision } : {}),
           });
@@ -2712,7 +2777,9 @@ export async function runAutonomousMediaAcquisition(input: {
       sharedQueries: sm?.sharedQueries ?? 0,
       sharedCandidates: sm?.sharedCandidates ?? 0,
       attempts: sceneAttempts.length,
-      technicalBlocked: visualRecordsForScene.filter((record) => record.status === 'technical_blocked').length,
+      visualAttempts: visualRecordsForScene.reduce((count, record) => count + record.attempts.length, 0),
+      technicalBlocked: visualRecordsForScene.filter((record) => record.status === 'technical_blocked' || record.status === 'partial').length,
+      mediaUnavailable: visualRecordsForScene.filter((record) => record.status === 'media_unavailable').length,
       acquired: sm?.downloadsSucceeded ?? 0,
       approved,
       contextual,
@@ -2768,6 +2835,7 @@ export async function runAutonomousMediaAcquisition(input: {
       rejectionReasons,
       failedDownloads: failedDownloads.slice(0, 60),
       pendingVerificationCount: pendingVerificationAssets.size,
+      mediaUnavailableCount: visionDiagnostics.records.filter((record) => record.status === 'media_unavailable').length,
       visionDiagnostics: {
         ...visionDiagnostics,
         providerErrors: [...new Set(visionDiagnostics.providerErrors)].slice(0, 15),

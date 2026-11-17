@@ -501,14 +501,94 @@ export function planMediaCoverage(input: {
   relevanceDecisions?: MediaRelevanceDecision[];
   requireRelevanceApproval?: boolean;
 }): MediaCoverageReport {
+  type SourceInterval = { startSec: number; endSec: number };
+  const intersectIntervals = (available: readonly SourceInterval[], allowed: readonly SourceInterval[]): SourceInterval[] => {
+    const out: SourceInterval[] = [];
+    for (const source of available) {
+      for (const permit of allowed) {
+        const startSec = Math.max(source.startSec, permit.startSec);
+        const endSec = Math.min(source.endSec, permit.endSec);
+        if (endSec > startSec) out.push({ startSec, endSec });
+      }
+    }
+    return out.sort((a, b) => a.startSec - b.startSec);
+  };
+  const subtractIntervals = (available: readonly SourceInterval[], consumed: readonly SourceInterval[]): SourceInterval[] => {
+    let out = available.map((interval) => ({ ...interval }));
+    for (const cut of consumed) {
+      const next: SourceInterval[] = [];
+      for (const interval of out) {
+        if (cut.endSec <= interval.startSec || cut.startSec >= interval.endSec) {
+          next.push(interval);
+          continue;
+        }
+        if (cut.startSec > interval.startSec) next.push({ startSec: interval.startSec, endSec: cut.startSec });
+        if (cut.endSec < interval.endSec) next.push({ startSec: cut.endSec, endSec: interval.endSec });
+      }
+      out = next.filter((interval) => interval.endSec > interval.startSec);
+    }
+    return out;
+  };
   const format = input.format ?? 'analysis';
   const totalExpectedDurationSec = input.segments.reduce((acc, s) => acc + Math.max(1, s.expectedDurationSec), 0);
   const policy = getCoveragePolicyForFormat(format, totalExpectedDurationSec, input.intentionalRepetition);
 
-  const decisionByMediaId = new Map<string, MediaRelevanceDecision>();
+  const decisionsByMediaId = new Map<string, MediaRelevanceDecision[]>();
   for (const d of input.relevanceDecisions ?? []) {
-    decisionByMediaId.set(d.mediaId, d);
+    const list = decisionsByMediaId.get(d.mediaId) ?? [];
+    list.push(d);
+    decisionsByMediaId.set(d.mediaId, list);
   }
+  const mergeDecisions = (decisions: readonly MediaRelevanceDecision[]): MediaRelevanceDecision | undefined => {
+    const latest = decisions.at(-1);
+    if (!latest) return undefined;
+    const accepted = decisions.some((d) => d.accepted);
+    const assemblyEligible = decisions.some((d) => isAssemblyEligibleDecision(d));
+    const eligibleSegmentIds = [...new Set(decisions.flatMap((d) => d.eligibleSegmentIds ?? []))];
+    const matchedIntervals = decisions.flatMap((d) => d.matchedIntervals ?? []);
+    const visualEvidence = decisions.flatMap((d) => d.visualEvidence ?? []);
+    const matchedEntities = [...new Set(decisions.flatMap((d) => d.matchedEntities))];
+    const matchedActions = [...new Set(decisions.flatMap((d) => d.matchedActions ?? []))];
+    const correspondenceLevel = decisions.some((d) => d.correspondenceLevel === 'exact_match')
+      ? 'exact_match'
+      : decisions.some((d) => d.correspondenceLevel === 'contextual_support')
+        ? 'contextual_support'
+        : latest.correspondenceLevel;
+    const relevanceTier = decisions.some((d) => d.relevanceTier === 'exact_segment_match')
+      ? 'exact_segment_match'
+      : decisions.some((d) => d.relevanceTier === 'same_universe_context')
+        ? 'same_universe_context'
+        : latest.relevanceTier;
+    const editorialStatus = (['approved_for_scene', 'visually_verified', 'contextual', 'human_approved', 'candidate'] as const)
+      .find((status) => decisions.some((d) => d.editorialStatus === status)) ?? latest.editorialStatus;
+    const { rejectionCode: _rejectionCode, ...withoutRejection } = latest;
+    return {
+      ...withoutRejection,
+      accepted,
+      assemblyEligible,
+      ...(eligibleSegmentIds.length > 0 ? { eligibleSegmentIds } : {}),
+      ...(matchedIntervals.length > 0 ? { matchedIntervals } : {}),
+      ...(visualEvidence.length > 0 ? { visualEvidence } : {}),
+      matchedEntities,
+      ...(matchedActions.length > 0 ? { matchedActions } : {}),
+      ...(correspondenceLevel ? { correspondenceLevel } : {}),
+      ...(relevanceTier ? { relevanceTier } : {}),
+      ...(editorialStatus ? { editorialStatus } : {}),
+      ...(accepted ? {} : latest.rejectionCode ? { rejectionCode: latest.rejectionCode } : {}),
+      ...(decisions.some((d) => d.visualVerificationStatus === 'visually_verified') ? { visualVerificationStatus: 'visually_verified' as const } : {}),
+      ...(decisions.some((d) => d.visualConfidence !== undefined) ? { visualConfidence: Math.max(...decisions.map((d) => d.visualConfidence ?? 0)) } : {}),
+    };
+  };
+  const decisionByMediaId = new Map<string, MediaRelevanceDecision>();
+  for (const [mediaId, decisions] of decisionsByMediaId) {
+    const merged = mergeDecisions(decisions);
+    if (merged) decisionByMediaId.set(mediaId, merged);
+  }
+  const decisionForScene = (mediaId: string, segmentId: string): MediaRelevanceDecision | undefined => {
+    const decisions = decisionsByMediaId.get(mediaId) ?? [];
+    return decisions.find((d) => d.eligibleSegmentIds?.includes(segmentId) || d.matchedIntervals?.some((interval) => interval.segmentId === segmentId))
+      ?? decisionByMediaId.get(mediaId);
+  };
 
   const incompatibleMap = new Map<string, string>();
   const contextualMap = new Map<string, string>();
@@ -546,7 +626,7 @@ export function planMediaCoverage(input: {
   }
 
   for (const d of input.relevanceDecisions ?? []) {
-    if (!d.accepted && !incompatibleMap.has(d.mediaId)) {
+    if (!d.accepted && !decisionByMediaId.get(d.mediaId)?.accepted && !incompatibleMap.has(d.mediaId)) {
       incompatibleMap.set(d.mediaId, d.reason || 'Rejeitada pelo Media Relevance Gate.');
     }
   }
@@ -587,7 +667,7 @@ export function planMediaCoverage(input: {
     });
 
     const candidates = validAssets.filter((asset) => {
-      const decision = decisionByMediaId.get(asset.mediaId);
+      const decision = decisionForScene(asset.mediaId, seg.segmentId);
       const assemblyEligible = decision
         ? isAssemblyEligibleDecision(decision)
         : asset.compatible !== false && !asset.rejectedReason;
@@ -642,7 +722,10 @@ export function planMediaCoverage(input: {
       for (const u of segUsages) {
         const asset = validAssets.find((a) => a.mediaId === u.mediaId);
         if (!asset) continue;
-        const pool = remainingIntervalsByAsset.get(asset.mediaId) ?? [];
+        const globalPool = remainingIntervalsByAsset.get(asset.mediaId) ?? [];
+        const sceneDecision = decisionForScene(asset.mediaId, seg.segmentId);
+        const allowedPool = intersectIntervals(globalPool, usableSourceIntervals(asset, sceneDecision));
+        const pool = allowedPool.map((interval) => ({ ...interval }));
         const usageStart = Math.max(0, u.sourceStartSec);
         const usageEnd = Math.min(asset.durationSec, Math.max(usageStart, u.sourceEndSec));
         let credited = 0;
@@ -673,10 +756,11 @@ export function planMediaCoverage(input: {
           }
         }
         if (credited > 0) usedSources.add(asset.mediaId);
-        remainingIntervalsByAsset.set(asset.mediaId, pool);
+        const consumed = subtractIntervals(allowedPool, pool);
+        remainingIntervalsByAsset.set(asset.mediaId, subtractIntervals(globalPool, consumed));
         remainingUsableByAsset.set(
           asset.mediaId,
-          Number(pool.reduce((acc, iv) => acc + (iv.endSec - iv.startSec), 0).toFixed(2)),
+          Number((remainingIntervalsByAsset.get(asset.mediaId) ?? []).reduce((acc, iv) => acc + (iv.endSec - iv.startSec), 0).toFixed(2)),
         );
         if (credited < u.timelineDurationSec * 0.5) plannedReuses += 1;
         if (credited > 0) {
@@ -692,12 +776,15 @@ export function planMediaCoverage(input: {
       // Assets verified for THIS scene first, then compatible ones; a scene is a montage of several short
       // intervals from several sources rather than one long clip.
       const ordered = [...candidates].sort((a, b) => {
-        const own = (x: AcquiredMediaAsset) => (decisionByMediaId.get(x.mediaId)?.eligibleSegmentIds?.includes(seg.segmentId) ? 1 : 0);
+        const own = (x: AcquiredMediaAsset) => (decisionForScene(x.mediaId, seg.segmentId)?.eligibleSegmentIds?.includes(seg.segmentId) ? 1 : 0);
         return own(b) - own(a);
       });
       const perSourceCap = ordered.length > 1 ? Math.max(6, seg.expectedDurationSec * 0.6) : seg.expectedDurationSec;
       for (const cand of ordered) {
-        const pool = remainingIntervalsByAsset.get(cand.mediaId) ?? [];
+        const globalPool = remainingIntervalsByAsset.get(cand.mediaId) ?? [];
+        const sceneDecision = decisionForScene(cand.mediaId, seg.segmentId);
+        const allowedPool = intersectIntervals(globalPool, usableSourceIntervals(cand, sceneDecision));
+        const pool = allowedPool.map((interval) => ({ ...interval }));
         let takenFromSource = 0;
         while (pool.length > 0 && usableDurationSec < seg.expectedDurationSec && takenFromSource < perSourceCap) {
           const iv = pool[0]!;
@@ -724,9 +811,11 @@ export function planMediaCoverage(input: {
           if (take >= span - 0.01) pool.shift();
           else iv.startSec += take;
         }
+        const consumed = subtractIntervals(allowedPool, pool);
+        remainingIntervalsByAsset.set(cand.mediaId, subtractIntervals(globalPool, consumed));
         remainingUsableByAsset.set(
           cand.mediaId,
-          Number(pool.reduce((acc, iv) => acc + (iv.endSec - iv.startSec), 0).toFixed(2)),
+          Number((remainingIntervalsByAsset.get(cand.mediaId) ?? []).reduce((acc, iv) => acc + (iv.endSec - iv.startSec), 0).toFixed(2)),
         );
         if (usableDurationSec >= seg.expectedDurationSec) break;
       }

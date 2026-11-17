@@ -77,4 +77,33 @@ describe('Media Recovery Loop contracts', () => {
     expect(plan.queries.some((query) => query.query.toLowerCase().includes('espada'))).toBe(true);
     expect(plan.gaps[0]?.editorialAlternatives.some((alternative) => alternative.kind === 'explanatory_graphic')).toBe(true);
   });
+
+  it('keeps per-scene semantic decisions for one shared physical media id', () => {
+    const sceneA = { ...segment, segmentId: 'scene_a', subject: 'Black Clover Asta A', expectedDurationSec: 4 };
+    const sceneB = { ...segment, segmentId: 'scene_b', subject: 'Black Clover Asta B', expectedDurationSec: 4 };
+    const sharedDecision = (segmentId: string) => ({
+      mediaId: 'shared-media',
+      accepted: true,
+      assemblyEligible: true,
+      editorialStatus: 'approved_for_scene' as const,
+      correspondenceLevel: 'exact_match' as const,
+      visualVerificationStatus: 'visually_verified' as const,
+      score: 0.95,
+      reason: `Prova visual de ${segmentId}.`,
+      sampledTimestampsSec: [1, 3],
+      matchedEntities: ['Black Clover', 'Asta'],
+      matchedIntervals: segmentId === 'scene_a' ? [{ startSec: 0, endSec: 4, segmentId }] : [{ startSec: 8, endSec: 9, segmentId }],
+      eligibleSegmentIds: [segmentId],
+      visualCategory: 'anime_animation' as const,
+    });
+    const report = planMediaCoverage({
+      segments: [sceneA, sceneB],
+      assets: [{ mediaId: 'shared-media', uri: 'shared.mp4', durationSec: 10, compatible: true }],
+      relevanceDecisions: [sharedDecision('scene_a'), sharedDecision('scene_b')],
+      requireRelevanceApproval: true,
+    });
+    expect(report.segments.find((scene) => scene.segmentId === 'scene_a')?.candidateMediaIds).toContain('shared-media');
+    expect(report.segments.find((scene) => scene.segmentId === 'scene_b')?.candidateMediaIds).toContain('shared-media');
+    expect(report.segments.find((scene) => scene.segmentId === 'scene_b')?.coverageGapSec).toBe(3);
+  });
 });

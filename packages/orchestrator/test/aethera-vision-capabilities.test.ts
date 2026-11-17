@@ -69,6 +69,15 @@ describe('vision capabilities, batches and cache inputs (synthetic provider)', (
     expect(chatCalls).toBe(1);
   });
 
+  it('does not treat a different Ollama tag in the same family as the configured model', async () => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ models: [{ name: 'qwen2.5vl:7b' }] }), { status: 200 }));
+    const provider = createOllamaLocalVlmProvider({ baseUrl: 'http://ollama.test', model: 'qwen2.5vl:3b' });
+    await expect(provider.detect()).resolves.toEqual({
+      available: false,
+      reason: expect.stringMatching(/qwen2\.5vl:3b.*not installed|qwen2\.5vl:3b.*não instalado/i),
+    });
+  });
+
   it('shares timeout circuit state across router instances before retrying a slow provider', async () => {
     let slowCalls = 0;
     const slow: VisualAnalysisProvider = {
@@ -99,6 +108,7 @@ describe('vision capabilities, batches and cache inputs (synthetic provider)', (
     expect((await makeRouter().describe(request)).provider).toBe('fallback');
     expect(slowCalls).toBe(2);
     expect(cooldowns.has('slow')).toBe(true);
+    expect((await makeRouter().checkProvidersHealth(['slow']))[0]).toMatchObject({ available: false, reason: expect.stringMatching(/timeout_cooldown/) });
     expect((await makeRouter().describe(request)).attempts[0]).toMatchObject({ provider: 'slow', outcome: 'unavailable' });
     expect(slowCalls).toBe(2);
   });
