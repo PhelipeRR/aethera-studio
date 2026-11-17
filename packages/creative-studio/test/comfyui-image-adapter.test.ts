@@ -226,6 +226,7 @@ describe('ComfyUiImageAdapter', () => {
     await expect(adapter.inpaintRegion({
       imageBuffer: image,
       prompt: 'repair the hand with coherent anatomy',
+      negativePrompt: 'extra fingers, duplicate hands',
       bbox: { x: 12, y: 10, width: 24, height: 20 },
       strength: 0.48,
     })).resolves.toEqual(Buffer.from('PNG bytes'));
@@ -233,6 +234,7 @@ describe('ComfyUiImageAdapter', () => {
     expect(uploads.map((upload) => upload.filename)).toEqual(['aethera-inpaint-base.png', 'aethera-inpaint-mask.png']);
     expect(gateway.queued?.['4']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/aethera-inpaint-base.png' } });
     expect(gateway.queued?.['5']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/aethera-inpaint-mask.png' } });
+    expect(gateway.queued?.['3']).toMatchObject({ class_type: 'CLIPTextEncode', inputs: { text: 'extra fingers, duplicate hands' } });
     expect(gateway.queued?.['6']).toMatchObject({ class_type: 'VAEEncodeForInpaint', inputs: { pixels: ['4', 0], mask: ['5', 0], grow_mask_by: 8 } });
     expect(gateway.queued?.['7']).toMatchObject({ class_type: 'KSampler', inputs: { denoise: 0.48, latent_image: ['6', 0] } });
     const maskUpload = uploads.at(1);
@@ -276,5 +278,6 @@ describe('ComfyUiImageAdapter', () => {
     })).resolves.toEqual(generated);
     expect(queueCount).toBe(3);
     expect(gateway.queued?.['6']).toMatchObject({ class_type: 'VAEEncodeForInpaint' });
+    expect(gateway.queued?.['3']).toMatchObject({ class_type: 'CLIPTextEncode', inputs: { text: expect.stringContaining('multiple people') } });
   });
 });

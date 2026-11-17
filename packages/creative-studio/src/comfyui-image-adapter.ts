@@ -217,7 +217,8 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       image = await this.inpaintRegionInternal({
         imageBuffer: image,
         bbox: region,
-        prompt: `one distinct full-body character in the ${region.anchor} region; ${request.prompt}; preserve the rest of the image exactly, no fused bodies, no duplicate faces`,
+        prompt: `one and only one distinct full-body character in the ${region.anchor} region; ${request.prompt}; preserve the rest of the image exactly, no fused bodies, no duplicate faces, no other visible people in this region`,
+        negativePrompt: 'multiple people, extra person, duplicate character, cloned face, group, crowd, background character, fused bodies, extra limbs, malformed anatomy',
         strength: 0.92,
       });
     }
@@ -246,7 +247,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     const workflow = buildComfyUiInpaintWorkflow({
       checkpoint: this.checkpoint,
       positivePrompt: request.prompt,
-      negativePrompt: 'text, letters, watermark, low quality, deformed anatomy, extra limbs',
+      negativePrompt: request.negativePrompt ?? 'text, letters, watermark, low quality, deformed anatomy, extra limbs',
       width,
       height,
       seed: 0,

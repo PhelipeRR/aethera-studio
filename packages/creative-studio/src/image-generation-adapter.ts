@@ -86,6 +86,8 @@ export interface VisualQualityInspectionResult {
 export interface LocalizedInpaintRequest {
   imageBuffer: Buffer;
   prompt: string;
+  /** Optional localized negative prompt, used to constrain regional character passes. */
+  negativePrompt?: string;
   bbox: { x: number; y: number; width: number; height: number };
   strength?: number;
 }
