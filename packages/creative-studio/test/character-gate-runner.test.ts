@@ -10,6 +10,23 @@ import { buildVisualRecipe } from '../src/visual-recipe.js';
 import evidence from './fixtures/character-gate-cs9-evidence.json' with { type: 'json' };
 
 const CLEAN_TRIO = (evidence as Record<string, unknown>)['run-cs9-lora-2026-11-17T1109/cyberpunk-trio-preview.png'];
+const CLEAN_DUO = {
+  width: 1344,
+  height: 768,
+  detectors: {
+    yolo_person: { boxes: [{ x: 100, y: 80, width: 160, height: 580, confidence: 0.9 }, { x: 1050, y: 80, width: 160, height: 580, confidence: 0.9 }] },
+    yolo_face: { boxes: [] },
+    yolo_hand: { boxes: [] },
+    openpose: { people: [] },
+  },
+};
+const UNDERSIZED_DUO = {
+  ...CLEAN_DUO,
+  detectors: {
+    ...CLEAN_DUO.detectors,
+    yolo_person: { boxes: [{ x: 100, y: 380, width: 120, height: 240, confidence: 0.9 }, { x: 1050, y: 80, width: 160, height: 580, confidence: 0.9 }] },
+  },
+};
 const EXTRA_TRIO = (evidence as Record<string, unknown>)['run-cs9-2026-11-17T1117/cyberpunk-trio-preview.png'];
 const ILLEGIBLE = (evidence as Record<string, unknown>)['run-cs9-2026-11-17T1050/cyberpunk-group-eight-preview.png'];
 
@@ -233,6 +250,52 @@ describe('Character Composition Gate runner', () => {
       differenceImageAsset: expect.objectContaining({ originalName: expect.stringContaining('diff') }),
       regression: { status: 'passed' },
     });
+  });
+
+  it('prioritizes an objective undersized-character repair before uncertain attributes', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([UNDERSIZED_DUO, CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    expect(outcome.report.attempts[0]?.repairs[0]).toMatchObject({
+      criterionKind: 'count',
+      criterionId: expect.stringContaining('undersized_character'),
+      status: 'applied',
+    });
+  });
+
+  it('retries a failed count repair locally with a new auditable variant before moving on', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2);
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([UNDERSIZED_DUO, UNDERSIZED_DUO, CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 2 },
+      },
+    });
+
+    expect(outcome.report.attempts[0]?.repairs).toHaveLength(2);
+    expect(outcome.report.attempts[0]?.repairs.map((repair) => repair.criterionId)).toEqual([
+      'count:undersized_character:0',
+      'count:undersized_character:0:retry1',
+    ]);
+    expect(outcome.report.attempts[0]?.repairs[0]?.status).toBe('failed');
+    expect(outcome.report.attempts[0]?.repairs[1]?.status).toBe('applied');
   });
 
   it('keeps the pre-repair image when a regional repair loses a confirmed attribute', async () => {

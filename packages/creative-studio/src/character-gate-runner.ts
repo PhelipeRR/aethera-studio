@@ -684,15 +684,30 @@ export async function runCharacterCompositionGate(input: {
         const undersized = currentEvaluation.gate.reasons.some((reason) => reason.code === 'undersized_character')
           ? currentEvaluation.gate.figures.find((figure) => figure.regionIndex !== null && figure.regionIndex !== undefined && figure.height < 0.55 * regionRects[figure.regionIndex]!.height)
           : undefined;
+        const countRepairBaseId = undersized ? `count:undersized_character:${String(undersized.regionIndex)}` : null;
+        const failedCountRepairAttempts = countRepairBaseId
+          ? attempt.repairs.filter((repair) => repair.criterionKind === 'count' && repair.status === 'failed' && (repair.criterionId === countRepairBaseId || repair.criterionId?.startsWith(`${countRepairBaseId}:retry`))).length
+          : 0;
+        const countCandidate = undersized && (repairUncertainAttributes || currentEvaluation.gate.failureClass === 'placement')
+          ? {
+              criterionId: failedCountRepairAttempts === 0 ? countRepairBaseId! : `${countRepairBaseId}:retry${failedCountRepairAttempts}`,
+              criterionKind: 'count' as const,
+              regionIndex: undersized.regionIndex ?? null,
+              bbox: regionRects[undersized.regionIndex!]!,
+              prompt: `Repair only the character in this region so it fills the planned cinematic depth without changing neighboring characters: ${recipe.characterRegions[undersized.regionIndex!]?.prompt ?? 'the planned character'}. ${failedCountRepairAttempts > 0 ? 'The previous localized repair did not correct the scale; make the full-body figure visibly occupy the planned region while preserving its identity.' : ''} Preserve lighting, identity and contact shadow.`,
+              reason: 'undersized_character',
+            }
+          : null;
         const qualityCandidate = currentEvaluation.visualQuality?.localizedDefects.find((defect) => defect.severity === 'severe' && !defect.repaired)
           ?? currentEvaluation.visualQuality?.localizedDefects.find((defect) => defect.severity === 'moderate' && !defect.repaired);
-        const candidate = semanticCandidate
+        const semanticRepairCandidate = semanticCandidate
           ? { criterionId: semanticCandidate.criterionId, criterionKind: criterionForRepair(currentEvaluation.semantic, semanticCandidate.criterionId)?.kind ?? 'quality' as const, regionIndex: criterionForRepair(currentEvaluation.semantic, semanticCandidate.criterionId)?.regionIndex ?? null, bbox: semanticCandidate.bbox, prompt: semanticCandidate.prompt, reason: semanticCandidate.reason }
-          : undersized && (repairUncertainAttributes || currentEvaluation.gate.failureClass === 'placement')
-            ? { criterionId: `count:undersized_character:${String(undersized.regionIndex)}`, criterionKind: 'count' as const, regionIndex: undersized.regionIndex ?? null, bbox: regionRects[undersized.regionIndex!]!, prompt: `Repair only the character in this region so it fills the planned cinematic depth without changing neighboring characters: ${recipe.characterRegions[undersized.regionIndex!]?.prompt ?? 'the planned character'}. Preserve lighting, identity and contact shadow.`, reason: 'undersized_character' }
-            : qualityCandidate && (currentEvaluation.overallVerdict === 'rejected' || currentEvaluation.visualQuality?.reasons.includes('localized_visual_defect'))
-              ? { criterionId: `quality:${qualityCandidate.id}`, criterionKind: 'quality' as const, regionIndex: null, bbox: qualityCandidate.bbox, prompt: `Repair only this localized visual defect while preserving identity, lighting and all neighboring characters: ${qualityCandidate.description}`, reason: qualityCandidate.description }
-              : null;
+          : null;
+        const candidate = countCandidate
+          ?? semanticRepairCandidate
+          ?? (qualityCandidate && (currentEvaluation.overallVerdict === 'rejected' || currentEvaluation.visualQuality?.reasons.includes('localized_visual_defect'))
+            ? { criterionId: `quality:${qualityCandidate.id}`, criterionKind: 'quality' as const, regionIndex: null, bbox: qualityCandidate.bbox, prompt: `Repair only this localized visual defect while preserving identity, lighting and all neighboring characters: ${qualityCandidate.description}`, reason: qualityCandidate.description }
+            : null);
         if (!candidate) break;
         triedRepairs.add(candidate.criterionId);
         const beforeImage = image;
@@ -733,7 +748,7 @@ export async function runCharacterCompositionGate(input: {
             report.reason = `Regional repair regression: ${regression.reasons.join(', ') || regression.status}.`;
             attempt.repairs.push(report);
             attempt.repair = report;
-            break;
+            continue;
           }
           image = repairedImage;
           images.set(attempt.attempt, image);
