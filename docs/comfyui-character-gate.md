@@ -469,10 +469,51 @@ Por terços, do cabo à ponta:
 - **Defeito encontrado em `assessObjectRelation`:** para armas longas seguradas no meio da haste, a ponta é escolhida como a extremidade mais distante do pulso, o que é instável perto do empate (lança A deu `guard_ambiguous`, lança B `satisfied`). Para `guard` e `raised`, a ponta deve ser a extremidade superior.
 - A proximidade do pulso não prova que a mão está fechada. Um ponto de contato ainda depende de revisão humana.
 
-**Próximo passo proposto (não implementado):**
-1. Estratégia `object_controlnet` no runner, com a geometria da arma derivada da relação e da pose, o controle depth com a arma desenhada e a sugestão de pixels condicionada ao contraste. A estratégia fica opcional, ativa só quando o ControlNet de profundidade existe.
-2. Verificação pela linha planejada, por terços.
-3. OpenPose ControlNet com o braço reposicionado para `raised` e `guard`.
-4. Ponta definida pela extremidade superior.
+### CS10 — estratégia `object_controlnet` integrada e execução real — `run-2026-11-17T2122`
 
-Tudo continua como proposta, com `humanReview.status=pending`.
+Os itens 1, 2 e 4 da investigação foram implementados no runner, sem criar um
+motor paralelo:
+
+1. `estimateDepth` atravessa o adapter ComfyUI e o provider chain; a profundidade
+   recebe a linha geométrica da arma e o inpaint usa `ControlNetApplyAdvanced`.
+2. A máscara editável é estreita, cobre a linha e a empunhadura, protege o rosto
+   e reaplica um prior de pixels somente quando o contraste local o favorece.
+3. A verificação mede suporte de borda ao longo da linha planejada, por terços,
+   comparando com a imagem-base e uma linha deslocada de controle.
+4. A ponta é definida pela extremidade superior para relações `raised`/`guard`,
+   evitando o falso positivo causado por empunhadura no meio da haste.
+5. Falha na preparação do ControlNet não faz downgrade para inpaint textual;
+   a tentativa fica `failed` com o erro preservado. Terços incompletos ou grip/
+   orientação incertos ficam `proposed`, e a árvore persiste referências dos
+   PNGs de máscara e depth-control para replay posterior.
+
+O run real foi servido por `comfyui-native`, com o modelo
+`xinsir-controlnet-depth-sdxl-1.0.safetensors` e `fallbackUsed=false`. As duas
+operações `object_controlnet` foram executadas e persistidas na árvore de
+propostas; a combinação sequencial também reaplicou as duas operações no mesmo
+duo. O resultado correto permaneceu `needs_review`, com
+`humanReview.status=pending`.
+
+| Proposta | Evidência registrada | Revisão visual |
+|---|---|---|
+| `repair-2` — katana | `failed`; linha renderizada, suporte `1 / 1 / 1`, mas `grip=violated` | A lâmina aparece próxima da personagem, sem empunhadura confiável; não foi adotada |
+| `repair-3` — retry da katana | `proposed`; `0,913 / 0,935 / 0,13`, `grip=satisfied`, ponta incompleta | A arma fica parcialmente visível; ainda exige revisão humana |
+| `repair-4` — lança | `proposed`; `1 / 0,235 / 0`, `grip=satisfied` pela geometria, objeto incompleto | A haste atravessa a composição e não fecha nas mãos; parece flutuante, não guarda válida |
+| `combination-3-4` | `proposed`; ambas as relações `uncertain`/`incomplete` | As duas edições coexistem, mas a composição não comprova empunhadura |
+
+Evidências visuais preservadas em
+`artifacts/comfyui-character-gate-acceptance/run-2026-11-17T2122/`:
+
+- `duo-before.png` — imagem original adotada;
+- `duo-after-attempt1-repair*-{original,repaired,difference,mask}-*.png` —
+  cada reparo, inclusive o rejeitado;
+- `duo-after-attempt1-tree-combination-3-4-proposed-image-*.png` — combinação;
+- `contact-sheet-before-after-gate.png` — comparação completa;
+- `artifacts/cs10-controlnet-weapon-probe/2026-11-17T2050/` — depth map,
+  máscaras, planejamento geométrico e comparação das variantes.
+
+O ControlNet depth resolve presença e orientação com muito mais consistência
+que o texto sozinho, mas não reposiciona braços nem fecha a mão na haste. O
+próximo passo técnico continua sendo combinar depth com OpenPose ControlNet e
+keypoints de braço reposicionados para `raised`/`guard`; como esse controle não
+foi aplicado neste run, nenhuma proposta foi aprovada automaticamente.

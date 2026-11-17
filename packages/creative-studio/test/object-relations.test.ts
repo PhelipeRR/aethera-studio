@@ -6,7 +6,9 @@ import {
   detectNewLinearObjects,
   parseObjectRelations,
   planObjectRepairMask,
+  planWeaponGeometry,
   segmentEdgeSupport,
+  verifyPlannedObject,
   type PoseKeypoints,
 } from '../src/object-relations.js';
 
@@ -88,6 +90,13 @@ describe('assessObjectRelation', () => {
     expect(planted.overall).toBe('violated');
   });
 
+  it('takes the upper end as the tip of a raised or guard weapon held mid-shaft', () => {
+    // The left wrist holds the shaft nearer its upper end; the tip is still the upper end.
+    for (const segment of [{ x1: 300, y1: 455, x2: 700, y2: 277 }, { x1: 700, y1: 277, x2: 300, y2: 455 }]) {
+      expect(assessObjectRelation({ relation: spearGuard, segments: [segment], pose: POSE, figure: FIGURE })).toMatchObject({ grip: 'satisfied', orientation: 'satisfied', overall: 'satisfied' });
+    }
+  });
+
   it('does not judge a segment too short to be the requested weapon (hair or arm edge near the hand)', () => {
     // 113 px on a 546 px figure: the real-run false positive (hair edge next to clasped hands).
     const short = assessObjectRelation({ relation: katanaRaised, segments: [{ x1: 450, y1: 365, x2: 470, y2: 250 }], pose: POSE, figure: FIGURE });
@@ -162,5 +171,65 @@ describe('weapon localization near vertical', () => {
     const after = await canvas([[500, 700, 503, 120]]);
     const segments = await detectNewLinearObjects(before, after, { x: 300, y: 50, width: 400, height: 700 }, { minLength: 150 });
     expect(segments).toHaveLength(1);
+  });
+});
+
+const tipOf = (segment: { x1: number; y1: number; x2: number; y2: number }) => (segment.y1 <= segment.y2 ? { x: segment.x1, y: segment.y1 } : { x: segment.x2, y: segment.y2 });
+const length = (segment: { x1: number; y1: number; x2: number; y2: number }) => Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
+
+describe('weapon geometry for ControlNet guidance', () => {
+  const image = { width: 1000, height: 800 };
+  const face = { x: 470, y: 120, width: 60, height: 70 };
+
+  it('plans a raised katana from the outer hand, tip above the shoulders and tilted away from the face', () => {
+    const plan = planWeaponGeometry({ relation: parseObjectRelations('katana raised')[0]!, figure: FIGURE, pose: POSE, hands: [], face, image })!;
+    expect(plan).toMatchObject({ grip: { x: 445, y: 360 }, crossguard: true, handSource: 'openpose' });
+    const tip = tipOf(plan.segment);
+    expect(tip.y).toBeLessThan(POSE.rightShoulder!.y);
+    expect(tip.x).toBeLessThan(plan.grip.x); // the face is to the right of this hand
+    expect(length(plan.segment)).toBeGreaterThan(0.5 * FIGURE.height);
+    expect(assessObjectRelation({ relation: parseObjectRelations('katana raised')[0]!, segments: [plan.segment], pose: POSE, figure: FIGURE }).overall).toBe('satisfied');
+  });
+
+  it('plans a spear in guard diagonally through both hands, tip up and outward', () => {
+    const plan = planWeaponGeometry({ relation: parseObjectRelations('spear held in guard')[0]!, figure: FIGURE, pose: POSE, hands: [], face, image })!;
+    expect(plan.grip).toEqual({ x: 500, y: 360 });
+    const tip = tipOf(plan.segment);
+    expect(tip.y).toBeLessThan(plan.grip.y);
+    expect(tip.x).toBeGreaterThan(plan.grip.x); // grip on the right half of the image: outward is right
+    const angle = (Math.atan2(Math.abs(plan.segment.y2 - plan.segment.y1), Math.abs(plan.segment.x2 - plan.segment.x1)) * 180) / Math.PI;
+    expect(angle).toBeGreaterThan(15);
+    expect(angle).toBeLessThan(35);
+    expect(plan.crossguard).toBe(false);
+    expect(assessObjectRelation({ relation: parseObjectRelations('spear held in guard')[0]!, segments: [plan.segment], pose: POSE, figure: FIGURE }).overall).toBe('satisfied');
+  });
+
+  it('uses detected hand boxes when the wrists are missing and gives up without any hand or required pose', () => {
+    const noWrists = { ...POSE, rightWrist: null, leftWrist: null };
+    const hands = [{ x: 430, y: 345, width: 30, height: 30 }, { x: 540, y: 345, width: 30, height: 30 }];
+    expect(planWeaponGeometry({ relation: parseObjectRelations('spear held in guard')[0]!, figure: FIGURE, pose: noWrists, hands, face, image })).toMatchObject({ grip: { x: 500, y: 360 }, handSource: 'yolo_hand' });
+    expect(planWeaponGeometry({ relation: parseObjectRelations('spear held in guard')[0]!, figure: FIGURE, pose: noWrists, hands: [], face, image })).toBeNull();
+    expect(planWeaponGeometry({ relation: parseObjectRelations('warrior with katana')[0]!, figure: FIGURE, pose: POSE, hands: [], face, image })).toBeNull();
+  });
+});
+
+describe('planned-object verification', () => {
+  const segment = { x1: 450, y1: 600, x2: 520, y2: 150 };
+
+  it('confirms an object rendered along the whole planned line, against the base and an offset control line', async () => {
+    const result = await verifyPlannedObject(await canvas([]), await canvas([[450, 600, 520, 150]]), segment, 600);
+    expect(result.status).toBe('rendered');
+    expect(Math.min(...result.thirds)).toBeGreaterThan(0.8);
+    expect(result.offset).toBeLessThan(0.1);
+  });
+
+  it('reports an incomplete object when a third of the line is missing', async () => {
+    const result = await verifyPlannedObject(await canvas([]), await canvas([[450, 600, 492, 330]]), segment, 600);
+    expect(result).toMatchObject({ status: 'incomplete', reasons: expect.arrayContaining(['object_incomplete_third:3']) });
+  });
+
+  it('reports an object that was not rendered along the plan', async () => {
+    const before = await canvas([[100, 700, 900, 700]]);
+    expect(await verifyPlannedObject(before, before, segment, 600)).toMatchObject({ status: 'not_rendered', reasons: ['object_not_rendered_along_plan'] });
   });
 });

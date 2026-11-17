@@ -770,6 +770,8 @@ export class AetheraCreativeStudioService {
       localizedRepair?: boolean;
       repairUncertainAttributes?: boolean;
       maxLocalizedRepairs?: number;
+      /** Depth ControlNet guidance for object repairs (on when ComfyUI has a depth ControlNet; false disables it). */
+      objectControlNet?: boolean;
     };
     /** Opt-in negative photobombing slider on multi-character scenes (off by default: it can erase the cast). */
     crowdSuppression?: boolean;
@@ -852,6 +854,7 @@ export class AetheraCreativeStudioService {
             detector: this.characterGateDetector,
             requiredProviderId: this.comfyUiAdapter.id,
             poseControlNetModel: gateSettings.layered === false ? null : await this.comfyUiAdapter.findPoseControlNet().catch(() => null),
+            depthControlNetModel: gateSettings.objectControlNet === false ? null : await this.comfyUiAdapter.findDepthControlNet().catch(() => null),
             holdModels: (work) => this.comfyUiAdapter.withModelsHeld(work),
             cutoutBatch: (paths) => this.batchCutout.cutout(paths),
             semanticGate: {

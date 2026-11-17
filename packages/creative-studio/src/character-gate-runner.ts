@@ -14,12 +14,21 @@ import {
   type CharacterGateOptions,
   type CharacterGateResult,
 } from './character-gate.js';
-import type { CompositionStrategyParams, ExternalImageAdapter, ImageGenerationRequest, VisualQualityInspectionResult } from './image-generation-adapter.js';
+import type { CompositionStrategyParams, ExternalImageAdapter, ImageGenerationRequest, LocalizedInpaintRequest, VisualQualityInspectionResult } from './image-generation-adapter.js';
 import { generateLayeredComposition } from './layered-composition.js';
 import {
   assessObjectRelation,
+  assessPlannedObject,
   buildObjectRepairPrompt,
   detectNewLinearObjects,
+  drawWeaponDepthControl,
+  paintWeaponPrior,
+  planWeaponGeometry,
+  shouldPaintWeaponPrior,
+  verifyPlannedObject,
+  weaponRepairMask,
+  type PlannedObjectVerification,
+  type WeaponPlan,
   parseObjectRelations,
   planObjectRepairMask,
   poseFromOpenPose,
@@ -167,6 +176,12 @@ export interface CharacterGateConfig {
   largeGroupThreshold?: number;
   /** OpenPose ControlNet installed in ComfyUI; null disables the layered strategy. */
   poseControlNetModel?: string | null;
+  /**
+   * Depth ControlNet installed in ComfyUI. With it (and an adapter that estimates depth), object repairs draw the
+   * requested weapon into the depth map along the pose the prompt asks for (`object_controlnet`); null keeps text-only
+   * object repairs.
+   */
+  depthControlNetModel?: string | null;
   /** Generations served by any other provider are invalid attempts (no silent fallback). */
   requiredProviderId?: string;
   /** Keeps engine models loaded during the layered strategy's portrait batch. */
@@ -210,6 +225,8 @@ export interface CharacterGateRepairReport {
   bbox: { x: number; y: number; width: number; height: number } | null;
   seed: number | null;
   maskAsset: { relativePath: string; originalName: string } | null;
+  /** Persisted depth-control image used by an object_controlnet repair. */
+  controlNetImageAsset: { relativePath: string; originalName: string } | null;
   originalImageAsset: { relativePath: string; originalName: string } | null;
   repairedImageAsset: { relativePath: string; originalName: string } | null;
   differenceImageAsset: { relativePath: string; originalName: string } | null;
@@ -217,7 +234,7 @@ export interface CharacterGateRepairReport {
   afterAttribute: { status: string; score: number | null; margin: number | null } | null;
   regression: CharacterGateVisualRegressionReport;
   /** `rescale_then_inpaint` enlarges the detected figure inside its planned region before a blending inpaint. */
-  strategy?: 'inpaint' | 'rescale_then_inpaint' | 'object_inpaint';
+  strategy?: 'inpaint' | 'rescale_then_inpaint' | 'object_inpaint' | 'object_controlnet';
   strength?: number;
   /** Applied enlargement for `rescale_then_inpaint`; 1 means the figure could not be enlarged inside its region. */
   scaleFactor?: number;
@@ -230,6 +247,10 @@ export interface CharacterGateRepairReport {
   protectRects?: Array<{ x: number; y: number; width: number; height: number }>;
   /** Prompt relations (grip, hand, orientation) and their geometric assessment after an object repair. */
   objectRelations?: CharacterGateObjectRelationReport[];
+  /** Depth ControlNet guidance of an `object_controlnet` repair (the control map carries the planned weapon). */
+  controlNet?: { model: string; strength: number; endPercent: number; paintPrior: boolean };
+  /** Text-only fallback reason when the ControlNet guidance could not be prepared. */
+  controlNetError?: string;
   reason?: string;
 }
 
@@ -239,6 +260,9 @@ export interface CharacterGateObjectRelationReport {
   /** New straight structures localized inside the repair mask (candidate objects). */
   segments: Segment[];
   maskBasis: 'pose' | 'figure';
+  /** Planned weapon line (ControlNet repairs) and its verification along the plan. */
+  plan?: WeaponPlan;
+  verification?: PlannedObjectVerification;
 }
 
 export interface CharacterGateProposalOperation {
@@ -251,6 +275,11 @@ export interface CharacterGateProposalOperation {
   protectRects: Array<{ x: number; y: number; width: number; height: number }>;
   seed: number;
   strength: number;
+  controlNet?: { model: string; strength: number; endPercent: number; paintPrior: boolean };
+  /** Reusable managed-storage references for replay after the report is reloaded. */
+  maskAsset?: { relativePath: string; originalName: string };
+  controlNetImageAsset?: { relativePath: string; originalName: string };
+  weaponSegment?: Segment;
 }
 
 /**
@@ -346,6 +375,8 @@ interface PendingRepairEvidence {
   originalBuffer: Buffer;
   repairedBuffer: Buffer;
   differenceBuffer: Buffer;
+  /** Exact ControlNet request (without the image) so a combination can replay the operation on another image. */
+  replay?: { request: Omit<LocalizedInpaintRequest, 'imageBuffer'>; paintPrior: boolean; plan: WeaponPlan };
 }
 
 type ServedReporter = ExternalImageAdapter & {
@@ -450,6 +481,7 @@ function emptyRepairReport(): CharacterGateRepairReport {
     bbox: null,
     seed: null,
     maskAsset: null,
+    controlNetImageAsset: null,
     originalImageAsset: null,
     repairedImageAsset: null,
     differenceImageAsset: null,
@@ -545,6 +577,16 @@ async function compareRepairBuffers(before: Buffer, after: Buffer, bbox: { x: nu
  * the strength a spear needed. The local CLIP evaluator cannot confirm thin objects, so these repairs end as proposals.
  */
 const OBJECT_REPAIR_STRENGTH = 0.6;
+/**
+ * Depth ControlNet settings for `object_controlnet` (probe 2026-11-17T2050): without a pixel prior the repaint needs more
+ * freedom (variant B); with a prior on a bright background less denoise keeps the painted stroke (variant C).
+ */
+const OBJECT_CONTROLNET_DEPTH = { denoise: 0.75, strength: 1, endPercent: 0.9 } as const;
+const OBJECT_CONTROLNET_PRIOR = { denoise: 0.6, strength: 0.9, endPercent: 0.8 } as const;
+
+function handsForFigure(evidence: CharacterGateEvidence | null | undefined): GateRectLike[] {
+  return (evidence?.detectors.yolo_hand?.boxes ?? []).filter((box) => box.confidence >= 0.4);
+}
 /** One extra seed per character when the geometric relation check rejects the first object repair. */
 const MAX_OBJECT_REPAIRS_PER_CHARACTER = 2;
 /** A later operation "removes" an earlier object when its edge support falls below this share of the original. */
@@ -579,8 +621,15 @@ async function assessObjectRepair(input: {
   evaluation: CharacterGateCandidateEvaluation;
   figure: GateRectLike | undefined;
   maskBasis: 'pose' | 'figure';
+  /** ControlNet repairs know where the weapon must be: verify along the plan instead of searching for it. */
+  plan?: WeaponPlan;
 }): Promise<CharacterGateObjectRelationReport> {
   const figure = input.evaluation.gate.figures.find((candidate) => input.figure && Math.abs(candidate.x + candidate.width / 2 - (input.figure.x + input.figure.width / 2)) < input.figure.width) ?? input.figure;
+  if (input.plan && figure) {
+    const verification = await verifyPlannedObject(input.before, input.after, input.plan.segment, figure.height);
+    const assessment = assessPlannedObject({ relation: input.relation, plan: input.plan, verification, pose: poseForFigure(input.evaluation.evidence, figure), figure });
+    return { relation: input.relation, assessment, segments: [input.plan.segment], maskBasis: input.maskBasis, plan: input.plan, verification };
+  }
   const segments = figure ? await detectNewLinearObjects(input.before, input.after, input.mask, { minLength: Math.max(40, figure.height * 0.2) }) : [];
   const assessment = figure
     ? assessObjectRelation({ relation: input.relation, segments, pose: poseForFigure(input.evaluation.evidence, figure), figure })
@@ -820,6 +869,10 @@ function operationOf(report: CharacterGateRepairReport, repairIndex: number): Ch
     protectRects: report.protectRects ?? [],
     seed: report.seed,
     strength: report.strength ?? 0.48,
+    ...(report.controlNet ? { controlNet: report.controlNet } : {}),
+    ...(report.maskAsset ? { maskAsset: report.maskAsset } : {}),
+    ...(report.controlNetImageAsset ? { controlNetImageAsset: report.controlNetImageAsset } : {}),
+    ...(report.objectRelations?.[0]?.plan ? { weaponSegment: report.objectRelations[0].plan.segment } : {}),
   };
 }
 
@@ -907,15 +960,18 @@ async function buildProposalTree(input: {
     try {
       for (let step = 1; step < combinable.length && reasons.length === 0; step += 1) {
         const operation = combinable[step]!.node.operations[0]!;
-        current = await input.adapter.inpaintRegion({
-          imageBuffer: current,
-          prompt: operation.prompt,
-          negativePrompt: operation.negativePrompt,
-          bbox: operation.bbox,
-          ...(operation.protectRects.length > 0 ? { protectRects: operation.protectRects } : {}),
-          strength: operation.strength,
-          seed: operation.seed,
-        });
+        const replay = combinable[step]!.evidence.replay;
+        current = await input.adapter.inpaintRegion(replay
+          ? { ...replay.request, imageBuffer: replay.paintPrior ? await paintWeaponPrior(current, replay.plan) : current }
+          : {
+              imageBuffer: current,
+              prompt: operation.prompt,
+              negativePrompt: operation.negativePrompt,
+              bbox: operation.bbox,
+              ...(operation.protectRects.length > 0 ? { protectRects: operation.protectRects } : {}),
+              strength: operation.strength,
+              seed: operation.seed,
+            });
         const evaluation = await evaluateCharacterGateCandidate({ adapter, recipe, imageBuffer: current, compareBeforeBuffer: base, config: evalConfig });
         previousEvaluation = evaluation;
         const afterById = new Map((evaluation.semantic?.criteria ?? []).map((criterion) => [criterion.id, criterion]));
@@ -942,6 +998,7 @@ async function buildProposalTree(input: {
               evaluation,
               figure: baseEvaluation.gate.figures.find((figure) => figure.regionIndex === entry.node.regionIndexes[0]),
               maskBasis: relationReport.maskBasis,
+              ...(entry.evidence.replay ? { plan: entry.evidence.replay.plan } : {}),
             });
             node.objectRelations[earlier] = reassessed;
             if (reassessed.assessment.overall === 'violated') reasons.push(`combined_relation_violated:${entry.node.criterionIds[0] ?? entry.node.id}`);
@@ -960,9 +1017,10 @@ async function buildProposalTree(input: {
       width: Math.max(...union.map((rect) => rect.x + rect.width)) - Math.min(...union.map((rect) => rect.x)),
       height: Math.max(...union.map((rect) => rect.y + rect.height)) - Math.min(...union.map((rect) => rect.y)),
     };
-    const svgMasks = await Promise.all(combinable.map((entry) => makeRepairMask(recipe.width, recipe.height, entry.node.operations[0]!.bbox, entry.node.operations[0]!.protectRects)));
-    let mask = svgMasks[0]!;
-    for (const next of svgMasks.slice(1)) mask = await sharp(mask).composite([{ input: next, blend: 'lighten' }]).png().toBuffer();
+    // The union of the masks each operation really used (narrow weapon masks for ControlNet repairs).
+    const usedMasks = combinable.map((entry) => entry.evidence.maskBuffer);
+    let mask = usedMasks[0]!;
+    for (const next of usedMasks.slice(1)) mask = await sharp(mask).composite([{ input: next, blend: 'lighten' }]).png().toBuffer();
     const diff = await compareRepairBuffers(base, current, unionBox);
     pending.combinations.set(node.id, { image: current, mask, difference: diff.differenceBuffer });
     nodes.push(node);
@@ -1143,6 +1201,9 @@ export async function runCharacterCompositionGate(input: {
                 ? planObjectRepairMask({ relation, region: regionRects[objectRegion]!, figure, pose: poseForFigure(currentEvaluation.evidence, figure), face: faceForFigure(currentEvaluation.evidence, figure) })
                 : { bbox: regionRects[objectRegion]!, protect: [], basis: 'figure' as const };
               const wording = buildObjectRepairPrompt(characterPrompt, relation);
+              const weaponPlan = figure && config.depthControlNetModel && adapter.estimateDepth
+                ? planWeaponGeometry({ relation, figure, pose: poseForFigure(currentEvaluation.evidence, figure), hands: handsForFigure(currentEvaluation.evidence), face: faceForFigure(currentEvaluation.evidence, figure), image: { width: recipe.width, height: recipe.height } })
+                : null;
               const previous = objectRepairsByRegion.get(objectRegion) ?? 0;
               return {
                 criterionId: previous === 0 ? semanticCandidate.criterionId : `${semanticCandidate.criterionId}:retry${previous}`,
@@ -1157,6 +1218,7 @@ export async function runCharacterCompositionGate(input: {
                 strength: OBJECT_REPAIR_STRENGTH,
                 objectTerms: terms,
                 relation,
+                weaponPlan,
                 coveredCriterionIds: objects.map((criterion) => criterion.id),
                 reason: semanticCandidate.reason,
               };
@@ -1173,7 +1235,7 @@ export async function runCharacterCompositionGate(input: {
         triedRepairs.add(candidate.criterionId);
         if ('coveredCriterionIds' in candidate && Array.isArray(candidate.coveredCriterionIds)) for (const id of candidate.coveredCriterionIds as string[]) triedRepairs.add(id);
         const objectCandidate = 'relation' in candidate && candidate.regionIndex !== null
-          ? (candidate as typeof candidate & { relation: ObjectRelation; figure: CharacterGateFigure | undefined; maskBasis: 'pose' | 'figure' })
+          ? (candidate as typeof candidate & { relation: ObjectRelation; figure: CharacterGateFigure | undefined; maskBasis: 'pose' | 'figure'; weaponPlan: WeaponPlan | null })
           : null;
         if (objectCandidate) objectRepairsByRegion.set(objectCandidate.regionIndex!, (objectRepairsByRegion.get(objectCandidate.regionIndex!) ?? 0) + 1);
         const beforeImage = image;
@@ -1205,15 +1267,57 @@ export async function runCharacterCompositionGate(input: {
             report.scaleFactor = Number(rescaled.scaleFactor.toFixed(3));
             if (rescaled.skippedReason) report.rescaleSkippedReason = rescaled.skippedReason;
           }
-          const repairedImage = await adapter.inpaintRegion({
-            imageBuffer: inpaintBase,
-            prompt: candidate.prompt,
-            negativePrompt,
-            bbox: candidate.bbox,
-            ...(protectRects.length > 0 ? { protectRects } : {}),
-            strength: repairStrength,
-            seed: repairSeed,
-          });
+          // object_controlnet: the depth map of the current image gets the planned weapon as its nearest surface and the
+          // editable area narrows to the weapon line and the grip (face protected).
+          let controlPlan: { mask: Buffer; bbox: GateRectLike; request: Omit<LocalizedInpaintRequest, 'imageBuffer'>; paintPrior: boolean; plan: WeaponPlan } | null = null;
+          const weaponPlan = objectCandidate?.weaponPlan ?? null;
+          if (weaponPlan && objectCandidate?.figure && config.depthControlNetModel && adapter.estimateDepth) {
+            report.strategy = 'object_controlnet';
+            try {
+              const size = { width: recipe.width, height: recipe.height };
+              const depth = await adapter.estimateDepth({ imageBuffer: beforeImage });
+              const control = await drawWeaponDepthControl(depth, weaponPlan, size);
+              const { mask, bbox } = await weaponRepairMask(weaponPlan, objectCandidate.figure.height, size, protectRects);
+              const paintPrior = await shouldPaintWeaponPrior(beforeImage, weaponPlan);
+              const settings = paintPrior ? OBJECT_CONTROLNET_PRIOR : OBJECT_CONTROLNET_DEPTH;
+              controlPlan = {
+                mask,
+                bbox,
+                paintPrior,
+                plan: weaponPlan,
+                request: {
+                  prompt: candidate.prompt,
+                  negativePrompt,
+                  bbox,
+                  maskBuffer: mask,
+                  ...(protectRects.length > 0 ? { protectRects } : {}),
+                  controlNet: { model: config.depthControlNetModel, imageBuffer: control, strength: settings.strength, endPercent: settings.endPercent },
+                  strength: settings.denoise,
+                  seed: repairSeed,
+                },
+              };
+              report.bbox = bbox;
+              report.strength = settings.denoise;
+              report.controlNet = { model: config.depthControlNetModel, strength: settings.strength, endPercent: settings.endPercent, paintPrior };
+            } catch (error) {
+              report.controlNetError = error instanceof Error ? error.message : String(error);
+            }
+          }
+          if (weaponPlan && config.depthControlNetModel && adapter.estimateDepth && !controlPlan) {
+            throw new Error(`object_controlnet preparation failed: ${report.controlNetError ?? 'unknown error'}`);
+          }
+          const repairBbox = controlPlan?.bbox ?? candidate.bbox;
+          const repairedImage = await adapter.inpaintRegion(controlPlan
+            ? { ...controlPlan.request, imageBuffer: controlPlan.paintPrior ? await paintWeaponPrior(inpaintBase, controlPlan.plan) : inpaintBase }
+            : {
+                imageBuffer: inpaintBase,
+                prompt: candidate.prompt,
+                negativePrompt,
+                bbox: candidate.bbox,
+                ...(protectRects.length > 0 ? { protectRects } : {}),
+                strength: repairStrength,
+                seed: repairSeed,
+              });
           const afterEvaluation = await evaluateCharacterGateCandidate({
             adapter,
             recipe,
@@ -1221,8 +1325,9 @@ export async function runCharacterCompositionGate(input: {
             compareBeforeBuffer: beforeImage,
             config: { detector: config.detector, ...(config.options ? { options: config.options } : {}), ...(config.semanticGate ? { semanticGate: config.semanticGate } : {}) },
           });
-          const diff = await compareRepairBuffers(beforeImage, repairedImage, candidate.bbox);
+          const diff = await compareRepairBuffers(beforeImage, repairedImage, repairBbox);
           const regression = repairRegression(beforeEvaluation, afterEvaluation, { criterionId: candidate.criterionId, kind: candidate.criterionKind }, diff);
+          let plannedObjectNeedsReview = false;
           if (pastedRect) {
             const seamBefore = await pasteSeamStrength(beforeImage, pastedRect, candidate.bbox);
             const seamAfter = await pasteSeamStrength(repairedImage, pastedRect, candidate.bbox);
@@ -1236,22 +1341,47 @@ export async function runCharacterCompositionGate(input: {
             const relationReport = await assessObjectRepair({
               before: beforeImage,
               after: repairedImage,
-              mask: candidate.bbox,
+              mask: repairBbox,
               relation: objectCandidate.relation,
               evaluation: afterEvaluation,
               figure: objectCandidate.figure,
               maskBasis: objectCandidate.maskBasis,
+              ...(controlPlan ? { plan: controlPlan.plan } : {}),
             });
             report.objectRelations = [relationReport];
             if (relationReport.assessment.overall === 'violated') {
               regression.reasons.push(...relationReport.assessment.reasons.map((reason) => `object_relation_violated:${reason}`));
               regression.status = 'failed';
+            } else if (controlPlan && relationReport.verification && (
+              relationReport.verification.status !== 'rendered'
+              || relationReport.assessment.grip !== 'satisfied'
+              || relationReport.assessment.orientation !== 'satisfied'
+              || relationReport.assessment.overall !== 'satisfied'
+            )) {
+              plannedObjectNeedsReview = true;
+              regression.reasons.push('object_relation_needs_review');
+              regression.status = 'needs_review';
             }
           }
           report.afterAttribute = attributeSnapshot(afterEvaluation.semantic, candidate.criterionId);
           report.regression = regression;
-          const maskBuffer = await makeRepairMask(recipe.width, recipe.height, candidate.bbox, protectRects);
-          repairEvidence.push({ report, maskBuffer, originalBuffer: beforeImage, repairedBuffer: repairedImage, differenceBuffer: diff.differenceBuffer });
+          const maskBuffer = controlPlan?.mask ?? await makeRepairMask(recipe.width, recipe.height, candidate.bbox, protectRects);
+          repairEvidence.push({
+            report,
+            maskBuffer,
+            originalBuffer: beforeImage,
+            repairedBuffer: repairedImage,
+            differenceBuffer: diff.differenceBuffer,
+            ...(controlPlan ? { replay: { request: controlPlan.request, paintPrior: controlPlan.paintPrior, plan: controlPlan.plan } } : {}),
+          });
+          if (plannedObjectNeedsReview) {
+            if (objectCandidate) objectRegionsDone.add(objectCandidate.regionIndex!);
+            report.status = 'proposed';
+            report.reason = 'Repair rendered an incomplete or uncertain planned object; kept as an alternative for human review.';
+            attempt.repairs.push(report);
+            attempt.repair = report;
+            continue;
+          }
           const onlyUnverified = regression.reasons.length === 1 && regression.reasons[0] === 'target_attribute_not_confirmed';
           if (onlyUnverified) {
             if (objectCandidate) objectRegionsDone.add(objectCandidate.regionIndex!);
@@ -1323,6 +1453,12 @@ export async function runCharacterCompositionGate(input: {
           input.ingestion.ingestBuffer({ buffer: pending.differenceBuffer, kind: 'image', extension: 'png', originalName: diffName }),
         ]);
         pending.report.maskAsset = { relativePath: maskAsset.relativePath, originalName: maskName };
+        const controlNetImage = pending.replay?.request.controlNet?.imageBuffer;
+        if (controlNetImage) {
+          const controlName = `ai-gate-control-attempt${attempt.attempt}-repair${repairIndex + 1}-${safeCriterion}-${attempt.seed}.png`;
+          const controlAsset = await input.ingestion.ingestBuffer({ buffer: controlNetImage, kind: 'image', extension: 'png', originalName: controlName });
+          pending.report.controlNetImageAsset = { relativePath: controlAsset.relativePath, originalName: controlName };
+        }
         pending.report.originalImageAsset = { relativePath: originalAsset.relativePath, originalName };
         pending.report.repairedImageAsset = { relativePath: repairedAsset.relativePath, originalName: repairedName };
         pending.report.differenceImageAsset = { relativePath: differenceAsset.relativePath, originalName: diffName };
@@ -1335,6 +1471,11 @@ export async function runCharacterCompositionGate(input: {
           return { relativePath: asset.relativePath, originalName };
         };
         for (const node of tree.nodes) {
+          for (const operation of node.operations) {
+            const report = pendingRepairs.get(attempt.attempt)?.[operation.repairIndex]?.report;
+            if (report?.maskAsset) operation.maskAsset = report.maskAsset;
+            if (report?.controlNetImageAsset) operation.controlNetImageAsset = report.controlNetImageAsset;
+          }
           if (node.kind === 'base') node.imageAsset = await ingest(pendingTree.base, `ai-gate-proposal-base-attempt${attempt.attempt}-${attempt.seed}.png`);
           else if (node.kind === 'repair' && node.repairIndex !== null) {
             const report = pendingRepairs.get(attempt.attempt)?.[node.repairIndex]?.report;

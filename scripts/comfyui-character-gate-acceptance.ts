@@ -136,6 +136,7 @@ try {
   const service = new AetheraCreativeStudioService({ db: handle.db, userDataDir });
   await service.saveImageEngineSettings({ endpoint: 'http://127.0.0.1:8000', checkpoint: 'animagine-xl-3.1.safetensors', releaseMemoryAfterGeneration: true });
   const poseControlNetModel = await service.comfyUiAdapter.findPoseControlNet();
+  const depthControlNetModel = process.env.GATE_OBJECT_CONTROLNET === '0' ? null : await service.comfyUiAdapter.findDepthControlNet();
   const results: Array<Record<string, unknown> & {
     id: string;
     mode: 'before' | 'after';
@@ -175,6 +176,7 @@ try {
                   maxAttempts,
                   requiredProviderId: service.comfyUiAdapter.id,
                   poseControlNetModel,
+                  depthControlNetModel,
                   holdModels: (work) => service.comfyUiAdapter.withModelsHeld(work),
                   cutoutBatch: (paths) => service.batchCutout.cutout(paths),
                   semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: Number(process.env.GATE_MAX_REPAIRS ?? 5) },
@@ -306,6 +308,7 @@ try {
       humanApprovalRequired: true,
     },
     poseControlNetModel,
+    depthControlNetModel,
     crowdSuppressionLora: 'off (not used)',
     contactSheet: sheetPath,
     results,

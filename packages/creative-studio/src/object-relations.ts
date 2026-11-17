@@ -117,6 +117,14 @@ function distanceToSegment(point: Point, segment: Segment): number {
   return Math.hypot(point.x - (segment.x1 + t * vx), point.y - (segment.y1 + t * vy));
 }
 
+/** Position of `point` projected on the segment: 0 at (x1, y1), 1 at (x2, y2). */
+function projectionAlong(point: Point, segment: Segment): number {
+  const vx = segment.x2 - segment.x1;
+  const vy = segment.y2 - segment.y1;
+  const lengthSq = vx * vx + vy * vy;
+  return lengthSq > 0 ? Math.max(0, Math.min(1, ((point.x - segment.x1) * vx + (point.y - segment.y1) * vy) / lengthSq)) : 0;
+}
+
 const usable = (point: Point | null | undefined): point is Point => !!point && (point.score ?? 1) >= 0.1;
 
 /** Grip tolerances as a fraction of figure height. */
@@ -184,9 +192,15 @@ export function assessObjectRelation(input: { relation: ObjectRelation; segments
     if (hand === 'violated') reasons.push(`object_not_in_${requested}_hand`);
   }
 
-  // Tip: the endpoint farther from the holding wrist; without a grip, the upper endpoint.
+  // Tip: held at one end (hilt), the tip is the far end. Held mid-shaft (a polearm grip can sit nearer either end), the
+  // nearer end is not a reliable base, so a raised or guard weapon takes its upper endpoint as the tip.
   const holdingWrist = holdingHand ? wrists[holdingHand] : null;
-  const [base, tip] = holdingWrist
+  const upperFirst = segment.y1 <= segment.y2;
+  const gripAlong = holdingWrist ? projectionAlong(holdingWrist, segment) : null;
+  const midShaft = gripAlong !== null && gripAlong > 0.25 && gripAlong < 0.75;
+  const [base, tip] = (relation.orientation === 'raised' || relation.orientation === 'guard') && (midShaft || !holdingWrist)
+    ? (upperFirst ? [{ x: segment.x2, y: segment.y2 }, { x: segment.x1, y: segment.y1 }] : [{ x: segment.x1, y: segment.y1 }, { x: segment.x2, y: segment.y2 }])
+    : holdingWrist
     ? (Math.hypot(segment.x1 - holdingWrist.x, segment.y1 - holdingWrist.y) <= Math.hypot(segment.x2 - holdingWrist.x, segment.y2 - holdingWrist.y)
       ? [{ x: segment.x1, y: segment.y1 }, { x: segment.x2, y: segment.y2 }]
       : [{ x: segment.x2, y: segment.y2 }, { x: segment.x1, y: segment.y1 }])
@@ -474,4 +488,235 @@ export function poseFromOpenPose(keypoints: Array<Point | null>): PoseKeypoints 
     rightHip: at(8),
     leftHip: at(11),
   };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// ControlNet guidance (CS10): text alone does not make the inpaint draw a long thin weapon, but a depth ControlNet whose
+// map already contains the weapon does (probe 2026-11-17T2050). The weapon line is planned from the prompt relation and
+// the detected hands; after the repair the same line is verified by edge support, third by third.
+
+export interface WeaponPlan {
+  /** From the butt/pommel (x1, y1) to the tip (x2, y2), clipped to the image. */
+  segment: Segment;
+  grip: Point;
+  widthPx: number;
+  /** Draw a short perpendicular guard (tsuba) near the hilt. */
+  crossguard: boolean;
+  handSource: 'openpose' | 'yolo_hand';
+}
+
+const BLADES = new Set(['katana', 'sword', 'blade']);
+const POLEARMS = new Set(['spear', 'lance', 'polearm', 'halberd', 'staff']);
+const WEAPON_LENGTH: Record<string, number> = { katana: 0.5, sword: 0.5, blade: 0.5, spear: 0.8, lance: 0.8, polearm: 0.8, halberd: 0.8, staff: 0.8, rifle: 0.45, gun: 0.4, pistol: 0.12, bow: 0.5, axe: 0.35 };
+/** Raised/lowered weapons lean this far from the vertical; guard weapons rise this far above the horizontal. */
+const RAISED_TILT_DEG = 28;
+const GUARD_ELEVATION_DEG = 24;
+
+function clipSegment(segment: Segment, width: number, height: number): Segment {
+  // Liang–Barsky against [0, width-1] × [0, height-1].
+  const dx = segment.x2 - segment.x1;
+  const dy = segment.y2 - segment.y1;
+  let t0 = 0;
+  let t1 = 1;
+  const edges: Array<[number, number]> = [[-dx, segment.x1], [dx, width - 1 - segment.x1], [-dy, segment.y1], [dy, height - 1 - segment.y1]];
+  for (const [p, q] of edges) {
+    if (p === 0) {
+      if (q < 0) return segment;
+      continue;
+    }
+    const r = q / p;
+    if (p < 0) t0 = Math.max(t0, r);
+    else t1 = Math.min(t1, r);
+  }
+  if (t0 > t1) return segment;
+  return { x1: segment.x1 + dx * t0, y1: segment.y1 + dy * t0, x2: segment.x1 + dx * t1, y2: segment.y1 + dy * t1 };
+}
+
+/**
+ * Plans where the requested weapon should be, from the relation and the hands. Returns null when the prompt asks for
+ * no pose (nothing to enforce) or no hand is visible (the grip would be invented).
+ */
+export function planWeaponGeometry(input: { relation: ObjectRelation; figure: Rect; pose: PoseKeypoints | null; hands: Rect[]; face: Rect | null; image: { width: number; height: number } }): WeaponPlan | null {
+  const { relation, figure, pose } = input;
+  if (!relation.orientation || (relation.placement !== null && relation.placement !== 'in_hand')) return null;
+  const wrists = [pose?.rightWrist, pose?.leftWrist].filter(usable);
+  const handBoxes = input.hands
+    .map((box) => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 }))
+    .filter((point) => point.x >= figure.x - figure.width * 0.25 && point.x <= figure.x + figure.width * 1.25 && point.y >= figure.y && point.y <= figure.y + figure.height);
+  const hands = wrists.length > 0 ? wrists.map((point) => ({ x: point.x, y: point.y })) : handBoxes;
+  if (hands.length === 0) return null;
+  const handSource = wrists.length > 0 ? 'openpose' as const : 'yolo_hand' as const;
+  const faceCenterX = input.face ? input.face.x + input.face.width / 2 : usable(pose?.nose) ? pose!.nose!.x : figure.x + figure.width / 2;
+  const length = (WEAPON_LENGTH[relation.object] ?? 0.4) * figure.height;
+  let grip: Point;
+  let direction: Point; // unit vector from the grip towards the tip
+  let behind: number; // share of the length behind the grip
+  if (relation.orientation === 'raised' || relation.orientation === 'lowered') {
+    // One-handed reading: the hand farther from the face, so the blade does not cross it; tilt away from the face.
+    grip = [...hands].sort((a, b) => Math.abs(b.x - faceCenterX) - Math.abs(a.x - faceCenterX))[0]!;
+    const side = grip.x >= faceCenterX ? 1 : -1;
+    const tilt = (RAISED_TILT_DEG * Math.PI) / 180;
+    direction = { x: side * Math.sin(tilt), y: relation.orientation === 'raised' ? -Math.cos(tilt) : Math.cos(tilt) };
+    behind = 0.12;
+  } else {
+    // Two-handed polearm/rifle reading: through the middle of the hands, pointing outward (away from the image centre).
+    grip = { x: hands.reduce((sum, point) => sum + point.x, 0) / hands.length, y: hands.reduce((sum, point) => sum + point.y, 0) / hands.length };
+    const side = grip.x >= input.image.width / 2 ? 1 : -1;
+    const elevation = relation.orientation === 'guard' ? (GUARD_ELEVATION_DEG * Math.PI) / 180 : 0;
+    direction = { x: side * Math.cos(elevation), y: -Math.sin(elevation) };
+    behind = relation.orientation === 'guard' ? 0.35 : 0.2;
+  }
+  const raw = {
+    x1: grip.x - direction.x * length * behind,
+    y1: grip.y - direction.y * length * behind,
+    x2: grip.x + direction.x * length * (1 - behind),
+    y2: grip.y + direction.y * length * (1 - behind),
+  };
+  const widthPx = Math.max(6, Math.round(figure.height * (POLEARMS.has(relation.object) ? 0.013 : 0.016)));
+  return { segment: clipSegment(raw, input.image.width, input.image.height), grip: { x: grip.x, y: grip.y }, widthPx, crossguard: BLADES.has(relation.object), handSource };
+}
+
+export interface PlannedObjectVerification {
+  /** Edge support of the repaired image along the planned line, hilt → middle → tip. */
+  thirds: [number, number, number];
+  before: number;
+  after: number;
+  /** Support along a parallel control line next to the plan (clutter, not the object). */
+  offset: number;
+  status: 'rendered' | 'incomplete' | 'not_rendered';
+  reasons: string[];
+}
+
+/** A third must be backed by edges over this share of its length (probe: rendered thirds 0.47–0.98, missing tip 0.31). */
+const PLANNED_THIRD_MIN = 0.45;
+/** The repair must add this much support along the whole line compared with the base image. */
+const PLANNED_GAIN_MIN = 0.2;
+/** Above this, the control line is as busy as the plan and the evidence is not specific to the object. */
+const PLANNED_OFFSET_MAX = 0.25;
+
+export async function verifyPlannedObject(before: Buffer, after: Buffer, segment: Segment, figureHeight: number): Promise<PlannedObjectVerification> {
+  const part = (from: number, to: number): Segment => ({
+    x1: segment.x1 + (segment.x2 - segment.x1) * from,
+    y1: segment.y1 + (segment.y2 - segment.y1) * from,
+    x2: segment.x1 + (segment.x2 - segment.x1) * to,
+    y2: segment.y1 + (segment.y2 - segment.y1) * to,
+  });
+  const thirds = [
+    await segmentEdgeSupport(after, part(0, 1 / 3)),
+    await segmentEdgeSupport(after, part(1 / 3, 2 / 3)),
+    await segmentEdgeSupport(after, part(2 / 3, 1)),
+  ].map((value) => Number(value.toFixed(3))) as [number, number, number];
+  const beforeSupport = Number((await segmentEdgeSupport(before, segment)).toFixed(3));
+  const afterSupport = Number((await segmentEdgeSupport(after, segment)).toFixed(3));
+  const length = Math.max(1, Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1));
+  const shift = Math.max(12, figureHeight * 0.055);
+  const nx = (-(segment.y2 - segment.y1) / length) * shift;
+  const ny = ((segment.x2 - segment.x1) / length) * shift;
+  const offset = Number((await segmentEdgeSupport(after, { x1: segment.x1 + nx, y1: segment.y1 + ny, x2: segment.x2 + nx, y2: segment.y2 + ny })).toFixed(3));
+  const reasons: string[] = [];
+  if (afterSupport - beforeSupport < PLANNED_GAIN_MIN) {
+    return { thirds, before: beforeSupport, after: afterSupport, offset, status: 'not_rendered', reasons: ['object_not_rendered_along_plan'] };
+  }
+  thirds.forEach((value, index) => { if (value < PLANNED_THIRD_MIN) reasons.push(`object_incomplete_third:${index + 1}`); });
+  if (offset > PLANNED_OFFSET_MAX) reasons.push('edge_clutter_next_to_plan');
+  return { thirds, before: beforeSupport, after: afterSupport, offset, status: reasons.length === 0 ? 'rendered' : 'incomplete', reasons };
+}
+
+/** Relation assessment for a planned (ControlNet-guided) object: presence comes from the plan verification. */
+export function assessPlannedObject(input: { relation: ObjectRelation; plan: WeaponPlan; verification: PlannedObjectVerification; pose: PoseKeypoints | null; figure: Rect }): ObjectRelationAssessment {
+  const { verification } = input;
+  if (verification.status === 'not_rendered') {
+    return { presence: 'not_detected', grip: 'uncertain', hand: 'uncertain', orientation: 'uncertain', overall: 'violated', segment: input.plan.segment, holdingHand: null, reasons: [...verification.reasons] };
+  }
+  const assessment = assessObjectRelation({ relation: input.relation, segments: [input.plan.segment], pose: input.pose, figure: input.figure });
+  if (verification.status === 'rendered') return assessment;
+  return {
+    ...assessment,
+    presence: 'weak',
+    overall: assessment.overall === 'violated' ? 'violated' : 'uncertain',
+    reasons: [...assessment.reasons, ...verification.reasons],
+  };
+}
+
+type Stroke = [number, number, number, number];
+
+function weaponStrokes(plan: WeaponPlan): Stroke[] {
+  const { x1, y1, x2, y2 } = plan.segment;
+  const strokes: Stroke[] = [[x1, y1, x2, y2]];
+  if (plan.crossguard) {
+    const t = 0.12;
+    const gx = x1 + (x2 - x1) * t;
+    const gy = y1 + (y2 - y1) * t;
+    const length = Math.max(1, Math.hypot(x2 - x1, y2 - y1));
+    const half = plan.widthPx * 1.6;
+    const nx = (-(y2 - y1) / length) * half;
+    const ny = ((x2 - x1) / length) * half;
+    strokes.push([gx - nx, gy - ny, gx + nx, gy + ny]);
+  }
+  return strokes;
+}
+
+function svgLines(strokes: Stroke[], color: string, width: number): string {
+  return strokes
+    .map(([x1, y1, x2, y2]) => `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-width="${width}" stroke-linecap="round"/>`)
+    .join('');
+}
+
+/** Depth control map: the scene's estimated depth with the weapon drawn as the nearest surface along the plan. */
+export async function drawWeaponDepthControl(depth: Buffer, plan: WeaponPlan, size: { width: number; height: number }): Promise<Buffer> {
+  const { data, info } = await sharp(depth).resize(size.width, size.height, { fit: 'fill' }).greyscale().raw().toBuffer({ resolveWithObject: true });
+  const samples: number[] = [];
+  for (let i = 0; i <= 40; i += 1) {
+    const x = Math.round(plan.segment.x1 + ((plan.segment.x2 - plan.segment.x1) * i) / 40);
+    const y = Math.round(plan.segment.y1 + ((plan.segment.y2 - plan.segment.y1) * i) / 40);
+    if (x >= 0 && y >= 0 && x < info.width && y < info.height) samples.push(data[y * info.width + x] ?? 0);
+  }
+  samples.sort((a, b) => a - b);
+  const near = Math.min(255, Math.round((samples[Math.floor(samples.length * 0.9)] ?? 128) + 25));
+  const grey = `rgb(${near},${near},${near})`;
+  const overlay = Buffer.from(`<svg width="${size.width}" height="${size.height}">${svgLines(weaponStrokes(plan), grey, plan.widthPx)}</svg>`);
+  return sharp(data, { raw: { width: info.width, height: info.height, channels: 1 } }).toColourspace('srgb').composite([{ input: overlay }]).png().toBuffer();
+}
+
+/** Narrow editable mask (white) along the weapon and around the grip; the protected rectangles stay black. */
+export async function weaponRepairMask(plan: WeaponPlan, figureHeight: number, size: { width: number; height: number }, protect: Rect[]): Promise<{ mask: Buffer; bbox: Rect }> {
+  const band = Math.max(24, Math.round(figureHeight * 0.1));
+  const radius = Math.max(24, Math.round(figureHeight * 0.09));
+  const protectSvg = protect.map((rect) => `<rect x="${rect.x.toFixed(1)}" y="${rect.y.toFixed(1)}" width="${rect.width.toFixed(1)}" height="${rect.height.toFixed(1)}" fill="black"/>`).join('');
+  const svg = `<svg width="${size.width}" height="${size.height}"><rect width="100%" height="100%" fill="black"/>${svgLines(weaponStrokes(plan), 'white', band)}<circle cx="${plan.grip.x.toFixed(1)}" cy="${plan.grip.y.toFixed(1)}" r="${radius}" fill="white"/>${protectSvg}</svg>`;
+  const xs = [plan.segment.x1, plan.segment.x2, plan.grip.x - radius, plan.grip.x + radius];
+  const ys = [plan.segment.y1, plan.segment.y2, plan.grip.y - radius, plan.grip.y + radius];
+  const left = Math.max(0, Math.min(...xs) - band / 2);
+  const top = Math.max(0, Math.min(...ys) - band / 2);
+  const right = Math.min(size.width, Math.max(...xs) + band / 2);
+  const bottom = Math.min(size.height, Math.max(...ys) + band / 2);
+  return { mask: await sharp(Buffer.from(svg)).png().toBuffer(), bbox: { x: left, y: top, width: right - left, height: bottom - top } };
+}
+
+/** Mean luminance under the planned line; a bright background benefits from a pixel prior, a dark one turns it into a ghost. */
+const PRIOR_MIN_LUMINANCE = 110;
+
+export async function shouldPaintWeaponPrior(image: Buffer, plan: WeaponPlan): Promise<boolean> {
+  const { data, info } = await sharp(image).greyscale().raw().toBuffer({ resolveWithObject: true });
+  let total = 0;
+  let count = 0;
+  for (let i = 0; i <= 40; i += 1) {
+    const x = Math.round(plan.segment.x1 + ((plan.segment.x2 - plan.segment.x1) * i) / 40);
+    const y = Math.round(plan.segment.y1 + ((plan.segment.y2 - plan.segment.y1) * i) / 40);
+    if (x >= 0 && y >= 0 && x < info.width && y < info.height) {
+      total += data[y * info.width + x] ?? 0;
+      count += 1;
+    }
+  }
+  return count > 0 && total / count >= PRIOR_MIN_LUMINANCE;
+}
+
+/** Neutral steel stroke (plus a dark guard) painted into the init image as a pixel prior for the sampler. */
+export async function paintWeaponPrior(image: Buffer, plan: WeaponPlan): Promise<Buffer> {
+  const meta = await sharp(image).metadata();
+  const width = meta.width ?? 1;
+  const height = meta.height ?? 1;
+  const [blade, ...guard] = weaponStrokes(plan);
+  const svg = `<svg width="${width}" height="${height}">${svgLines([blade!], '#b0b4be', Math.max(3, plan.widthPx - 2))}${svgLines(guard, '#78643c', plan.widthPx)}</svg>`;
+  return sharp(image).composite([{ input: await sharp(Buffer.from(svg)).blur(0.8).png().toBuffer() }]).png().toBuffer();
 }
