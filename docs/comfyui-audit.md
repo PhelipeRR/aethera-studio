@@ -82,14 +82,15 @@ The Aethera path is now:
 3. `ComfyUiImageAdapter` validates the selected checkpoint and native nodes against `/object_info`;
 4. it queues a native txt2img or img2img graph through `/prompt`, waits on `/history`, and downloads `/view` output;
 5. the generated buffer receives a structural audit for dimensions and luminance variation;
-6. a user-selected seed, render side (768/1024) or serial batch changes the persisted request rather than hiding parameters in process memory;
-7. only a real output is composed; fallback reports remain visible in the panel and production console.
+6. a user-selected seed, render side (768/1024), reference denoise, bounded retry limit or serial batch changes the persisted request rather than hiding parameters in process memory;
+7. an optional native `LoraLoader`/`LoraLoaderModelOnly` node is inserted only when the selected LoRA is reported by `/object_info`;
+8. only a real output is composed; fallback reports remain visible in the panel and production console.
 
 Reference images use `/upload/image` and a native `LoadImage → VAEEncode → KSampler` graph. Localized repair uses a bounded mask with `VAEEncodeForInpaint` when that node is exposed. Multi-character requests with two to eight planned regions use one environment pass followed by one bounded inpaint pass per region; a reference image deliberately remains on the single img2img path. The adapter also has a checkpoint-independent `LoadImage → UpscaleModelLoader → ImageUpscaleWithModel` graph, exposed in the panel as an explicit background-upscale action that creates a new managed asset. Jobs are serialized by a process-local GPU lease; memory can be released explicitly or after each generation.
 
 ## What is still blocked
 
-The real six-case ComfyUI acceptance pass cannot be claimed until a server is running with at least one compatible checkpoint. The upscale graph and panel action cannot be validated until an `upscale_models` file is installed. ControlNet, IP-Adapter, LoRA and face-detail workflows also cannot be validated while their models/nodes are absent. The current reference path is native img2img; it does not pretend to provide IP-Adapter identity locking.
+The real six-case ComfyUI acceptance pass cannot be claimed until a server is running with at least one compatible checkpoint. The upscale graph and panel action cannot be validated until an `upscale_models` file is installed. ControlNet, IP-Adapter, the new LoRA graph and face-detail workflows also cannot be validated while their models/nodes are absent. The current reference path is native img2img with explicit denoise control; it does not pretend to provide IP-Adapter identity locking.
 
 To unblock the real pass, install/import a licensed checkpoint into the audited ComfyUI `models\checkpoints` directory, start ComfyUI on `127.0.0.1:8188`, and rerun the audit. The panel will then expose the reported checkpoint list rather than accepting an arbitrary model name.
 

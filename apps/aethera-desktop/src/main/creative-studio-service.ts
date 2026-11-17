@@ -563,6 +563,9 @@ export class AetheraCreativeStudioService {
     stylization?: number;
     professionalPreset?: ProfessionalPresetId;
     referenceImagePaths?: string[];
+    referenceStrength?: number;
+    maxAttempts?: number;
+    lora?: { model: string; strengthModel?: number; strengthClip?: number };
     characterCount?: number;
     assetManifest?: Record<string, ManagedAssetRef>;
   }): Promise<{
@@ -609,6 +612,9 @@ export class AetheraCreativeStudioService {
         ingestion: this.ingestion,
         ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
         ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths } : {}),
+        ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),
+        ...(input.maxAttempts !== undefined ? { maxAttempts: input.maxAttempts } : {}),
+        ...(input.lora ? { lora: input.lora } : {}),
         ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
         ...(input.seed !== undefined ? { seed: input.seed } : {}),
         ...(input.maxSide !== undefined ? { maxSide: input.maxSide } : {}),
@@ -690,6 +696,9 @@ export class AetheraCreativeStudioService {
       ...(input.stylization !== undefined ? { stylization: input.stylization } : {}),
       ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
       ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths.slice(0, 4) } : {}),
+      ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),
+      ...(input.maxAttempts !== undefined ? { maxAttempts: input.maxAttempts } : {}),
+      ...(input.lora ? { lora: input.lora } : {}),
       ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
     };
     this.repo.saveGenerationRun({

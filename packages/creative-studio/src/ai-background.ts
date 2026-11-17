@@ -15,6 +15,11 @@ export interface AiGenerationReport {
   message: string;
   durationMs?: number;
   recipe?: VisualRecipe;
+  /** Img2img denoise used for the first reference image; lower values preserve more of the reference. */
+  referenceStrength?: number;
+  /** Number of bounded generation attempts, including the first attempt. */
+  attempts?: number;
+  lora?: { model: string; strengthModel: number; strengthClip: number };
   qualityAudit?: GeneratedImageQualityAudit;
 }
 
@@ -32,6 +37,9 @@ export interface GenerateAiBackgroundInput {
   stylization?: number;
   professionalPreset?: ProfessionalPresetId;
   referenceImagePaths?: string[];
+  referenceStrength?: number;
+  maxAttempts?: number;
+  lora?: { model: string; strengthModel?: number; strengthClip?: number };
   characterCount?: number;
 }
 
@@ -64,64 +72,88 @@ export async function generateAiBackground(
     ...(input.professionalPreset ? { professionalPreset: input.professionalPreset } : {}),
     ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
   });
+  const maxAttempts = Math.min(3, Math.max(1, Math.floor(input.maxAttempts ?? 1)));
   const started = Date.now();
-  try {
-    const buffer = await input.imageAdapter.generateImage({
-      prompt: recipe.positivePrompt,
-      negativePrompt: recipe.negativePrompt,
-      seed: recipe.seed,
-      width: recipe.width,
-      height: recipe.height,
-      steps: recipe.steps,
-      cfg: recipe.cfg,
-      samplerName: recipe.samplerName,
-      scheduler: recipe.scheduler,
-      preset: recipe.professionalPreset,
-      ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths } : {}),
-      ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
-      ...(recipe.characterRegions.length > 1 ? { characterRegions: recipe.characterRegions } : {}),
-    });
-    const qualityAudit = await auditGeneratedImage(buffer, { expectedWidth: recipe.width, expectedHeight: recipe.height });
-    if (!qualityAudit.passed) {
+  let lastRecipe = recipe;
+  let lastAudit: GeneratedImageQualityAudit | undefined;
+  let lastError: string | undefined;
+
+  for (let attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1) {
+    const attempt = attemptIndex + 1;
+    const attemptRecipe = attemptIndex === 0 ? recipe : { ...recipe, seed: (recipe.seed + attemptIndex) % 0x80000000 };
+    lastRecipe = attemptRecipe;
+    try {
+      const buffer = await input.imageAdapter.generateImage({
+        prompt: attemptRecipe.positivePrompt,
+        negativePrompt: attemptRecipe.negativePrompt,
+        seed: attemptRecipe.seed,
+        width: attemptRecipe.width,
+        height: attemptRecipe.height,
+        steps: attemptRecipe.steps,
+        cfg: attemptRecipe.cfg,
+        samplerName: attemptRecipe.samplerName,
+        scheduler: attemptRecipe.scheduler,
+        preset: attemptRecipe.professionalPreset,
+        ...(input.referenceImagePaths?.length ? { referenceImagePaths: input.referenceImagePaths } : {}),
+        ...(input.referenceImagePaths?.length && input.referenceStrength !== undefined
+          ? { strength: Math.min(1, Math.max(0.01, input.referenceStrength)) }
+          : {}),
+        ...(input.lora
+          ? {
+              lora: {
+                model: input.lora.model,
+                strengthModel: input.lora.strengthModel ?? 1,
+                strengthClip: input.lora.strengthClip ?? input.lora.strengthModel ?? 1,
+              },
+            }
+          : {}),
+        ...(input.characterCount !== undefined ? { characterCount: input.characterCount } : {}),
+        ...(attemptRecipe.characterRegions.length > 1 ? { characterRegions: attemptRecipe.characterRegions } : {}),
+      });
+      const qualityAudit = await auditGeneratedImage(buffer, { expectedWidth: attemptRecipe.width, expectedHeight: attemptRecipe.height });
+      lastAudit = qualityAudit;
+      if (!qualityAudit.passed) continue;
+
+      const asset = await input.ingestion.ingestBuffer({
+        buffer,
+        kind: 'image',
+        extension: 'png',
+        originalName: `ai-gen-${attemptRecipe.preset}-${attemptRecipe.seed}.png`,
+      });
       return {
-        asset: null,
+        asset,
         report: {
-          status: 'failed',
+          status: 'generated',
           engineId,
-          message: `A auditoria estrutural rejeitou a imagem gerada: ${qualityAudit.findings.map((finding) => finding.message).join(' ')}`,
+          message: `Fundo gerado por ${engineId} (preset ${attemptRecipe.preset}, seed ${attemptRecipe.seed}${attempt > 1 ? `, após ${attempt} tentativas` : ''}).`,
           durationMs: Date.now() - started,
-          recipe,
+          recipe: attemptRecipe,
+          ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),
+          attempts: attempt,
+          ...(input.lora ? { lora: { model: input.lora.model, strengthModel: input.lora.strengthModel ?? 1, strengthClip: input.lora.strengthClip ?? input.lora.strengthModel ?? 1 } } : {}),
           qualityAudit,
         },
       };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
     }
-    const asset = await input.ingestion.ingestBuffer({
-      buffer,
-      kind: 'image',
-      extension: 'png',
-      originalName: `ai-gen-${recipe.preset}-${recipe.seed}.png`,
-    });
-    return {
-      asset,
-      report: {
-        status: 'generated',
-        engineId,
-        message: `Fundo gerado por ${engineId} (preset ${recipe.preset}, seed ${recipe.seed}).`,
-        durationMs: Date.now() - started,
-        recipe,
-        qualityAudit,
-      },
-    };
-  } catch (error) {
-    return {
-      asset: null,
-      report: {
-        status: 'failed',
-        engineId,
-        message: `Falha na geração por IA (${error instanceof Error ? error.message : String(error)}); a arte usou o fundo da paleta.`,
-        durationMs: Date.now() - started,
-        recipe,
-      },
-    };
   }
+
+  const failureReason = lastAudit
+    ? lastAudit.findings.map((finding) => finding.message).join(' ')
+    : lastError ?? 'nenhuma saída utilizável foi retornada pelo motor';
+  return {
+    asset: null,
+    report: {
+      status: 'failed',
+      engineId,
+      message: `Falha na geração por IA após ${maxAttempts} tentativa${maxAttempts === 1 ? '' : 's'} (${failureReason}); a arte usou o fundo da paleta.`,
+      durationMs: Date.now() - started,
+      recipe: lastRecipe,
+      ...(input.referenceStrength !== undefined ? { referenceStrength: input.referenceStrength } : {}),
+      attempts: maxAttempts,
+      ...(input.lora ? { lora: { model: input.lora.model, strengthModel: input.lora.strengthModel ?? 1, strengthClip: input.lora.strengthClip ?? input.lora.strengthModel ?? 1 } } : {}),
+      ...(lastAudit ? { qualityAudit: lastAudit } : {}),
+    },
+  };
 }

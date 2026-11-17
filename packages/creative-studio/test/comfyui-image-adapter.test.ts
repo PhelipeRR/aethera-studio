@@ -45,6 +45,26 @@ describe('ComfyUiImageAdapter', () => {
     expect(gateway.queued?.['5']).toMatchObject({ class_type: 'KSampler', inputs: { seed: 17, steps: 6, cfg: 4.5 } });
   });
 
+  it('queues a native LoRA loader only when the selected model is reported by ComfyUI', async () => {
+    const gateway = fakeGateway();
+    gateway.getObjectInfo = async () => ({
+      ...readyObjectInfo(),
+      LoraLoader: { input: { required: { lora_name: [['anime-style.safetensors']] } } },
+    });
+    const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
+
+    await adapter.generateImage({
+      prompt: 'anime key visual',
+      width: 768,
+      height: 768,
+      lora: { model: 'anime-style.safetensors', strengthModel: 0.7, strengthClip: 0.6 },
+    });
+
+    expect(gateway.queued?.['10']).toMatchObject({ class_type: 'LoraLoader', inputs: { lora_name: 'anime-style.safetensors', strength_model: 0.7, strength_clip: 0.6 } });
+    expect(gateway.queued?.['2']).toMatchObject({ inputs: { clip: ['10', 1] } });
+    expect(gateway.queued?.['5']).toMatchObject({ inputs: { model: ['10', 0] } });
+  });
+
   it('is unavailable and gives an actionable error when the selected checkpoint is absent', async () => {
     const gateway = fakeGateway();
     gateway.getObjectInfo = async () => ({

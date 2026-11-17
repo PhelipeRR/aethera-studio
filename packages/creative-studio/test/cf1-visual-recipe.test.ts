@@ -171,12 +171,44 @@ describe('CF-1 orchestration order and AI background report', () => {
       imageAdapter: fake,
       ingestion,
       seed: 7,
+      referenceImagePaths: ['C:/reference.png'],
+      referenceStrength: 0.38,
     });
     expect(res.report.status).toBe('generated');
     expect(res.asset?.kind).toBe('image');
     expect(seen).toMatchObject({ seed: 7, width: 1024, height: 576 });
+    expect(seen?.strength).toBe(0.38);
+    expect(res.report.referenceStrength).toBe(0.38);
     expect(seen?.negativePrompt).toMatch(/text/);
     expect(seen?.prompt).toBe(res.report.recipe?.positivePrompt);
+  });
+
+  it('retries a structurally rejected image with a bounded seed change', async () => {
+    const seeds: number[] = [];
+    let calls = 0;
+    const fake: ExternalImageAdapter = {
+      id: 'retry-fake',
+      isAvailable: async () => true,
+      generateImage: async (req) => {
+        calls += 1;
+        seeds.push(req.seed ?? -1);
+        return calls === 1 ? png(req.width, req.height) : richPng(req.width, req.height);
+      },
+    };
+    const res = await generateAiBackground({
+      artType: 'banner',
+      prompt: NEXTWORTH_PROMPT,
+      imageAdapter: fake,
+      ingestion,
+      seed: 41,
+      maxAttempts: 2,
+    });
+
+    expect(res.report.status).toBe('generated');
+    expect(res.report.attempts).toBe(2);
+    expect(calls).toBe(2);
+    expect(seeds).toEqual([41, 42]);
+    expect(res.report.message).toMatch(/após 2 tentativas/);
   });
 
   it('keeps a generated composition crisp and adds a soft scrim behind the text', async () => {

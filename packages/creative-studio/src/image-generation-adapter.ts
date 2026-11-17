@@ -29,6 +29,8 @@ export interface ImageGenerationRequest {
   cfg?: number;
   samplerName?: string;
   scheduler?: string;
+  /** Optional native ComfyUI LoRA applied to the model and, when supported, the text encoder. */
+  lora?: { model: string; strengthModel?: number; strengthClip?: number };
   batchSize?: number;
   preset?: string;
   characterCount?: number;

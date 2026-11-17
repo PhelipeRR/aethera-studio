@@ -63,6 +63,41 @@ describe('ComfyUI workflow registry', () => {
     expect(result.errors).toContain('Checkpoint "missing.safetensors" is not reported by ComfyUI as installed.');
   });
 
+  it('applies a selected LoRA to the native model and CLIP paths and validates its inventory name', () => {
+    const workflow = buildComfyUiTxt2ImgWorkflow({
+      checkpoint: 'sdxl.safetensors',
+      positivePrompt: 'anime key visual',
+      negativePrompt: 'text',
+      width: 768,
+      height: 768,
+      seed: 9,
+      steps: 8,
+      cfg: 5,
+      samplerName: 'euler',
+      scheduler: 'normal',
+      filenamePrefix: 'Aethera/lora',
+      lora: { model: 'anime-style.safetensors', strengthModel: 0.75, strengthClip: 0.6 },
+    });
+
+    expect(workflow['10']).toMatchObject({
+      class_type: 'LoraLoader',
+      inputs: {
+        lora_name: 'anime-style.safetensors',
+        strength_model: 0.75,
+        strength_clip: 0.6,
+      },
+    });
+    expect(workflow['2']?.inputs['clip']).toEqual(['10', 1]);
+    expect(workflow['5']?.inputs['model']).toEqual(['10', 0]);
+    expect(
+      validateComfyUiWorkflow(workflow, {
+        CheckpointLoaderSimple: { input: { required: { ckpt_name: [['sdxl.safetensors']] } } },
+        CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {},
+        LoraLoader: { input: { required: { lora_name: [['anime-style.safetensors']] } } },
+      }),
+    ).toEqual({ ok: true, errors: [] });
+  });
+
   it('builds a native img2img graph with an uploaded reference and denoise strength', () => {
     const workflow = buildComfyUiImg2ImgWorkflow({
       checkpoint: 'sdxl.safetensors',

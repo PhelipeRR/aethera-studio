@@ -254,7 +254,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     return true;
   }
 
-  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler'>): ComfyUiWorkflow {
+  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora'>): ComfyUiWorkflow {
     return buildComfyUiTxt2ImgWorkflow({
       checkpoint: request.model ?? this.checkpoint,
       positivePrompt: request.prompt,
@@ -266,12 +266,13 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       cfg: request.cfg ?? this.cfg,
       samplerName: request.samplerName ?? this.samplerName,
       scheduler: request.scheduler ?? this.scheduler,
+      ...(request.lora ? { lora: request.lora } : {}),
       filenamePrefix: this.filenamePrefix,
     });
   }
 
   private img2imgWorkflowFor(
-    request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'strength'>,
+    request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'strength' | 'lora'>,
     inputImage: ComfyUiImageRef,
   ): ComfyUiWorkflow {
     return buildComfyUiImg2ImgWorkflow({
@@ -285,6 +286,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       cfg: request.cfg ?? this.cfg,
       samplerName: request.samplerName ?? this.samplerName,
       scheduler: request.scheduler ?? this.scheduler,
+      ...(request.lora ? { lora: request.lora } : {}),
       denoise: request.strength ?? 0.55,
       inputImage,
       filenamePrefix: this.filenamePrefix,

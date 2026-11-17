@@ -20,6 +20,7 @@ export interface ComfyUiTxt2ImgInput {
   samplerName: string;
   scheduler: string;
   filenamePrefix: string;
+  lora?: { model: string; strengthModel?: number; strengthClip?: number; nodeType?: 'LoraLoader' | 'LoraLoaderModelOnly' };
 }
 
 export interface ComfyUiWorkflowValidation {
@@ -55,7 +56,10 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
   const steps = Math.max(1, Math.round(input.steps));
   const cfg = Math.max(0, input.cfg);
   const seed = Math.max(0, Math.floor(input.seed));
-  return {
+  const loraNodeType = input.lora?.nodeType ?? 'LoraLoader';
+  const modelRef: [string, number] = input.lora ? ['10', 0] : ['1', 0];
+  const clipRef: [string, number] = input.lora && loraNodeType === 'LoraLoader' ? ['10', 1] : ['1', 1];
+  const workflow: ComfyUiWorkflow = {
     '1': {
       class_type: 'CheckpointLoaderSimple',
       inputs: { ckpt_name: input.checkpoint },
@@ -63,12 +67,12 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
     },
     '2': {
       class_type: 'CLIPTextEncode',
-      inputs: { text: input.positivePrompt, clip: ['1', 1] },
+      inputs: { text: input.positivePrompt, clip: clipRef },
       _meta: { title: 'Aethera positive prompt' },
     },
     '3': {
       class_type: 'CLIPTextEncode',
-      inputs: { text: input.negativePrompt, clip: ['1', 1] },
+      inputs: { text: input.negativePrompt, clip: clipRef },
       _meta: { title: 'Aethera negative prompt' },
     },
     '4': {
@@ -85,7 +89,7 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
         sampler_name: input.samplerName,
         scheduler: input.scheduler,
         denoise: 1,
-        model: ['1', 0],
+        model: modelRef,
         positive: ['2', 0],
         negative: ['3', 0],
         latent_image: ['4', 0],
@@ -103,6 +107,26 @@ export function buildComfyUiTxt2ImgWorkflow(input: ComfyUiTxt2ImgInput): ComfyUi
       _meta: { title: 'Aethera output' },
     },
   };
+  if (input.lora) {
+    workflow['10'] = {
+      class_type: loraNodeType,
+      inputs: loraNodeType === 'LoraLoader'
+        ? {
+            model: ['1', 0],
+            clip: ['1', 1],
+            lora_name: input.lora.model,
+            strength_model: Math.max(-5, Math.min(5, input.lora.strengthModel ?? 1)),
+            strength_clip: Math.max(-5, Math.min(5, input.lora.strengthClip ?? input.lora.strengthModel ?? 1)),
+          }
+        : {
+            model: ['1', 0],
+            lora_name: input.lora.model,
+            strength_model: Math.max(-5, Math.min(5, input.lora.strengthModel ?? 1)),
+          },
+      _meta: { title: 'Aethera LoRA' },
+    };
+  }
+  return workflow;
 }
 
 export function buildComfyUiImg2ImgWorkflow(input: ComfyUiImg2ImgInput): ComfyUiWorkflow {
@@ -119,6 +143,7 @@ export function buildComfyUiImg2ImgWorkflow(input: ComfyUiImg2ImgInput): ComfyUi
     '1': node('1'),
     '2': node('2'),
     '3': node('3'),
+    ...(base['10'] ? { '10': base['10'] } : {}),
     '4': { class_type: 'LoadImage', inputs: { image: imageName }, _meta: { title: 'Aethera reference image' } },
     '5': { class_type: 'VAEEncode', inputs: { pixels: ['4', 0], vae: ['1', 2] }, _meta: { title: 'Aethera reference encode' } },
     '6': {
@@ -150,6 +175,7 @@ export function buildComfyUiInpaintWorkflow(input: ComfyUiInpaintInput): ComfyUi
     '1': node('1'),
     '2': node('2'),
     '3': node('3'),
+    ...(base['10'] ? { '10': base['10'] } : {}),
     '4': { class_type: 'LoadImage', inputs: { image: imageName }, _meta: { title: 'Aethera inpaint base image' } },
     '5': { class_type: 'LoadImage', inputs: { image: maskName }, _meta: { title: 'Aethera localized repair mask' } },
     '6': {
@@ -199,6 +225,18 @@ function checkpointNames(objectInfo: Record<string, unknown>): string[] {
   return values[0].filter((value): value is string => typeof value === 'string');
 }
 
+function loraNames(objectInfo: Record<string, unknown>): string[] {
+  for (const nodeType of ['LoraLoader', 'LoraLoaderModelOnly']) {
+    const loader = objectInfo[nodeType];
+    if (!loader || typeof loader !== 'object') continue;
+    const input = (loader as Record<string, unknown>)['input'];
+    const required = input && typeof input === 'object' ? (input as Record<string, unknown>)['required'] : undefined;
+    const values = required && typeof required === 'object' ? (required as Record<string, unknown>)['lora_name'] : undefined;
+    if (Array.isArray(values) && Array.isArray(values[0])) return values[0].filter((value): value is string => typeof value === 'string');
+  }
+  return [];
+}
+
 export function validateComfyUiWorkflow(workflow: ComfyUiWorkflow, objectInfo: Record<string, unknown>): ComfyUiWorkflowValidation {
   const errors: string[] = [];
   const requiredNodeTypes = new Set<string>();
@@ -219,6 +257,15 @@ export function validateComfyUiWorkflow(workflow: ComfyUiWorkflow, objectInfo: R
     if (installed.length === 0) {
       errors.push('ComfyUI reports no checkpoint models for CheckpointLoaderSimple.');
     }
+  }
+  for (const node of Object.values(workflow)) {
+    if (!node.class_type.startsWith('LoraLoader') || typeof node.inputs['lora_name'] !== 'string') continue;
+    if (!availableTypes.has(node.class_type)) continue;
+    const installed = loraNames(objectInfo);
+    if (installed.length > 0 && !installed.includes(node.inputs['lora_name'])) {
+      errors.push(`LoRA "${node.inputs['lora_name']}" is not reported by ComfyUI as installed.`);
+    }
+    if (installed.length === 0) errors.push('ComfyUI reports no LoRA models for the selected loader.');
   }
   for (const [nodeId, node] of Object.entries(workflow)) {
     if (!node.class_type || !node.inputs) errors.push(`Workflow node ${nodeId} is missing class_type or inputs.`);

@@ -30,6 +30,9 @@ interface CreativeBridge {
       message: string;
       durationMs?: number;
       recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine'; stylization?: number };
+      referenceStrength?: number;
+      attempts?: number;
+      lora?: { model: string; strengthModel: number; strengthClip: number };
       qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
       generationRunId?: string;
     };
@@ -44,6 +47,9 @@ interface CreativeBridge {
       message: string;
       durationMs?: number;
       recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine'; stylization?: number };
+      referenceStrength?: number;
+      attempts?: number;
+      lora?: { model: string; strengthModel: number; strengthClip: number };
       qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
       generationRunId?: string;
     };
@@ -143,6 +149,8 @@ export function CreativeStudioPanel() {
   const [prompt, setPrompt] = useState('');
   const [headline, setHeadline] = useState('');
   const [referencePath, setReferencePath] = useState('');
+  const [referenceStrength, setReferenceStrength] = useState(0.55);
+  const [maxAttempts, setMaxAttempts] = useState(1);
   const [characterCount, setCharacterCount] = useState(1);
   const [generationSeed, setGenerationSeed] = useState('');
   const [maxSide, setMaxSide] = useState(1024);
@@ -167,6 +175,8 @@ export function CreativeStudioPanel() {
   const [useAiGeneration, setUseAiGeneration] = useState<boolean>(true);
   const [professionalPreset, setProfessionalPreset] = useState<ProfessionalPresetId>('youtube_thumbnail_1280x720');
   const [selectedCheckpoint, setSelectedCheckpoint] = useState('');
+  const [selectedLora, setSelectedLora] = useState('');
+  const [loraStrength, setLoraStrength] = useState(0.8);
   const [selectedUpscaleModel, setSelectedUpscaleModel] = useState('');
   const [releaseMemoryAfterGeneration, setReleaseMemoryAfterGeneration] = useState(false);
   const [fidelityMode, setFidelityMode] = useState<'conceptual_art' | 'content_faithful' | 'authentic_gameplay'>(
@@ -203,6 +213,9 @@ export function CreativeStudioPanel() {
     message: string;
     durationMs?: number;
     recipe?: { preset: string; seed: number; source: 'deterministic' | 'reasoning_engine'; stylization?: number };
+    referenceStrength?: number;
+    attempts?: number;
+    lora?: { model: string; strengthModel: number; strengthClip: number };
     qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
   } | null>(null);
   const [generationBusy, setGenerationBusy] = useState(false);
@@ -260,6 +273,9 @@ export function CreativeStudioPanel() {
         useAiGeneration,
         professionalPreset,
         ...(referencePath.trim() ? { referenceImagePaths: [referencePath.trim()] } : {}),
+        ...(referencePath.trim() ? { referenceStrength } : {}),
+        ...(selectedLora ? { lora: { model: selectedLora, strengthModel: loraStrength, strengthClip: loraStrength } } : {}),
+        maxAttempts,
         characterCount,
         maxSide,
         stylization,
@@ -472,6 +488,23 @@ export function CreativeStudioPanel() {
                 {engineStatus.comfyUi.models.checkpoints.map((checkpoint) => <option key={checkpoint} value={checkpoint}>{checkpoint}</option>)}
               </select>
             )}
+            {engineStatus.comfyUi.models.loras.length > 0 && (
+              <>
+                <select
+                  aria-label="LoRA ComfyUI"
+                  value={selectedLora}
+                  onChange={(e) => setSelectedLora(e.target.value)}
+                  style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
+                >
+                  <option value="">Sem LoRA</option>
+                  {engineStatus.comfyUi.models.loras.map((model) => <option key={model} value={model}>{model}</option>)}
+                </select>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }} title="Força aplicada ao modelo e ao CLIP">
+                  força LoRA
+                  <input aria-label="Força da LoRA" type="number" min={-1} max={2} step={0.05} value={loraStrength} onChange={(e) => setLoraStrength(Number(e.target.value))} style={{ width: 52, padding: '3px 4px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11 }} />
+                </label>
+              </>
+            )}
             {engineStatus.comfyUi.models.upscale_models.length > 0 && (
               <select
                 aria-label="Modelo de upscale ComfyUI"
@@ -547,6 +580,19 @@ export function CreativeStudioPanel() {
               aria-label="Caminho da imagem de referência"
               style={{ flex: 1.2, minWidth: 220, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
             />
+            {referencePath.trim() && (
+              <select
+                aria-label="Preservação da referência"
+                value={referenceStrength}
+                onChange={(e) => setReferenceStrength(Number(e.target.value))}
+                title="Denoise img2img: valores menores preservam mais a referência"
+                style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+              >
+                <option value={0.32}>Referência alta (mais fiel)</option>
+                <option value={0.55}>Referência equilibrada</option>
+                <option value={0.75}>Interpretação criativa</option>
+              </select>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <select
@@ -604,6 +650,15 @@ export function CreativeStudioPanel() {
               style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
             >
               {[1, 2, 3, 4].map((count) => <option key={count} value={count}>Lote {count}</option>)}
+            </select>
+            <select
+              aria-label="Tentativas máximas de geração IA"
+              value={maxAttempts}
+              onChange={(e) => setMaxAttempts(Number(e.target.value))}
+              title="Limite de novas gerações quando a auditoria estrutural reprovar a saída"
+              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+            >
+              {[1, 2, 3].map((count) => <option key={count} value={count}>{count} tentativa{count === 1 ? '' : 's'} IA</option>)}
             </select>
             <button disabled={generationBusy} onClick={handleCreate} style={{ padding: '8px 14px', background: generationBusy ? 'var(--muted)' : 'var(--brand-lime)', color: 'var(--brand-ink)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: generationBusy ? 'wait' : 'pointer' }}>
               {generationBusy ? 'Gerando…' : 'Gerar Arte Editável'}
@@ -676,6 +731,9 @@ export function CreativeStudioPanel() {
               {generationReport.recipe && (
                 <div style={{ color: 'var(--muted-foreground)', marginTop: 4 }}>
                   preset {generationReport.recipe.preset} · seed {generationReport.recipe.seed} · estilização {generationReport.recipe.stylization !== undefined ? Math.round(generationReport.recipe.stylization * 100) : '—'}% · origem {generationReport.recipe.source}
+                  {generationReport.referenceStrength !== undefined ? ` · referência ${Math.round((1 - generationReport.referenceStrength) * 100)}% preservada` : ''}
+                  {generationReport.attempts !== undefined ? ` · ${generationReport.attempts} tentativa${generationReport.attempts === 1 ? '' : 's'}` : ''}
+                  {generationReport.lora ? ` · LoRA ${generationReport.lora.model} (${generationReport.lora.strengthModel})` : ''}
                 </div>
               )}
               {generationReport.qualityAudit && (
