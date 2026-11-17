@@ -22,7 +22,12 @@ export function inspectComfyUiCapabilities(objectInfo: Record<string, unknown>, 
     nativeImg2Img: hasNode(nodes, 'LoadImage') && hasNode(nodes, 'VAEEncode') && models.checkpoints.length > 0,
     inpaint: hasNode(nodes, 'LoadImage') && hasNode(nodes, 'VAEEncodeForInpaint') && models.checkpoints.length > 0,
     controlNet: models.controlnet.length > 0 && hasNode(nodes, 'ControlNetLoader') && hasNode(nodes, 'ControlNetApplyAdvanced', 'ControlNetApply'),
-    ipAdapter: hasNode(nodes, 'IPAdapterApply', 'IPAdapterAdvanced', 'IPAdapter'),
+    ipAdapter:
+      models.ipadapter.length > 0 &&
+      models.clip_vision.length > 0 &&
+      hasNode(nodes, 'IPAdapterModelLoader') &&
+      hasNode(nodes, 'CLIPVisionLoader') &&
+      hasNode(nodes, 'IPAdapterApply', 'IPAdapterAdvanced'),
     faceDetailer: hasNode(nodes, 'FaceDetailer', 'DetailerForEach', 'UltralyticsDetectorProvider'),
     upscale: models.upscale_models.length > 0 && hasNode(nodes, 'ImageUpscaleWithModel', 'UltimateSDUpscale'),
     lora: models.loras.length > 0 && hasNode(nodes, 'LoraLoader', 'LoraLoaderModelOnly'),

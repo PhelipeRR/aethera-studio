@@ -157,6 +157,44 @@ describe('ComfyUI workflow registry', () => {
     ).toEqual({ ok: true, errors: [] });
   });
 
+  it('adds the official IP-Adapter model and CLIP Vision loaders before the sampler', () => {
+    const workflow = buildComfyUiTxt2ImgWorkflow({
+      checkpoint: 'sdxl.safetensors',
+      positivePrompt: 'same character, anime key visual',
+      negativePrompt: 'text',
+      width: 768,
+      height: 768,
+      seed: 5,
+      steps: 8,
+      cfg: 5,
+      samplerName: 'euler',
+      scheduler: 'normal',
+      filenamePrefix: 'Aethera/ipadapter',
+      ipAdapter: {
+        model: 'ip-adapter-plus_sdxl.safetensors',
+        clipVisionModel: 'CLIP-ViT-H.safetensors',
+        image: { filename: 'identity.png', subfolder: 'aethera', type: 'input' },
+        weight: 0.9,
+        nodeType: 'IPAdapterAdvanced',
+      },
+    });
+
+    expect(workflow['14']).toMatchObject({ class_type: 'IPAdapterModelLoader', inputs: { ipadapter_file: 'ip-adapter-plus_sdxl.safetensors' } });
+    expect(workflow['15']).toMatchObject({ class_type: 'CLIPVisionLoader', inputs: { clip_name: 'CLIP-ViT-H.safetensors' } });
+    expect(workflow['16']).toMatchObject({ class_type: 'LoadImage', inputs: { image: 'aethera/identity.png' } });
+    expect(workflow['17']).toMatchObject({ class_type: 'IPAdapterAdvanced', inputs: { model: ['1', 0], ipadapter: ['14', 0], clip_vision: ['15', 0], image: ['16', 0], weight: 0.9 } });
+    expect(workflow['5']?.inputs['model']).toEqual(['17', 0]);
+    expect(
+      validateComfyUiWorkflow(workflow, {
+        CheckpointLoaderSimple: { input: { required: { ckpt_name: [['sdxl.safetensors']] } } },
+        CLIPTextEncode: {}, EmptyLatentImage: {}, KSampler: {}, VAEDecode: {}, SaveImage: {}, LoadImage: {},
+        IPAdapterModelLoader: { input: { required: { ipadapter_file: [['ip-adapter-plus_sdxl.safetensors']] } } },
+        CLIPVisionLoader: { input: { required: { clip_name: [['CLIP-ViT-H.safetensors']] } } },
+        IPAdapterAdvanced: {},
+      }),
+    ).toEqual({ ok: true, errors: [] });
+  });
+
   it('extracts generated image references from history outputs', () => {
     const history: ComfyUiHistoryEntry = {
       outputs: {

@@ -23,7 +23,7 @@ The audit found:
 - ComfyUI version: `0.20.1` from `resources\ComfyUI\comfyui_version.py`;
 - loopback ports `8188` and `8000`: not reachable (`fetch failed` / connection refused);
 - no ComfyUI process was running;
-- model directories exist, but the audited model extensions are absent from `checkpoints`, `controlnet`, `diffusion_models`, `loras`, `vae`, `upscale_models` and `embeddings`;
+- model directories exist, but the audited model extensions are absent from `checkpoints`, `controlnet`, `ipadapter`, `clip_vision`, `diffusion_models`, `loras`, `vae`, `upscale_models` and `embeddings`;
 - GPU evidence from the baseline: `NVIDIA GeForce RTX 4060 Ti`, 8188 MiB total VRAM, driver `621.01`.
 
 The reproducible result is therefore:
@@ -35,6 +35,8 @@ The reproducible result is therefore:
   "models": {
     "checkpoints": [],
     "controlnet": [],
+    "ipadapter": [],
+    "clip_vision": [],
     "diffusion_models": [],
     "loras": [],
     "vae": [],
@@ -67,7 +69,7 @@ No model is installed locally, so these are recommendations rather than validate
 - **fast preview candidate:** [SDXL-Lightning](https://huggingface.co/ByteDance/SDXL-Lightning), whose card provides 1/2/4/8-step variants; prefer a compatible 4-step checkpoint only after the ComfyUI graph, model pairing and license are checked;
 - **existing local fallback:** [SDXL-Turbo](https://huggingface.co/stabilityai/sdxl-turbo), useful for quick previews at 1–4 steps, but its card points commercial users to Stability’s license, so it is not treated as the professional-quality baseline;
 - **not selected for a monetized channel:** [FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) is a 12B model under the FLUX.1-dev Non-Commercial License. Quantized community variants do not automatically remove that restriction, so it is not acceptable as the NextWorth default without a separate license decision;
-- **later identity-control candidate:** [IP-Adapter for SDXL](https://huggingface.co/h94/IP-Adapter), especially Plus/Face variants. The card lists a large SDXL image encoder and the runtime currently has no IP-Adapter node/model, so it remains disabled until VRAM and identity-fidelity validation pass.
+- **later identity-control candidate:** [IP-Adapter for SDXL](https://huggingface.co/h94/IP-Adapter), especially Plus/Face variants. The card lists a large SDXL image encoder and the runtime currently has no IP-Adapter node/model, so it remains disabled until VRAM and identity-fidelity validation pass. The optional graph follows the official [ComfyUI IPAdapter node contract](https://github.com/comfyorg/comfyui-ipadapter/blob/main/IPAdapterPlus.py) (`IPAdapterModelLoader`, `CLIPVisionLoader`, `IPAdapterAdvanced`/`IPAdapterApply`).
 
 Recommended installation order for the 8 GB card: one SDXL anime checkpoint (Animagine or Illustrious, not both initially), native VAE path, then the six-case harness; only after that add one ControlNet or one IP-Adapter stack and measure peak VRAM again. The model names above are not yet installed or visually accepted on this machine.
 
@@ -85,13 +87,14 @@ The Aethera path is now:
 6. a user-selected seed, render side (768/1024), reference denoise, bounded retry limit or serial batch changes the persisted request rather than hiding parameters in process memory;
 7. an optional native `LoraLoader`/`LoraLoaderModelOnly` node is inserted only when the selected LoRA is reported by `/object_info`;
 8. an optional `ControlNetLoader` + discovered `ControlNetApplyAdvanced`/`ControlNetApply` path is inserted only when its model, conditioning image and node type are available;
-9. only a real output is composed; fallback reports remain visible in the panel and production console.
+9. an optional `IPAdapterModelLoader` + `CLIPVisionLoader` + discovered `IPAdapterAdvanced`/`IPAdapterApply` path is inserted only when both model inventories, a reference image and compatible nodes are available;
+10. only a real output is composed; fallback reports remain visible in the panel and production console.
 
 Reference images use `/upload/image` and a native `LoadImage → VAEEncode → KSampler` graph. Localized repair uses a bounded mask with `VAEEncodeForInpaint` when that node is exposed. Multi-character requests with two to eight planned regions use one environment pass followed by one bounded inpaint pass per region; a reference image deliberately remains on the single img2img path. The adapter also has a checkpoint-independent `LoadImage → UpscaleModelLoader → ImageUpscaleWithModel` graph, exposed in the panel as an explicit background-upscale action that creates a new managed asset. Jobs are serialized by a process-local GPU lease; memory can be released explicitly or after each generation.
 
 ## What is still blocked
 
-The real six-case ComfyUI acceptance pass cannot be claimed until a server is running with at least one compatible checkpoint. The upscale graph and panel action cannot be validated until an `upscale_models` file is installed. ControlNet, IP-Adapter, the new LoRA graph and face-detail workflows also cannot be validated while their models/nodes are absent. The current reference path is native img2img with explicit denoise control; it does not pretend to provide IP-Adapter identity locking.
+The real six-case ComfyUI acceptance pass cannot be claimed until a server is running with at least one compatible checkpoint. The upscale graph and panel action cannot be validated until an `upscale_models` file is installed. ControlNet, IP-Adapter, the new LoRA graph and face-detail workflows also cannot be validated while their models/nodes are absent. The current reference path is native img2img with explicit denoise control; IP-Adapter is now an optional feature-gated path, but identity still requires human/semantic verification and is never promised as perfect.
 
 To unblock the real pass, install/import a licensed checkpoint into the audited ComfyUI `models\checkpoints` directory, start ComfyUI on `127.0.0.1:8188`, and rerun the audit. The panel will then expose the reported checkpoint list rather than accepting an arbitrary model name.
 

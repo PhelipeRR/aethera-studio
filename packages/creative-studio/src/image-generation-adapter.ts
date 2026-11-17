@@ -33,6 +33,8 @@ export interface ImageGenerationRequest {
   lora?: { model: string; strengthModel?: number; strengthClip?: number };
   /** Optional ControlNet model plus a local conditioning image. */
   controlNet?: { model: string; imagePath: string; strength?: number; startPercent?: number; endPercent?: number };
+  /** Optional IP-Adapter stack; referenceImagePath defaults to referenceImagePaths[0]. */
+  ipAdapter?: { model: string; clipVisionModel: string; referenceImagePath?: string; weight?: number };
   batchSize?: number;
   preset?: string;
   characterCount?: number;

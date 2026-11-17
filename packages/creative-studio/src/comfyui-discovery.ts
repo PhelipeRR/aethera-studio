@@ -14,6 +14,8 @@ export interface ComfyUiFileSystem {
 export interface ComfyUiModelInventory {
   checkpoints: string[];
   controlnet: string[];
+  ipadapter: string[];
+  clip_vision: string[];
   diffusion_models: string[];
   loras: string[];
   vae: string[];
@@ -48,6 +50,8 @@ export interface ComfyUiDiscoveryOptions {
 const MODEL_CATEGORIES: Array<keyof ComfyUiModelInventory> = [
   'checkpoints',
   'controlnet',
+  'ipadapter',
+  'clip_vision',
   'diffusion_models',
   'loras',
   'vae',
@@ -118,6 +122,8 @@ function emptyInventory(): ComfyUiModelInventory {
   return {
     checkpoints: [],
     controlnet: [],
+    ipadapter: [],
+    clip_vision: [],
     diffusion_models: [],
     loras: [],
     vae: [],

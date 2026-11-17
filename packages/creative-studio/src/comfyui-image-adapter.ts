@@ -11,6 +11,7 @@ import {
   validateComfyUiWorkflow,
   type ComfyUiWorkflow,
   type ComfyUiControlNetInput,
+  type ComfyUiIpAdapterInput,
 } from './comfyui-workflow.js';
 import type {
   ExternalImageAdapter,
@@ -131,6 +132,13 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     const objectInfo = await this.gateway.getObjectInfo();
     const referencePath = request.referenceImagePaths?.[0];
     const uploadedReference = referencePath ? await this.uploadReference(referencePath) : null;
+    const ipReferencePath = request.ipAdapter?.referenceImagePath ?? referencePath;
+    if (request.ipAdapter && !ipReferencePath) throw new Error('IP-Adapter requires a local reference image path.');
+    const uploadedIpReference = ipReferencePath
+      ? ipReferencePath === referencePath && uploadedReference
+        ? uploadedReference
+        : await this.uploadReference(ipReferencePath)
+      : null;
     const uploadedControlNet = request.controlNet ? await this.uploadReference(request.controlNet.imagePath) : null;
     const controlNet: ComfyUiControlNetInput | undefined = request.controlNet && uploadedControlNet
       ? {
@@ -144,6 +152,17 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
             : 'ControlNetApply' as const,
         }
       : undefined;
+    const ipAdapter: ComfyUiIpAdapterInput | undefined = request.ipAdapter && uploadedIpReference
+      ? {
+          model: request.ipAdapter.model,
+          clipVisionModel: request.ipAdapter.clipVisionModel,
+          image: uploadedIpReference,
+          ...(request.ipAdapter.weight !== undefined ? { weight: request.ipAdapter.weight } : {}),
+          nodeType: Object.prototype.hasOwnProperty.call(objectInfo, 'IPAdapterAdvanced')
+            ? 'IPAdapterAdvanced' as const
+            : 'IPAdapterApply' as const,
+        }
+      : undefined;
     const regions = request.characterRegions?.slice(0, 8) ?? [];
     const regionalComposition = regions.length > 1 && !uploadedReference;
     const workflowRequest = regionalComposition
@@ -154,8 +173,8 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
         }
       : request;
     const workflow = uploadedReference
-      ? this.img2imgWorkflowFor(request, uploadedReference, controlNet)
-      : this.workflowFor(workflowRequest, controlNet);
+      ? this.img2imgWorkflowFor(request, uploadedReference, controlNet, ipAdapter)
+      : this.workflowFor(workflowRequest, controlNet, ipAdapter);
     const validation = validateComfyUiWorkflow(workflow, objectInfo);
     if (!validation.ok) {
       this.availabilityError = validation.errors.join(' ');
@@ -270,7 +289,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     return true;
   }
 
-  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora'>, controlNet?: ComfyUiControlNetInput): ComfyUiWorkflow {
+  private workflowFor(request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'lora'>, controlNet?: ComfyUiControlNetInput, ipAdapter?: ComfyUiIpAdapterInput): ComfyUiWorkflow {
     return buildComfyUiTxt2ImgWorkflow({
       checkpoint: request.model ?? this.checkpoint,
       positivePrompt: request.prompt,
@@ -284,6 +303,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       scheduler: request.scheduler ?? this.scheduler,
       ...(request.lora ? { lora: request.lora } : {}),
       ...(controlNet ? { controlNet } : {}),
+      ...(ipAdapter ? { ipAdapter } : {}),
       filenamePrefix: this.filenamePrefix,
     });
   }
@@ -292,6 +312,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     request: Pick<ImageGenerationRequest, 'prompt' | 'negativePrompt' | 'width' | 'height' | 'seed' | 'model' | 'steps' | 'cfg' | 'samplerName' | 'scheduler' | 'strength' | 'lora'>,
     inputImage: ComfyUiImageRef,
     controlNet?: ComfyUiControlNetInput,
+    ipAdapter?: ComfyUiIpAdapterInput,
   ): ComfyUiWorkflow {
     return buildComfyUiImg2ImgWorkflow({
       checkpoint: request.model ?? this.checkpoint,
@@ -306,6 +327,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       scheduler: request.scheduler ?? this.scheduler,
       ...(request.lora ? { lora: request.lora } : {}),
       ...(controlNet ? { controlNet } : {}),
+      ...(ipAdapter ? { ipAdapter } : {}),
       denoise: request.strength ?? 0.55,
       inputImage,
       filenamePrefix: this.filenamePrefix,

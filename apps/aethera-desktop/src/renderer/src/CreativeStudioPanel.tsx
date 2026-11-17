@@ -34,6 +34,7 @@ interface CreativeBridge {
       attempts?: number;
       lora?: { model: string; strengthModel: number; strengthClip: number };
       controlNet?: { model: string; strength: number; imagePath: string };
+      ipAdapter?: { model: string; clipVisionModel: string; weight: number; referenceImagePath?: string };
       qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
       generationRunId?: string;
     };
@@ -52,6 +53,7 @@ interface CreativeBridge {
       attempts?: number;
       lora?: { model: string; strengthModel: number; strengthClip: number };
       controlNet?: { model: string; strength: number; imagePath: string };
+      ipAdapter?: { model: string; clipVisionModel: string; weight: number; referenceImagePath?: string };
       qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
       generationRunId?: string;
     };
@@ -116,7 +118,7 @@ interface CreativeBridge {
       endpoint?: string;
       version?: string;
       reason?: string;
-      models: { checkpoints: string[]; loras: string[]; controlnet: string[]; upscale_models: string[] };
+      models: { checkpoints: string[]; loras: string[]; controlnet: string[]; ipadapter: string[]; clip_vision: string[]; upscale_models: string[] };
       capabilities: { nativeTxt2Img: boolean; nativeImg2Img: boolean; inpaint: boolean; controlNet: boolean; ipAdapter: boolean; faceDetailer: boolean; upscale: boolean; lora: boolean };
     };
     localAvailable: boolean;
@@ -182,6 +184,9 @@ export function CreativeStudioPanel() {
   const [selectedControlNet, setSelectedControlNet] = useState('');
   const [controlNetImagePath, setControlNetImagePath] = useState('');
   const [controlNetStrength, setControlNetStrength] = useState(0.65);
+  const [selectedIpAdapter, setSelectedIpAdapter] = useState('');
+  const [selectedClipVision, setSelectedClipVision] = useState('');
+  const [ipAdapterWeight, setIpAdapterWeight] = useState(0.8);
   const [selectedUpscaleModel, setSelectedUpscaleModel] = useState('');
   const [releaseMemoryAfterGeneration, setReleaseMemoryAfterGeneration] = useState(false);
   const [fidelityMode, setFidelityMode] = useState<'conceptual_art' | 'content_faithful' | 'authentic_gameplay'>(
@@ -222,6 +227,7 @@ export function CreativeStudioPanel() {
     attempts?: number;
     lora?: { model: string; strengthModel: number; strengthClip: number };
     controlNet?: { model: string; strength: number; imagePath: string };
+    ipAdapter?: { model: string; clipVisionModel: string; weight: number; referenceImagePath?: string };
     qualityAudit?: { passed: boolean; metrics: { lumaStdDev: number }; findings: Array<{ message: string }> };
   } | null>(null);
   const [generationBusy, setGenerationBusy] = useState(false);
@@ -283,6 +289,9 @@ export function CreativeStudioPanel() {
         ...(selectedLora ? { lora: { model: selectedLora, strengthModel: loraStrength, strengthClip: loraStrength } } : {}),
         ...(selectedControlNet && controlNetImagePath.trim()
           ? { controlNet: { model: selectedControlNet, imagePath: controlNetImagePath.trim(), strength: controlNetStrength } }
+          : {}),
+        ...(selectedIpAdapter && selectedClipVision && referencePath.trim()
+          ? { ipAdapter: { model: selectedIpAdapter, clipVisionModel: selectedClipVision, referenceImagePath: referencePath.trim(), weight: ipAdapterWeight } }
           : {}),
         maxAttempts,
         characterCount,
@@ -524,6 +533,32 @@ export function CreativeStudioPanel() {
                 <option value="">Sem ControlNet</option>
                 {engineStatus.comfyUi.models.controlnet.map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
+            )}
+            {engineStatus.comfyUi.models.ipadapter.length > 0 && engineStatus.comfyUi.models.clip_vision.length > 0 && (
+              <>
+                <select
+                  aria-label="Modelo IP-Adapter ComfyUI"
+                  value={selectedIpAdapter}
+                  onChange={(e) => setSelectedIpAdapter(e.target.value)}
+                  style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
+                >
+                  <option value="">Sem IP-Adapter</option>
+                  {engineStatus.comfyUi.models.ipadapter.map((model) => <option key={model} value={model}>{model}</option>)}
+                </select>
+                <select
+                  aria-label="Encoder CLIP Vision ComfyUI"
+                  value={selectedClipVision}
+                  onChange={(e) => setSelectedClipVision(e.target.value)}
+                  style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
+                >
+                  <option value="">Sem encoder</option>
+                  {engineStatus.comfyUi.models.clip_vision.map((model) => <option key={model} value={model}>{model}</option>)}
+                </select>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }} title="Peso da identidade visual; exige imagem de referência">
+                  peso IP
+                  <input aria-label="Peso do IP-Adapter" type="number" min={-1} max={5} step={0.05} value={ipAdapterWeight} onChange={(e) => setIpAdapterWeight(Number(e.target.value))} style={{ width: 52, padding: '3px 4px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11 }} />
+                </label>
+              </>
             )}
             {engineStatus.comfyUi.models.upscale_models.length > 0 && (
               <select
@@ -770,6 +805,7 @@ export function CreativeStudioPanel() {
                   {generationReport.attempts !== undefined ? ` · ${generationReport.attempts} tentativa${generationReport.attempts === 1 ? '' : 's'}` : ''}
                   {generationReport.lora ? ` · LoRA ${generationReport.lora.model} (${generationReport.lora.strengthModel})` : ''}
                   {generationReport.controlNet ? ` · ControlNet ${generationReport.controlNet.model} (${generationReport.controlNet.strength})` : ''}
+                  {generationReport.ipAdapter ? ` · IP-Adapter ${generationReport.ipAdapter.model} (${generationReport.ipAdapter.weight})` : ''}
                 </div>
               )}
               {generationReport.qualityAudit && (

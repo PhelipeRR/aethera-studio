@@ -96,6 +96,39 @@ describe('ComfyUiImageAdapter', () => {
     }
   });
 
+  it('uploads the reference and queues the official IP-Adapter stack when both model inventories are exposed', async () => {
+    const gateway = fakeGateway();
+    const uploads: string[] = [];
+    gateway.getObjectInfo = async () => ({
+      ...readyObjectInfo(),
+      IPAdapterModelLoader: { input: { required: { ipadapter_file: [['ip-adapter-plus_sdxl.safetensors']] } } },
+      CLIPVisionLoader: { input: { required: { clip_name: [['CLIP-ViT-H.safetensors']] } } },
+      IPAdapterAdvanced: {},
+    });
+    gateway.uploadImage = async (_buffer, filename) => {
+      uploads.push(filename);
+      return { name: filename, subfolder: 'aethera', type: 'input' };
+    };
+    const root = mkdtempSync(join(tmpdir(), 'comfy-ipadapter-'));
+    const referencePath = join(root, 'identity.png');
+    writeFileSync(referencePath, Buffer.from('identity bytes'));
+    try {
+      const adapter = new ComfyUiImageAdapter({ gateway, checkpoint: 'sdxl.safetensors' });
+      await adapter.generateImage({
+        prompt: 'same character, anime key visual',
+        width: 768,
+        height: 768,
+        ipAdapter: { model: 'ip-adapter-plus_sdxl.safetensors', clipVisionModel: 'CLIP-ViT-H.safetensors', weight: 0.9, referenceImagePath: referencePath },
+      });
+      expect(uploads).toEqual(['identity.png']);
+      expect(gateway.queued?.['14']).toMatchObject({ class_type: 'IPAdapterModelLoader' });
+      expect(gateway.queued?.['17']).toMatchObject({ class_type: 'IPAdapterAdvanced', inputs: { image: ['16', 0], weight: 0.9 } });
+      expect(gateway.queued?.['5']).toMatchObject({ inputs: { model: ['17', 0] } });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('is unavailable and gives an actionable error when the selected checkpoint is absent', async () => {
     const gateway = fakeGateway();
     gateway.getObjectInfo = async () => ({
