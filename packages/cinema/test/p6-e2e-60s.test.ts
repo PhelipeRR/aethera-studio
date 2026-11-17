@@ -5,6 +5,15 @@ import { produceCinemaPackage, renderRealCinemaMp4 } from '../src/index.js';
 
 const cyberpunkPath = join(process.cwd(), 'artifacts', 'aethera-p2-broll-poc', '2026-11-17T17-22-54-360Z', 'media', 'cyberpunk-2077-clip.mp4');
 const evidenceDir = join(process.cwd(), 'artifacts', 'aethera-p6-e2e');
+const motionAudioRoot = join(process.env['USERPROFILE'] ?? '', '.claude', 'skills', 'motionvelix', 'assets', 'sfx');
+const realAudioAssets = existsSync(join(motionAudioRoot, 'chuva.wav'))
+  ? {
+      ambience: { path: join(motionAudioRoot, 'chuva.wav'), license: 'motionvelix-user-kit-original-synthesized' },
+      sfx: ['whoosh', 'glitch', 'impacto', 'whoosh_rapido']
+        .map((id, index) => ({ id, path: join(motionAudioRoot, `${id}.wav`), license: 'motionvelix-user-kit-original-synthesized', atMs: [4_500, 12_000, 26_500, 39_500][index] ?? 0, gainDb: -18 }))
+        .filter((asset) => existsSync(asset.path)),
+    }
+  : undefined;
 
 describe('P6 60-second production E2E', () => {
   it('reuses local Cyberpunk media and produces a reproducible FFmpeg MP4 with persisted diagnostics', async () => {
@@ -50,6 +59,7 @@ describe('P6 60-second production E2E', () => {
       requireRealMedia: true,
       previewQuality: 'fast_preview',
       allowProceduralVoiceFallback: false,
+      ...(realAudioAssets ? { realAudioAssets } : {}),
     });
     const second = await renderRealCinemaMp4({
       pkg,
@@ -59,6 +69,7 @@ describe('P6 60-second production E2E', () => {
       requireRealMedia: true,
       previewQuality: 'fast_preview',
       allowProceduralVoiceFallback: false,
+      ...(realAudioAssets ? { realAudioAssets } : {}),
     });
 
     expect(existsSync(first.mp4Path)).toBe(true);
@@ -74,6 +85,9 @@ describe('P6 60-second production E2E', () => {
     expect(first.smartCaptions?.wordCount).toBe(first.captionAlignment?.wordCount);
     expect(first.smartCaptions?.coverage.endMs).toBeGreaterThan(first.audioFirstTimeline!.measuredNarrationDurationMs - 1_000);
     expect(first.deliveryGate?.status).toBe('approved');
+    if (realAudioAssets) {
+      expect(first.audioSources).toMatchObject({ ambience: 'asset', sfx: 'asset', music: 'missing' });
+    }
     expect(second.narrationCacheHits).toBeGreaterThanOrEqual(1);
     expect(second.incrementalRenderStats?.cacheHits).toBeGreaterThanOrEqual(1);
 
@@ -91,6 +105,7 @@ describe('P6 60-second production E2E', () => {
       audioFirstTimeline: first.audioFirstTimeline,
       captionAlignment: first.captionAlignment,
       smartCaptions: first.smartCaptions,
+      audioSources: first.audioSources,
       narration: {
         mode: first.narrationMode,
         measuredDurationMs: first.audioFirstTimeline?.measuredNarrationDurationMs,
@@ -98,7 +113,7 @@ describe('P6 60-second production E2E', () => {
       },
       cache: second.incrementalRenderStats,
       limitations: [
-        'Nenhum asset local separado de música, ambience ou SFX licenciados foi encontrado; esta prova valida a narração real e a composição FFmpeg.',
+        ...(realAudioAssets ? ['A biblioteca local fornece ambience e SFX licenciados; música separada continua pendente e permanece explicitamente missing.'] : ['Nenhum asset local separado de música, ambience ou SFX licenciados foi encontrado; esta prova valida a narração real e a composição FFmpeg.']),
         ...(first.smartCaptions ? [] : ['Nenhuma legenda foi declarada nesta prova porque timestamps por palavra completos não estavam disponíveis; não há aprovação silenciosa de captions.']),
       ],
     }, null, 2), 'utf8');
