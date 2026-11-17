@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { AssetIngestionService } from '../src/asset-ingestion.js';
-import { evaluateCharacterGateCandidate, nextCompositionStrategy, runCharacterCompositionGate, type CharacterGateDetector } from '../src/character-gate-runner.js';
+import { evaluateCharacterGateCandidate, nextCompositionStrategy, pasteSeamStrength, runCharacterCompositionGate, type CharacterGateDetector } from '../src/character-gate-runner.js';
 import type { ImageGenerationRequest, LocalizedInpaintRequest, SemanticEvaluationRequest, SemanticEvaluationResult, VisualQualityInspectionResult } from '../src/image-generation-adapter.js';
 import { buildVisualRecipe } from '../src/visual-recipe.js';
 import evidence from './fixtures/character-gate-cs9-evidence.json' with { type: 'json' };
@@ -54,6 +54,7 @@ async function fixture(characterCount = 3, options: { semanticScore?: number; se
   let provider = 'comfyui-native';
   const png = await sharp({ create: { width: recipe.width, height: recipe.height, channels: 3, background: '#335' } }).png().toBuffer();
   let repairCalls = 0;
+  const repairRequests: LocalizedInpaintRequest[] = [];
   const adapter = {
     id: 'fake',
     isAvailable: async () => true,
@@ -82,14 +83,23 @@ async function fixture(characterCount = 3, options: { semanticScore?: number; se
       visualArtifactSeverity: options.quality?.visualArtifactSeverity ?? 8,
       localizedDefects: options.quality?.localizedDefects ?? [],
     }),
-    inpaintRegion: async ({ bbox }: LocalizedInpaintRequest): Promise<Buffer> => {
+    removeBackground: async ({ inputImagePath }: { inputImagePath: string }): Promise<Buffer> => {
+      const meta = await sharp(inputImagePath).metadata();
+      const w = meta.width ?? 1;
+      const h = meta.height ?? 1;
+      const silhouette = Buffer.from(`<svg width="${w}" height="${h}"><ellipse cx="${w / 2}" cy="${h / 2}" rx="${w * 0.35}" ry="${h * 0.45}" fill="#fff"/></svg>`);
+      return sharp(inputImagePath).ensureAlpha().composite([{ input: silhouette, blend: 'dest-in' }]).png().toBuffer();
+    },
+    inpaintRegion: async (request: LocalizedInpaintRequest): Promise<Buffer> => {
+      const { bbox } = request;
+      repairRequests.push(request);
       repairCalls += 1;
       return sharp(png).composite([{ input: Buffer.from(`<svg width="${recipe.width}" height="${recipe.height}"><rect x="${Math.round(bbox.x)}" y="${Math.round(bbox.y)}" width="${Math.max(1, Math.round(bbox.width))}" height="${Math.max(1, Math.round(bbox.height))}" fill="#e56b6f"/></svg>`), blend: 'over' }]).png().toBuffer();
     },
   };
   const ingestion = new AssetIngestionService({ storageRoot: mkdtempSync(join(tmpdir(), 'gate-test-')) });
   const baseRequest: ImageGenerationRequest = { prompt: recipe.positivePrompt, negativePrompt: recipe.negativePrompt, width: recipe.width, height: recipe.height, characterRegions: recipe.characterRegions };
-  return { recipe, requests, adapter, ingestion, baseRequest, getRepairCalls: () => repairCalls, setProvider: (id: string) => { provider = id; } };
+  return { recipe, requests, adapter, ingestion, baseRequest, getRepairCalls: () => repairCalls, getRepairRequests: () => repairRequests, setProvider: (id: string) => { provider = id; } };
 }
 
 describe('Character Composition Gate runner', () => {
@@ -296,6 +306,59 @@ describe('Character Composition Gate runner', () => {
     ]);
     expect(outcome.report.attempts[0]?.repairs[0]?.status).toBe('failed');
     expect(outcome.report.attempts[0]?.repairs[1]?.status).toBe('applied');
+  });
+
+  it('rescales the undersized figure inside its planned region before a blending inpaint', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairRequests } = await fixture(2);
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([UNDERSIZED_DUO, CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    const repair = outcome.report.attempts[0]?.repairs[0];
+    expect(repair).toMatchObject({ criterionKind: 'count', strategy: 'rescale_then_inpaint', status: 'applied' });
+    expect(repair?.rescaleSkippedReason).toBeUndefined();
+    expect(repair?.scaleFactor).toBeGreaterThan(1.5);
+    expect(repair?.strength).toBeLessThan(0.6);
+    expect(getRepairRequests()[0]?.strength).toBe(repair?.strength);
+  });
+
+  it('measures a hard seam along a pasted rectangle but not on a smooth image', async () => {
+    const flat = await sharp({ create: { width: 200, height: 200, channels: 3, background: '#556' } }).png().toBuffer();
+    const block = await sharp({ create: { width: 80, height: 120, channels: 3, background: '#112' } }).png().toBuffer();
+    const panel = await sharp(flat).composite([{ input: block, left: 60, top: 40 }]).png().toBuffer();
+    const rect = { x: 60, y: 40, width: 80, height: 120 };
+    expect(await pasteSeamStrength(flat, rect)).toBe(0);
+    expect(await pasteSeamStrength(panel, rect)).toBeGreaterThan(30);
+  });
+
+  it('caps count repairs so an uncertain attribute still receives a localized repair', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([UNDERSIZED_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 3 },
+      },
+    });
+
+    const ids = outcome.report.attempts[0]?.repairs.map((repair) => repair.criterionId) ?? [];
+    expect(ids.slice(0, 2)).toEqual(['count:undersized_character:0', 'count:undersized_character:0:retry1']);
+    expect(ids).toHaveLength(3);
+    expect(ids[2]).not.toMatch(/^count:/);
   });
 
   it('keeps the pre-repair image when a regional repair loses a confirmed attribute', async () => {

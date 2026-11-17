@@ -198,6 +198,14 @@ export interface CharacterGateRepairReport {
   beforeAttribute: { status: string; score: number | null; margin: number | null } | null;
   afterAttribute: { status: string; score: number | null; margin: number | null } | null;
   regression: CharacterGateVisualRegressionReport;
+  /** `rescale_then_inpaint` enlarges the detected figure inside its planned region before a blending inpaint. */
+  strategy?: 'inpaint' | 'rescale_then_inpaint';
+  strength?: number;
+  /** Applied enlargement for `rescale_then_inpaint`; 1 means the figure could not be enlarged inside its region. */
+  scaleFactor?: number;
+  rescaleSkippedReason?: string;
+  /** Luminance step along the pasted rectangle before/after a `rescale_then_inpaint` repair. */
+  pasteSeam?: { before: number; after: number };
   reason?: string;
 }
 
@@ -455,6 +463,122 @@ async function compareRepairBuffers(before: Buffer, after: Buffer, bbox: { x: nu
   };
 }
 
+/** Count repairs per undersized figure; the remaining repair budget stays available for semantic attributes. */
+const MAX_COUNT_REPAIRS_PER_FIGURE = 2;
+/** Blend strengths for the rescaled figure: low enough to keep identity, high enough to hide the paste seam. */
+const COUNT_REPAIR_STRENGTHS = [0.42, 0.55] as const;
+const COUNT_REPAIR_TARGET_FRACTION = 0.8;
+
+/**
+ * Low-strength inpaint keeps the existing silhouette, so it cannot make a small figure larger. This enlarges the
+ * detected figure's own pixels inside its planned region, anchored at its feet, so the following inpaint only has to
+ * blend edges, lighting and contact shadow.
+ */
+async function rescaleFigureIntoRegion(
+  adapter: ExternalImageAdapter,
+  image: Buffer,
+  figure: GateRectLike,
+  region: GateRectLike,
+  targetFraction: number,
+): Promise<{ buffer: Buffer; scaleFactor: number; pastedRect: GateRectLike | null; skippedReason?: string }> {
+  const meta = await sharp(image).metadata();
+  const imageWidth = meta.width ?? 0;
+  const imageHeight = meta.height ?? 0;
+  if (!imageWidth || !imageHeight || figure.height <= 0) return { buffer: image, scaleFactor: 1, pastedRect: null, skippedReason: 'invalid_figure' };
+  // Never paste the rectangular crop: its background reads as a hard-edged panel that a blending inpaint cannot hide.
+  if (!adapter.removeBackground) return { buffer: image, scaleFactor: 1, pastedRect: null, skippedReason: 'cutout_unavailable' };
+  const pad = Math.max(2, Math.round(figure.height * 0.04));
+  const cropLeft = Math.max(0, Math.floor(figure.x - pad));
+  const cropTop = Math.max(0, Math.floor(figure.y - pad));
+  const cropRight = Math.min(imageWidth, Math.ceil(figure.x + figure.width + pad));
+  const cropBottom = Math.min(imageHeight, Math.ceil(figure.y + figure.height + pad));
+  const cropWidth = cropRight - cropLeft;
+  const cropHeight = cropBottom - cropTop;
+  const regionLeft = Math.max(0, Math.round(region.x));
+  const regionTop = Math.max(0, Math.round(region.y));
+  const regionRight = Math.min(imageWidth, Math.round(region.x + region.width));
+  const regionBottom = Math.min(imageHeight, Math.round(region.y + region.height));
+  if (cropWidth <= 0 || cropHeight <= 0 || regionRight <= regionLeft || regionBottom <= regionTop) return { buffer: image, scaleFactor: 1, pastedRect: null, skippedReason: 'invalid_region' };
+  const scaleFactor = Math.min(
+    (targetFraction * (regionBottom - regionTop)) / figure.height,
+    (regionRight - regionLeft) / cropWidth,
+    (regionBottom - regionTop) / cropHeight,
+  );
+  if (scaleFactor <= 1.05) return { buffer: image, scaleFactor: 1, pastedRect: null, skippedReason: 'no_room_to_enlarge' };
+  const width = Math.round(cropWidth * scaleFactor);
+  const height = Math.round(cropHeight * scaleFactor);
+  const bottom = Math.min(regionBottom, cropBottom);
+  const top = Math.max(regionTop, bottom - height);
+  const centerX = figure.x + figure.width / 2;
+  const left = Math.round(Math.min(Math.max(centerX - width / 2, regionLeft), regionRight - width));
+  const crop = await sharp(image).extract({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight }).png().toBuffer();
+  const tempDir = mkdtempSync(join(tmpdir(), 'aethera-rescale-'));
+  let cutout: Buffer;
+  try {
+    const cropPath = join(tempDir, 'figure.png');
+    writeFileSync(cropPath, crop);
+    cutout = await adapter.removeBackground({ inputImagePath: cropPath, featherPx: 2 });
+  } catch (error) {
+    return { buffer: image, scaleFactor: 1, pastedRect: null, skippedReason: `cutout_failed: ${error instanceof Error ? error.message : String(error)}` };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+  const alpha = await sharp(cutout).resize(cropWidth, cropHeight, { fit: 'fill' }).ensureAlpha().extractChannel(3).raw().toBuffer();
+  let opaque = 0;
+  for (const value of alpha) if (value > 127) opaque += 1;
+  const coverage = opaque / Math.max(1, alpha.length);
+  // A cutout that keeps (almost) everything or nothing is not a figure silhouette.
+  if (coverage < 0.05 || coverage > 0.9) return { buffer: image, scaleFactor: 1, pastedRect: null, skippedReason: `cutout_coverage_${coverage.toFixed(2)}` };
+  const enlarged = await sharp(cutout).resize(cropWidth, cropHeight, { fit: 'fill' }).resize(width, height, { kernel: 'lanczos3' }).png().toBuffer();
+  const buffer = await sharp(image).composite([{ input: enlarged, left, top }]).png().toBuffer();
+  return { buffer, scaleFactor, pastedRect: { x: left, y: top, width, height } };
+}
+
+type GateRectLike = { x: number; y: number; width: number; height: number };
+
+/**
+ * Mean luminance step across the border of `rect` (1 px inside vs 1 px outside). A pasted panel produces a strong,
+ * straight step along its edges that natural scene content does not. Edges lying on the border of `within` (the
+ * inpaint region) are skipped: there the step belongs to the inpaint mask boundary, not to the paste.
+ */
+export async function pasteSeamStrength(image: Buffer, rect: GateRectLike, within?: GateRectLike): Promise<number> {
+  const { data, info } = await sharp(image).greyscale().raw().toBuffer({ resolveWithObject: true });
+  const { width, height } = info;
+  const left = Math.round(rect.x);
+  const top = Math.round(rect.y);
+  const right = Math.round(rect.x + rect.width) - 1;
+  const bottom = Math.round(rect.y + rect.height) - 1;
+  const at = (x: number, y: number) => data[y * width + x] ?? 0;
+  const inside = (x: number, y: number) => x >= 0 && y >= 0 && x < width && y < height;
+  let sum = 0;
+  let samples = 0;
+  const edge = (ix: number, iy: number, ox: number, oy: number) => {
+    if (!inside(ix, iy) || !inside(ox, oy)) return;
+    sum += Math.abs(at(ix, iy) - at(ox, oy));
+    samples += 1;
+  };
+  const margin = 2;
+  const interior = {
+    top: !within || top - Math.round(within.y) > margin,
+    bottom: !within || Math.round(within.y + within.height) - 1 - bottom > margin,
+    left: !within || left - Math.round(within.x) > margin,
+    right: !within || Math.round(within.x + within.width) - 1 - right > margin,
+  };
+  for (let x = left; x <= right; x += 1) {
+    if (interior.top) edge(x, top, x, top - 1);
+    if (interior.bottom) edge(x, bottom, x, bottom + 1);
+  }
+  for (let y = top; y <= bottom; y += 1) {
+    if (interior.left) edge(left, y, left - 1, y);
+    if (interior.right) edge(right, y, right + 1, y);
+  }
+  return samples > 0 ? sum / samples : 0;
+}
+
+/** A repair fails when it leaves a hard seam along the pasted rectangle that was not there before. */
+const PASTE_SEAM_MIN_DELTA = 10;
+const PASTE_SEAM_MIN_RATIO = 1.8;
+
 function repairRegression(
   before: CharacterGateCandidateEvaluation,
   after: CharacterGateCandidateEvaluation,
@@ -688,7 +812,7 @@ export async function runCharacterCompositionGate(input: {
         const failedCountRepairAttempts = countRepairBaseId
           ? attempt.repairs.filter((repair) => repair.criterionKind === 'count' && repair.status === 'failed' && (repair.criterionId === countRepairBaseId || repair.criterionId?.startsWith(`${countRepairBaseId}:retry`))).length
           : 0;
-        const countCandidate = undersized && (repairUncertainAttributes || currentEvaluation.gate.failureClass === 'placement')
+        const countCandidate = undersized && failedCountRepairAttempts < MAX_COUNT_REPAIRS_PER_FIGURE && (repairUncertainAttributes || currentEvaluation.gate.failureClass === 'placement')
           ? {
               criterionId: failedCountRepairAttempts === 0 ? countRepairBaseId! : `${countRepairBaseId}:retry${failedCountRepairAttempts}`,
               criterionKind: 'count' as const,
@@ -696,6 +820,8 @@ export async function runCharacterCompositionGate(input: {
               bbox: regionRects[undersized.regionIndex!]!,
               prompt: `Repair only the character in this region so it fills the planned cinematic depth without changing neighboring characters: ${recipe.characterRegions[undersized.regionIndex!]?.prompt ?? 'the planned character'}. ${failedCountRepairAttempts > 0 ? 'The previous localized repair did not correct the scale; make the full-body figure visibly occupy the planned region while preserving its identity.' : ''} Preserve lighting, identity and contact shadow.`,
               reason: 'undersized_character',
+              figure: undersized,
+              strength: COUNT_REPAIR_STRENGTHS[Math.min(failedCountRepairAttempts, COUNT_REPAIR_STRENGTHS.length - 1)],
             }
           : null;
         const qualityCandidate = currentEvaluation.visualQuality?.localizedDefects.find((defect) => defect.severity === 'severe' && !defect.repaired)
@@ -721,13 +847,25 @@ export async function runCharacterCompositionGate(input: {
         report.bbox = candidate.bbox;
         report.seed = repairSeed;
         report.beforeAttribute = attributeSnapshot(beforeEvaluation.semantic, candidate.criterionId);
+        const repairStrength = 'strength' in candidate && typeof candidate.strength === 'number' ? candidate.strength : config.semanticGate.repairStrength ?? 0.48;
+        report.strategy = 'figure' in candidate && candidate.figure ? 'rescale_then_inpaint' : 'inpaint';
+        report.strength = repairStrength;
         try {
+          let inpaintBase = beforeImage;
+          let pastedRect: GateRectLike | null = null;
+          if ('figure' in candidate && candidate.figure) {
+            const rescaled = await rescaleFigureIntoRegion(adapter, beforeImage, candidate.figure, candidate.bbox, COUNT_REPAIR_TARGET_FRACTION);
+            inpaintBase = rescaled.buffer;
+            pastedRect = rescaled.pastedRect;
+            report.scaleFactor = Number(rescaled.scaleFactor.toFixed(3));
+            if (rescaled.skippedReason) report.rescaleSkippedReason = rescaled.skippedReason;
+          }
           const repairedImage = await adapter.inpaintRegion({
-            imageBuffer: beforeImage,
+            imageBuffer: inpaintBase,
             prompt: candidate.prompt,
             negativePrompt: recipe.negativePrompt,
             bbox: candidate.bbox,
-            strength: config.semanticGate.repairStrength ?? 0.48,
+            strength: repairStrength,
             seed: repairSeed,
           });
           const afterEvaluation = await evaluateCharacterGateCandidate({
@@ -739,6 +877,15 @@ export async function runCharacterCompositionGate(input: {
           });
           const diff = await compareRepairBuffers(beforeImage, repairedImage, candidate.bbox);
           const regression = repairRegression(beforeEvaluation, afterEvaluation, { criterionId: candidate.criterionId, kind: candidate.criterionKind }, diff);
+          if (pastedRect) {
+            const seamBefore = await pasteSeamStrength(beforeImage, pastedRect, candidate.bbox);
+            const seamAfter = await pasteSeamStrength(repairedImage, pastedRect, candidate.bbox);
+            report.pasteSeam = { before: Number(seamBefore.toFixed(2)), after: Number(seamAfter.toFixed(2)) };
+            if (seamAfter - seamBefore > PASTE_SEAM_MIN_DELTA && seamAfter > PASTE_SEAM_MIN_RATIO * Math.max(1, seamBefore)) {
+              regression.reasons.push('visible_paste_seam');
+              regression.status = 'failed';
+            }
+          }
           report.afterAttribute = attributeSnapshot(afterEvaluation.semantic, candidate.criterionId);
           report.regression = regression;
           const maskBuffer = await makeRepairMask(recipe.width, recipe.height, candidate.bbox);

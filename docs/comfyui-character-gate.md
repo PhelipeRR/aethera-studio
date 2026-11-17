@@ -251,3 +251,35 @@ Conclusões técnicas desta rodada (não são aprovação):
   reparo semântico.
 - O ganho visual do caso de 8 personagens vem da composição em camadas; os
   reparos de atributo nesse caso não confirmaram evidência e foram revertidos.
+
+### CS10 — reparo de escala por silhueta — `run-2026-11-17T1837` (duo)
+
+Correção das duas pendências acima:
+
+- **Estratégia `rescale_then_inpaint`.** Para `undersized_character`, o runner
+  recorta o próprio personagem detectado, extrai a silhueta com
+  `removeBackground`, amplia dentro da região planejada (alvo 80% da altura,
+  ancorado nos pés, sem sair da região) e só então faz um inpaint de
+  harmonização (força `0,42`; retentativa `0,55`). Sem `removeBackground`, ou
+  com recorte de cobertura implausível (<5% ou >90%), a ampliação é pulada e
+  registrada em `rescaleSkippedReason`; o retângulo bruto nunca é colado.
+- **Guarda de emenda (`visible_paste_seam`).** A regressão mede o degrau de
+  luminância nas bordas da colagem que ficam dentro da região. Reprova se o
+  degrau sobe mais de 10 e passa de 1,8× o original. Motivo: uma primeira
+  versão colou o retângulo inteiro (`run-2026-11-17T1821`). O gate aprovou
+  contagem e regressão, mas a imagem mostrava um painel de bordas duras. Esse
+  falso positivo, medido offline, teria degrau `4,2 → 31,9` e agora é reprovado.
+- **Limite de 2 reparos de contagem por personagem**, liberando o restante do
+  orçamento (`maxLocalizedRepairs = 3`) para atributos.
+
+| Reparo | Estratégia | Resultado |
+|---|---|---|
+| `count:undersized_character:0`, seed `2709488337` | `rescale_then_inpaint`, escala `2,22×`, força `0,42` | **aplicado**: contagem `needs_review → passed_pending_human_review`; emenda `6,37 → 4,25`; alteração fora do bbox `3,7%`; identidade `87` |
+| `character-1-object-katana`, seed `1505161448` | inpaint `0,48` | rejeitado: `0,6403 → 0,6397` |
+| `character-1-object-sword`, seed `3590644849` | inpaint `0,48` | rejeitado: `0,6559 → 0,6391` |
+
+Revisão visual do agente (não substitui a humana): o personagem 1 passou a
+ocupar a profundidade planejada, integrado ao cenário, sem painel e com a mesma
+identidade; o personagem 2 ficou intacto. Continua `needs_review` porque as
+armas exigidas (katana/espada, lança) não aparecem e a semântica segue sem
+evidência; o gate não as confirma, corretamente. `humanReview.status` = `pending`.
