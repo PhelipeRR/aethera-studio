@@ -708,3 +708,11 @@ composição, ritmo e coerência.
 - [x] Nova rota `/aethera/creative` e item de menu "Thumbs & Artes" para o Creative Studio.
 - [x] **Validação**: typecheck web limpo; `build:aethera` aprovado; E2E Electron temporário confirmou menu, formulário de chave e Creative Studio com capturas. Falhas restantes em `apps/aethera-desktop/test` são pré-existentes (`sharp-native-smoke` exige instalador empacotado; `staged-pipeline` falha igual no código original).
 - [ ] Production Console no card não foi verificado visualmente: exige um job de produção existente.
+
+## P0/P0.5 — pendências preservadas antes do P1 Audio-First (2026-11-17)
+
+- [ ] Dois casos `technical_blocked` do Media Pipeline ainda não foram recuperados; permanecem distintos de rejeição editorial.
+- [ ] Os arquivos MP4 físicos não estavam presentes no workspace investigado; não foi feito novo download automático para reproduzir o teste anterior. A retomada deve procurar primeiro cache e artefatos locais.
+- [ ] Falta validar a retomada completa em um novo teste E2E, reutilizando os arquivos existentes quando encontrados.
+
+P1 — Audio-First Timeline foi autorizado para implementação. P2 permanece bloqueado até o aceite explícito de P1.
