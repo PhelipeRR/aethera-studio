@@ -5,7 +5,7 @@ import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { AssetIngestionService } from '../src/asset-ingestion.js';
 import { nextCompositionStrategy, runCharacterCompositionGate, type CharacterGateDetector } from '../src/character-gate-runner.js';
-import type { ImageGenerationRequest } from '../src/image-generation-adapter.js';
+import type { ImageGenerationRequest, SemanticEvaluationResult, VisualQualityInspectionResult } from '../src/image-generation-adapter.js';
 import { buildVisualRecipe } from '../src/visual-recipe.js';
 import evidence from './fixtures/character-gate-cs9-evidence.json' with { type: 'json' };
 
@@ -25,11 +25,12 @@ function scriptedDetector(sequence: unknown[]): CharacterGateDetector & { calls:
   };
 }
 
-async function fixture(characterCount = 3) {
+async function fixture(characterCount = 3, options: { semanticScore?: number; semanticMargin?: number; semanticOffTopic?: boolean; quality?: Partial<VisualQualityInspectionResult> } = {}) {
   const recipe = buildVisualRecipe({ artType: 'thumbnail', prompt: 'cyberpunk trio in a rainy city', characterCount, seed: 500 });
   const requests: ImageGenerationRequest[] = [];
   let provider = 'comfyui-native';
   const png = await sharp({ create: { width: recipe.width, height: recipe.height, channels: 3, background: '#335' } }).png().toBuffer();
+  let repairCalls = 0;
   const adapter = {
     id: 'fake',
     isAvailable: async () => true,
@@ -39,10 +40,32 @@ async function fixture(characterCount = 3) {
     },
     getLastServedProvider: () => ({ providerId: provider, fallbackErrors: provider === 'comfyui-native' ? [] : ['comfyui-native: timeout'] }),
     getLastGenerationMetadata: () => ({ checkpoint: 'animagine-xl-3.1.safetensors' }),
+    evaluateImageSemantics: async (): Promise<SemanticEvaluationResult> => ({
+      evaluatorId: 'test-local-clip',
+      positiveScore: repairCalls > 0 ? 0.84 : options.semanticScore ?? 0.84,
+      negativeScore: (repairCalls > 0 ? 0.84 : options.semanticScore ?? 0.84) - (repairCalls > 0 ? 0.42 : options.semanticMargin ?? 0.42),
+      margin: repairCalls > 0 ? 0.42 : options.semanticMargin ?? 0.42,
+      isOffTopic: repairCalls > 0 ? false : options.semanticOffTopic ?? false,
+      matchedLabel: 'test criterion',
+      rationale: 'controlled local evidence',
+    }),
+    inspectVisualQuality: async (): Promise<VisualQualityInspectionResult> => ({
+      evaluatorId: 'test-local-quality',
+      anatomicalConsistency: options.quality?.anatomicalConsistency ?? 92,
+      physicalCoherence: options.quality?.physicalCoherence ?? 92,
+      compositionQuality: options.quality?.compositionQuality ?? 90,
+      subjectIdentityConsistency: options.quality?.subjectIdentityConsistency ?? 94,
+      visualArtifactSeverity: options.quality?.visualArtifactSeverity ?? 8,
+      localizedDefects: options.quality?.localizedDefects ?? [],
+    }),
+    inpaintRegion: async (): Promise<Buffer> => {
+      repairCalls += 1;
+      return png;
+    },
   };
   const ingestion = new AssetIngestionService({ storageRoot: mkdtempSync(join(tmpdir(), 'gate-test-')) });
   const baseRequest: ImageGenerationRequest = { prompt: recipe.positivePrompt, negativePrompt: recipe.negativePrompt, width: recipe.width, height: recipe.height, characterRegions: recipe.characterRegions };
-  return { recipe, requests, adapter, ingestion, baseRequest, setProvider: (id: string) => { provider = id; } };
+  return { recipe, requests, adapter, ingestion, baseRequest, getRepairCalls: () => repairCalls, setProvider: (id: string) => { provider = id; } };
 }
 
 describe('Character Composition Gate runner', () => {
@@ -90,5 +113,74 @@ describe('Character Composition Gate runner', () => {
     expect(nextCompositionStrategy({ failureClass: null, tried: [], characterCount: 8, layeredAvailable: true, largeGroupThreshold: 6 })?.id).toBe('layered-individual');
     expect(nextCompositionStrategy({ failureClass: null, tried: [], characterCount: 8, layeredAvailable: false, largeGroupThreshold: 6 })?.id).toBe('regional-base');
     expect(nextCompositionStrategy({ failureClass: 'missing', tried: ['regional-base'], characterCount: 2, layeredAvailable: true, largeGroupThreshold: 6 })?.id).toBe('regional-strong-pose');
+  });
+
+  it('records count, semantic and visual-quality failures separately', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(3, {
+      quality: {
+        visualArtifactSeverity: 92,
+        localizedDefects: [{ id: 'defect-1', category: 'visual_artifact', severity: 'severe', bbox: { x: 20, y: 20, width: 40, height: 40 }, description: 'severe artifact', repaired: false }],
+      },
+    });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: { detector: scriptedDetector([EXTRA_TRIO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { enabled: true } },
+    });
+
+    expect(outcome.report.verdict).toBe('rejected');
+    expect(outcome.report.failureCategories.count).toContain('extra_main_characters');
+    expect(outcome.report.failureCategories.semantic).toEqual([]);
+    expect(outcome.report.failureCategories.visualQuality).toContain('severe_visual_artifact');
+    expect(outcome.report.attempts[0]).toMatchObject({ semantic: { verdict: 'passed_pending_human_review' }, visualQuality: { verdict: 'rejected' } });
+  });
+
+  it('keeps ambiguous semantic evidence as needs_review', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(3, { semanticScore: 0.53, semanticMargin: 0.01 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: { detector: scriptedDetector([CLEAN_TRIO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { enabled: true } },
+    });
+
+    expect(outcome.report.verdict).toBe('needs_review');
+    expect(outcome.report.failureCategories.count).toEqual([]);
+    expect(outcome.report.failureCategories.semantic).toContain('insufficient_semantic_evidence');
+  });
+
+  it('does not reject when the semantic evaluator is unavailable', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(3);
+    const { evaluateImageSemantics: _evaluateImageSemantics, ...unavailableAdapter } = adapter;
+    const outcome = await runCharacterCompositionGate({
+      adapter: unavailableAdapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: { detector: scriptedDetector([CLEAN_TRIO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { enabled: true } },
+    });
+
+    expect(outcome.report.verdict).toBe('needs_review');
+    expect(outcome.report.attempts[0]?.semantic?.criteria.every((criterion) => criterion.status === 'uncertain')).toBe(true);
+    expect(outcome.report.attempts[0]?.semantic?.verdict).not.toBe('rejected');
+  });
+
+  it('repairs one proven localized semantic defect without regenerating the whole image and keeps the original', async () => {
+    const { recipe, requests, adapter, ingestion, baseRequest, getRepairCalls } = await fixture(3, { semanticScore: 0.08, semanticMargin: -0.2, semanticOffTopic: true });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: { detector: scriptedDetector([CLEAN_TRIO, CLEAN_TRIO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { enabled: true, localizedRepair: true } },
+    });
+
+    expect(getRepairCalls()).toBe(1);
+    expect(requests).toHaveLength(1);
+    expect(outcome.report.verdict).toBe('passed_pending_human_review');
+    expect(outcome.report.attempts[0]?.repair).toMatchObject({ status: 'applied', originalImageAsset: expect.objectContaining({ originalName: expect.stringContaining('original') }) });
   });
 });

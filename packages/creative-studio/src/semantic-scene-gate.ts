@@ -1,4 +1,5 @@
-import sharp from 'sharp';
+import { createHash } from 'node:crypto';
+import sharp, { type Metadata } from 'sharp';
 import type { CharacterGateEvidence, GateRect } from './character-gate.js';
 import type { SemanticEvaluationRequest, SemanticEvaluationResult } from './image-generation-adapter.js';
 import type { VisualRecipe } from './visual-recipe.js';
@@ -211,6 +212,71 @@ function observationFromEvidence(evidence: CharacterGateEvidence | undefined): S
   return observations;
 }
 
+async function imageObservations(imageBuffer: Buffer, evidence: CharacterGateEvidence | undefined): Promise<SemanticSceneGateResult['observations']> {
+  if (!evidence) return [];
+  const boxes = (evidence.detectors.yolo_person?.boxes ?? []).filter((box) => box.height >= evidence.height * 0.3 && box.confidence >= 0.3);
+  if (boxes.length === 0) return [];
+  let metadata: Metadata;
+  try {
+    metadata = await sharp(imageBuffer).metadata();
+  } catch {
+    return [];
+  }
+  const observations: SemanticSceneGateResult['observations'] = [];
+  if (metadata.channels === 4) {
+    const { data, info } = await sharp(imageBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    for (const box of boxes) {
+      const left = Math.max(0, Math.min(info.width - 1, Math.round(box.x)));
+      const top = Math.max(0, Math.min(info.height - 1, Math.round(box.y)));
+      const width = Math.max(1, Math.min(info.width - left, Math.round(box.width)));
+      const height = Math.max(1, Math.min(info.height - top, Math.round(box.height)));
+      let semi = 0;
+      let opaque = 0;
+      for (let y = top; y < top + height; y += 1) {
+        for (let x = left; x < left + width; x += 1) {
+          const alpha = data[(y * info.width + x) * 4 + 3] ?? 0;
+          if (alpha > 20 && alpha < 225) semi += 1;
+          if (alpha >= 225) opaque += 1;
+        }
+      }
+      const total = width * height;
+      if (semi / total >= 0.2 && opaque / total < 0.75) {
+        observations.push({
+          code: 'translucent_character',
+          status: 'confirmed',
+          message: `A character mask contains ${(semi / total * 100).toFixed(1)}% semi-transparent pixels with insufficient opaque support; possible ghost/translucent figure.`,
+          bbox: { x: box.x, y: box.y, width: box.width, height: box.height },
+        });
+      }
+    }
+  }
+
+  if (boxes.length > 1) {
+    const hashes = await Promise.all(boxes.map(async (box) => {
+      try {
+        const crop = await cropBuffer(imageBuffer, { x: box.x, y: box.y, width: box.width, height: box.height }, evidence.width, evidence.height);
+        const normalized = await sharp(crop).resize(32, 64, { fit: 'fill' }).grayscale().raw().toBuffer();
+        let min = 255;
+        let max = 0;
+        for (const value of normalized) {
+          min = Math.min(min, value);
+          max = Math.max(max, value);
+        }
+        // A flat/fixture crop has no subject evidence. Do not call it a duplicate: that would turn an evaluator or
+        // test image with a uniform background into a false rejection.
+        if (max - min < 12) return null;
+        return createHash('sha256').update(normalized).digest('hex');
+      } catch {
+        return null;
+      }
+    }));
+    if (new Set(hashes.filter((hash): hash is string => hash !== null)).size < hashes.filter((hash) => hash !== null).length) {
+      observations.push({ code: 'duplicate_character', status: 'confirmed', message: 'Two main-character crops are pixel-identical after normalization; duplicate visual evidence is proven.' });
+    }
+  }
+  return observations;
+}
+
 /** Evaluates prompt criteria with existing local multimodal evidence and never invents absent-object failures. */
 export async function evaluateSemanticSceneGate(input: {
   imageBuffer: Buffer;
@@ -282,8 +348,11 @@ export async function evaluateSemanticSceneGate(input: {
     }
   }
 
+  const observations = [...observationFromEvidence(input.evidence), ...(await imageObservations(input.imageBuffer, input.evidence))];
   const failed = criteria.filter((criterion) => criterion.status === 'failed');
   const uncertain = criteria.filter((criterion) => criterion.status === 'uncertain');
+  const confirmedVisualFailures = observations.filter((observation) => observation.status === 'confirmed');
+  const uncertainVisualFailures = observations.filter((observation) => observation.status === 'uncertain');
   const scores = criteria.map((criterion) => criterion.score).filter((score): score is number => score !== null);
   const repairCandidates = failed
     .filter((criterion): criterion is SemanticCriterion & { bbox: GateRect } => criterion.bbox !== null)
@@ -296,13 +365,15 @@ export async function evaluateSemanticSceneGate(input: {
   const semanticFailures = [
     ...(failed.length > 0 ? ['contradictory_prompt_evidence'] : []),
     ...(uncertain.length > 0 ? ['insufficient_semantic_evidence'] : []),
+    ...(confirmedVisualFailures.length > 0 ? ['visual_composition_contradiction'] : []),
+    ...(uncertainVisualFailures.length > 0 ? ['insufficient_visual_evidence'] : []),
   ];
   return {
-    verdict: failed.length > 0 ? 'rejected' : uncertain.length > 0 ? 'needs_review' : 'passed_pending_human_review',
+    verdict: failed.length > 0 || confirmedVisualFailures.length > 0 ? 'rejected' : uncertain.length > 0 || uncertainVisualFailures.length > 0 ? 'needs_review' : 'passed_pending_human_review',
     criteria,
     semanticScore: scores.length > 0 ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null,
     failureCategories: { semantic: semanticFailures, visualQuality: [] },
     repairCandidates,
-    observations: observationFromEvidence(input.evidence),
+    observations,
   };
 }

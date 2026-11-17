@@ -12,8 +12,9 @@ import {
   type CharacterGateOptions,
   type CharacterGateResult,
 } from './character-gate.js';
-import type { CompositionStrategyParams, ExternalImageAdapter, ImageGenerationRequest } from './image-generation-adapter.js';
+import type { CompositionStrategyParams, ExternalImageAdapter, ImageGenerationRequest, VisualQualityInspectionResult } from './image-generation-adapter.js';
 import { generateLayeredComposition } from './layered-composition.js';
+import { evaluateSemanticSceneGate, type SemanticSceneGateOptions, type SemanticSceneGateResult } from './semantic-scene-gate.js';
 import type { VisualRecipe } from './visual-recipe.js';
 
 const execFileAsync = promisify(execFile);
@@ -158,6 +159,34 @@ export interface CharacterGateConfig {
   cutoutBatch?: (imagePaths: string[]) => Promise<Buffer[]>;
   /** Seed step between attempts (default 7919). */
   seedStride?: number;
+  /** CS10 prompt-oriented semantic and local visual-quality evidence. Undefined preserves CS9 count-only behavior. */
+  semanticGate?: {
+    enabled?: boolean;
+    options?: SemanticSceneGateOptions;
+    localizedRepair?: boolean;
+    repairStrength?: number;
+  };
+}
+
+export interface CharacterGateVisualQualityReport {
+  verdict: CharacterGateResult['verdict'];
+  evaluatorId: string | null;
+  anatomicalConsistency: number | null;
+  physicalCoherence: number | null;
+  compositionQuality: number | null;
+  subjectIdentityConsistency: number | null;
+  visualArtifactSeverity: number | null;
+  localizedDefects: VisualQualityInspectionResult['localizedDefects'];
+  reasons: string[];
+}
+
+export interface CharacterGateRepairReport {
+  status: 'not_requested' | 'skipped' | 'applied' | 'failed';
+  bbox: { x: number; y: number; width: number; height: number } | null;
+  seed: number | null;
+  originalImageAsset: { relativePath: string; originalName: string } | null;
+  repairedImageAsset: { relativePath: string; originalName: string } | null;
+  reason?: string;
 }
 
 export interface CharacterGateAttempt {
@@ -168,6 +197,10 @@ export interface CharacterGateAttempt {
   servedBy: { providerId: string; fallbackErrors: string[] } | null;
   engineParameters: unknown;
   gate: CharacterGateResult | null;
+  semantic: SemanticSceneGateResult | null;
+  visualQuality: CharacterGateVisualQualityReport | null;
+  overallVerdict: CharacterGateResult['verdict'] | null;
+  repair: CharacterGateRepairReport;
   detector: { device: string; loadMs: number; peakTorchMiB: number; durationMs: number } | null;
   /** Managed-storage path of the image when it was not the chosen one (rejected / superseded evidence). */
   imageAsset: { relativePath: string; originalName: string } | null;
@@ -182,6 +215,7 @@ export interface CharacterGateReport {
   chosenAttempt: number | null;
   stopReason: 'passed' | 'needs_review_not_retried' | 'max_attempts' | 'strategies_exhausted' | 'no_valid_attempt';
   frozenPrompt: { positive: string; negative: string; regions: string[]; scene: string | null };
+  failureCategories: { count: string[]; semantic: string[]; visualQuality: string[] };
   attempts: CharacterGateAttempt[];
   note: string;
 }
@@ -205,6 +239,88 @@ function shouldRetry(result: CharacterGateResult, policy: NonNullable<CharacterG
   return policy === 'always' || (policy === 'actionable' && (result.failureClass === 'missing' || result.failureClass === 'placement'));
 }
 
+function inspectVisualQuality(result: VisualQualityInspectionResult | null, enabled: boolean): CharacterGateVisualQualityReport | null {
+  if (!enabled) return null;
+  if (!result) {
+    return {
+      verdict: 'needs_review',
+      evaluatorId: null,
+      anatomicalConsistency: null,
+      physicalCoherence: null,
+      compositionQuality: null,
+      subjectIdentityConsistency: null,
+      visualArtifactSeverity: null,
+      localizedDefects: [],
+      reasons: ['visual_quality_evaluator_unavailable'],
+    };
+  }
+  const severeArtifact = result.visualArtifactSeverity >= 85;
+  const severeDefect = result.localizedDefects.some((defect) => defect.severity === 'severe' && !defect.repaired);
+  const hasDefect = result.localizedDefects.some((defect) => !defect.repaired && defect.severity !== 'none');
+  const weakMetric = [result.anatomicalConsistency, result.physicalCoherence, result.compositionQuality, result.subjectIdentityConsistency].some((value) => value < 70);
+  const reasons = [
+    ...(severeArtifact ? ['severe_visual_artifact'] : []),
+    ...(severeDefect ? ['severe_localized_visual_defect'] : []),
+    ...(!severeArtifact && !severeDefect && hasDefect ? ['localized_visual_defect'] : []),
+    ...(!severeArtifact && !severeDefect && weakMetric ? ['weak_visual_quality_metric'] : []),
+  ];
+  return {
+    verdict: severeArtifact || severeDefect ? 'rejected' : reasons.length > 0 ? 'needs_review' : 'passed_pending_human_review',
+    evaluatorId: result.evaluatorId,
+    anatomicalConsistency: result.anatomicalConsistency,
+    physicalCoherence: result.physicalCoherence,
+    compositionQuality: result.compositionQuality,
+    subjectIdentityConsistency: result.subjectIdentityConsistency,
+    visualArtifactSeverity: result.visualArtifactSeverity,
+    localizedDefects: result.localizedDefects,
+    reasons,
+  };
+}
+
+function combinedVerdict(
+  count: CharacterGateResult,
+  semantic: SemanticSceneGateResult | null,
+  quality: CharacterGateVisualQualityReport | null,
+): CharacterGateResult['verdict'] {
+  if (count.verdict === 'rejected' || semantic?.verdict === 'rejected' || quality?.verdict === 'rejected') return 'rejected';
+  if (count.verdict === 'needs_review' || semantic?.verdict === 'needs_review' || quality?.verdict === 'needs_review') return 'needs_review';
+  return 'passed_pending_human_review';
+}
+
+function failureCategories(
+  count: CharacterGateResult,
+  semantic: SemanticSceneGateResult | null,
+  quality: CharacterGateVisualQualityReport | null,
+): CharacterGateReport['failureCategories'] {
+  return {
+    count: count.reasons.filter((reason) => reason.severity !== 'info').map((reason) => reason.code),
+    semantic: semantic?.failureCategories.semantic ?? [],
+    visualQuality: quality?.reasons ?? [],
+  };
+}
+
+function combinedRank(attempt: CharacterGateAttempt): number {
+  const verdict = attempt.overallVerdict ?? attempt.gate?.verdict ?? 'rejected';
+  const base = verdict === 'passed_pending_human_review' ? 3000 : verdict === 'needs_review' ? 1500 : 0;
+  const countRank = attempt.gate ? characterGateRank(attempt.gate) : 0;
+  const semanticScore = attempt.semantic?.semanticScore ?? 0;
+  const qualityScore = attempt.visualQuality
+    ? (attempt.visualQuality.anatomicalConsistency ?? 0) + (attempt.visualQuality.physicalCoherence ?? 0) + (attempt.visualQuality.compositionQuality ?? 0) + (attempt.visualQuality.subjectIdentityConsistency ?? 0)
+    : 0;
+  return base + countRank + Math.round(semanticScore * 100) + qualityScore - (attempt.semantic?.criteria.filter((criterion) => criterion.status !== 'confirmed').length ?? 0) * 10;
+}
+
+function shouldRetryCombined(
+  attempt: CharacterGateAttempt,
+  policy: NonNullable<CharacterGateConfig['retryOnNeedsReview']>,
+): boolean {
+  if (attempt.overallVerdict === 'rejected') return true;
+  if (attempt.overallVerdict !== 'needs_review') return false;
+  if (policy === 'always') return true;
+  if (policy === 'actionable' && attempt.gate && shouldRetry(attempt.gate, policy)) return true;
+  return Boolean(attempt.visualQuality?.reasons.includes('localized_visual_defect'));
+}
+
 /**
  * Generates with the frozen recipe (same prompt, regions and sampler on every attempt), evaluates each image with the
  * Character Composition Gate and retries with a new seed AND a new strategy while the gate rejects. The best attempt
@@ -226,6 +342,7 @@ export async function runCharacterCompositionGate(input: {
   const workDir = mkdtempSync(join(tmpdir(), 'aethera-gate-run-'));
   const attempts: CharacterGateAttempt[] = [];
   const images = new Map<number, Buffer>();
+  const originalImages = new Map<number, Buffer>();
   const tried: string[] = [];
   let stopReason: CharacterGateReport['stopReason'] = 'max_attempts';
   let lastFailure: CharacterGateResult['failureClass'] | null = null;
@@ -262,6 +379,10 @@ export async function runCharacterCompositionGate(input: {
         servedBy: null,
         engineParameters: null,
         gate: null,
+        semantic: null,
+        visualQuality: null,
+        overallVerdict: null,
+        repair: { status: 'not_requested', bbox: null, seed: null, originalImageAsset: null, repairedImageAsset: null },
         detector: null,
         imageAsset: null,
         layered: null,
@@ -298,49 +419,119 @@ export async function runCharacterCompositionGate(input: {
         lastFailure = 'uncertain';
         continue;
       }
+      originalImages.set(attempt.attempt, image);
       images.set(attempt.attempt, image);
-      const imagePath = join(workDir, `attempt-${attempt.attempt}.png`);
-      writeFileSync(imagePath, image);
-      const detectStarted = Date.now();
-      try {
-        const detection = await config.detector.detect([imagePath]);
-        const evidence = detection.results[0];
-        if (!evidence || evidence.error) throw new Error(evidence?.error ?? 'detector returned no result');
-        attempt.detector = { device: detection.device, loadMs: detection.loadMs, peakTorchMiB: detection.peakTorchMiB, durationMs: Date.now() - detectStarted };
-        attempt.gate = evaluateCharacterComposition({
-          evidence,
-          expectedCount: recipe.characterRegions.length,
-          regions: regionRects,
-          ...(recipe.calmZones?.length ? { calmZones: recipe.calmZones } : {}),
-          ...(config.options ? { options: config.options } : {}),
-        });
-      } catch (error) {
-        // A detector failure is never a pass: the attempt stays in review with the error recorded.
-        attempt.gate = evaluateCharacterComposition({
-          evidence: { width: recipe.width, height: recipe.height, detectors: { yolo_person: { error: error instanceof Error ? error.message : String(error) } } },
-          expectedCount: recipe.characterRegions.length,
-        });
+      const semanticEnabled = config.semanticGate?.enabled === true;
+      const evaluateCandidate = async (candidate: Buffer, candidatePath: string): Promise<void> => {
+        writeFileSync(candidatePath, candidate);
+        const detectStarted = Date.now();
+        let evidence: CharacterGateEvidence | undefined;
+        try {
+          const detection = await config.detector.detect([candidatePath]);
+          const detected = detection.results[0];
+          if (!detected || detected.error) throw new Error(detected?.error ?? 'detector returned no result');
+          evidence = detected;
+          attempt.detector = { device: detection.device, loadMs: detection.loadMs, peakTorchMiB: detection.peakTorchMiB, durationMs: Date.now() - detectStarted };
+          attempt.gate = evaluateCharacterComposition({
+            evidence,
+            expectedCount: recipe.characterRegions.length,
+            regions: regionRects,
+            ...(recipe.calmZones?.length ? { calmZones: recipe.calmZones } : {}),
+            ...(config.options ? { options: config.options } : {}),
+          });
+        } catch (error) {
+          // A detector failure is never a pass: the attempt stays in review with the error recorded.
+          attempt.gate = evaluateCharacterComposition({
+            evidence: { width: recipe.width, height: recipe.height, detectors: { yolo_person: { error: error instanceof Error ? error.message : String(error) } } },
+            expectedCount: recipe.characterRegions.length,
+          });
+        }
+        if (semanticEnabled) {
+          attempt.semantic = await evaluateSemanticSceneGate({
+            imageBuffer: candidate,
+            recipe,
+            adapter: adapter.evaluateImageSemantics
+              ? { evaluateImageSemantics: adapter.evaluateImageSemantics.bind(adapter) }
+              : null,
+            ...(evidence ? { evidence } : {}),
+            ...(config.semanticGate?.options ? { options: config.semanticGate.options } : {}),
+          });
+          let inspected: VisualQualityInspectionResult | null = null;
+          if (adapter.inspectVisualQuality) {
+            try {
+              inspected = await adapter.inspectVisualQuality({ imageBuffer: candidate, genre: recipe.preset.includes('anime') ? 'anime' : 'general' });
+            } catch {
+              inspected = null;
+            }
+          }
+          attempt.visualQuality = inspectVisualQuality(inspected, true);
+        } else {
+          attempt.semantic = null;
+          attempt.visualQuality = null;
+        }
+        attempt.overallVerdict = combinedVerdict(attempt.gate, attempt.semantic, attempt.visualQuality);
+      };
+      await evaluateCandidate(image, join(workDir, `attempt-${attempt.attempt}.png`));
+
+      if (semanticEnabled && config.semanticGate?.localizedRepair && attempt.overallVerdict === 'rejected' && adapter.inpaintRegion) {
+        const semanticCandidate = attempt.semantic?.repairCandidates[0];
+        const qualityCandidate = attempt.visualQuality?.localizedDefects.find((defect) => defect.severity === 'severe' && !defect.repaired)
+          ?? attempt.visualQuality?.localizedDefects.find((defect) => defect.severity === 'moderate' && !defect.repaired);
+        const repairCandidate = semanticCandidate
+          ? { bbox: semanticCandidate.bbox, prompt: semanticCandidate.prompt, reason: semanticCandidate.reason }
+          : qualityCandidate
+            ? { bbox: qualityCandidate.bbox, prompt: `Repair only this localized visual defect while preserving identity and lighting: ${qualityCandidate.description}`, reason: qualityCandidate.description }
+            : null;
+        if (repairCandidate) {
+          const repairSeed = (seed ^ Math.round(repairCandidate.bbox.x * 31 + repairCandidate.bbox.y * 17 + repairCandidate.bbox.width * 13 + repairCandidate.bbox.height * 7)) >>> 0;
+          attempt.repair = { status: 'applied', bbox: repairCandidate.bbox, seed: repairSeed, originalImageAsset: null, repairedImageAsset: null };
+          try {
+            image = await adapter.inpaintRegion({
+              imageBuffer: image,
+              prompt: repairCandidate.prompt,
+              negativePrompt: recipe.negativePrompt,
+              bbox: repairCandidate.bbox,
+              strength: config.semanticGate.repairStrength ?? 0.48,
+              seed: repairSeed,
+            });
+            images.set(attempt.attempt, image);
+            await evaluateCandidate(image, join(workDir, `attempt-${attempt.attempt}-repaired.png`));
+          } catch (error) {
+            attempt.repair = { status: 'failed', bbox: repairCandidate.bbox, seed: repairSeed, originalImageAsset: null, repairedImageAsset: null, reason: error instanceof Error ? error.message : String(error) };
+            attempt.overallVerdict = 'needs_review';
+          }
+        } else {
+          attempt.repair = { status: 'skipped', bbox: null, seed: null, originalImageAsset: null, repairedImageAsset: null, reason: 'No localized bbox was supported by the evidence.' };
+        }
       }
       attempt.durationMs = Date.now() - started;
-      if (attempt.gate.verdict === 'passed_pending_human_review') {
+      if (attempt.overallVerdict === 'passed_pending_human_review') {
         stopReason = 'passed';
         break;
       }
-      if (!shouldRetry(attempt.gate, retryPolicy)) {
+      if (!shouldRetryCombined(attempt, retryPolicy)) {
         stopReason = 'needs_review_not_retried';
         break;
       }
-      lastFailure = attempt.gate.failureClass;
+      lastFailure = attempt.gate?.failureClass ?? 'uncertain';
     }
 
     const evaluated = attempts.filter((attempt) => attempt.gate && images.has(attempt.attempt));
     if (evaluated.length === 0) {
       throw new Error(`Character Composition Gate: no valid attempt (${attempts.map((attempt) => `#${attempt.attempt} ${attempt.status}: ${attempt.error ?? ''}`).join('; ')}).`);
     }
-    const chosen = evaluated.reduce((best, attempt) => (characterGateRank(attempt.gate!) > characterGateRank(best.gate!) ? attempt : best));
+    const chosen = evaluated.reduce((best, attempt) => (combinedRank(attempt) > combinedRank(best) ? attempt : best));
     for (const attempt of evaluated) {
+      if (attempt.repair.status === 'applied') {
+        const originalName = `ai-gate-original-${attempt.gate!.verdict}-attempt${attempt.attempt}-${attempt.seed}.png`;
+        const originalAsset = await input.ingestion.ingestBuffer({ buffer: originalImages.get(attempt.attempt)!, kind: 'image', extension: 'png', originalName });
+        attempt.repair.originalImageAsset = { relativePath: originalAsset.relativePath, originalName };
+        const repairedName = `ai-gate-repaired-${attempt.overallVerdict ?? attempt.gate!.verdict}-attempt${attempt.attempt}-${attempt.seed}.png`;
+        const repairedAsset = await input.ingestion.ingestBuffer({ buffer: images.get(attempt.attempt)!, kind: 'image', extension: 'png', originalName: repairedName });
+        attempt.repair.repairedImageAsset = { relativePath: repairedAsset.relativePath, originalName: repairedName };
+      }
       if (attempt === chosen) continue;
-      const originalName = `ai-gate-${attempt.gate!.verdict}-attempt${attempt.attempt}-${attempt.seed}.png`;
+      const originalName = `ai-gate-${attempt.overallVerdict ?? attempt.gate!.verdict}-attempt${attempt.attempt}-${attempt.seed}.png`;
       const asset = await input.ingestion.ingestBuffer({ buffer: images.get(attempt.attempt)!, kind: 'image', extension: 'png', originalName });
       attempt.imageAsset = { relativePath: asset.relativePath, originalName };
     }
@@ -351,7 +542,7 @@ export async function runCharacterCompositionGate(input: {
       engineParameters: chosen.engineParameters,
       report: {
         enabled: true,
-        verdict: chosen.gate!.verdict,
+        verdict: chosen.overallVerdict ?? chosen.gate!.verdict,
         chosenAttempt: chosen.attempt,
         stopReason,
         frozenPrompt: {
@@ -360,6 +551,7 @@ export async function runCharacterCompositionGate(input: {
           regions: recipe.characterRegions.map((region) => region.prompt ?? ''),
           scene: recipe.scenePrompt ?? null,
         },
+        failureCategories: failureCategories(chosen.gate!, chosen.semantic, chosen.visualQuality),
         attempts,
         note: 'Gate verdicts are detector evidence, not approval. passed_pending_human_review still requires human visual review.',
       },

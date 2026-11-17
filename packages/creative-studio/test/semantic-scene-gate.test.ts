@@ -132,4 +132,44 @@ describe('Semantic Scene Gate evidence policy', () => {
     expect(result.failureCategories.semantic).toContain('contradictory_prompt_evidence');
     expect(result.criteria[0]).toMatchObject({ sourcePrompt: expect.any(String), score: 0.08, margin: -0.2, rationale: expect.any(String) });
   });
+
+  it('rejects a character proven translucent by its alpha mask and keeps boundary clipping in review', async () => {
+    const raw = Buffer.alloc(120 * 80 * 4);
+    for (let y = 10; y < 70; y += 1) {
+      for (let x = 40; x < 80; x += 1) {
+        const offset = (y * 120 + x) * 4;
+        raw[offset] = 220;
+        raw[offset + 1] = 80;
+        raw[offset + 2] = 80;
+        raw[offset + 3] = 90;
+      }
+    }
+    const semiCharacter = await sharp(raw, { raw: { width: 120, height: 80, channels: 4 } }).png().toBuffer();
+    const result = await evaluateSemanticSceneGate({
+      imageBuffer: semiCharacter,
+      recipe: recipeFor(['unarmed guardian']),
+      evidence: {
+        width: 120,
+        height: 80,
+        detectors: { yolo_person: { boxes: [{ x: 40, y: 10, width: 40, height: 60, confidence: 0.95 }] } },
+      },
+      adapter: evaluator(0.86, 0.42),
+    });
+
+    expect(result.verdict).toBe('rejected');
+    expect(result.observations).toContainEqual(expect.objectContaining({ code: 'translucent_character', status: 'confirmed' }));
+
+    const clipped = await evaluateSemanticSceneGate({
+      imageBuffer: await imageBuffer(),
+      recipe: recipeFor(['unarmed guardian']),
+      evidence: {
+        width: 1344,
+        height: 768,
+        detectors: { yolo_person: { boxes: [{ x: 0, y: 20, width: 280, height: 600, confidence: 0.95 }] } },
+      },
+      adapter: evaluator(0.86, 0.42),
+    });
+    expect(clipped.verdict).toBe('needs_review');
+    expect(clipped.observations).toContainEqual(expect.objectContaining({ code: 'incomplete_character', status: 'uncertain' }));
+  });
 });
