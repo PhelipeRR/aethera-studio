@@ -30,6 +30,7 @@ export * from './qc/visual-critic.js';
 export * from './qc/media-relevance-gate.js';
 export * from './render/real-renderer.js';
 export * from './render/elevenlabs-tts.js';
+export * from './captions/smart-captions.js';
 export * from './benchmarks/benchmark-suite.js';
 export * from './evolution/evolution-core.js';
 export * from './evolution/production-learning.js';
