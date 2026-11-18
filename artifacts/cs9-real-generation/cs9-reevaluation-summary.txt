@@ -1,2 +1,0 @@
-REJECTED | Cyberpunk 2077 A | Visual=✅ | CLIP=73% | Quality=99 | cyberpunk-2077-concept-A-object_focus.png
-REJECTED | Cyberpunk 2077 B | Visual=✅ | CLIP=69% | Quality=53 | cyberpunk-2077-concept-B-environmental_story.png
