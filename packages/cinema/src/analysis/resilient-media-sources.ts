@@ -1236,7 +1236,7 @@ export async function runAutonomousMediaAcquisition(input: {
   const maxRounds = Math.max(1, input.limits?.maxRounds ?? 3);
   const baseMaxDurationMs = Math.max(
     1_000,
-    input.limits?.maxDurationMs ?? Math.max(180_000, Math.min(900_000, input.segments.length * 60_000)),
+    input.limits?.maxDurationMs ?? Math.max(240_000, Math.min(1_500_000, input.segments.length * 90_000)),
   );
   const budgetMultiplier = Math.max(0.25, input.limits?.budgetMultiplier ?? 1);
   const maxDurationMs = Math.round(baseMaxDurationMs * budgetMultiplier);
@@ -1246,7 +1246,7 @@ export async function runAutonomousMediaAcquisition(input: {
   const maxQueriesTotal = Math.max(input.segments.length, input.limits?.maxQueriesTotal ?? Math.max(36, input.segments.length * 4));
   const maxCandidateDurationSec = input.limits?.maxCandidateDurationSec ?? 600;
   const maxSectionedCandidateDurationSec =
-    input.limits?.maxCandidateDurationSec ?? (input.deps.ytDlpAcquireFn ? 3600 : maxCandidateDurationSec);
+    input.limits?.maxCandidateDurationSec ?? (input.deps.ytDlpAcquireFn ? 14_400 : maxCandidateDurationSec);
   const discoveryConcurrency = Math.max(1, input.limits?.discoveryConcurrency ?? 3);
   const acquisitionConcurrency = Math.max(1, input.limits?.acquisitionConcurrency ?? 2);
   // Vision is the slowest stage (tens of seconds per asset): two assets in parallel halve the wall time without
@@ -1310,6 +1310,23 @@ export async function runAutonomousMediaAcquisition(input: {
     status: 'contextual' | 'visually_verified';
     reason: string;
   }> = [];
+  const verifiedContextualFallbacksBySegment = new Map<
+    string,
+    Array<{
+      item: {
+        mediaId: string;
+        filePath: string;
+        fileSizeBytes: number;
+        sha256: string;
+        durationSec: number;
+        segment: ScriptCoverageSegment;
+        cand: MediaSourceCandidate;
+      };
+      candKey: string;
+      decision: MediaRelevanceDecision;
+      recoveryAttemptForAsset?: AutonomousRecoveryAttempt;
+    }>
+  >();
   const approvedSegmentByMediaId = new Map<string, string>();
   /** Local file of every downloaded candidate (for diagnostics thumbnails/inspection). */
   const localPathByMediaId = new Map<string, string>();
@@ -2026,7 +2043,7 @@ export async function runAutonomousMediaAcquisition(input: {
         const perDownloadTimeoutMs = Math.min(
           perDownloadLimitMs,
           Math.max(
-            Math.min(perDownloadLimitMs, 75_000),
+            Math.min(perDownloadLimitMs, 120_000),
             Math.floor((acquisitionBudgetMs * acquisitionConcurrency) / Math.max(1, acquisitionQueue.length)),
           ),
         );
@@ -2442,6 +2459,27 @@ export async function runAutonomousMediaAcquisition(input: {
                 status: decision.editorialStatus,
                 reason: decision.reason,
               });
+              const hasSegmentIntervals = decision.matchedIntervals?.some((iv) => iv.segmentId === seg.segmentId) ?? false;
+              const licenseAllowed =
+                item.cand.licenseDecision?.status !== 'rejected' &&
+                (item.cand.licenseDecision?.status !== 'pending_human_review' ||
+                  licensePolicy === 'assemble_with_rights_review');
+              if (
+                decision.accepted &&
+                decision.visualVerificationStatus === 'visually_verified' &&
+                decision.correspondenceLevel === 'contextual_support' &&
+                (hasSegmentIntervals || decision.score >= 0.45) &&
+                licenseAllowed
+              ) {
+                const list = verifiedContextualFallbacksBySegment.get(seg.segmentId) ?? [];
+                list.push({
+                  item,
+                  candKey,
+                  decision,
+                  ...(recoveryAttemptForAsset ? { recoveryAttemptForAsset } : {}),
+                });
+                verifiedContextualFallbacksBySegment.set(seg.segmentId, list);
+              }
               const visualRecord = visionDiagnostics.records.find((record) => record.mediaId === item.mediaId && record.segmentId === seg.segmentId);
               if (visualRecord) visualRecord.editorialDisposition = 'contextual';
               if (recoveryAttemptForAsset) recoveryAttemptForAsset.outcome = 'contextual_only';
@@ -2610,13 +2648,139 @@ export async function runAutonomousMediaAcquisition(input: {
     if (stoppedReason === 'max_rounds' && (deadlineController.signal.aborted || remainingMs() <= 0)) {
       stoppedReason = 'deadline_exceeded';
     }
+
+    // Fallback editorial: se alguma cena terminou sem match literal (0s cobertos), mas já possui
+    // apoio contextual verificado visualmente (contextual_support + visually_verified), promove o melhor
+    // ativo verificado em vez de descartar o arquivo e travar a produção.
+    let promotedContextualFallback = false;
+    if (stageMode !== 'verify_pending_only') {
+      for (const segCov of latestCoverage.segments) {
+        if (segCov.covered || segCov.usableDurationSec > 0) continue;
+        const pool = verifiedContextualFallbacksBySegment.get(segCov.segmentId);
+        if (!pool || pool.length === 0) continue;
+        const eligiblePool = pool.filter(
+          (entry) => (entry.decision.matchedIntervals?.filter((iv) => iv.segmentId === segCov.segmentId).length ?? 0) >= 2,
+        );
+        if (eligiblePool.length === 0) continue;
+        const ranked = [...eligiblePool].sort((a, b) => {
+        const scoreDiff = (b.decision.score ?? 0) - (a.decision.score ?? 0);
+        if (Math.abs(scoreDiff) > 0.01) return scoreDiff;
+        const ivB = b.decision.matchedIntervals?.filter((iv) => iv.segmentId === segCov.segmentId).length ?? 0;
+        const ivA = a.decision.matchedIntervals?.filter((iv) => iv.segmentId === segCov.segmentId).length ?? 0;
+        if (ivB !== ivA) return ivB - ivA;
+        return (b.decision.visualConfidence ?? 0) - (a.decision.visualConfidence ?? 0);
+      });
+      const best = ranked[0];
+      if (!best || !existsSync(best.item.filePath)) continue;
+
+      const promotedDecision: MediaRelevanceDecision = {
+        ...best.decision,
+        accepted: true,
+        assemblyEligible: true,
+        editorialStatus: 'approved_for_scene',
+        eligibleSegmentIds: [...new Set([...(best.decision.eligibleSegmentIds ?? []), segCov.segmentId])],
+        reason: `Apoio contextual verificado visualmente promovido para cena sem match literal: ${best.decision.reason}`,
+      };
+      const idx = relevanceDecisions.indexOf(best.decision);
+      if (idx >= 0) {
+        relevanceDecisions[idx] = promotedDecision;
+      } else {
+        relevanceDecisions.push(promotedDecision);
+      }
+
+      setCandidateVerificationState(best.candKey, 'verified');
+      const visualRecord = visionDiagnostics.records.find(
+        (record) => record.mediaId === best.item.mediaId && record.segmentId === segCov.segmentId,
+      );
+      if (visualRecord) visualRecord.editorialDisposition = 'approved';
+      const sm = segMetricsMap.get(segCov.segmentId);
+      if (sm) sm.approvedCount += 1;
+      approvedSegmentByMediaId.set(best.item.mediaId, segCov.segmentId);
+
+      const existingApproved = approvedAssets.find((asset) => asset.mediaId === best.item.mediaId);
+      if (existingApproved) {
+        existingApproved.relevantToEntities = [
+          ...new Set([...(existingApproved.relevantToEntities ?? []), ...promotedDecision.matchedEntities]),
+        ];
+        existingApproved.editorialStatus = 'approved_for_scene';
+      } else {
+        approvedAssets.push({
+          mediaId: best.item.mediaId,
+          uri: best.item.filePath,
+          ...(best.item.cand.title ? { title: best.item.cand.title } : {}),
+          origin: best.item.cand.origin,
+          durationSec: best.item.durationSec,
+          compatible: true,
+          relevantToEntities: promotedDecision.matchedEntities,
+          editorialStatus: 'approved_for_scene',
+        });
+      }
+      const previousApprovedMeta = approvedMetaById.get(best.item.mediaId);
+      approvedMetaById.set(best.item.mediaId, {
+        title: best.item.cand.title ?? best.item.filePath,
+        origin: best.item.cand.origin,
+        sourceUrl: best.item.cand.url,
+        localPath: best.item.filePath,
+        fileSizeBytes: best.item.fileSizeBytes,
+        sha256: best.item.sha256,
+        durationSec: best.item.durationSec,
+        decision: previousApprovedMeta ? mergeApprovedDecision(previousApprovedMeta.decision, promotedDecision) : promotedDecision,
+        ...(best.item.cand.providerItem ? { providerItem: best.item.cand.providerItem } : {}),
+        ...(best.item.cand.licenseDecision ? { licenseDecision: best.item.cand.licenseDecision } : {}),
+      });
+      if (best.item.cand.licenseDecision?.status === 'pending_human_review' && licensePolicy === 'assemble_with_rights_review') {
+        pendingLicenseReview.push({
+          mediaId: best.item.mediaId,
+          segmentId: segCov.segmentId,
+          title: best.item.cand.title ?? best.item.filePath,
+          origin: best.item.cand.origin,
+          sourceUrl: best.item.cand.providerItem?.pageUrl ?? best.item.cand.url,
+          localPath: best.item.filePath,
+          licenseId: best.item.cand.providerItem?.license.licenseId ?? 'unknown',
+          reasons: best.item.cand.licenseDecision.reasons,
+          relevanceAccepted: true,
+          usedInDraft: true,
+        });
+      }
+      if (best.recoveryAttemptForAsset) {
+        if (!best.recoveryAttemptForAsset.approvedMediaIds.includes(best.item.mediaId)) {
+          best.recoveryAttemptForAsset.approvedMediaIds.push(best.item.mediaId);
+        }
+        best.recoveryAttemptForAsset.outcome = 'verified_interval';
+      }
+      promotedContextualFallback = true;
+      }
+    }
+
+    if (promotedContextualFallback) {
+      latestCoverage = planMediaCoverage({
+        segments: input.segments,
+        assets: approvedAssets,
+        ...(input.format ? { format: input.format } : {}),
+        relevanceDecisions,
+        requireRelevanceApproval: true,
+      });
+      for (const segCov of latestCoverage.segments) {
+        const sm = segMetricsMap.get(segCov.segmentId);
+        if (sm) {
+          sm.covered = segCov.covered;
+          sm.usableDurationSec = segCov.usableDurationSec;
+        }
+      }
+      if (latestCoverage.gatePassed) {
+        stoppedReason = 'coverage_satisfied';
+      }
+    }
   } finally {
     clearTimeout(deadlineTimer);
     saveCheckpoint();
     const approvedResolvedPaths = new Set(approvedAssets.map((a) => resolve(a.uri)));
+    const pendingResolvedPaths = new Set(
+      [...pendingVerificationAssets.values()].map((p) => resolve(p.filePath)),
+    );
     const mediaRootResolved = resolve(input.mediaDir);
     for (const fp of downloadedTempPaths) {
-      if (approvedResolvedPaths.has(fp)) continue;
+      if (approvedResolvedPaths.has(fp) || pendingResolvedPaths.has(fp)) continue;
       const rel = relative(mediaRootResolved, fp);
       if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
       if (existsSync(fp)) {
