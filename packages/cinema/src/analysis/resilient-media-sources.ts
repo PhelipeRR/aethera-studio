@@ -1279,7 +1279,7 @@ export async function runAutonomousMediaAcquisition(input: {
   const maxQueriesTotal = Math.max(input.segments.length, input.limits?.maxQueriesTotal ?? Math.max(36, input.segments.length * 4));
   const maxCandidateDurationSec = input.limits?.maxCandidateDurationSec ?? 600;
   const maxSectionedCandidateDurationSec =
-    input.limits?.maxCandidateDurationSec ?? (input.deps.ytDlpAcquireFn ? 14_400 : maxCandidateDurationSec);
+    input.limits?.maxCandidateDurationSec ?? (input.deps.ytDlpAcquireFn ? 86_400 : maxCandidateDurationSec);
   const discoveryConcurrency = Math.max(1, input.limits?.discoveryConcurrency ?? 3);
   const acquisitionConcurrency = Math.max(1, input.limits?.acquisitionConcurrency ?? 2);
   // Vision is the slowest stage (tens of seconds per asset): two assets in parallel halve the wall time without

@@ -1565,9 +1565,9 @@ export class StagedCinemaPipeline {
       }
       if (job.editorialScript && job.targetDurationSec > 0) {
         const totalEstSec = job.editorialScript.segments.reduce((s, seg) => s + seg.estimatedDurationSec, 0);
-        if (totalEstSec > job.targetDurationSec * 1.03 && job.editorialScript.segments.length > 0) {
-          const perSegTargetSec = Math.max(3, (job.targetDurationSec * 0.92) / job.editorialScript.segments.length);
-          const maxWordsPerSeg = Math.max(6, Math.floor(perSegTargetSec * 2.1));
+        if (totalEstSec > job.targetDurationSec * 1.05 && job.editorialScript.segments.length > 0) {
+          const perSegTargetSec = Math.max(3, (job.targetDurationSec * 1.04) / job.editorialScript.segments.length);
+          const maxWordsPerSeg = Math.max(7, Math.floor(perSegTargetSec * 2.35));
           job.editorialScript = {
             ...job.editorialScript,
             segments: job.editorialScript.segments.map((seg) => {

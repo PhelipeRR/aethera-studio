@@ -991,8 +991,12 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
 
     const isImageSource = spec.sourceUri ? /\.(png|jpe?g|webp)$/i.test(spec.sourceUri) : false;
     const sourceRange = spec.clip?.sourceRange;
-    const sourceRangeStartSec = sourceRange ? Math.max(0, sourceRange.start.value / Math.max(1, sourceRange.start.rate)) : 0;
-    const sourceRangeDurationSec = sourceRange ? Math.max(0.001, sourceRange.duration.value / Math.max(1, sourceRange.duration.rate)) : 0;
+    const rawStartSec = sourceRange ? Math.max(0, sourceRange.start.value / Math.max(1, sourceRange.start.rate)) : 0;
+    const rawRangeDurSec = sourceRange ? Math.max(0.001, sourceRange.duration.value / Math.max(1, sourceRange.duration.rate)) : 0;
+    // Skip initial fade-from-black frames (<0.5s) on clip 0 when source has sufficient headroom
+    const skipLeadingBlack = i === 0 && !isImageSource && !input.injectRealBlackFrameDefect && rawStartSec < 0.5 && rawRangeDurSec > 2.5;
+    const sourceRangeStartSec = skipLeadingBlack ? 0.5 : rawStartSec;
+    const sourceRangeDurationSec = skipLeadingBlack ? Math.max(1, rawRangeDurSec - 0.5) : rawRangeDurSec;
     const sourceMedia = spec.clip ? input.pkg.timeline.sourceMedia[spec.clip.mediaId] : undefined;
     const sourceFps = sourceMedia?.fps ? sourceMedia.fps.value / Math.max(1, sourceMedia.fps.rate) : targetFps;
     const sourceRangeLoopFrames = Math.max(1, Math.round(sourceRangeDurationSec * sourceFps));
@@ -1001,8 +1005,11 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     const sourceRangeFilter = spec.sourceUri && !isImageSource && sourceRange
       ? `trim=start=${sourceRangeStartSec.toFixed(3)}:duration=${sourceRangeDurationSec.toFixed(3)},setpts=PTS-STARTPTS,loop=loop=-1:size=${sourceRangeLoopFrames}:start=0,setpts=N/FRAME_RATE/TB`
       : '';
+    const imageZoomFrames = Math.max(30, Math.round(spec.effectiveDur * targetFps));
     const baseFilter = spec.sourceUri
-      ? `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2,fps=${targetFps},setpts=(PTS-STARTPTS)/${Math.max(0.25, spec.clip?.speed ?? 1)},trim=duration=${spec.effectiveDur},setpts=PTS-STARTPTS`
+      ? isImageSource
+        ? `scale=${Math.round(targetWidth * 1.15)}:${Math.round(targetHeight * 1.15)}:force_original_aspect_ratio=increase,crop=${Math.round(targetWidth * 1.15)}:${Math.round(targetHeight * 1.15)},zoompan=z='min(zoom+0.0008,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${imageZoomFrames}:s=${targetWidth}x${targetHeight}:fps=${targetFps},trim=duration=${spec.effectiveDur},setpts=PTS-STARTPTS`
+        : `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2,fps=${targetFps},setpts=(PTS-STARTPTS)/${Math.max(0.25, spec.clip?.speed ?? 1)},trim=duration=${spec.effectiveDur},setpts=PTS-STARTPTS`
       : `geq=r='clip(44+38*sin(X/45+T*1.4)+24*cos(Y/35-T),24,235)':g='clip(34+28*cos(X/55-T)+30*sin((X+Y)/60+T),20,235)':b='clip(68+58*sin((X-Y)/42+T*1.8),32,235)',scale=${targetWidth}:${targetHeight}:flags=bilinear`;
 
     const isDiscrete = Boolean(directives?.discreteTypography);
@@ -1013,8 +1020,12 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       (hasRealFootage && isGenericShotLabel);
     const headlineSize = Math.round((isDiscrete ? 22 : directives?.elaborateMotionGraphics ? 36 : 34) * baseScale);
     const sublineSize = Math.round((isDiscrete ? 15 : 20) * baseScale);
-    const lowerBoxHeight = Math.round((hasRealFootage ? 72 : isDiscrete ? 82 : 130) * baseScale);
-    const lowerBoxY = Math.max(0, targetHeight - safeBottom - lowerBoxHeight);
+    const lowerBoxHeight = Math.round((hasRealFootage ? 52 : isDiscrete ? 82 : 130) * baseScale);
+    // Place scene label badge at the top when captions occupy the bottom safe zone to avoid text overlap
+    const hasCaptionsOverlay = measuredCaptionWords.length > 0 || subtitleClips.length > 0;
+    const lowerBoxY = hasCaptionsOverlay && hasRealFootage
+      ? Math.max(16, Math.round((targetHeight * safeArea.top) / 100))
+      : Math.max(0, targetHeight - safeBottom - lowerBoxHeight);
     const lowerBoxWidth = Math.max(1, targetWidth - safeLeft - safeRight);
     const motionBar = isDiscrete || hideTitle || hasRealFootage
       ? ''
@@ -1026,7 +1037,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
         : isDiscrete
         ? `drawbox=x=${safeLeft}:y=${lowerBoxY}:w=${lowerBoxWidth}:h=${lowerBoxHeight}:color=${bgHex}@0.64:t=fill`
         : `drawbox=x=${safeLeft}:y=${lowerBoxY}:w=${lowerBoxWidth}:h=${lowerBoxHeight}:color=${bgHex}@0.82:t=fill`;
-    const headlineY = Math.round(lowerBoxY + (hasRealFootage ? 16 : isDiscrete ? 14 : 21) * baseScale);
+    const headlineY = Math.round(lowerBoxY + (hasRealFootage ? 13 : isDiscrete ? 14 : 21) * baseScale);
     const sublineY = Math.round(headlineY + (isDiscrete ? 34 : 52) * baseScale);
     const colorFilterChain =
       input.pkg.colorPlan?.ffmpegColorFilterChain?.trim() ||

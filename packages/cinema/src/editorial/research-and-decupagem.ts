@@ -656,7 +656,9 @@ export function buildSemanticDecupagem(
     // work itself (its ranked items — bosses, implants — are not required on screen in an intro).
     const overviewWorks =
       resolved.resolution === 'overview' && multiWork ? dossier.entities.map((e) => cleanEntityForQuery(e.entityName)) : [];
-    const secondary = multiWork ? resolved.secondaryEntity : undefined;
+    const isIntroOrOutro =
+      beat.stage === 'hook' || beat.stage === 'promise' || beat.stage === 'cta' || beat.stage === 'resolution';
+    const secondary = multiWork && !isIntroOrOutro ? resolved.secondaryEntity : undefined;
     const sceneWorks = matchedEntity
       ? multiWork
         ? [cleanEntityForQuery(matchedEntity.entityName), ...(secondary ? [cleanEntityForQuery(secondary.entityName)] : [])]
