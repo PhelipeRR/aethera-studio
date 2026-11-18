@@ -1716,10 +1716,22 @@ export class StagedCinemaPipeline {
                 }
               : {}),
             localMediaDirs: [...new Set([projectPaths.mediaDir, ...(baseDeps.localMediaDirs ?? [])])],
+            ...(baseDeps.ytDlpAcquireFn
+              ? {
+                  ytDlpAcquireFn: async (targetUrl, idx, dir, sig, downloadSection, onProgress) => {
+                    job.message = `Iniciando download [slot ${idx + 1}]: ${targetUrl}`;
+                    this.deps.onProgress?.(job);
+                    return baseDeps.ytDlpAcquireFn!(targetUrl, idx, dir, sig, downloadSection, onProgress);
+                  },
+                }
+              : {}),
             ...(baseDeps.ytDlpSearchFn
               ? {
                   ytDlpSearchFn: async (q, count, sig) => {
                     const matchedScene = resolveSceneForQuery(q);
+                    const qPreview = q.length > 52 ? `${q.slice(0, 49)}...` : q;
+                    job.message = `Consultando YouTube (${matchedScene?.sceneId ?? 'mídia'}): "${qPreview}"`;
+                    this.deps.onProgress?.(job);
                     const startedAt = new Date().toISOString();
                     const t0 = Date.now();
                     const prevSameScene = trail.queries.filter((x) => x.sceneId === (matchedScene?.sceneId ?? 'scene_unknown'));
@@ -1727,6 +1739,8 @@ export class StagedCinemaPipeline {
                     const queryId = `qry_${trail.queries.length + 1}_${Date.now()}`;
                     try {
                       const rows = await baseDeps.ytDlpSearchFn!(q, count, sig);
+                      job.message = `YouTube retornou ${rows.length} candidato(s) para "${qPreview}"`;
+                      this.deps.onProgress?.(job);
                       const finishedAt = new Date().toISOString();
                       const candidateIds: string[] = [];
                       for (let rIdx = 0; rIdx < rows.length; rIdx += 1) {
@@ -1818,7 +1832,15 @@ export class StagedCinemaPipeline {
             mediaDir: projectPaths.mediaDir,
             deps: auditedDeps,
             probeDurationFn: async (fp) => (await probeRealMp4(fp)).durationSec,
-            ...(this.deps.analyzeFrames ? { analyzeFrames: this.deps.analyzeFrames } : {}),
+            ...(this.deps.analyzeFrames
+              ? {
+                  analyzeFrames: async (uri, timestampsSec, segment) => {
+                    job.message = `Analisando frames (${segment.segmentId}) com VisionRouter...`;
+                    this.deps.onProgress?.(job);
+                    return this.deps.analyzeFrames!(uri, timestampsSec, segment);
+                  },
+                }
+              : {}),
             requireVisualVerification: this.deps.requireVisualVerification ?? true,
             evolution: this.deps.evolutionCore,
             limits: {
