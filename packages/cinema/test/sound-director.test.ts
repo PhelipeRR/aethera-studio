@@ -99,6 +99,25 @@ describe('@neuralbridge/cinema — Sound Director & Audio Timeline Audit', () =>
     expect(report.conflicts.some((c) => c.type === 'narration_truncated' && c.severity === 'critical')).toBe(true);
   });
 
+  it('allows sub-50ms rounding jitter at end of timeline without blocking render', () => {
+    const events: AudioTimelineEvent[] = [
+      {
+        sourceId: 'nar_seg_12',
+        sceneId: 'scene_12',
+        bus: 'A1_narration',
+        role: 'narration',
+        startMs: 170000,
+        endMs: 181592,
+        gainDb: 0,
+        priority: 100,
+      },
+    ];
+
+    const report = auditAudioTimeline(events, 181591);
+    expect(report.approved).toBe(true);
+    expect(report.conflicts.some((c) => c.type === 'narration_truncated')).toBe(false);
+  });
+
   it('blocks when gameplay dialogue (A2) overlaps primary narration (A1)', () => {
     const events: AudioTimelineEvent[] = [
       {

@@ -119,11 +119,13 @@ export function auditAudioTimeline(
   const sfxEvents = events.filter((e) => e.bus === 'A4_sfx');
   const musicEvents = events.filter((e) => e.bus === 'A3_music');
 
+  const DURATION_JITTER_TOLERANCE_MS = 50;
+
   // 1. Check consecutive narrations for overlap or insufficient breathing gap
   for (let i = 0; i < narrations.length; i += 1) {
     const cur = narrations[i];
     if (!cur) continue;
-    if (cur.endMs > totalDurationMs) {
+    if (cur.endMs > totalDurationMs + DURATION_JITTER_TOLERANCE_MS) {
       conflicts.push({
         conflictId: `nar_trunc_${i + 1}`,
         severity: 'critical',
