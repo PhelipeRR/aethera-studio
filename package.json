@@ -1,7 +1,7 @@
 {
   "name": "neuralbridge",
   "private": true,
-  "version": "0.1.65",
+  "version": "0.1.66",
   "description": "Local-first orchestrator and shared memory for Claude Code and Codex CLI",
   "workspaces": [
     "packages/*",
