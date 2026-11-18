@@ -1,7 +1,7 @@
-import { existsSync } from 'node:fs';
-import { dirname, join, normalize, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, Menu, net, protocol, safeStorage } from 'electron';
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { dirname, extname, join, normalize, resolve } from 'node:path';
+import { Readable } from 'node:stream';
+import { app, BrowserWindow, ipcMain, Menu, protocol, safeStorage } from 'electron';
 import {
   IntegrationAuthRegistry,
   PeerPairingManager,
@@ -108,6 +108,76 @@ function createWindow() {
   }
 }
 
+const MEDIA_MIME_TYPES: Record<string, string> = {
+  '.mp4': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.webm': 'video/webm',
+  '.mkv': 'video/x-matroska',
+  '.wav': 'audio/wav',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+};
+
+function serveMediaWithRanges(filePath: string, request: Request): Response {
+  const stat = statSync(filePath);
+  const fileSize = stat.size;
+  const contentType = MEDIA_MIME_TYPES[extname(filePath).toLowerCase()] ?? 'application/octet-stream';
+  const rangeHeader = request.headers.get('range');
+
+  if (!rangeHeader) {
+    const stream = Readable.toWeb(createReadStream(filePath)) as ReadableStream;
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': String(fileSize),
+        'Accept-Ranges': 'bytes',
+      },
+    });
+  }
+
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+  if (!match) {
+    return new Response(null, {
+      status: 416,
+      headers: { 'Content-Range': `bytes */${fileSize}` },
+    });
+  }
+
+  const startStr = match[1] ?? '';
+  const endStr = match[2] ?? '';
+  let start = startStr ? Number.parseInt(startStr, 10) : 0;
+  let end = endStr ? Number.parseInt(endStr, 10) : fileSize - 1;
+  if (!startStr && endStr) {
+    const suffixLen = Number.parseInt(endStr, 10);
+    start = Math.max(0, fileSize - suffixLen);
+    end = fileSize - 1;
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= fileSize || end < start) {
+    return new Response(null, {
+      status: 416,
+      headers: { 'Content-Range': `bytes */${fileSize}` },
+    });
+  }
+  end = Math.min(end, fileSize - 1);
+
+  const chunkSize = end - start + 1;
+  const stream = Readable.toWeb(createReadStream(filePath, { start, end })) as ReadableStream;
+  return new Response(stream, {
+    status: 206,
+    headers: {
+      'Content-Type': contentType,
+      'Content-Length': String(chunkSize),
+      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Accept-Ranges': 'bytes',
+    },
+  });
+}
+
 void app.whenReady().then(async () => {
   protocol.handle('aethera-media', (request) => {
     const url = new URL(request.url);
@@ -126,7 +196,7 @@ void app.whenReady().then(async () => {
     if (!inUserData && !/\.(mp4|mov|webm|wav|mp3|png|jpe?g|webp)$/i.test(resolved)) {
       return new Response('Forbidden', { status: 403 });
     }
-    return net.fetch(pathToFileURL(resolved).toString());
+    return serveMediaWithRanges(resolved, request);
   });
 
   const location: AppLocation = {
