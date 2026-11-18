@@ -196,6 +196,12 @@ export interface StagedProductionJob {
   state: ProductionStageState;
   progressPct: number;
   message: string;
+  downloadProgress?: {
+    label: string;
+    pct: number | null;
+    bytesDone: number;
+    bytesTotal: number | null;
+  };
   completedStages: ProductionStageState[];
   acquiredMedia: SourceMediaRecord[];
   renderExports?: Array<{
@@ -1688,6 +1694,12 @@ export class StagedCinemaPipeline {
                   ? `${progress.pct}% (${doneMb} / ${(progress.bytesTotal / (1024 * 1024)).toFixed(1)} MB)`
                   : `${doneMb} MB recebidos`;
               job.message = `Baixando mídia "${shortLabel}": ${progressText}`;
+              job.downloadProgress = {
+                label: shortLabel,
+                pct: progress.pct,
+                bytesDone: progress.bytesDone,
+                bytesTotal: progress.bytesTotal,
+              };
               this.deps.onProgress?.(job);
             },
             // Scope provider telemetry and downloads to this job so console lines land in the right production.
@@ -1720,6 +1732,12 @@ export class StagedCinemaPipeline {
               ? {
                   ytDlpAcquireFn: async (targetUrl, idx, dir, sig, downloadSection, onProgress) => {
                     job.message = `Iniciando download [slot ${idx + 1}]: ${targetUrl}`;
+                    job.downloadProgress = {
+                      label: `slot ${idx + 1} · ${targetUrl}`,
+                      pct: null,
+                      bytesDone: 0,
+                      bytesTotal: null,
+                    };
                     this.deps.onProgress?.(job);
                     return baseDeps.ytDlpAcquireFn!(targetUrl, idx, dir, sig, downloadSection, onProgress);
                   },
@@ -1858,6 +1876,7 @@ export class StagedCinemaPipeline {
           // Only now that acquisition + visual grounding actually finished can we transition out of 'aquisicao'.
           // This prevents the stage tracker from emitting 'aquisicao stage_completed' before downloads/validation ran.
           checkCancelled();
+          delete job.downloadProgress;
           job.state = 'validacao_visual';
           job.progressPct = 62;
           job.message = 'Validando mídias por Scene Grounding e evidências por frame...';

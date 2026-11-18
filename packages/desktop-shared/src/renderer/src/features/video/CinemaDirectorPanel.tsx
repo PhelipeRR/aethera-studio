@@ -179,6 +179,12 @@ interface StagedJobView {
   state: string;
   progressPct: number;
   message: string;
+  downloadProgress?: {
+    label: string;
+    pct: number | null;
+    bytesDone: number;
+    bytesTotal: number | null;
+  };
   completedStages: string[];
   pendingMedia: PendingMediaSlotView[];
   isTechnicalSample?: boolean;
@@ -555,8 +561,18 @@ export function CinemaDirectorPanel() {
     setDeletingProject(true);
     try {
       await api.cinemaDeleteProject(targetId);
-      setStagedJobs((prev) => prev.filter((j) => j.projectId !== targetId));
-      setStagedJob((prev) => (prev?.projectId === targetId ? null : prev));
+      const remaining = stagedJobs.filter((j) => j.projectId !== targetId);
+      setStagedJobs(remaining);
+      if (stagedJob?.projectId === targetId) {
+        setStagedJob(null);
+        setProgressPct(null);
+        setProgressStage('');
+        setActiveStartMs(undefined);
+        setBusy(false);
+        if (remaining.length === 0) {
+          setWorkspaceTab('criar');
+        }
+      }
       notify({
         title: 'Prompt excluído',
         message: `"${label}" foi removido.`,
@@ -1671,6 +1687,26 @@ export function CinemaDirectorPanel() {
                       </Button>
                     </div>
                     <p className="text-sm text-foreground/90">{stagedJob?.message || progressStage || 'Aguardando o primeiro evento do pipeline.'}</p>
+                    {stagedJob?.downloadProgress && (
+                      <div className="mt-1 flex flex-col gap-1.5 rounded-lg border border-border/70 bg-muted/30 p-3">
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span className="truncate font-medium text-foreground">
+                            Baixando: {stagedJob.downloadProgress.label}
+                          </span>
+                          <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
+                            {stagedJob.downloadProgress.pct !== null
+                              ? `${stagedJob.downloadProgress.pct}% (${(stagedJob.downloadProgress.bytesDone / (1024 * 1024)).toFixed(1)} / ${((stagedJob.downloadProgress.bytesTotal ?? 0) / (1024 * 1024)).toFixed(1)} MB)`
+                              : stagedJob.downloadProgress.bytesDone > 0
+                                ? `${(stagedJob.downloadProgress.bytesDone / (1024 * 1024)).toFixed(1)} MB recebidos`
+                                : 'Iniciando conexão...'}
+                          </span>
+                        </div>
+                        <Progress
+                          value={stagedJob.downloadProgress.pct ?? 0}
+                          aria-label="Progresso do download da mídia"
+                        />
+                      </div>
+                    )}
                   </section>
 
                   {stagedJob?.state === 'error' && (
