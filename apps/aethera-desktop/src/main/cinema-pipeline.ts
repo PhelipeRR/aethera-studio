@@ -1673,8 +1673,23 @@ export class StagedCinemaPipeline {
             );
           };
 
+          let lastDownloadProgressEmitMs = 0;
           const auditedDeps: ResilientAcquisitionDeps = {
             ...baseDeps,
+            onDownloadProgress: (progress) => {
+              const now = Date.now();
+              if (progress.pct !== 100 && now - lastDownloadProgressEmitMs < 450) return;
+              lastDownloadProgressEmitMs = now;
+              const rawLabel = (progress.title ?? progress.url).replace(/\s+/g, ' ').trim();
+              const shortLabel = rawLabel.length > 48 ? `${rawLabel.slice(0, 45)}...` : rawLabel;
+              const doneMb = (progress.bytesDone / (1024 * 1024)).toFixed(1);
+              const progressText =
+                progress.pct !== null && progress.bytesTotal
+                  ? `${progress.pct}% (${doneMb} / ${(progress.bytesTotal / (1024 * 1024)).toFixed(1)} MB)`
+                  : `${doneMb} MB recebidos`;
+              job.message = `Baixando mídia "${shortLabel}": ${progressText}`;
+              this.deps.onProgress?.(job);
+            },
             // Scope provider telemetry and downloads to this job so console lines land in the right production.
             ...(baseDeps.mediaProviders
               ? {

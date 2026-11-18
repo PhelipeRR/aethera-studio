@@ -2111,7 +2111,7 @@ productionConsole,
         return dirs;
       })(),
       ytDlpSearchFn: (q, count, sig) => ytDlpSearch(ytDlp, q, count, sig),
-      ytDlpAcquireFn: async (targetUrl, idx, dir, sig, downloadSection) => {
+      ytDlpAcquireFn: async (targetUrl, idx, dir, sig, downloadSection, onProgress) => {
         const relativeDir = `acq_${idx + 1}_${Date.now().toString(36)}`;
         mkdirSync(join(dir, relativeDir), { recursive: true });
         const out = await acquireWithYtDlp({
@@ -2125,6 +2125,7 @@ productionConsole,
           maxFilesize: '90M',
           ...(sig ? { signal: sig } : {}),
           ...(studioMediaTools ? { ffmpeg: studioMediaTools.ffmpeg } : {}),
+          ...(onProgress ? { onProgress } : {}),
         });
         return out.relativePath ? join(dir, out.relativePath) : null;
       },

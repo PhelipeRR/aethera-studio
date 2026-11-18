@@ -136,7 +136,17 @@ export interface ResilientAcquisitionDeps {
     mediaDir: string,
     signal?: AbortSignal,
     downloadSection?: string,
+    onProgress?: (progress: { bytesDone: number; bytesTotal: number | null }) => void,
   ) => Promise<string | null>;
+  onDownloadProgress?: (progress: {
+    url: string;
+    slotIndex: number;
+    segmentId?: string;
+    title?: string;
+    bytesDone: number;
+    bytesTotal: number | null;
+    pct: number | null;
+  }) => void;
 }
 
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm', '.mkv']);
@@ -464,7 +474,10 @@ export async function searchResilientMediaSources(
   const nonStaticVideoCandidates = candidates.filter(
     (c) => c.origin !== 'wikimedia_commons' && !/\.(jpg|jpeg|png|svg|gif)(\?|$)/i.test(c.url),
   );
-  if (deps.ytDlpSearchFn && nonStaticVideoCandidates.length < 3) {
+  const hasYouTubeCandidates = nonStaticVideoCandidates.some(
+    (c) => c.origin === 'youtube' || c.origin === 'youtube_data_api',
+  );
+  if (deps.ytDlpSearchFn && (nonStaticVideoCandidates.length < 3 || !hasYouTubeCandidates)) {
     try {
       const ytdlpHits = await deps.ytDlpSearchFn(query, 4, signal);
       const mapped = ytdlpHits
@@ -2126,7 +2139,24 @@ export async function runAutonomousMediaAcquisition(input: {
             } else if (cand.origin === 'yt_dlp' && !ytDlpBlocked && input.deps.ytDlpAcquireFn) {
               try {
                 const win = selectRelevantDownloadWindow(cand, task.segment);
-                filePath = await input.deps.ytDlpAcquireFn(cand.url, acqSeq, input.mediaDir, opSig, win.sectionArg);
+                const onDlProgress = input.deps.onDownloadProgress
+                  ? (p: { bytesDone: number; bytesTotal: number | null }) => {
+                      const pct =
+                        p.bytesTotal && p.bytesTotal > 0
+                          ? Math.min(100, Math.round((p.bytesDone / p.bytesTotal) * 100))
+                          : null;
+                      input.deps.onDownloadProgress?.({
+                        url: cand.url,
+                        slotIndex: acqSeq,
+                        segmentId: task.segment.segmentId,
+                        ...(cand.title ? { title: cand.title } : {}),
+                        bytesDone: p.bytesDone,
+                        bytesTotal: p.bytesTotal,
+                        pct,
+                      });
+                    }
+                  : undefined;
+                filePath = await input.deps.ytDlpAcquireFn(cand.url, acqSeq, input.mediaDir, opSig, win.sectionArg, onDlProgress);
                 if (!filePath || !existsSync(filePath)) {
                   downloadFailure = {
                     reasonCode: 'invalid_file',
