@@ -91,8 +91,42 @@ const MULTI_WORK_PATTERN =
   /\b(?:top\s*\d+\s+)?(?:\d+\s+)?(animes|mang[aá]s|jogos|games|filmes|s[eé]ries|doramas|webtoons)\b/i;
 
 /** A ranking/list of several works (e.g. "TOP 5 animes com sistemas de magia"), not one work's internals. */
+const DISTINCT_WORK_PATTERNS: RegExp[] = [
+  /\bsuper\s+mario(?:\s+(?:bros|64|odyssey|galaxy|world))?\b/i,
+  /\bsonic(?:\s+the\s+hedgehog)?\b/i,
+  /\b(?:grand\s+theft\s+auto|gta)(?:\s+(?:san\s+andreas|v|iv|vice\s+city|vi))?\b/i,
+  /\bred\s+dead\s+redemption(?:\s+2)?\b/i,
+  /\bcyberpunk(?:\s*2077)?\b/i,
+  /\belden\s+ring\b/i,
+  /\bdark\s+souls(?:\s*(?:3|iii|2|ii))?\b/i,
+  /\bsekiro\b/i,
+  /\bbloodborne\b/i,
+  /\bthe\s+witcher(?:\s*3)?\b/i,
+  /\bzelda\b/i,
+  /\bgod\s+of\s+war\b/i,
+  /\bhollow\s+knight\b/i,
+  /\bminecraft\b/i,
+  /\bdragon\s+ball(?:\s+(?:z|super|gt))?\b/i,
+  /\bnaruto\b/i,
+  /\bone\s+piece\b/i,
+  /\battack\s+on\s+titan\b/i,
+  /\bjujutsu\s+kaisen\b/i,
+  /\bbleach\b/i,
+  /\bdemon\s+slayer\b/i,
+];
+
 export function isMultiWorkPrompt(prompt: string): boolean {
-  return MULTI_WORK_PATTERN.test(prompt) && /\b(top\s*\d+|\d+\s+(?:animes|jogos|games|filmes|s[eé]ries|mang[aá]s)|ranking|melhores|lista)\b/i.test(prompt);
+  if (MULTI_WORK_PATTERN.test(prompt) && /\b(top\s*\d+|\d+\s+(?:animes|jogos|games|filmes|s[eé]ries|mang[aá]s)|ranking|melhores|lista)\b/i.test(prompt)) {
+    return true;
+  }
+  let matchedWorks = 0;
+  for (const re of DISTINCT_WORK_PATTERNS) {
+    if (re.test(prompt)) {
+      matchedWorks += 1;
+      if (matchedWorks >= 2) return true;
+    }
+  }
+  return false;
 }
 
 const REFERENCE_TRIGGER_PATTERN =

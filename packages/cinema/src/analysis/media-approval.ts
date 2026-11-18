@@ -79,6 +79,20 @@ export interface ApprovalSceneInput {
   projectDomain?: ContentDomain;
 }
 
+const GENERIC_VISUAL_DESCRIPTOR_RE =
+  /\b(cidade|pessoa|personagem|homem|mulher|garoto|garota|menino|menina|crianca|criança|carro|veiculo|veículo|moto|rua|avenida|predio|prédio|edificio|edifício|noite|noturna|luz|luminoso|luminosos|paineis|painéis|maquina|máquina|maquinas|máquinas|estrutura|estruturas|tela|cenario|cenário|paisagem|ambiente|fundo|objeto|arma|espada|armadura|city|person|character|man|woman|car|vehicle|street|building|night|light|lights|panel|machine|structure|screen|scenery|landscape|background|object|weapon|sword|armor|crowd|people)\b/i;
+
+function isGenericVisualDescriptor(entity: string): boolean {
+  const trimmed = entity.trim();
+  if (!trimmed) return true;
+  // Single-token short aliases (e.g. "v" in Cyberpunk 2077) are character codenames, never a contradicting work title.
+  if (trimmed.length <= 2) return true;
+  if (GENERIC_VISUAL_DESCRIPTOR_RE.test(trimmed)) return true;
+  // Multi-word all-lowercase phrases are almost always descriptive nouns, not named titles.
+  if (trimmed.split(/\s+/).length >= 3 && trimmed === trimmed.toLowerCase()) return true;
+  return false;
+}
+
 /** Observed identity from frames (detected entities) or from an anime provenance lookup (trace.moe-like). */
 export function observedIdentityFromDecision(decision: MediaRelevanceDecision, expected: string[]): ObservedIdentity | undefined {
   const prov = decision.animeProvenance;
@@ -97,10 +111,12 @@ export function observedIdentityFromDecision(decision: MediaRelevanceDecision, e
     return { detectedWork: name, confidence: Number(confidence.toFixed(2)), source: 'vision' };
   }
   // Frames confidently show named entities, none of them expected: a different work/character.
+  // Ignore generic visual scene descriptions (e.g. "cidade noturna com painéis luminosos", "pessoa de cabelo vermelho").
   const others = new Map<string, { n: number; conf: number }>();
   for (const f of frames) {
     for (const d of f.detectedEntities) {
       if (expected.some((e) => mentionsName(d, e) || mentionsName(e, d))) continue;
+      if (isGenericVisualDescriptor(d)) continue;
       const cur = others.get(d) ?? { n: 0, conf: 0 };
       others.set(d, { n: cur.n + 1, conf: cur.conf + f.confidence });
     }
