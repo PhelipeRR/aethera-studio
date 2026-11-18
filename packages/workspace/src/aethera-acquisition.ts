@@ -122,11 +122,45 @@ export function buildAcquisitionArgs(input: {
   ];
 }
 
-export function parseAcquisitionProgress(line: string): { bytesDone: number; bytesTotal: number | null } | null {
+export function parseSectionDurationSec(sectionOrLine: string): number | null {
+  const rangeMatch = /Downloading\s+\d+\s+time\s+ranges?:\s*(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)/i.exec(sectionOrLine);
+  if (rangeMatch?.[1] && rangeMatch[2]) {
+    const dur = Number(rangeMatch[2]) - Number(rangeMatch[1]);
+    return dur > 0 ? dur : null;
+  }
+  const secMatch = /^\*?(\d+):(\d{2})(?::(\d{2}))?-(\d+):(\d{2})(?::(\d{2}))?$/.exec(sectionOrLine.trim());
+  if (secMatch) {
+    const toSec = (a: string, b: string, c?: string) =>
+      c !== undefined ? Number(a) * 3600 + Number(b) * 60 + Number(c) : Number(a) * 60 + Number(b);
+    const start = toSec(secMatch[1]!, secMatch[2]!, secMatch[3]);
+    const end = toSec(secMatch[4]!, secMatch[5]!, secMatch[6]);
+    return end > start ? end - start : null;
+  }
+  return null;
+}
+
+export function parseAcquisitionProgress(
+  line: string,
+  sectionDurationSec?: number | null,
+): { bytesDone: number; bytesTotal: number | null } | null {
   const match = new RegExp(`${PROGRESS_TAG} (\\d+|NA) (\\d+|NA) ([\\d.]+|NA)`).exec(line);
-  if (!match || match[1] === 'NA') return null;
-  const total = match[2] !== 'NA' ? Number(match[2]) : match[3] !== 'NA' ? Math.round(Number(match[3])) : null;
-  return { bytesDone: Number(match[1]), bytesTotal: total };
+  if (match && match[1] !== 'NA') {
+    const total = match[2] !== 'NA' ? Number(match[2]) : match[3] !== 'NA' ? Math.round(Number(match[3])) : null;
+    return { bytesDone: Number(match[1]), bytesTotal: total };
+  }
+  const ffMatch = /(?:L?size=\s*(\d+)(KiB|kB|MiB|MB|B)?\s+)?time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(line);
+  if (ffMatch) {
+    const rawSize = ffMatch[1] ? Number(ffMatch[1]) : 0;
+    const unit = ffMatch[2] ?? 'KiB';
+    const mult = unit === 'MiB' || unit === 'MB' ? 1024 * 1024 : unit === 'B' ? 1 : 1024;
+    const bytesDone = rawSize * mult;
+    const timeSec = Number(ffMatch[3]) * 3600 + Number(ffMatch[4]) * 60 + Number(ffMatch[5]);
+    if (timeSec <= 0 && bytesDone <= 0) return null;
+    const ratio = sectionDurationSec && sectionDurationSec > 0 ? Math.min(0.99, timeSec / sectionDurationSec) : null;
+    const bytesTotal = ratio && ratio > 0.01 && bytesDone > 0 ? Math.round(bytesDone / ratio) : null;
+    return { bytesDone, bytesTotal };
+  }
+  return null;
 }
 
 export type AcquisitionErrorCode = 'unavailable' | 'forbidden' | 'format' | 'network' | 'tool_missing' | 'tool_outdated' | 'cancelled';
@@ -165,12 +199,15 @@ export async function acquireWithYtDlp(input: {
   mkdirSync(directory, { recursive: true });
   let buffer = '';
   let printed: string | null = null;
+  let sectionDurationSec = input.downloadSection ? parseSectionDurationSec(input.downloadSection) : null;
   const onOutput = (text: string) => {
     buffer += text;
-    const lines = buffer.split(/\r?\n/);
+    const lines = buffer.split(/\r\n|\r|\n/);
     buffer = lines.pop() ?? '';
     for (const line of lines) {
-      const progress = parseAcquisitionProgress(line);
+      const parsedDur = parseSectionDurationSec(line);
+      if (parsedDur) sectionDurationSec = parsedDur;
+      const progress = parseAcquisitionProgress(line, sectionDurationSec);
       if (progress) input.onProgress?.(progress);
       else if (line.trim() && !line.includes(PROGRESS_TAG) && /\.(mp4|mkv|webm)$/i.test(line.trim())) printed = line.trim();
     }

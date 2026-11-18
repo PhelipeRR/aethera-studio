@@ -84,6 +84,10 @@ describe('acquisition with the fake yt-dlp', () => {
     expect(classifyAcquisitionError('ERROR: Private video')).toMatchObject({ code: 'unavailable', retryable: false });
     expect(parseAcquisitionProgress('NBPROG 512 2048 NA')).toEqual({ bytesDone: 512, bytesTotal: 2048 });
     expect(parseAcquisitionProgress('NBPROG 512 NA 4096.5')).toEqual({ bytesDone: 512, bytesTotal: 4097 });
+    expect(parseAcquisitionProgress('frame=  125 fps=30 q=-1.0 size=    1024KiB time=00:00:05.00 bitrate=1677.7kbits/s', 10)).toEqual({
+      bytesDone: 1024 * 1024,
+      bytesTotal: 2048 * 1024,
+    });
     expect(parseAcquisitionProgress('[download] 50%')).toBeNull();
   });
 });
