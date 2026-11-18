@@ -1,0 +1,3 @@
+interface:
+  display_name: "Aethera Semantic Media Acquisition"
+  short_description: "Semantic media search, verification, and fallback without cross-game recycling"

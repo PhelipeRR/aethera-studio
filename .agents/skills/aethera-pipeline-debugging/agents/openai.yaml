@@ -1,0 +1,3 @@
+interface:
+  display_name: "Aethera Pipeline Debugging"
+  short_description: "Trace Aethera job artifacts, contract propagation, and render logs"

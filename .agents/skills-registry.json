@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "sharedRoot": ".agents/skills",
-  "generatedAtIso": "2026-11-14T00:06:12.277Z",
-  "totalProjectSkills": 38,
+  "generatedAtIso": "2026-11-18T16:44:19.872Z",
+  "totalProjectSkills": 47,
   "packageSkills": [
     "node_modules/playwright-core/lib/tools/skills/playwright-cli/SKILL.md",
     "node_modules/playwright-core/lib/tools/skills/playwright-component-testing/SKILL.md",
@@ -675,6 +675,159 @@
         "hydrogen"
       ],
       "status": "shared_reused"
+    },
+    {
+      "id": "remotion-best-practices",
+      "name": "remotion-best-practices",
+      "description": "Router for Remotion video skills",
+      "path": ".agents/skills/remotion-best-practices/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "external_installed"
+    },
+    {
+      "id": "remotion-captions",
+      "name": "remotion-captions",
+      "description": "Transcribing, displaying and animating captions",
+      "path": ".agents/skills/remotion-captions/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "external_installed"
+    },
+    {
+      "id": "remotion-markup",
+      "name": "remotion-markup",
+      "description": "Content, animation and effects best practices",
+      "path": ".agents/skills/remotion-markup/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "external_installed"
+    },
+    {
+      "id": "remotion-render",
+      "name": "remotion-render",
+      "description": "Export Remotion videos, stills, or OTIO timelines",
+      "path": ".agents/skills/remotion-render/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "external_installed"
+    },
+    {
+      "id": "aethera-semantic-media-acquisition",
+      "name": "aethera-semantic-media-acquisition",
+      "description": "Acquire and validate per-scene media for Aethera Studio. Trigger when debugging missing coverage, incompatible B-roll/gameplay recycling, query generation, fallback ordering, or scene-grounding mismatches.",
+      "path": ".agents/skills/aethera-semantic-media-acquisition/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "project_internal"
+    },
+    {
+      "id": "aethera-audio-engineering",
+      "name": "aethera-audio-engineering",
+      "description": "Engineer music, semantic SFX, narration sync, and FFmpeg audio QA in Aethera Studio. Trigger when fixing empty music tracks, mismatched SFX, clipping, silence gaps, loudness (-14 LUFS), or narration-to-video timing.",
+      "path": ".agents/skills/aethera-audio-engineering/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "project_internal"
+    },
+    {
+      "id": "aethera-pipeline-debugging",
+      "name": "aethera-pipeline-debugging",
+      "description": "Debug Aethera Studio production failures and silent data loss. Trigger when inspecting cinema-jobs/*.job.json, cinema-projects/*.json, console logs, dropped fields (vfxPlan, humorBeats, transitionIn), or duration drift.",
+      "path": ".agents/skills/aethera-pipeline-debugging/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "project_internal"
+    },
+    {
+      "id": "aethera-audiovisual-qa",
+      "name": "aethera-audiovisual-qa",
+      "description": "Execute Aethera Studio 3-stage Quality Gates (Pre-assembly, Pre-render, Post-render). Trigger when validating scene coverage, timeline completeness, or inspecting rendered MP4 output.",
+      "path": ".agents/skills/aethera-audiovisual-qa/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "project_internal"
+    },
+    {
+      "id": "aethera-self-repair",
+      "name": "aethera-self-repair",
+      "description": "Perform targeted audiovisual self-repair with partial re-render. Trigger when Quality Gates detect scene, track, or interval defects after assembly or render.",
+      "path": ".agents/skills/aethera-self-repair/SKILL.md",
+      "hasOpenAiYaml": true,
+      "auxiliaryFiles": [
+        "agents/openai.yaml"
+      ],
+      "compatibleAgents": [
+        "claude",
+        "codex",
+        "antigravity",
+        "hydrogen"
+      ],
+      "status": "project_internal"
     }
   ]
 }

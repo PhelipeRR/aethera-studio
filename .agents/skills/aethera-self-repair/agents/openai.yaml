@@ -1,0 +1,3 @@
+interface:
+  display_name: "Aethera Self-Repair"
+  short_description: "Targeted defect localization, cache invalidation, and partial re-render"
