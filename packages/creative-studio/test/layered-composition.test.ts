@@ -6,6 +6,18 @@ import { describe, expect, it } from 'vitest';
 import type { ImageGenerationRequest } from '../src/image-generation-adapter.js';
 import { generateLayeredComposition } from '../src/layered-composition.js';
 import { buildVisualRecipe } from '../src/visual-recipe.js';
+import { buildOpenPoseGuideSvg } from '../src/spatial-guides.js';
+
+describe('cinematic pose guides', () => {
+  it('renders distinct deterministic pose guides for adjacent layers', () => {
+    const region = { x: 40, y: 20, width: 120, height: 180 };
+    const defaultGuide = buildOpenPoseGuideSvg(200, 240, [region]);
+    const variantGuide = buildOpenPoseGuideSvg(200, 240, [region], { variant: 1 });
+
+    expect(variantGuide).not.toBe(defaultGuide);
+    expect(buildOpenPoseGuideSvg(200, 240, [region], { variant: 1 })).toBe(variantGuide);
+  });
+});
 
 describe('layered composition', () => {
   it('generates a plate and one portrait per character with models held, cuts out in one batch and harmonizes', async () => {
@@ -60,5 +72,8 @@ describe('layered composition', () => {
     expect(requests[5]).toMatchObject({ strength: 0.4, controlNet: { model: 'openpose.safetensors', strength: 0.6 } });
     expect(result.layers.map((layer) => layer.seed)).toEqual([1001, 1102, 1203, 1304]);
     expect(result.layers.every((layer) => layer.cutoutPixels === 30_000)).toBe(true);
+    expect(new Set(requests.slice(1, 5).map((request) => request.controlNet?.imagePath)).size).toBe(4);
+    const stats = await sharp(result.image).stats();
+    expect(Math.min(...stats.channels.map((channel) => channel.min))).toBeLessThan(45);
   });
 });

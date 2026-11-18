@@ -10,6 +10,7 @@ import type {
   ExternalImageAdapter,
   ImageGenerationRequest,
   ImageUpscaleRequest,
+  DepthEstimationRequest,
   LocalizedInpaintRequest,
   SemanticEvaluationRequest,
   SemanticEvaluationResult,
@@ -214,6 +215,7 @@ export class LocalPythonAiAdapter implements ExternalImageAdapter {
         rationale: isOffTopic
           ? `CLIP multimodal detectou desalinhamento semântico (${(pos * 100).toFixed(1)}% positivo vs ${(neg * 100).toFixed(1)}% distrator "${parsed.best_negative ?? ''}").`
           : `CLIP multimodal confirmou aderência ao tema "${parsed.best_positive ?? ''}" (similaridade calibrada ${(pos * 100).toFixed(1)}% vs ${(neg * 100).toFixed(1)}% distrator).`,
+        evidenceScope: request.evidenceBbox ? 'localized' : 'generic',
       };
     } finally {
       rmSync(workDir, { recursive: true, force: true });
@@ -398,7 +400,25 @@ export class ProviderChainImageAdapter implements ExternalImageAdapter {
     throw new Error('Nenhum provedor de crítica visual anatômica disponível.');
   }
 
+  /** First available provider that estimates depth (the one able to apply a depth ControlNet). */
+  async estimateDepth(request: DepthEstimationRequest): Promise<Buffer> {
+    for (const p of this.providers) {
+      if (!p.estimateDepth || !(await p.isAvailable())) continue;
+      return p.estimateDepth(request);
+    }
+    throw new Error('Nenhum provedor de estimativa de profundidade disponível.');
+  }
+
   async inpaintRegion(request: LocalizedInpaintRequest): Promise<Buffer> {
+    if (request.controlNet || request.maskBuffer) {
+      // Spatially guided repairs go only to a provider that supports the guidance; a fallback that ignored the mask or
+      // the ControlNet would return a different repair under the same report.
+      for (const p of this.providers) {
+        if (!p.inpaintRegion || !p.estimateDepth || !(await p.isAvailable())) continue;
+        return p.inpaintRegion(request);
+      }
+      throw new Error('Nenhum provedor de reparo localizado com ControlNet disponível.');
+    }
     for (const p of this.providers) {
       if (!p.inpaintRegion) continue;
       if (!(await p.isAvailable())) continue;

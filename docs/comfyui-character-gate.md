@@ -123,17 +123,397 @@ Evidências em `artifacts/comfyui-character-gate-acceptance/run-2026-11-17T1208/
 - `*-before.png` e `*-after.png`
 - `*-attempt<n>-<veredicto>-seed<s>.png`
 
-## Revisão visual do agente (não substitui a do usuário)
+## Revisão visual do agente do CS9 (histórica; não substitui a do usuário)
 
-- **T1217 duo (passed):** o personagem da direita aparece **semi-transparente** e se mistura ao céu. O gate não mede opacidade ou "fantasma", então isso é um possível falso positivo que precisa da revisão humana.
+- **T1217 duo (passed):** o personagem da direita aparecia **semi-transparente** e se misturava ao céu. Essa limitação foi coberta pelo detector de alfa explícito do CS10.
 - **Duos:** nenhum mostra katana ou lança. A aderência à descrição é fraca e não é avaliada pelo gate.
 - **Grupos de 8 em camadas:** os 8 personagens estão distintos e legíveis, o que é uma melhora grande sobre o "antes" ilegível. Os problemas são poses rígidas em fila, pés às vezes "flutuando" sobre o cenário e adesão parcial às descrições.
 - **Trios aprovados:** ficaram limpos. O trio rejeitado (T1217 #1) tinha de fato um 4º personagem e pedestres.
 
-## Pendências
+## Pendências históricas do CS9
 
-- Detectar personagens translúcidos ou fantasmas, por exemplo pela opacidade da máscara versus o fundo.
-- Avaliar aderência à descrição (CLIP/WD14 por região).
-- Variar poses nas camadas e aterrar os pés com sombra de contato.
 - Detector anime dedicado (deepghs), que precisa de autorização para download.
 - Banners estilizados com evidência só de rosto continuam em `needs_review`, o que é intencional.
+
+## CS10 — Semantic Scene Gate e composição cinematográfica
+
+O CS10 está integrado ao mesmo `runCharacterCompositionGate`; não existe um
+segundo pipeline. Quando `semanticGate.enabled` está ativo, cada tentativa
+registra separadamente:
+
+- `count`: contagem, figurantes, regiões vazias, sobreposição, anatomia e área segura;
+- `semantic`: critérios derivados somente do prompt por cena/personagem, objetos,
+  roupas, acessórios, poses e ações;
+- `visualQuality`: métricas do crítico visual local, artefatos localizados,
+  coerência física, composição e identidade.
+
+Os critérios são avaliados com o CLIP local já disponível (`local-clip-vit-base-patch32`)
+em crops regionais e na imagem completa. A inspeção local já existente também é
+reutilizada. O gate não baixa modelos nem instala pesos adicionais.
+
+Política de evidência:
+
+- objeto não mencionado não vira requisito;
+- ausência de detecção, score inconclusivo, evaluator indisponível e recorte
+  potencialmente incompleto viram `needs_review`;
+- somente contradição semântica forte ou defeito objetivo comprovado (como uma
+  máscara explicitamente semi-transparente) pode gerar `rejected`;
+- `passed_pending_human_review` continua exigindo aprovação visual humana.
+
+Quando existe um bbox acionável, o runner pode fazer uma única correção
+localizada via `inpaintRegion`, reavaliar a imagem e preservar tanto a imagem
+original rejeitada quanto a reparada, com seed e prompt registrados. A
+composição em camadas agora usa variações determinísticas de OpenPose,
+profundidade, iluminação compartilhada e sombras de contato reaplicadas após a
+harmonização.
+
+O acceptance script CS10 usa os mesmos casos de dupla, trio e oito personagens
+e grava `schemaVersion: cs10-semantic-scene-gate-v1`, contact sheet com os três
+eixos, `report.json`, PNGs antes/depois e todos os artefatos rejeitados em
+`artifacts/comfyui-character-gate-acceptance/<run-id>/`. O relatório registra
+explicitamente indisponibilidade de modelos/evaluators; não fabrica evidência
+de conformidade.
+
+### Aceitação real CS10 — `run-2026-11-17T1348`
+
+| Caso | Contagem | Semântica | Qualidade visual | Veredicto do gate |
+|---|---|---|---|---|
+| 2 personagens | `needs_review` — 2 detectados | `needs_review` — evidência insuficiente | `passed_pending_human_review` | `needs_review` |
+| 3 personagens | `passed_pending_human_review` — 3 detectados | `passed_pending_human_review` | `needs_review` — métrica visual fraca | `needs_review` |
+| 8 personagens | `needs_review` — 8 detectados, baixa concordância | `needs_review` — evidência insuficiente | `passed_pending_human_review` | `needs_review` |
+
+Os três pares foram gerados com modelos locais na RTX 4060 Ti, sem download de
+pesos adicionais; todos os arquivos referenciados no relatório existem e
+`humanReview.status` permanece `pending`. A contact sheet mostra a melhora
+visual do caso de 8 personagens com composição em camadas, mas não substitui a
+aprovação visual final.
+
+### CS10 — evidência por atributo e reparo regional real — `run-2026-11-17T1611`
+
+Esta reexecução usa o schema `cs10-attribute-evidence-repair-v2`. As imagens
+originais foram avaliadas pelo mesmo `ProviderChainImageAdapter` usado pelo
+gate, corrigindo a lacuna da execução anterior em que os evaluators semântico e
+visual não estavam disponíveis no modo *before*. O relatório, o contact sheet
+e todas as imagens de auditoria estão em:
+
+`artifacts/comfyui-character-gate-acceptance/run-2026-11-17T1611/`
+
+`humanReview.status` continua `pending`. Os eixos abaixo são evidência de
+detector, não aprovação final:
+
+| Cenário | Original: contagem / semântica / qualidade | Gate final: contagem / semântica / qualidade | Resultado dos reparos | Motivo final de `needs_review` |
+|---|---|---|---|---|
+| 2 personagens (`31001`) | `needs_review` / `needs_review` / `passed_pending_human_review` | `needs_review` / `needs_review` / `passed_pending_human_review` | Katana localizada executada, **rejeitada** pela regressão: score `0,5625 → 0,5846`, ainda incerto | personagem 1 subdimensionado e evidência insuficiente para katana, espada, armadura, lenço, pose; também lança/armadura/guarda do personagem 2 |
+| 3 personagens (`31002`) | `passed_pending_human_review` / `needs_review` / `needs_review` | `passed_pending_human_review` / `needs_review` / `needs_review` | Rifle localizado **aplicado**: score `0,7190 → 0,7727`, margem `0,0335 → 0,0818`; casaco localizado executado e **rejeitado**: `0,7032 → 0,6629` | evidência do casaco permanece incerta e a qualidade visual continua abaixo do limite automático |
+| 8 personagens (`31003`) | `needs_review` / `needs_review` / `needs_review` | `needs_review` / `needs_review` / `passed_pending_human_review` | Techwear localizado executado e **rejeitado**: score `0,6954 → 0,6884`; composição em camadas foi preservada | contagem com baixa concordância, várias roupas/acessórios sem evidência localizada suficiente; a melhoria de qualidade não elimina a revisão humana |
+
+Detalhes verificáveis dos reparos:
+
+- `duo`: `character-1-object-katana`, região `0`, bbox `{x:84,97,y:112,60,w:563,06,h:554,70}`, seed `1505161448`; regressão `failed` somente por `target_attribute_not_confirmed`. A imagem reparada e a diferença foram preservadas, mas a imagem original continuou sendo a escolhida.
+- `trio`: `character-3-object-rifle`, região `2`, bbox `{x:893,85,y:112,60,w:371,30,h:554,70}`, seed `1925846911`; regressão `passed`, alteração fora do bbox `3,84%`, identidade `94`; reparo adotado. `character-3-wardrobe-coat`, seed `127411626`, regressão `failed` por atributo não confirmado.
+- `eight`: `character-1-wardrobe-techwear`, região `0`, bbox `{x:75,46,y:321,66,w:124,08,h:320,74}`, seed `1417852993`; regressão `failed` por atributo não confirmado. A placa em camadas não foi regenerada.
+
+Cada reparo possui máscara, imagem antes, imagem candidata, diferença antes/depois,
+seed, prompt localizado e referências persistidas no `report.json`. O reparo
+regional só é adotado quando o atributo-alvo é confirmado e a regressão fora da
+região permanece dentro da política; ausência ou score inconclusivo continua
+como `needs_review`, sem reduzir thresholds.
+
+Contact sheet: `contact-sheet-before-after-gate.png`.
+
+### CS10 — prioridade de escala e retentativa regional — `run-2026-11-17T1729`
+
+Após a auditoria do `run-2026-11-17T1611`, o runner passou a priorizar a falha
+objetiva `undersized_character` antes de atributos incertos e a repetir a mesma
+região com variante auditável (`:retryN`, seed e prompt próprios) quando a
+correção de escala é rejeitada (commit `79ac6dd`). Thresholds inalterados;
+`humanReview.status` continua `pending`. Artefatos em
+`artifacts/comfyui-character-gate-acceptance/run-2026-11-17T1729/`.
+
+| Cenário | Original: contagem / semântica / qualidade | Gate final | Reparos | Motivo final de `needs_review` |
+|---|---|---|---|---|
+| 2 personagens (`31001`) | `needs_review` (`undersized_character`) / `needs_review` / `passed_pending_human_review` | igual ao original; imagem final = original | 3 inpaints da região `0` (seeds `2709488337`, `2020167405`, `160546862`), todos **rejeitados** por `count_placement_not_corrected`; alteração fora do bbox ≈ 3,8–4,0% | personagem 1 continua subdimensionado; 11 critérios semânticos sem evidência |
+| 3 personagens (`31002`) | `passed_pending_human_review` / `needs_review` / `needs_review` | mesma contagem/semântica/qualidade | rifle **aplicado** (`0,7190 → 0,7727`, seed `1925846911`); casaco **rejeitado** (`0,7032 → 0,6629`) | casaco e jaquetas/acessórios sem evidência; `weak_visual_quality_metric` |
+| 8 personagens (`31003`) | `needs_review` (6 motivos de contagem) / `needs_review` / `needs_review` | `needs_review` (`low_detector_agreement`) / `needs_review` / `passed_pending_human_review` | techwear (`0,6954 → 0,6884`), visor (`0,7423 → 0,6627`) e jaqueta (`0,6320 → 0,6773`, abaixo do limite) **rejeitados**; composição em camadas preservada | baixa concordância dos detectores; roupas/acessórios sem evidência localizada |
+
+Conclusões técnicas desta rodada (não são aprovação):
+
+- **Inpaint regional não corrige escala.** Com `repairStrength` 0,48 o
+  inpaint preserva a silhueta original; as três variantes mantiveram a altura
+  do personagem 1 do duo. Corrigir escala exige outra estratégia (recompor a
+  camada do personagem ou inpaint com força/máscara maiores), não mais
+  retentativas iguais.
+- **As retentativas de contagem consomem todo o orçamento de reparo.** Com
+  `maxLocalizedRepairs = 3` e prioridade fixa da contagem, o duo nunca chegou a
+  reparar atributos incertos. A variante `retry2` chegou a acrescentar espadas
+  visíveis ao personagem 1, mas foi descartada porque o critério-alvo era a
+  escala. Pendência: limitar retentativas de contagem para liberar ao menos um
+  reparo semântico.
+- O ganho visual do caso de 8 personagens vem da composição em camadas; os
+  reparos de atributo nesse caso não confirmaram evidência e foram revertidos.
+
+### CS10 — reparo de escala por silhueta — `run-2026-11-17T1837` (duo)
+
+Correção das duas pendências acima:
+
+- **Estratégia `rescale_then_inpaint`.** Para `undersized_character`, o runner
+  recorta o próprio personagem detectado, extrai a silhueta com
+  `removeBackground`, amplia dentro da região planejada (alvo 80% da altura,
+  ancorado nos pés, sem sair da região) e só então faz um inpaint de
+  harmonização (força `0,42`; retentativa `0,55`). Sem `removeBackground`, ou
+  com recorte de cobertura implausível (<5% ou >90%), a ampliação é pulada e
+  registrada em `rescaleSkippedReason`; o retângulo bruto nunca é colado.
+- **Guarda de emenda (`visible_paste_seam`).** A regressão mede o degrau de
+  luminância nas bordas da colagem que ficam dentro da região. Reprova se o
+  degrau sobe mais de 10 e passa de 1,8× o original. Motivo: uma primeira
+  versão colou o retângulo inteiro (`run-2026-11-17T1821`). O gate aprovou
+  contagem e regressão, mas a imagem mostrava um painel de bordas duras. Esse
+  falso positivo, medido offline, teria degrau `4,2 → 31,9` e agora é reprovado.
+- **Limite de 2 reparos de contagem por personagem**, liberando o restante do
+  orçamento (`maxLocalizedRepairs = 3`) para atributos.
+
+| Reparo | Estratégia | Resultado |
+|---|---|---|
+| `count:undersized_character:0`, seed `2709488337` | `rescale_then_inpaint`, escala `2,22×`, força `0,42` | **aplicado**: contagem `needs_review → passed_pending_human_review`; emenda `6,37 → 4,25`; alteração fora do bbox `3,7%`; identidade `87` |
+| `character-1-object-katana`, seed `1505161448` | inpaint `0,48` | rejeitado: `0,6403 → 0,6397` |
+| `character-1-object-sword`, seed `3590644849` | inpaint `0,48` | rejeitado: `0,6559 → 0,6391` |
+
+Revisão visual do agente (não substitui a humana): o personagem 1 passou a
+ocupar a profundidade planejada, integrado ao cenário, sem painel e com a mesma
+identidade; o personagem 2 ficou intacto. Continua `needs_review` porque as
+armas exigidas (katana/espada, lança) não aparecem e a semântica segue sem
+evidência; o gate não as confirma, corretamente. `humanReview.status` = `pending`.
+
+### CS10 — investigação: inserir katana/lança por reparo regional
+
+Investigação sem mudança de código de produto. Base: `duo-after.png` do
+`run-2026-11-17T1837` (escala já corrigida). Evidências, contact sheets e
+`probe.json` estão em
+`artifacts/cs10-object-repair-investigation/2026-11-17T1901/`. Thresholds
+inalterados; o duo continua `needs_review` e `humanReview.status=pending`.
+
+**Por que os reparos de objeto sempre falham hoje — duas causas independentes:**
+
+1. **Geração: o prompt de reparo não tem contexto.** O gate pede
+   `Repair only this region so it clearly shows: katana`. Com esse prompt e
+   força 0,48, nenhuma arma aparece (variante `c1-a`). O mesmo bbox e a mesma
+   força, com o prompt do personagem em tags
+   (`1girl, …, holding katana, katana raised, drawn sword`), colocam a espada
+   na mão em **3/3 seeds** (`r2-c1-gate-0.48-rich-*`) e preservam rosto,
+   cachecol e vestido. A pose "katana erguida" não foi obtida.
+   - A lança exige mais força. Com 0,48–0,55 em toda a região, 0/3. Com 0,70
+     em toda a região, a lança aparece, mas o personagem é recriado, de costas
+     (`c1-d/e`, `c2-c`).
+   - Com uma **máscara de corpo que exclui a cabeça** (a partir de ~18% da
+     altura da figura) e força 0,60–0,70, a lança aparece em **3/4 seeds**
+     com a identidade preservada (`r2-c2-body-*`).
+2. **Verificação: o avaliador local não distingue armas finas.** O CLIP
+   ViT-B/32 (`vision_worker.py evaluate-semantic`) erra nos dois sentidos:
+   - `sword` com espadas **visíveis**: `0,7357 / margem 0,0463`, não confirma.
+   - `anime girl holding a sword` na imagem **sem** espadas:
+     `0,7131 / 0,063`, **confirma (falso positivo)**.
+   - Espada adicionada de fato em `c1-b`: o score muda só `+0,005`.
+   - Atributos visíveis também ficam `uncertain` no recorte grande do gate:
+     cachecol `0,6409 / −0,049` e armadura do personagem 2
+     `0,5945 / −0,073`.
+   - O `CLIP-ViT-H-14` local é só o encoder visual (IP-Adapter), sem a torre
+     de texto, então não serve para verificar.
+   - Conclusão: hoje um reparo de objeto bem-sucedido é sempre descartado como
+     `target_attribute_not_confirmed`. Reduzir thresholds não resolve, porque
+     o mesmo avaliador também confirma objetos ausentes.
+
+**Recomendações (pendentes de decisão):**
+
+- Reparo de objeto: usar o prompt do personagem em tags com `holding <objeto>`,
+  negativo `from behind, back view`, máscara de corpo sem a cabeça e escada de
+  força 0,48 → 0,60 → 0,70.
+- Verificação, sem baixar thresholds. Há duas opções:
+  - (a) adicionar um detector local de vocabulário aberto (por exemplo, OWLv2
+    ou Grounding DINO). Exige baixar um modelo novo.
+  - (b) manter o reparo como **alternativa proposta**, com máscara, seed,
+    prompt e diff, para escolha humana. Nesse caso o veredicto continua
+    `needs_review` e a imagem escolhida pelo gate não muda sem aprovação.
+
+### CS10 — reparo de objeto como alternativa para revisão — `run-2026-11-17T1935` (duo)
+
+Decisão do usuário: reparos que o avaliador local não consegue verificar viram
+**alternativas propostas** para revisão humana. Nenhum threshold foi alterado.
+
+- **Status `proposed`.** Vale quando a única objeção da regressão é
+  `target_attribute_not_confirmed`. O reparo é salvo com máscara, seed, prompt,
+  imagem candidata e diff, mas **não é adotado**: a imagem escolhida e o
+  veredicto do gate não mudam. Qualquer outra objeção mantém `failed`: mudança
+  excessiva fora do bbox, atributo confirmado perdido, qualidade rejeitada ou o
+  novo `attribute_became_contradicted` (um critério passa a `failed`).
+- **Estratégia `object_inpaint`.** Um reparo por personagem cobre todos os seus
+  objetos não confirmados (por exemplo, katana e espada). Prompt: o prompt do
+  personagem + `holding <objeto>`. Negativo: acrescenta
+  `from behind, back view, …`. Máscara: corpo de 18% a 85% da altura da figura,
+  sem a cabeça, até ±0,5 da largura. Força: `0,60`.
+- **Prioridade.** Objetos obrigatórios de todos os personagens vêm antes de
+  roupa e pose. Corrigido um bug: ao montar candidatos, os critérios de objeto
+  eram marcados como tentados mesmo quando o reparo de escala vencia a
+  iteração. Por isso o `run-2026-11-17T1920` gastou o orçamento em armadura e
+  cachecol.
+- O script de aceitação passou a incluir o status do reparo no nome dos
+  arquivos (`repairN-<status>-…`).
+
+| Reparo | Resultado | Revisão visual do agente |
+|---|---|---|
+| `count:undersized_character:0` (`rescale_then_inpaint`, 0,42) | **aplicado** | personagem 1 na escala planejada, como no `T1837` |
+| `character-1-object-katana` (`object_inpaint`, 0,60, seed `1496267052`, bbox `105,221 531×366`) | **proposto**; CLIP `0,6403 → 0,6845`, não confirmável; fora do bbox `3,3%`; identidade `95` | duas lâminas visíveis (uma na mão, outra ao lado); rosto, cabelo, cachecol e vestido preservados; a pose "katana erguida" continua ausente |
+| `character-2-object-spear` (`object_inpaint`, 0,60, seed `1811965181`, bbox `832,178 292×425`) | **proposto**; CLIP `0,6152 → 0,6480`; fora do bbox `3,3%`; identidade `94` | lança visível, mas **fincada no chão ao lado**, não "em guarda"; armadura mais definida; identidade preservada |
+
+Cada proposta parte da imagem adotada (já com a escala corrigida), de forma
+independente. Para usar as duas armas, é preciso escolher e combinar na revisão
+humana. Arquivos: `artifacts/comfyui-character-gate-acceptance/run-2026-11-17T1935/`
+(`*-proposed-repaired-*`, `review-proposals.png`). Veredicto `needs_review`;
+`humanReview.status=pending`.
+
+### CS10 — relação personagem↔arma e árvore de propostas — `run-2026-11-17T2003` / `T2021` (duo)
+
+**O que mudou** (`src/object-relations.ts`, `src/character-gate-runner.ts`):
+
+- **Relações do prompt original.** `parseObjectRelations` lê, por personagem, objeto, colocação (`in_hand`/`on_shoulder`/`on_back`/`sheathed`), orientação (`raised`/`guard`/`lowered`/`aimed`) e mão (`left`/`right`/`both`). Não inventa relação: "warrior with katana" fica sem pose exigida.
+- **Presença ≠ pose.** `assessObjectRelation` separa `presence` (`detected`/`weak`/`not_detected`) de `grip`, `hand` e `orientation`. O objeto é localizado como uma nova estrutura reta (Sobel + Hough, deduplicada por proximidade de segmento) dentro da máscara. O pulso vem do OpenPose.
+  - Katana `raised`: a lâmina precisa estar na mão (distância ao pulso ≤ 0,06 h), com a ponta acima dos ombros e até 50° da vertical. Apontar para baixo é `violated`.
+  - Lança `guard`: precisa estar na mão, entre 12° e 70° da horizontal, com a ponta para cima. Lança em pé (> 80°) é `violated`.
+  - Mão errada, quando o prompt nomeia a mão, é `violated`.
+  - Um segmento mais curto que a extensão mínima do objeto vira `presence: weak`, e a relação fica `uncertain` (não confirma nem rejeita). A extensão mínima é katana/espada 0,30 h e lança 0,45 h.
+- **Máscara regional orientada pela relação.** `planObjectRepairMask` cobre mãos e empunhadura (±0,09 h), mais o espaço que a orientação exige: coluna acima da cabeça para `raised`, faixa lateral para `guard`. O rosto entra em `protectRects` (YOLO face ou nariz do OpenPose, ×1,3), e o ComfyUI o pinta de preto na máscara. Sem pose, cai para a máscara do corpo (`maskBasis: 'figure'`).
+- **Prompt e negativos derivados da relação.** Exemplos: "holding katana … raised overhead, blade pointing up" e "spear held diagonally across the body in guard stance". Os negativos incluem sheathed, empty hands e planted in the ground.
+- **Reparo de objeto com relação violada → `failed`** (`object_relation_violated:*`). Ganha uma segunda seed por personagem (`:retry1`), dentro do orçamento. O teto do runner passou para 6 reparos, e o padrão do serviço para 5.
+- **Combinação sequencial.** Considera as propostas de objeto de personagens diferentes, calculadas a partir da imagem adotada e sem relação violada. São reaplicadas, com as mesmas seed, máscara e prompt, sobre uma cópia da base. Depois de cada passo, o runner reavalia:
+  - todos os atributos confirmados antes (`confirmed_attribute_lost`);
+  - a sobrevivência das armas anteriores pelo suporte de borda do segmento (≥ 60%; senão `object_removed`);
+  - as relações reavaliadas (`combined_relation_violated`);
+  - a contagem (`combined_count_regressed`);
+  - a qualidade.
+  Qualquer regressão rejeita a combinação. As propostas individuais ficam intactas.
+- **Árvore de propostas** em `attempt.proposalTree`. Nós `base`, `repair` e `combination`, cada um com `parentId`, `dependsOn`, `operations` (prompt, negativo, bbox, protectRects, seed, strength), imagem, máscara, diff, relações, status e motivos. Todo nó tem `requiresHumanApproval: true`. Nenhuma proposta ou combinação é adotada. O veredito fica `needs_review`, e o relatório mantém `humanReview.status=pending`.
+
+**Testes (primeiro, todos verdes):** `object-relations.test.ts` (15) e `character-gate-runner.test.ts` (26). Cobrem:
+- objeto presente mas não empunhado;
+- arma na mão errada;
+- orientação contrária ao prompt (katana para baixo, lança fincada);
+- segmento curto demais (cabelo/braço);
+- máscara sobre as mãos com o rosto protegido;
+- combinação válida registrada na árvore;
+- segunda operação que apaga a primeira arma (`object_removed`);
+- duas propostas válidas cuja combinação regride (`combined_count_regressed`).
+
+Conjunto do gate: 64/64 (`character-gate-runner`, `character-gate`, `layered-composition`, `quality-gate-visual-focus`, `semantic-scene-gate`, `object-relations`). `tsc --noEmit` limpo.
+
+**Execução real (mesma seed 31001, mesma base corrigida na escala):**
+
+| Nó | T2003 (antes da extensão mínima) | T2021 (final) | Revisão visual |
+|---|---|---|---|
+| base (escala aplicada) | adotada | adotada | personagem ampliada e integrada; sem armas |
+| katana (`repair-2`) | proposed, relação `satisfied` | proposed, `presence: weak` → `uncertain` | **sem katana**: armadura e cachecol refeitos. O segmento de 113 px (0,21 h) era a borda do cabelo |
+| lança (`repair-3`) | failed, `object_upright_not_in_guard` | proposed, `presence: weak` → `uncertain` | **sem lança**: armadura de placas e um cabo curto na mão. O segmento era a borda do braço |
+| lança retry (`repair-4`, só T2003) | failed, upright + grip ambíguo | — | haste fina do quadril ao chão (fincada) |
+| combinação 2+3 (só T2021) | — | proposed, sem regressão | as duas edições coexistem; **nenhuma arma visível** |
+
+Comparação visual: `run-2026-11-17T2021/proposal-tree-comparison.png`.
+
+**Conclusões e limites:**
+- O T2003 mostrou um falso positivo geométrico: uma borda curta de cabelo junto às mãos "satisfazia" a katana erguida. A correção endureceu a verificação (extensão mínima por objeto) em vez de afrouxá-la. Nenhum threshold de CLIP ou do gate foi alterado.
+- A infraestrutura (relações, máscara, combinação, árvore) funciona. O gargalo continua sendo o inpaint do animagine-xl a 0,6 de denoise, que não desenha uma arma longa e fina na máscara. Ele reinterpreta "holding X" como armadura e acessórios. O duo **não** cumpre katana erguida nem lança em guarda.
+- A localização por bordas retas pode confundir o objeto com bordas do corpo. Por isso, sem extensão suficiente, o resultado é `uncertain` e vai para revisão humana. O CLIP ViT-B/32 continua incapaz de confirmar armas finas.
+- O `protectRects` reduz, mas não elimina, mudanças no cabelo: o `growMaskBy` e a mistura do VAE ainda tocam a borda do rosto.
+- Próximo passo técnico sugerido: guiar a forma da arma (ControlNet de linha/OpenPose com a haste desenhada, ou colagem de um recorte de arma seguida de harmonização) em vez de pedir só por texto.
+
+### CS10 — investigação: ControlNet para dar forma à arma — `artifacts/cs10-controlnet-weapon-probe/2026-11-17T2050`
+
+**Pergunta:** o inpaint só por texto não desenha armas longas e finas (T2003/T2021). Um ControlNet que já recebe a geometria da arma resolve?
+
+**Disponível localmente:** sem download. Há `xinsir-controlnet-depth-sdxl-1.0`, `thibaud-controlnet-openpose-sdxl-1.0`, Depth Anything V2 Large (`comfyui_controlnet_aux`) e `ControlNetApplyAdvanced`. Não há ControlNet canny/lineart SDXL instalado.
+
+**Método** (sonda fora do runner; base = imagem adotada do T2021, seed 31001, animagine 24 passos, cfg 5,5, euler_ancestral):
+1. Mapa de profundidade da base (Depth Anything V2, 1024).
+2. A arma é desenhada no mapa como a superfície mais próxima, seguindo a relação do prompt:
+   - katana: empunhadura nas mãos (OpenPose), lâmina de 0,5 h a 28° da vertical, para longe do rosto, com tsuba;
+   - lança: diagonal de 24° pelas duas mãos, ponta para cima e à frente.
+3. Máscara estreita: linha + 28 px, círculo nas mãos, rosto protegido. Fora da máscara, os pixels voltam da base.
+4. Variantes:
+   - A: depth 0,9, denoise 0,6;
+   - B: depth 1,0 até 90%, denoise 0,75;
+   - C: traço cinza neutro pintado na imagem inicial como sugestão de pixels, mais depth 0,9 e denoise 0,6.
+
+**Resultado:**
+
+| Variante | Katana (visual) | Lança (visual) |
+|---|---|---|
+| A | lâmina sai de trás do ombro, sem continuidade com a mão; ponta fraca | haste escura sólida, diagonal, ponta para cima |
+| B | empunhadura com tsuba na mão, lâmina erguida passando a cabeça | idem A, mais definida |
+| C | **melhor**: mão fechada na empunhadura, guarda visível, lâmina contínua até a ponta | haste translúcida ("fantasma") |
+
+Suporte de borda ao longo da linha planejada; uma linha deslocada 30 px serve de controle:
+
+| | base | A | B | C | linha deslocada |
+|---|---|---|---|---|---|
+| katana | 0,26 | 0,57 | 0,75 | 0,83 | ≤ 0,05 |
+| lança | 0,03 | 0,77 | 0,78 | 0,70 | ≤ 0,04 |
+
+Por terços, do cabo à ponta:
+- katana A: 0,59 / 0,78 / **0,31** (lâmina incompleta, como se vê);
+- katana C: 0,78 / 0,88 / 0,90;
+- lança B: 0,83 / 0,52 / 0,98 (o terço do meio cruza a calça escura).
+
+**Combinação sequencial:** lança B aplicada sobre a katana C, com a mesma máscara, seed e controle. O suporte da katana fica 0,83 → 0,83 e o da lança 0,78 → 0,78; nenhuma remove a outra. Comparação: `controlnet-comparison.png` (base / katana C / lança B / combinada).
+
+**Conclusões:**
+- **Presença e orientação: resolvidas pelo depth ControlNet com a arma desenhada no mapa.** Em 6 de 6 saídas a arma aparece na linha planejada, coisa que o texto sozinho nunca conseguiu. Para lâminas claras contra o céu, o traço como sugestão (C) melhora a continuidade. Contra fundo escuro (lança), ele vira translucidez, então a sugestão deve depender do contraste local.
+- **Empunhadura: só parcialmente.** O depth guia o objeto, não a mão. A katana C ficou de fato empunhada, mas na lança as mãos não se fecham sobre a haste: ela passa rente ao punho esquerdo, a 0,04 h. "Guarda" de verdade (braços erguidos segurando a haste) e "katana erguida acima da cabeça" exigem mudar o braço. O caminho é OpenPose ControlNet (já instalado) com os keypoints do braço reposicionados, combinado ao depth.
+- **Verificação:** a busca cega por Hough perdeu a maioria das armas visíveis (lâmina fina contra o céu claro, haste escura contra roupa escura). Com ControlNet a posição esperada é conhecida, então a verificação certa é o **suporte de borda ao longo da linha planejada, por terços** (cabo, meio, ponta), contra a base e uma linha deslocada de controle. Isso se soma à distância do pulso redetectado. Isso não reduz nenhum limiar: é uma medida nova, com controle negativo.
+- **Defeito encontrado em `assessObjectRelation`:** para armas longas seguradas no meio da haste, a ponta é escolhida como a extremidade mais distante do pulso, o que é instável perto do empate (lança A deu `guard_ambiguous`, lança B `satisfied`). Para `guard` e `raised`, a ponta deve ser a extremidade superior.
+- A proximidade do pulso não prova que a mão está fechada. Um ponto de contato ainda depende de revisão humana.
+
+### CS10 — estratégia `object_controlnet` integrada e execução real — `run-2026-11-17T2122`
+
+Os itens 1, 2 e 4 da investigação foram implementados no runner, sem criar um
+motor paralelo:
+
+1. `estimateDepth` atravessa o adapter ComfyUI e o provider chain; a profundidade
+   recebe a linha geométrica da arma e o inpaint usa `ControlNetApplyAdvanced`.
+2. A máscara editável é estreita, cobre a linha e a empunhadura, protege o rosto
+   e reaplica um prior de pixels somente quando o contraste local o favorece.
+3. A verificação mede suporte de borda ao longo da linha planejada, por terços,
+   comparando com a imagem-base e uma linha deslocada de controle.
+4. A ponta é definida pela extremidade superior para relações `raised`/`guard`,
+   evitando o falso positivo causado por empunhadura no meio da haste.
+5. Falha na preparação do ControlNet não faz downgrade para inpaint textual;
+   a tentativa fica `failed` com o erro preservado. Terços incompletos ou grip/
+   orientação incertos ficam `proposed`, e a árvore persiste referências dos
+   PNGs de máscara e depth-control para replay posterior.
+
+O run real foi servido por `comfyui-native`, com o modelo
+`xinsir-controlnet-depth-sdxl-1.0.safetensors` e `fallbackUsed=false`. As duas
+operações `object_controlnet` foram executadas e persistidas na árvore de
+propostas; a combinação sequencial também reaplicou as duas operações no mesmo
+duo. O resultado correto permaneceu `needs_review`, com
+`humanReview.status=pending`.
+
+| Proposta | Evidência registrada | Revisão visual |
+|---|---|---|
+| `repair-2` — katana | `failed`; linha renderizada, suporte `1 / 1 / 1`, mas `grip=violated` | A lâmina aparece próxima da personagem, sem empunhadura confiável; não foi adotada |
+| `repair-3` — retry da katana | `proposed`; `0,913 / 0,935 / 0,13`, `grip=satisfied`, ponta incompleta | A arma fica parcialmente visível; ainda exige revisão humana |
+| `repair-4` — lança | `proposed`; `1 / 0,235 / 0`, `grip=satisfied` pela geometria, objeto incompleto | A haste atravessa a composição e não fecha nas mãos; parece flutuante, não guarda válida |
+| `combination-3-4` | `proposed`; ambas as relações `uncertain`/`incomplete` | As duas edições coexistem, mas a composição não comprova empunhadura |
+
+Evidências visuais preservadas em
+`artifacts/comfyui-character-gate-acceptance/run-2026-11-17T2122/`:
+
+- `duo-before.png` — imagem original adotada;
+- `duo-after-attempt1-repair*-{original,repaired,difference,mask}-*.png` —
+  cada reparo, inclusive o rejeitado;
+- `duo-after-attempt1-tree-combination-3-4-proposed-image-*.png` — combinação;
+- `contact-sheet-before-after-gate.png` — comparação completa;
+- `artifacts/cs10-controlnet-weapon-probe/2026-11-17T2050/` — depth map,
+  máscaras, planejamento geométrico e comparação das variantes.
+
+O ControlNet depth resolve presença e orientação com muito mais consistência
+que o texto sozinho, mas não reposiciona braços nem fecha a mão na haste. O
+próximo passo técnico continua sendo combinar depth com OpenPose ControlNet e
+keypoints de braço reposicionados para `raised`/`guard`; como esse controle não
+foi aplicado neste run, nenhuma proposta foi aprovada automaticamente.

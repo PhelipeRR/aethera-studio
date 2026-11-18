@@ -760,7 +760,19 @@ export class AetheraCreativeStudioService {
      * Character Composition Gate for multi-character scenes (default on): local detectors, verdict, automatic retries
      * with new seeds and strategies. `false` disables it; an object tunes it.
      */
-    characterGate?: boolean | { maxAttempts?: number; retryOnNeedsReview?: 'never' | 'actionable' | 'always'; largeGroupThreshold?: number; layered?: boolean };
+    characterGate?: boolean | {
+      maxAttempts?: number;
+      retryOnNeedsReview?: 'never' | 'actionable' | 'always';
+      largeGroupThreshold?: number;
+      layered?: boolean;
+      /** CS10 semantic/quality gate is on by default; set false only for an explicit compatibility run. */
+      semantic?: boolean;
+      localizedRepair?: boolean;
+      repairUncertainAttributes?: boolean;
+      maxLocalizedRepairs?: number;
+      /** Depth ControlNet guidance for object repairs (on when ComfyUI has a depth ControlNet; false disables it). */
+      objectControlNet?: boolean;
+    };
     /** Opt-in negative photobombing slider on multi-character scenes (off by default: it can erase the cast). */
     crowdSuppression?: boolean;
     assetManifest?: Record<string, ManagedAssetRef>;
@@ -842,8 +854,15 @@ export class AetheraCreativeStudioService {
             detector: this.characterGateDetector,
             requiredProviderId: this.comfyUiAdapter.id,
             poseControlNetModel: gateSettings.layered === false ? null : await this.comfyUiAdapter.findPoseControlNet().catch(() => null),
+            depthControlNetModel: gateSettings.objectControlNet === false ? null : await this.comfyUiAdapter.findDepthControlNet().catch(() => null),
             holdModels: (work) => this.comfyUiAdapter.withModelsHeld(work),
             cutoutBatch: (paths) => this.batchCutout.cutout(paths),
+            semanticGate: {
+              enabled: gateSettings.semantic !== false,
+              localizedRepair: gateSettings.localizedRepair !== false,
+              repairUncertainAttributes: gateSettings.repairUncertainAttributes !== false,
+              maxLocalizedRepairs: gateSettings.maxLocalizedRepairs ?? 5,
+            },
             ...(gateSettings.maxAttempts !== undefined ? { maxAttempts: gateSettings.maxAttempts } : {}),
             ...(gateSettings.retryOnNeedsReview ? { retryOnNeedsReview: gateSettings.retryOnNeedsReview } : {}),
             ...(gateSettings.largeGroupThreshold !== undefined ? { largeGroupThreshold: gateSettings.largeGroupThreshold } : {}),

@@ -3,6 +3,7 @@ import { basename } from 'node:path';
 import sharp from 'sharp';
 import { ComfyUiClient, type ComfyUiHistoryEntry, type ComfyUiImageRef, type ComfyUiSystemStats } from './comfyui-client.js';
 import {
+  buildComfyUiDepthWorkflow,
   buildComfyUiInpaintWorkflow,
   buildComfyUiUpscaleWorkflow,
   extractComfyUiImages,
@@ -19,12 +20,16 @@ import {
 } from './comfyui-workflow.js';
 import { figureBox, renderOpenPoseGuide, renderZoneMask } from './spatial-guides.js';
 import type {
+  DepthEstimationRequest,
   ExternalImageAdapter,
   ImageUpscaleRequest,
   ImageGenerationRequest,
   LocalizedInpaintRequest,
 } from './image-generation-adapter.js';
 import { GpuGenerationLease } from './gpu-generation-lease.js';
+
+/** Depth preprocessors of comfyui_controlnet_aux, best first. */
+const DEPTH_PREPROCESSORS = ['DepthAnythingV2Preprocessor', 'DepthAnythingPreprocessor', 'MiDaS-DepthMapPreprocessor'] as const;
 import { applyCheckpointProfile, resolveCheckpointProfile, type AppliedCheckpointProfile } from './checkpoint-profiles.js';
 
 export interface ComfyUiGateway {
@@ -156,6 +161,13 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     return controlNetNames(await this.gateway.getObjectInfo()).find((name) => /openpose/i.test(name)) ?? null;
   }
 
+  /** Depth ControlNet reported by ComfyUI, or null when it or a depth preprocessor is missing (object ControlNet repair). */
+  async findDepthControlNet(): Promise<string | null> {
+    const objectInfo = await this.gateway.getObjectInfo();
+    if (!DEPTH_PREPROCESSORS.some((node) => Object.prototype.hasOwnProperty.call(objectInfo, node))) return null;
+    return controlNetNames(objectInfo).find((name) => /depth/i.test(name)) ?? null;
+  }
+
   getLastUnrefinedImage(): Buffer | null {
     return this.lastUnrefinedImage;
   }
@@ -210,6 +222,28 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
 
   async upscaleImage(request: ImageUpscaleRequest): Promise<Buffer> {
     return this.gpuLease.run(() => this.upscaleImageInternal(request));
+  }
+
+  async estimateDepth(request: DepthEstimationRequest): Promise<Buffer> {
+    return this.gpuLease.run(() => this.estimateDepthInternal(request));
+  }
+
+  private async estimateDepthInternal(request: DepthEstimationRequest): Promise<Buffer> {
+    if (!this.gateway.uploadImage) throw new Error('ComfyUI gateway does not support depth image upload.');
+    const metadata = await sharp(request.imageBuffer).metadata();
+    if (!metadata.width || !metadata.height) throw new Error('Depth estimation requires a decodable raster image.');
+    const objectInfo = await this.gateway.getObjectInfo();
+    const preprocessor = DEPTH_PREPROCESSORS.find((node) => Object.prototype.hasOwnProperty.call(objectInfo, node));
+    if (!preprocessor) throw new Error('ComfyUI has no depth preprocessor (comfyui_controlnet_aux).');
+    const uploaded = await this.gateway.uploadImage(request.imageBuffer, 'aethera-depth-input.png', 'aethera', true);
+    const workflow = buildComfyUiDepthWorkflow({
+      inputImage: { filename: uploaded.name, ...(uploaded.subfolder ? { subfolder: uploaded.subfolder } : {}), type: uploaded.type },
+      preprocessor,
+      resolution: Math.min(1024, Math.max(metadata.width, metadata.height)),
+      filenamePrefix: `${this.filenamePrefix}/depth`,
+    });
+    const depth = await this.runWorkflow(workflow);
+    return sharp(depth).resize(metadata.width, metadata.height, { fit: 'fill' }).png().toBuffer();
   }
 
   private async generateImageInternal(request: ImageGenerationRequest): Promise<Buffer> {
@@ -389,10 +423,32 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
     if (right <= x || bottom <= y) throw new Error('ComfyUI inpaint bounding box does not intersect the source image.');
 
     // White means editable for ComfyUI's VAEEncodeForInpaint mask; all other pixels remain black and protected.
-    const maskSvg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="black"/><rect x="${x}" y="${y}" width="${right - x}" height="${bottom - y}" fill="white"/></svg>`;
-    const maskBuffer = await sharp(Buffer.from(maskSvg)).png().toBuffer();
+    const protectedRects = (request.protectRects ?? [])
+      .map((rect) => `<rect x="${Math.round(rect.x)}" y="${Math.round(rect.y)}" width="${Math.max(1, Math.round(rect.width))}" height="${Math.max(1, Math.round(rect.height))}" fill="black"/>`)
+      .join('');
+    const maskSvg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="black"/><rect x="${x}" y="${y}" width="${right - x}" height="${bottom - y}" fill="white"/>${protectedRects}</svg>`;
+    const maskBuffer = request.maskBuffer
+      ? await sharp(request.maskBuffer)
+          .resize(width, height, { fit: 'fill' })
+          .composite(protectedRects ? [{ input: Buffer.from(`<svg width="${width}" height="${height}">${protectedRects}</svg>`) }] : [])
+          .flatten({ background: '#000' })
+          .png()
+          .toBuffer()
+      : await sharp(Buffer.from(maskSvg)).png().toBuffer();
     const baseUpload = await this.gateway.uploadImage(request.imageBuffer, 'aethera-inpaint-base.png', 'aethera', true);
     const maskUpload = await this.gateway.uploadImage(maskBuffer, 'aethera-inpaint-mask.png', 'aethera', true);
+    const objectInfoForControl = request.controlNet ? await this.gateway.getObjectInfo() : null;
+    const controlUpload = request.controlNet ? await this.gateway.uploadImage(request.controlNet.imageBuffer, 'aethera-inpaint-control.png', 'aethera', true) : null;
+    const controlNet: ComfyUiControlNetInput | undefined = request.controlNet && controlUpload
+      ? {
+          model: request.controlNet.model,
+          image: { filename: controlUpload.name, ...(controlUpload.subfolder ? { subfolder: controlUpload.subfolder } : {}), type: controlUpload.type },
+          strength: request.controlNet.strength ?? 1,
+          startPercent: 0,
+          endPercent: request.controlNet.endPercent ?? 1,
+          nodeType: objectInfoForControl && Object.prototype.hasOwnProperty.call(objectInfoForControl, 'ControlNetApplyAdvanced') ? 'ControlNetApplyAdvanced' as const : 'ControlNetApply' as const,
+        }
+      : undefined;
     const workflow = buildComfyUiInpaintWorkflow({
       checkpoint: this.checkpoint,
       positivePrompt: request.prompt,
@@ -406,6 +462,7 @@ export class ComfyUiImageAdapter implements ExternalImageAdapter {
       scheduler: this.scheduler,
       denoise: request.strength ?? 0.54,
       growMaskBy: 8,
+      ...(controlNet ? { controlNet } : {}),
       image: { filename: baseUpload.name, ...(baseUpload.subfolder ? { subfolder: baseUpload.subfolder } : {}), type: baseUpload.type },
       mask: { filename: maskUpload.name, ...(maskUpload.subfolder ? { subfolder: maskUpload.subfolder } : {}), type: maskUpload.type },
       filenamePrefix: `${this.filenamePrefix}/inpaint`,

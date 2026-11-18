@@ -67,6 +67,11 @@ export interface SemanticEvaluationRequest {
   imageBuffer: Buffer;
   positiveConcepts: string[];
   negativeConcepts: string[];
+  /** CS10: the criterion is evaluated on a localized crop, not only on the compound scene prompt. */
+  criterionId?: string;
+  criterionKind?: string;
+  regionIndex?: number | null;
+  evidenceBbox?: { x: number; y: number; width: number; height: number };
 }
 
 export interface SemanticEvaluationResult {
@@ -77,6 +82,8 @@ export interface SemanticEvaluationResult {
   isOffTopic: boolean;
   matchedLabel: string;
   rationale: string;
+  /** Attribute confirmation is valid only when the evaluator saw the localized crop. */
+  evidenceScope?: 'localized' | 'generic' | 'unavailable';
 }
 
 export interface VisualQualityInspectionRequest {
@@ -101,9 +108,19 @@ export interface LocalizedInpaintRequest {
   /** Optional localized negative prompt, used to constrain regional character passes. */
   negativePrompt?: string;
   bbox: { x: number; y: number; width: number; height: number };
+  /** Rectangles inside `bbox` that must stay untouched (e.g. a face next to a raised weapon). */
+  protectRects?: Array<{ x: number; y: number; width: number; height: number }>;
+  /** Editable area as an opaque PNG (white = repaint) of the image size; replaces the `bbox` rectangle when given. */
+  maskBuffer?: Buffer;
+  /** Spatial guidance for the repaint (e.g. a depth map that already contains the requested object). */
+  controlNet?: { model: string; imageBuffer: Buffer; strength?: number; endPercent?: number };
   strength?: number;
   /** Explicit sampler seed; defaults to a value derived from the bbox so separate repairs do not share noise. */
   seed?: number;
+}
+
+export interface DepthEstimationRequest {
+  imageBuffer: Buffer;
 }
 
 export interface ImageUpscaleRequest {
@@ -136,6 +153,8 @@ export interface ExternalImageAdapter {
   evaluateImageSemantics?(request: SemanticEvaluationRequest): Promise<SemanticEvaluationResult>;
   inspectVisualQuality?(request: VisualQualityInspectionRequest): Promise<VisualQualityInspectionResult>;
   inpaintRegion?(request: LocalizedInpaintRequest): Promise<Buffer>;
+  /** Relative depth map (brighter = nearer) at the input size, for depth ControlNet guidance. */
+  estimateDepth?(request: DepthEstimationRequest): Promise<Buffer>;
   upscaleImage?(request: ImageUpscaleRequest): Promise<Buffer>;
 }
 

@@ -106,9 +106,8 @@ export async function generateLayeredComposition(input: LayeredCompositionInput)
   input.assertProvider('scene plate');
 
   // 2. One character per generation, on a plain background, posed by a single centered skeleton.
-  const portraitGuide = join(workDir, 'layered-portrait-pose.png');
-  writeFileSync(portraitGuide, await renderOpenPoseGuide(PORTRAIT.width, PORTRAIT.height, [{ x: PORTRAIT.width * 0.2, y: PORTRAIT.height * 0.03, width: PORTRAIT.width * 0.6, height: PORTRAIT.height * 0.94 }]));
   const composites: OverlayOptions[] = [];
+  const contactShadows: OverlayOptions[] = [];
   const layers: LayeredCompositionResult['layers'] = [];
   const generate = adapter.generateImage.bind(adapter);
   const hold = input.holdModels ?? (<T>(work: () => Promise<T>) => work());
@@ -116,9 +115,16 @@ export async function generateLayeredComposition(input: LayeredCompositionInput)
     const paths: string[] = [];
     for (const [index, region] of recipe.characterRegions.entries()) {
       const layerSeed = (seed + 101 * (index + 1)) % 0x80000000;
+      const portraitGuide = join(workDir, `layered-portrait-pose-${index + 1}.png`);
+      writeFileSync(portraitGuide, await renderOpenPoseGuide(
+        PORTRAIT.width,
+        PORTRAIT.height,
+        [{ x: PORTRAIT.width * 0.2, y: PORTRAIT.height * 0.03, width: PORTRAIT.width * 0.6, height: PORTRAIT.height * 0.94 }],
+        { variant: index },
+      ));
       const portrait = await generate({
       ...shared,
-      prompt: `${stripScene(region.prompt ?? 'solo, single character, full body', recipe.scenePrompt)}, simple background, white background, standing`,
+      prompt: `${stripScene(region.prompt ?? 'solo, single character, full body', recipe.scenePrompt)}, simple background, white background, standing, consistent ${recipe.scenePrompt ?? 'scene'} lighting`,
       negativePrompt: `${recipe.negativePrompt}, scenery, buildings, multiple people, 2girls, 2boys`,
       seed: layerSeed,
       width: PORTRAIT.width,
@@ -143,23 +149,35 @@ export async function generateLayeredComposition(input: LayeredCompositionInput)
     if (!bounds) throw new Error(`Character ${index + 1} cutout is empty.`);
     // Place the trimmed figure inside the region's figure box, feet on the box bottom.
     const box: GuideRect = figureBox(region);
-    const scale = Math.min(box.height / bounds.height, (box.width * 1.6) / bounds.width);
+    const depthScale = region.y < recipe.height * 0.2 ? 0.9 : region.y < recipe.height * 0.3 ? 0.96 : 1;
+    const scale = Math.min(box.height / bounds.height, (box.width * 1.6) / bounds.width) * depthScale;
     const targetWidth = Math.max(1, Math.round(bounds.width * scale));
     const targetHeight = Math.max(1, Math.round(bounds.height * scale));
     const figure = await sharp(cutout).extract(bounds).resize(targetWidth, targetHeight).png().toBuffer();
     const left = Math.round(box.x + box.width / 2 - targetWidth / 2);
     const top = Math.round(box.y + box.height - targetHeight);
+    const shadowWidth = Math.max(18, Math.round(targetWidth * 0.62));
+    const shadowHeight = Math.max(8, Math.round(targetHeight * 0.045));
+    const shadowSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${shadowWidth}" height="${shadowHeight}">
+      <defs><radialGradient id="contact" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#050914" stop-opacity="0.86"/><stop offset="100%" stop-color="#050914" stop-opacity="0"/></radialGradient></defs>
+      <ellipse cx="${shadowWidth / 2}" cy="${shadowHeight / 2}" rx="${shadowWidth * 0.48}" ry="${shadowHeight * 0.45}" fill="url(#contact)"/>
+    </svg>`;
+    contactShadows.push({
+      input: Buffer.from(shadowSvg),
+      left: Math.round(box.x + box.width / 2 - shadowWidth / 2),
+      top: Math.round(box.y + box.height - shadowHeight / 2),
+    });
     composites.push({ input: figure, left: Math.max(0, Math.min(recipe.width - targetWidth, left)), top: Math.max(0, Math.min(recipe.height - targetHeight, top)) });
     layers[index]!.cutoutPixels = bounds.pixels;
   }
-  const composed = await sharp(plate).resize(recipe.width, recipe.height).composite(composites).png().toBuffer();
+  const composed = await sharp(plate).resize(recipe.width, recipe.height).composite([...contactShadows, ...composites]).png().toBuffer();
   const composedPath = join(workDir, 'layered-composed.png');
   writeFileSync(composedPath, composed);
 
   // 3. Harmonize light and style without moving anyone: low denoise plus the full pose guide.
   const fullGuide = join(workDir, 'layered-full-pose.png');
-  writeFileSync(fullGuide, await renderOpenPoseGuide(recipe.width, recipe.height, recipe.characterRegions));
-  const image = await adapter.generateImage({
+  writeFileSync(fullGuide, await renderOpenPoseGuide(recipe.width, recipe.height, recipe.characterRegions, { variants: recipe.characterRegions.map((_, index) => index) }));
+  const harmonized = await adapter.generateImage({
     ...shared,
     seed: (seed + 7) % 0x80000000,
     referenceImagePaths: [composedPath],
@@ -167,5 +185,8 @@ export async function generateLayeredComposition(input: LayeredCompositionInput)
     controlNet: { model: input.poseControlNetModel, imagePath: fullGuide, strength: 0.6, startPercent: 0, endPercent: 0.7 },
   });
   input.assertProvider('harmonization');
+  // The low-denoise harmonizer may soften or erase a contact shadow. Re-apply the deterministic ground cues after
+  // it returns so the final image keeps the same feet-on-ground evidence used by the composition audit.
+  const image = await sharp(harmonized).resize(recipe.width, recipe.height).composite(contactShadows).png().toBuffer();
   return { image, plateSeed: seed, layers, harmonizeStrength, durationMs: Date.now() - started };
 }

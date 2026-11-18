@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildComfyUiTxt2ImgWorkflow,
   buildComfyUiImg2ImgWorkflow,
+  buildComfyUiDepthWorkflow,
   buildComfyUiInpaintWorkflow,
   buildComfyUiUpscaleWorkflow,
   buildComfyUiFaceDetailerWorkflow,
@@ -388,6 +389,26 @@ describe('ComfyUI workflow registry', () => {
     expect(workflow['inpaint_encode']).toMatchObject({ class_type: 'VAEEncode', inputs: { pixels: ['4', 0], vae: ['1', 2] } });
     expect(workflow['6']).toMatchObject({ class_type: 'SetLatentNoiseMask', inputs: { samples: ['inpaint_encode', 0], mask: ['inpaint_grow', 0] } });
     expect(workflow['9']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['8', 0] } });
+  });
+
+  it('routes the inpaint sampler through a depth ControlNet when one is given', () => {
+    const workflow = buildComfyUiInpaintWorkflow({
+      checkpoint: 'sdxl.safetensors', positivePrompt: 'holding katana', negativePrompt: 'sheathed', width: 1344, height: 768, seed: 4, steps: 24, cfg: 5.5,
+      samplerName: 'euler_ancestral', scheduler: 'normal', denoise: 0.75, growMaskBy: 8, filenamePrefix: 'Aethera/inpaint',
+      image: { filename: 'base.png', subfolder: 'aethera', type: 'input' },
+      mask: { filename: 'mask.png', subfolder: 'aethera', type: 'input' },
+      controlNet: { model: 'xinsir-controlnet-depth-sdxl-1.0.safetensors', image: { filename: 'control.png', subfolder: 'aethera', type: 'input' }, strength: 1, startPercent: 0, endPercent: 0.9, nodeType: 'ControlNetApplyAdvanced' },
+    });
+    const apply = Object.entries(workflow).find(([, node]) => node.class_type === 'ControlNetApplyAdvanced')!;
+    expect(apply[1].inputs).toMatchObject({ strength: 1, end_percent: 0.9 });
+    expect(workflow['7']).toMatchObject({ class_type: 'KSampler', inputs: { positive: [apply[0], 0], negative: [apply[0], 1], latent_image: ['6', 0], denoise: 0.75 } });
+    expect(Object.values(workflow).some((node) => node.class_type === 'LoadImage' && node.inputs['image'] === 'aethera/control.png')).toBe(true);
+  });
+
+  it('builds a depth estimation graph for the depth ControlNet map', () => {
+    const workflow = buildComfyUiDepthWorkflow({ inputImage: { filename: 'in.png', subfolder: 'aethera', type: 'input' }, preprocessor: 'DepthAnythingV2Preprocessor', resolution: 1000, filenamePrefix: 'Aethera/depth' });
+    expect(workflow['2']).toMatchObject({ class_type: 'DepthAnythingV2Preprocessor', inputs: { image: ['1', 0], resolution: 1024 } });
+    expect(workflow['3']).toMatchObject({ class_type: 'SaveImage', inputs: { images: ['2', 0] } });
   });
 
   it('rejects links whose types do not match the live object_info signatures', () => {

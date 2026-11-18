@@ -4,12 +4,65 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { AssetIngestionService } from '../src/asset-ingestion.js';
-import { nextCompositionStrategy, runCharacterCompositionGate, type CharacterGateDetector } from '../src/character-gate-runner.js';
-import type { ImageGenerationRequest } from '../src/image-generation-adapter.js';
+import { evaluateCharacterGateCandidate, nextCompositionStrategy, pasteSeamStrength, runCharacterCompositionGate, type CharacterGateDetector } from '../src/character-gate-runner.js';
+import type { ImageGenerationRequest, LocalizedInpaintRequest, SemanticEvaluationRequest, SemanticEvaluationResult, VisualQualityInspectionResult } from '../src/image-generation-adapter.js';
+import { parseObjectRelations, planWeaponGeometry, poseFromOpenPose } from '../src/object-relations.js';
 import { buildVisualRecipe } from '../src/visual-recipe.js';
 import evidence from './fixtures/character-gate-cs9-evidence.json' with { type: 'json' };
 
 const CLEAN_TRIO = (evidence as Record<string, unknown>)['run-cs9-lora-2026-11-17T1109/cyberpunk-trio-preview.png'];
+const CLEAN_DUO = {
+  width: 1344,
+  height: 768,
+  detectors: {
+    yolo_person: { boxes: [{ x: 100, y: 80, width: 160, height: 580, confidence: 0.9 }, { x: 1050, y: 80, width: 160, height: 580, confidence: 0.9 }] },
+    yolo_face: { boxes: [] },
+    yolo_hand: { boxes: [] },
+    openpose: { people: [] },
+  },
+};
+const UNDERSIZED_DUO = {
+  ...CLEAN_DUO,
+  detectors: {
+    ...CLEAN_DUO.detectors,
+    yolo_person: { boxes: [{ x: 100, y: 380, width: 120, height: 240, confidence: 0.9 }, { x: 1050, y: 80, width: 160, height: 580, confidence: 0.9 }] },
+  },
+};
+// Front-facing duo with OpenPose COCO-18 keypoints (index 4 = right wrist, 7 = left wrist).
+function personKeypoints(dx: number) {
+  const kp: Array<{ x: number; y: number; score: number } | null> = Array.from({ length: 18 }, () => null);
+  const set = (index: number, x: number, y: number) => { kp[index] = { x: x + dx, y, score: 0.9 }; };
+  set(0, 180, 110); set(1, 180, 150); set(2, 150, 160); set(3, 140, 240); set(4, 140, 330);
+  set(5, 210, 160); set(6, 220, 240); set(7, 220, 330); set(8, 160, 380); set(11, 200, 380);
+  set(9, 160, 500); set(10, 160, 620); set(12, 200, 500); set(13, 200, 620);
+  return { keypoints: kp, score: 20, parts: 14 };
+}
+const POSED_DUO = { ...CLEAN_DUO, detectors: { ...CLEAN_DUO.detectors, openpose: { people: [personKeypoints(0), personKeypoints(950)] } } };
+const POSED_DUO_EXTRA_PERSON = {
+  ...POSED_DUO,
+  detectors: {
+    ...POSED_DUO.detectors,
+    yolo_person: { boxes: [...POSED_DUO.detectors.yolo_person.boxes, { x: 640, y: 90, width: 150, height: 560, confidence: 0.92 }] },
+    openpose: { people: [...POSED_DUO.detectors.openpose.people, personKeypoints(530)] },
+  },
+};
+const RELATION_DUO = ['swordswoman with silver hair, katana raised', 'spear warrior with black hair, spear held in guard'];
+const KATANA_RAISED: Line = [140, 335, 150, 40];
+const KATANA_AWAY_FROM_HANDS: Line = [340, 60, 345, 330];
+const SPEAR_IN_GUARD: Line = [1070, 345, 1300, 180];
+const RELATION_GATE = { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 2 } as const;
+
+// Weapon lines the runner plans for POSED_DUO from the prompt relations (the fake ControlNet inpaint draws them).
+function plannedLine(characterIndex: number, relationText: string): Line {
+  const box = POSED_DUO.detectors.yolo_person.boxes[characterIndex]!;
+  const figure = { x: box.x, y: box.y, width: box.width, height: box.height };
+  const plan = planWeaponGeometry({ relation: parseObjectRelations(relationText)[0]!, figure, pose: poseFromOpenPose(POSED_DUO.detectors.openpose.people[characterIndex]!.keypoints), hands: [], face: null, image: { width: 1344, height: 768 } })!;
+  return [plan.segment.x1, plan.segment.y1, plan.segment.x2, plan.segment.y2].map(Math.round) as Line;
+}
+const PLANNED_KATANA = plannedLine(0, 'katana raised');
+const PLANNED_SPEAR = plannedLine(1, 'spear held in guard');
+const DEPTH_GATE = { detector: scriptedDetector([POSED_DUO]), maxAttempts: 1, retryOnNeedsReview: 'never' as const, depthControlNetModel: 'depth-test.safetensors' };
+
 const EXTRA_TRIO = (evidence as Record<string, unknown>)['run-cs9-2026-11-17T1117/cyberpunk-trio-preview.png'];
 const ILLEGIBLE = (evidence as Record<string, unknown>)['run-cs9-2026-11-17T1050/cyberpunk-group-eight-preview.png'];
 
@@ -25,11 +78,22 @@ function scriptedDetector(sequence: unknown[]): CharacterGateDetector & { calls:
   };
 }
 
-async function fixture(characterCount = 3) {
-  const recipe = buildVisualRecipe({ artType: 'thumbnail', prompt: 'cyberpunk trio in a rainy city', characterCount, seed: 500 });
+type Line = [number, number, number, number];
+type InpaintStep = { lines?: Line[]; erase?: { x: number; y: number; width: number; height: number } };
+
+async function fixture(characterCount = 3, options: { semanticScore?: number; semanticMargin?: number; semanticOffTopic?: boolean; repairScore?: number; repairMargin?: number; repairOffTopic?: boolean; quality?: Partial<VisualQualityInspectionResult>; descriptions?: string[]; inpaintSteps?: InpaintStep[]; depth?: boolean; depthFailure?: boolean } = {}) {
+  const recipe = buildVisualRecipe({
+    artType: 'thumbnail',
+    prompt: 'cyberpunk trio in a rainy city',
+    characterCount,
+    characterDescriptions: options.descriptions ?? Array.from({ length: characterCount }, (_, index) => index === 0 ? 'warrior with katana and armor' : 'warrior with spear and armor'),
+    seed: 500,
+  });
   const requests: ImageGenerationRequest[] = [];
   let provider = 'comfyui-native';
   const png = await sharp({ create: { width: recipe.width, height: recipe.height, channels: 3, background: '#335' } }).png().toBuffer();
+  let repairCalls = 0;
+  const repairRequests: LocalizedInpaintRequest[] = [];
   const adapter = {
     id: 'fake',
     isAvailable: async () => true,
@@ -39,10 +103,56 @@ async function fixture(characterCount = 3) {
     },
     getLastServedProvider: () => ({ providerId: provider, fallbackErrors: provider === 'comfyui-native' ? [] : ['comfyui-native: timeout'] }),
     getLastGenerationMetadata: () => ({ checkpoint: 'animagine-xl-3.1.safetensors' }),
+    evaluateImageSemantics: async (request: SemanticEvaluationRequest): Promise<SemanticEvaluationResult> => ({
+      evaluatorId: 'test-local-clip',
+      positiveScore: repairCalls > 0 ? options.repairScore ?? 0.84 : options.semanticScore ?? 0.84,
+      negativeScore: (repairCalls > 0 ? options.repairScore ?? 0.84 : options.semanticScore ?? 0.84) - (repairCalls > 0 ? options.repairMargin ?? 0.42 : options.semanticMargin ?? 0.42),
+      margin: repairCalls > 0 ? options.repairMargin ?? 0.42 : options.semanticMargin ?? 0.42,
+      isOffTopic: repairCalls > 0 ? options.repairOffTopic ?? false : options.semanticOffTopic ?? false,
+      matchedLabel: request.positiveConcepts[0] ?? 'test criterion',
+      rationale: 'controlled local evidence',
+      evidenceScope: request.evidenceBbox ? 'localized' : 'generic',
+    }),
+    inspectVisualQuality: async (): Promise<VisualQualityInspectionResult> => ({
+      evaluatorId: 'test-local-quality',
+      anatomicalConsistency: options.quality?.anatomicalConsistency ?? 92,
+      physicalCoherence: options.quality?.physicalCoherence ?? 92,
+      compositionQuality: options.quality?.compositionQuality ?? 90,
+      subjectIdentityConsistency: options.quality?.subjectIdentityConsistency ?? 94,
+      visualArtifactSeverity: options.quality?.visualArtifactSeverity ?? 8,
+      localizedDefects: options.quality?.localizedDefects ?? [],
+    }),
+    removeBackground: async ({ inputImagePath }: { inputImagePath: string }): Promise<Buffer> => {
+      const meta = await sharp(inputImagePath).metadata();
+      const w = meta.width ?? 1;
+      const h = meta.height ?? 1;
+      const silhouette = Buffer.from(`<svg width="${w}" height="${h}"><ellipse cx="${w / 2}" cy="${h / 2}" rx="${w * 0.35}" ry="${h * 0.45}" fill="#fff"/></svg>`);
+      return sharp(inputImagePath).ensureAlpha().composite([{ input: silhouette, blend: 'dest-in' }]).png().toBuffer();
+    },
+    ...(options.depth
+      ? { estimateDepth: async ({ imageBuffer }: { imageBuffer: Buffer }): Promise<Buffer> => {
+          if (options.depthFailure) throw new Error('depth unavailable');
+          const meta = await sharp(imageBuffer).metadata();
+          return sharp({ create: { width: meta.width ?? 1, height: meta.height ?? 1, channels: 3, background: '#555' } }).png().toBuffer();
+        } }
+      : {}),
+    inpaintRegion: async (request: LocalizedInpaintRequest): Promise<Buffer> => {
+      const { bbox } = request;
+      repairRequests.push(request);
+      repairCalls += 1;
+      const step = options.inpaintSteps?.[repairCalls - 1];
+      if (options.inpaintSteps) {
+        // Draws thin weapons on the request's own image so sequential operations accumulate like a real inpaint.
+        const lines = (step?.lines ?? []).map(([x1, y1, x2, y2]) => `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#e8e8f0" stroke-width="6"/>`).join('');
+        const erase = step?.erase ? `<rect x="${step.erase.x}" y="${step.erase.y}" width="${step.erase.width}" height="${step.erase.height}" fill="#333355"/>` : '';
+        return sharp(request.imageBuffer).composite([{ input: Buffer.from(`<svg width="${recipe.width}" height="${recipe.height}">${erase}${lines}</svg>`), blend: 'over' }]).png().toBuffer();
+      }
+      return sharp(png).composite([{ input: Buffer.from(`<svg width="${recipe.width}" height="${recipe.height}"><rect x="${Math.round(bbox.x)}" y="${Math.round(bbox.y)}" width="${Math.max(1, Math.round(bbox.width))}" height="${Math.max(1, Math.round(bbox.height))}" fill="#e56b6f"/></svg>`), blend: 'over' }]).png().toBuffer();
+    },
   };
   const ingestion = new AssetIngestionService({ storageRoot: mkdtempSync(join(tmpdir(), 'gate-test-')) });
   const baseRequest: ImageGenerationRequest = { prompt: recipe.positivePrompt, negativePrompt: recipe.negativePrompt, width: recipe.width, height: recipe.height, characterRegions: recipe.characterRegions };
-  return { recipe, requests, adapter, ingestion, baseRequest, setProvider: (id: string) => { provider = id; } };
+  return { recipe, requests, adapter, ingestion, baseRequest, getRepairCalls: () => repairCalls, getRepairRequests: () => repairRequests, setProvider: (id: string) => { provider = id; } };
 }
 
 describe('Character Composition Gate runner', () => {
@@ -90,5 +200,471 @@ describe('Character Composition Gate runner', () => {
     expect(nextCompositionStrategy({ failureClass: null, tried: [], characterCount: 8, layeredAvailable: true, largeGroupThreshold: 6 })?.id).toBe('layered-individual');
     expect(nextCompositionStrategy({ failureClass: null, tried: [], characterCount: 8, layeredAvailable: false, largeGroupThreshold: 6 })?.id).toBe('regional-base');
     expect(nextCompositionStrategy({ failureClass: 'missing', tried: ['regional-base'], characterCount: 2, layeredAvailable: true, largeGroupThreshold: 6 })?.id).toBe('regional-strong-pose');
+  });
+
+  it('records count, semantic and visual-quality failures separately', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(3, {
+      quality: {
+        visualArtifactSeverity: 92,
+        localizedDefects: [{ id: 'defect-1', category: 'visual_artifact', severity: 'severe', bbox: { x: 20, y: 20, width: 40, height: 40 }, description: 'severe artifact', repaired: false }],
+      },
+    });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: { detector: scriptedDetector([EXTRA_TRIO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { enabled: true } },
+    });
+
+    expect(outcome.report.verdict).toBe('rejected');
+    expect(outcome.report.failureCategories.count).toContain('extra_main_characters');
+    expect(outcome.report.failureCategories.semantic).toEqual([]);
+    expect(outcome.report.failureCategories.visualQuality).toContain('severe_visual_artifact');
+    expect(outcome.report.attempts[0]).toMatchObject({ semantic: { verdict: 'passed_pending_human_review' }, visualQuality: { verdict: 'rejected' } });
+  });
+
+  it('keeps ambiguous semantic evidence as needs_review', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(3, { semanticScore: 0.53, semanticMargin: 0.01 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: { detector: scriptedDetector([CLEAN_TRIO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { enabled: true } },
+    });
+
+    expect(outcome.report.verdict).toBe('needs_review');
+    expect(outcome.report.failureCategories.count).toEqual([]);
+    expect(outcome.report.failureCategories.semantic).toContain('insufficient_semantic_evidence');
+  });
+
+  it('does not reject when the semantic evaluator is unavailable', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(3);
+    const { evaluateImageSemantics: _evaluateImageSemantics, ...unavailableAdapter } = adapter;
+    const outcome = await runCharacterCompositionGate({
+      adapter: unavailableAdapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: { detector: scriptedDetector([CLEAN_TRIO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { enabled: true } },
+    });
+
+    expect(outcome.report.verdict).toBe('needs_review');
+    expect(outcome.report.attempts[0]?.semantic?.criteria.every((criterion) => criterion.status === 'uncertain')).toBe(true);
+    expect(outcome.report.attempts[0]?.semantic?.verdict).not.toBe('rejected');
+  });
+
+  it('repairs one proven localized semantic defect without regenerating the whole image and keeps the original', async () => {
+    const { recipe, requests, adapter, ingestion, baseRequest, getRepairCalls } = await fixture(3, { semanticScore: 0.08, semanticMargin: -0.2, semanticOffTopic: true });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: { detector: scriptedDetector([CLEAN_TRIO, CLEAN_TRIO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { enabled: true, localizedRepair: true } },
+    });
+
+    expect(getRepairCalls()).toBe(1);
+    expect(requests).toHaveLength(1);
+    expect(outcome.report.verdict).toBe('passed_pending_human_review');
+    expect(outcome.report.attempts[0]?.repair).toMatchObject({ status: 'applied', originalImageAsset: expect.objectContaining({ originalName: expect.stringContaining('original') }) });
+  });
+
+  it('evaluates an original candidate without invoking image generation', async () => {
+    const { recipe, adapter, ingestion, baseRequest, requests } = await fixture(3);
+    const evaluation = await evaluateCharacterGateCandidate({
+      adapter,
+      recipe,
+      imageBuffer: await adapter.generateImage!(baseRequest),
+      config: { detector: scriptedDetector([CLEAN_TRIO]), semanticGate: { enabled: true } },
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(evaluation.overallVerdict).toBe('passed_pending_human_review');
+    expect(evaluation.semantic?.criteria.length).toBeGreaterThan(0);
+    expect(evaluation.visualQuality?.evaluatorId).toBe('test-local-quality');
+  });
+
+  it('applies one uncertain-attribute repair with mask, diff and regression evidence', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairCalls } = await fixture(3, { semanticScore: 0.58, semanticMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([CLEAN_TRIO, CLEAN_TRIO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    expect(getRepairCalls()).toBe(1);
+    expect(outcome.report.verdict).toBe('passed_pending_human_review');
+    expect(outcome.report.attempts[0]?.repairs).toHaveLength(1);
+    expect(outcome.report.attempts[0]?.repairs[0]).toMatchObject({
+      status: 'applied',
+      criterionId: expect.stringContaining('object'),
+      maskAsset: expect.objectContaining({ originalName: expect.stringContaining('mask') }),
+      originalImageAsset: expect.objectContaining({ originalName: expect.stringContaining('original') }),
+      repairedImageAsset: expect.objectContaining({ originalName: expect.stringContaining('repaired') }),
+      differenceImageAsset: expect.objectContaining({ originalName: expect.stringContaining('diff') }),
+      regression: { status: 'passed' },
+    });
+  });
+
+  it('prioritizes an objective undersized-character repair before uncertain attributes', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([UNDERSIZED_DUO, CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    expect(outcome.report.attempts[0]?.repairs[0]).toMatchObject({
+      criterionKind: 'count',
+      criterionId: expect.stringContaining('undersized_character'),
+      status: 'applied',
+    });
+  });
+
+  it('retries a failed count repair locally with a new auditable variant before moving on', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2);
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([UNDERSIZED_DUO, UNDERSIZED_DUO, CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 2 },
+      },
+    });
+
+    expect(outcome.report.attempts[0]?.repairs).toHaveLength(2);
+    expect(outcome.report.attempts[0]?.repairs.map((repair) => repair.criterionId)).toEqual([
+      'count:undersized_character:0',
+      'count:undersized_character:0:retry1',
+    ]);
+    expect(outcome.report.attempts[0]?.repairs[0]?.status).toBe('failed');
+    expect(outcome.report.attempts[0]?.repairs[1]?.status).toBe('applied');
+  });
+
+  it('rescales the undersized figure inside its planned region before a blending inpaint', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairRequests } = await fixture(2);
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([UNDERSIZED_DUO, CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    const repair = outcome.report.attempts[0]?.repairs[0];
+    expect(repair).toMatchObject({ criterionKind: 'count', strategy: 'rescale_then_inpaint', status: 'applied' });
+    expect(repair?.rescaleSkippedReason).toBeUndefined();
+    expect(repair?.scaleFactor).toBeGreaterThan(1.5);
+    expect(repair?.strength).toBeLessThan(0.6);
+    expect(getRepairRequests()[0]?.strength).toBe(repair?.strength);
+  });
+
+  it('measures a hard seam along a pasted rectangle but not on a smooth image', async () => {
+    const flat = await sharp({ create: { width: 200, height: 200, channels: 3, background: '#556' } }).png().toBuffer();
+    const block = await sharp({ create: { width: 80, height: 120, channels: 3, background: '#112' } }).png().toBuffer();
+    const panel = await sharp(flat).composite([{ input: block, left: 60, top: 40 }]).png().toBuffer();
+    const rect = { x: 60, y: 40, width: 80, height: 120 };
+    expect(await pasteSeamStrength(flat, rect)).toBe(0);
+    expect(await pasteSeamStrength(panel, rect)).toBeGreaterThan(30);
+  });
+
+  it('caps count repairs so an uncertain attribute still receives a localized repair', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([UNDERSIZED_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 3 },
+      },
+    });
+
+    const ids = outcome.report.attempts[0]?.repairs.map((repair) => repair.criterionId) ?? [];
+    expect(ids.slice(0, 2)).toEqual(['count:undersized_character:0', 'count:undersized_character:0:retry1']);
+    expect(ids).toHaveLength(3);
+    expect(ids[2]).not.toMatch(/^count:/);
+  });
+
+  it('repairs a missing object with the character prompt on a head-protected body mask', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairRequests } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    const repair = outcome.report.attempts[0]?.repairs[0];
+    const request = getRepairRequests()[0];
+    const figure = CLEAN_DUO.detectors.yolo_person.boxes[0]!;
+    expect(repair).toMatchObject({ criterionKind: 'object', strategy: 'object_inpaint', strength: 0.6 });
+    expect(request?.prompt).toContain('holding katana');
+    expect(request?.prompt).toContain(recipe.characterRegions[0]!.prompt!);
+    expect(request?.negativePrompt).toContain('back view');
+    expect(request?.bbox.y).toBeGreaterThanOrEqual(figure.y + figure.height * 0.15);
+    expect(request?.bbox.y! + request!.bbox.height).toBeLessThanOrEqual(figure.y + figure.height);
+  });
+
+  it('repairs objects of every character after a scale repair, before wardrobe or pose', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([UNDERSIZED_DUO, CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 3 },
+      },
+    });
+
+    const repairs = outcome.report.attempts[0]?.repairs ?? [];
+    expect(repairs.map((repair) => [repair.criterionKind, repair.regionIndex])).toEqual([['count', 0], ['object', 0], ['object', 1]]);
+  });
+
+  it('fails an object repair whose weapon appears but is not held, recording presence and grip separately', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO, inpaintSteps: [{ lines: [KATANA_AWAY_FROM_HANDS] }, { lines: [KATANA_AWAY_FROM_HANDS] }] });
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { detector: scriptedDetector([POSED_DUO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { ...RELATION_GATE, maxLocalizedRepairs: 1 } } });
+
+    const repair = outcome.report.attempts[0]?.repairs[0];
+    expect(repair).toMatchObject({ criterionKind: 'object', status: 'failed', reason: expect.stringContaining('object_not_in_hand') });
+    expect(repair?.objectRelations?.[0]).toMatchObject({ relation: { object: 'katana', orientation: 'raised' }, assessment: { presence: 'detected', grip: 'violated', overall: 'violated' } });
+  });
+
+  it('plans the katana mask over the hands and above them while protecting the face', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairRequests } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO, inpaintSteps: [{ lines: [KATANA_RAISED] }] });
+    await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { detector: scriptedDetector([POSED_DUO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { ...RELATION_GATE, maxLocalizedRepairs: 1 } } });
+
+    const request = getRepairRequests()[0]!;
+    expect(request.prompt).toMatch(/holding katana/);
+    expect(request.prompt).toMatch(/raised overhead/);
+    expect(request.bbox.y).toBeLessThan(80);
+    expect(request.bbox.y + request.bbox.height).toBeGreaterThan(330);
+    expect(request.protectRects?.[0]).toMatchObject({ x: expect.any(Number), y: expect.any(Number) });
+    const face = request.protectRects![0]!;
+    expect(face.x).toBeLessThan(180);
+    expect(face.x + face.width).toBeGreaterThan(180);
+  });
+
+  it('combines two valid proposals sequentially on a copy and records the proposal tree without adopting it', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, {
+      semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO,
+      inpaintSteps: [{ lines: [KATANA_RAISED] }, { lines: [SPEAR_IN_GUARD] }, { lines: [SPEAR_IN_GUARD] }],
+    });
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { detector: scriptedDetector([POSED_DUO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: RELATION_GATE } });
+
+    const attempt = outcome.report.attempts[0]!;
+    expect(attempt.repairs.map((repair) => [repair.status, repair.objectRelations?.[0]?.assessment.overall])).toEqual([['proposed', 'satisfied'], ['proposed', 'satisfied']]);
+    const tree = attempt.proposalTree!;
+    const base = tree.nodes.find((node) => node.kind === 'base')!;
+    const proposals = tree.nodes.filter((node) => node.kind === 'repair');
+    const combination = tree.nodes.find((node) => node.kind === 'combination')!;
+    expect(proposals.every((node) => node.parentId === base.id && node.status === 'proposed')).toBe(true);
+    expect(combination).toMatchObject({ status: 'proposed', parentId: proposals[0]!.id, dependsOn: proposals.map((node) => node.id), requiresHumanApproval: true });
+    expect(combination.operations).toHaveLength(2);
+    expect(combination.operations[1]).toMatchObject({ seed: expect.any(Number), prompt: expect.stringContaining('guard stance'), bbox: expect.any(Object) });
+    expect(combination.imageAsset?.relativePath).toMatch(/\.png$/);
+    expect(combination.differenceAsset?.relativePath).toMatch(/\.png$/);
+    expect(base.imageAsset?.relativePath).toMatch(/\.png$/);
+    expect(outcome.report.verdict).toBe('needs_review');
+  });
+
+  it('rejects the combination when the second operation removes the first weapon and keeps both proposals', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, {
+      semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO,
+      inpaintSteps: [{ lines: [KATANA_RAISED] }, { lines: [SPEAR_IN_GUARD] }, { lines: [SPEAR_IN_GUARD], erase: { x: 120, y: 20, width: 60, height: 330 } }],
+    });
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { detector: scriptedDetector([POSED_DUO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: RELATION_GATE } });
+
+    const tree = outcome.report.attempts[0]!.proposalTree!;
+    const combination = tree.nodes.find((node) => node.kind === 'combination')!;
+    expect(combination.status).toBe('rejected');
+    expect(combination.reasons.join(' ')).toMatch(/object_removed/);
+    expect(tree.nodes.filter((node) => node.kind === 'repair').map((node) => node.status)).toEqual(['proposed', 'proposed']);
+  });
+
+  it('rejects a combination that regresses even though both individual proposals are valid', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, {
+      semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO,
+      inpaintSteps: [{ lines: [KATANA_RAISED] }, { lines: [SPEAR_IN_GUARD] }, { lines: [SPEAR_IN_GUARD] }],
+    });
+    // Evaluations: generated image, katana proposal, spear proposal, then the combined image grows an extra person.
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { detector: scriptedDetector([POSED_DUO, POSED_DUO, POSED_DUO, POSED_DUO_EXTRA_PERSON]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: RELATION_GATE } });
+
+    const tree = outcome.report.attempts[0]!.proposalTree!;
+    const combination = tree.nodes.find((node) => node.kind === 'combination')!;
+    expect(combination.status).toBe('rejected');
+    expect(combination.reasons).toContain('combined_count_regressed');
+    expect(tree.nodes.filter((node) => node.kind === 'repair').every((node) => node.status === 'proposed')).toBe(true);
+    expect(outcome.report.verdict).toBe('needs_review');
+  });
+
+  it('shapes an object repair with a depth ControlNet that carries the planned weapon and verifies it along the plan', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairRequests } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO, depth: true, inpaintSteps: [{ lines: [PLANNED_KATANA] }] });
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { ...DEPTH_GATE, semanticGate: { ...RELATION_GATE, maxLocalizedRepairs: 1 } } });
+
+    const request = getRepairRequests()[0]!;
+    expect(request.controlNet).toMatchObject({ model: 'depth-test.safetensors', imageBuffer: expect.any(Buffer) });
+    expect(request.maskBuffer).toBeInstanceOf(Buffer);
+    expect(request.prompt).toMatch(/raised overhead/);
+    const repair = outcome.report.attempts[0]!.repairs[0]!;
+    expect(repair).toMatchObject({ strategy: 'object_controlnet', status: 'proposed', controlNet: { model: 'depth-test.safetensors' } });
+    expect(repair.objectRelations?.[0]).toMatchObject({ verification: { status: 'rendered' }, assessment: { presence: 'detected', grip: 'satisfied', orientation: 'satisfied', overall: 'satisfied' } });
+    expect(outcome.report.verdict).toBe('needs_review');
+  });
+
+  it('does not downgrade a selected ControlNet repair to text-only when depth preparation fails', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairCalls } = await fixture(2, {
+      semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO, depth: true, depthFailure: true,
+    });
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { ...DEPTH_GATE, semanticGate: { ...RELATION_GATE, maxLocalizedRepairs: 1 } } });
+
+    const repair = outcome.report.attempts[0]!.repairs[0]!;
+    expect(getRepairCalls()).toBe(0);
+    expect(repair).toMatchObject({ strategy: 'object_controlnet', status: 'failed', controlNetError: 'depth unavailable' });
+    expect(repair.reason).toMatch(/object_controlnet preparation failed: depth unavailable/);
+  });
+
+  it('keeps an incomplete planned object as a proposal even when semantic evidence confirms it', async () => {
+    const [x1, y1, x2, y2] = PLANNED_KATANA;
+    const incompleteLine: Line = [x1, y1, Math.round(x1 + (x2 - x1) * 0.66), Math.round(y1 + (y2 - y1) * 0.66)];
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, {
+      semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.84, repairMargin: 0.42, descriptions: RELATION_DUO, depth: true, inpaintSteps: [{ lines: [incompleteLine] }],
+    });
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { ...DEPTH_GATE, semanticGate: { ...RELATION_GATE, maxLocalizedRepairs: 1 } } });
+
+    const repair = outcome.report.attempts[0]!.repairs[0]!;
+    expect(repair).toMatchObject({ strategy: 'object_controlnet', status: 'proposed' });
+    expect(repair.objectRelations?.[0]).toMatchObject({ verification: { status: 'incomplete' }, assessment: { overall: 'uncertain' } });
+    expect(repair.reason).toMatch(/incomplete or uncertain planned object/);
+  });
+
+  it('fails a ControlNet object repair whose weapon was not rendered along the plan and retries with a new seed', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairRequests } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO, depth: true, inpaintSteps: [{ lines: [] }, { lines: [] }] });
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { ...DEPTH_GATE, semanticGate: RELATION_GATE } });
+
+    const repairs = outcome.report.attempts[0]!.repairs;
+    expect(repairs.map((repair) => [repair.criterionId, repair.status])).toEqual([['character-1-object-katana', 'failed'], ['character-1-object-katana:retry1', 'failed']]);
+    expect(repairs[0]!.reason).toContain('object_not_rendered_along_plan');
+    expect(new Set(getRepairRequests().map((request) => request.seed)).size).toBe(2);
+  });
+
+  it('replays the ControlNet operations when combining proposals', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairRequests } = await fixture(2, {
+      semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3, descriptions: RELATION_DUO, depth: true,
+      inpaintSteps: [{ lines: [PLANNED_KATANA] }, { lines: [PLANNED_SPEAR] }, { lines: [PLANNED_SPEAR] }],
+    });
+    const outcome = await runCharacterCompositionGate({ adapter, ingestion, recipe, baseRequest, config: { ...DEPTH_GATE, semanticGate: RELATION_GATE } });
+
+    const tree = outcome.report.attempts[0]!.proposalTree!;
+    const combination = tree.nodes.find((node) => node.kind === 'combination')!;
+    expect(combination).toMatchObject({ status: 'proposed', requiresHumanApproval: true });
+    expect(combination.operations.map((operation) => operation.strategy)).toEqual(['object_controlnet', 'object_controlnet']);
+    const replay = getRepairRequests()[2]!;
+    expect(replay.controlNet).toMatchObject({ model: 'depth-test.safetensors' });
+    expect(replay.seed).toBe(getRepairRequests()[1]!.seed);
+    expect(combination.objectRelations.map((relation) => relation.verification?.status)).toEqual(['rendered', 'rendered']);
+    expect(combination.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        maskAsset: { relativePath: expect.stringMatching(/\.png$/), originalName: expect.stringContaining('mask') },
+        controlNetImageAsset: { relativePath: expect.stringMatching(/\.png$/), originalName: expect.stringContaining('control') },
+      }),
+    ]));
+  });
+
+  it('keeps an unverifiable object repair as a proposed alternative without adopting it', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(2, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.58, repairMargin: 0.3 });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([CLEAN_DUO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    const attempt = outcome.report.attempts[0]!;
+    expect(attempt.repairs[0]).toMatchObject({
+      status: 'proposed',
+      regression: { reasons: ['target_attribute_not_confirmed'] },
+      repairedImageAsset: expect.objectContaining({ relativePath: expect.stringMatching(/\.png$/) }),
+    });
+    expect(attempt.imageAsset?.relativePath).not.toBe(attempt.repairs[0]?.repairedImageAsset?.relativePath);
+    expect(outcome.report.verdict).toBe('needs_review');
+  });
+
+  it('keeps the pre-repair image when a regional repair loses a confirmed attribute', async () => {
+    const { recipe, adapter, ingestion, baseRequest, getRepairCalls } = await fixture(3, { semanticScore: 0.58, semanticMargin: 0.3, repairScore: 0.05, repairMargin: -0.2, repairOffTopic: true });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: {
+        detector: scriptedDetector([CLEAN_TRIO, CLEAN_TRIO]),
+        maxAttempts: 1,
+        retryOnNeedsReview: 'never',
+        semanticGate: { enabled: true, localizedRepair: true, repairUncertainAttributes: true, maxLocalizedRepairs: 1 },
+      },
+    });
+
+    expect(getRepairCalls()).toBe(1);
+    expect(outcome.report.verdict).toBe('needs_review');
+    expect(outcome.report.attempts[0]?.repairs[0]).toMatchObject({ status: 'failed', regression: { status: 'failed' }, reason: expect.stringContaining('regression') });
+  });
+
+  it('preserves a chosen rejected image as audit evidence when the attempt limit is reached', async () => {
+    const { recipe, adapter, ingestion, baseRequest } = await fixture(3, { semanticScore: 0.08, semanticMargin: -0.2, semanticOffTopic: true });
+    const outcome = await runCharacterCompositionGate({
+      adapter,
+      ingestion,
+      recipe,
+      baseRequest,
+      config: { detector: scriptedDetector([CLEAN_TRIO]), maxAttempts: 1, retryOnNeedsReview: 'never', semanticGate: { enabled: true, localizedRepair: false } },
+    });
+
+    expect(outcome.report.verdict).toBe('rejected');
+    expect(outcome.report.attempts[0]?.imageAsset).toMatchObject({ originalName: 'ai-gate-rejected-attempt1-500.png', relativePath: expect.stringMatching(/\.png$/) });
   });
 });

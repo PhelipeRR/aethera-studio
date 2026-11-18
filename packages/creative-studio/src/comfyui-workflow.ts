@@ -501,6 +501,24 @@ export function buildComfyUiInpaintWorkflow(input: ComfyUiInpaintInput): ComfyUi
   };
 }
 
+export interface ComfyUiDepthInput {
+  inputImage: ComfyUiImageRef;
+  /** Preprocessor node reported by /object_info (comfyui_controlnet_aux). */
+  preprocessor: 'DepthAnythingV2Preprocessor' | 'DepthAnythingPreprocessor' | 'MiDaS-DepthMapPreprocessor';
+  resolution: number;
+  filenamePrefix: string;
+}
+
+/** Depth estimation graph used to build depth ControlNet maps for localized object repairs. */
+export function buildComfyUiDepthWorkflow(input: ComfyUiDepthInput): ComfyUiWorkflow {
+  const imageName = input.inputImage.subfolder ? `${input.inputImage.subfolder}/${input.inputImage.filename}` : input.inputImage.filename;
+  return {
+    '1': { class_type: 'LoadImage', inputs: { image: imageName }, _meta: { title: 'Aethera depth input' } },
+    '2': { class_type: input.preprocessor, inputs: { image: ['1', 0], resolution: Math.max(64, Math.round(input.resolution / 64) * 64) }, _meta: { title: 'Aethera depth estimate' } },
+    '3': { class_type: 'SaveImage', inputs: { filename_prefix: input.filenamePrefix, images: ['2', 0] }, _meta: { title: 'Aethera depth output' } },
+  };
+}
+
 /** Native model-based upscale graph. It intentionally does not require a checkpoint or custom nodes. */
 export function buildComfyUiUpscaleWorkflow(input: ComfyUiUpscaleInput): ComfyUiWorkflow {
   const imageName = input.inputImage.subfolder ? `${input.inputImage.subfolder}/${input.inputImage.filename}` : input.inputImage.filename;
