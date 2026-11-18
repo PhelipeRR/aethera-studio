@@ -1,7 +1,7 @@
 {
   "name": "@neuralbridge/aethera-desktop",
   "private": true,
-  "version": "0.1.70",
+  "version": "0.1.71",
   "description": "Aethera Studio — standalone autonomous AI video studio & channel manager",
   "main": "out/main/index.js",
   "scripts": {
