@@ -1,7 +1,7 @@
 import { canonicalQueryKey } from '../editorial/contextual-media-queries.js';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { extname, join } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   computeVisionDecisionCacheKey,
   evaluateMediaRelevance,
@@ -1274,6 +1274,7 @@ export async function runAutonomousMediaAcquisition(input: {
   const candidatesByProvider: Record<string, number> = {};
   const seenCandidateKeys = new Set<string>();
   const seenFileHashes = new Set<string>();
+  const downloadedTempPaths = new Set<string>();
   const rejectedCandidates: AutonomousAcquisitionAuditReport['rejectedCandidates'] = [];
   const rejectedSegmentByMediaId = new Map<string, string>();
   const rejectedUrlByMediaId = new Map<string, string>();
@@ -2192,6 +2193,9 @@ export async function runAutonomousMediaAcquisition(input: {
               return;
             }
 
+            if (cand.origin !== 'local_library') {
+              downloadedTempPaths.add(resolve(filePath));
+            }
             const fileSizeBytes = statSync(filePath).size;
             if (fileSizeBytes < 1024) {
               candidateStates.set(candKey, 'failed');
@@ -2609,6 +2613,16 @@ export async function runAutonomousMediaAcquisition(input: {
   } finally {
     clearTimeout(deadlineTimer);
     saveCheckpoint();
+    const approvedResolvedPaths = new Set(approvedAssets.map((a) => resolve(a.uri)));
+    const mediaRootResolved = resolve(input.mediaDir);
+    for (const fp of downloadedTempPaths) {
+      if (approvedResolvedPaths.has(fp)) continue;
+      const rel = relative(mediaRootResolved, fp);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
+      if (existsSync(fp)) {
+        try { unlinkSync(fp); } catch { /* ignore */ }
+      }
+    }
   }
 
   const approvedMediaDetails: ApprovedMediaAuditDetail[] = [];
