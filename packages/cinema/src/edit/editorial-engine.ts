@@ -209,6 +209,7 @@ export function buildClipFromShot(input: {
   mediaId: string;
   label: string;
   startFrames: number;
+  sourceStartFrames?: number;
   durationFrames: number;
   fps: CanonicalTimeline['fps'];
   shotId?: string;
@@ -221,7 +222,7 @@ export function buildClipFromShot(input: {
     mediaId: input.mediaId,
     label: input.label,
     sourceRange: {
-      start: fromFrames(input.startFrames, input.fps),
+      start: fromFrames(input.sourceStartFrames ?? 0, input.fps),
       duration: fromFrames(input.durationFrames, input.fps),
     },
     timelineRange: {

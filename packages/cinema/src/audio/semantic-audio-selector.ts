@@ -1,4 +1,4 @@
-import { basename } from 'node:path';
+import { basename, dirname } from 'node:path';
 import type { RealAudioAssetRef, RealSfxAssetRef } from './real-audio-assets.js';
 
 export interface LocalAudioLibraryEntry {
@@ -49,7 +49,7 @@ const EVENT_KEYWORDS: Record<SemanticSfxQuery['eventType'], string[]> = {
   comic_sting: ['glitch', 'blip', 'boing', 'pop', 'anime', 'droid', 'retro', 'record'],
 };
 
-const MUSIC_KEYWORDS = ['music', 'bgm', 'soundtrack', 'cinematic', 'ambient', 'synth', 'lofi', 'score', 'theme', 'instrumental'];
+const MUSIC_KEYWORDS = ['music', 'bgm', 'soundtrack', 'score', 'instrumental', 'synthwave', 'lofi'];
 
 /**
  * Scores a local audio file path against an editorial SFX event type and video domain.
@@ -142,15 +142,20 @@ export function selectMusicFromLibrary(
   const lowerDomain = domainText.toLowerCase();
   return entries
     .filter((entry) => {
-      const lower = entry.path.toLowerCase();
-      if (!/\.(wav|mp3|ogg|m4a|flac)$/i.test(lower)) return false;
-      if (EXCLUDED_VEHICLE_AND_NOISE_TERMS.some((term) => lower.includes(term))) return false;
-      if ((entry.bytes ?? 0) > 0 && (entry.bytes ?? 0) < 1_500_000) return false;
-      return MUSIC_KEYWORDS.some((kw) => lower.includes(kw));
+      const fileAndPack = `${basename(dirname(entry.path))} ${basename(entry.path)}`.toLowerCase();
+      if (!/\.(wav|mp3|ogg|m4a|flac)$/i.test(fileAndPack)) return false;
+      if (EXCLUDED_VEHICLE_AND_NOISE_TERMS.some((term) => fileAndPack.includes(term))) return false;
+      if (/(roomtone|ambisonic|foley|sfx|sound\s*fx|ui|interface|explosion|riser|whoosh)/i.test(fileAndPack)) {
+        return false;
+      }
+      if ((entry.bytes ?? 0) > 0 && (entry.bytes ?? 0) < 2_000_000) return false;
+      return MUSIC_KEYWORDS.some((kw) => fileAndPack.includes(kw));
     })
     .sort((a, b) => {
-      const aScore = MUSIC_KEYWORDS.filter((kw) => a.path.toLowerCase().includes(kw) && lowerDomain.includes(kw)).length;
-      const bScore = MUSIC_KEYWORDS.filter((kw) => b.path.toLowerCase().includes(kw) && lowerDomain.includes(kw)).length;
+      const aLabel = `${basename(dirname(a.path))} ${basename(a.path)}`.toLowerCase();
+      const bLabel = `${basename(dirname(b.path))} ${basename(b.path)}`.toLowerCase();
+      const aScore = MUSIC_KEYWORDS.filter((kw) => aLabel.includes(kw) && lowerDomain.includes(kw)).length;
+      const bScore = MUSIC_KEYWORDS.filter((kw) => bLabel.includes(kw) && lowerDomain.includes(kw)).length;
       return bScore - aScore || (b.bytes ?? 0) - (a.bytes ?? 0);
     })
     .slice(0, 5)
