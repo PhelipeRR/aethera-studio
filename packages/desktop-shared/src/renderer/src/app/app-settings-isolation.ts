@@ -2,9 +2,6 @@ export type AppIdentity = 'aethera' | 'singularity';
 
 export type AetheraSettingsCategoryId =
   | 'general'
-  | 'youtube'
-  | 'twitch_igdb'
-  | 'rawg'
   | 'media_sources'
   | 'ai_agents'
   | 'voice_studio'
@@ -23,9 +20,6 @@ export type SingularityOnlySectionId =
 
 export const AETHERA_ALLOWED_SETTINGS_CATEGORIES: readonly AetheraSettingsCategoryId[] = [
   'general',
-  'youtube',
-  'twitch_igdb',
-  'rawg',
   'media_sources',
   'ai_agents',
   'voice_studio',

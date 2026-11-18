@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { ELEVENLABS_PCM_FORMAT, synthesizeElevenLabsWav } from '@neuralbridge/cinema';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -84,6 +84,15 @@ class TtsCache {
       writeFileSync(file, JSON.stringify({ ts: Date.now(), value }), 'utf8');
     } catch {
       // cache write failure is non-fatal
+    }
+  }
+
+  delete(provider: string, kind: string, id: string): void {
+    const file = this.key(provider, kind, id);
+    try {
+      if (existsSync(file)) unlinkSync(file);
+    } catch {
+      // cache invalidation failure is non-fatal
     }
   }
 }
@@ -209,10 +218,12 @@ export class ElevenLabsProvider implements TtsProvider {
 
   saveCredentials(credentials: ElevenLabsCredentials): void {
     this.secretStore.save(credentials);
+    this.cache.delete('elevenlabs', 'voices', 'all');
   }
 
   clearCredentials(): void {
     this.secretStore.clear();
+    this.cache.delete('elevenlabs', 'voices', 'all');
   }
 
   async healthCheck(signal?: AbortSignal): Promise<{ ok: boolean; message?: string }> {

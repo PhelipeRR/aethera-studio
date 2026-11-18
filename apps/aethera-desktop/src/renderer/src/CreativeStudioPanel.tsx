@@ -318,7 +318,7 @@ export function CreativeStudioPanel() {
         ...(selectedIpAdapter && selectedClipVision && referencePath.trim()
           ? { ipAdapter: { model: selectedIpAdapter, clipVisionModel: selectedClipVision, referenceImagePath: referencePath.trim(), weight: ipAdapterWeight } }
           : {}),
-        ...(engineStatus?.comfyUi.capabilities.faceDetailer && engineStatus.comfyUi.models.faceDetectors.includes(selectedFaceDetector)
+        ...(engineStatus?.comfyUi?.capabilities?.faceDetailer && (engineStatus.comfyUi.models?.faceDetectors ?? []).includes(selectedFaceDetector)
           ? { faceDetailer: { detectorModel: selectedFaceDetector, denoise: 0.35, guideSize: 512, maxSize: 1024 } }
           : {}),
         maxAttempts,
@@ -518,29 +518,29 @@ export function CreativeStudioPanel() {
             auto-start: {engineStatus.startup.message}
           </span>
         )}
-        {engineStatus && (
+        {engineStatus?.comfyUi && (
           <span style={{ color: 'var(--muted-foreground)' }}>
             recursos: {[
-              engineStatus.comfyUi.capabilities.inpaint && 'inpaint',
-              engineStatus.comfyUi.capabilities.controlNet && 'ControlNet',
-              engineStatus.comfyUi.capabilities.ipAdapter && 'IP-Adapter',
-              engineStatus.comfyUi.capabilities.faceDetailer && 'FaceDetailer',
-              engineStatus.comfyUi.capabilities.upscale && 'upscale',
-              engineStatus.comfyUi.capabilities.lora && 'LoRA',
+              engineStatus.comfyUi.capabilities?.inpaint && 'inpaint',
+              engineStatus.comfyUi.capabilities?.controlNet && 'ControlNet',
+              engineStatus.comfyUi.capabilities?.ipAdapter && 'IP-Adapter',
+              engineStatus.comfyUi.capabilities?.faceDetailer && 'FaceDetailer',
+              engineStatus.comfyUi.capabilities?.upscale && 'upscale',
+              engineStatus.comfyUi.capabilities?.lora && 'LoRA',
             ].filter(Boolean).join(' · ') || 'somente nodes básicos'}
           </span>
         )}
-        {engineStatus && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--muted-foreground)' }}>
-            <span>checkpoints: {engineStatus.comfyUi.models.checkpoints.length} · LoRAs: {engineStatus.comfyUi.models.loras.length}</span>
-            {engineStatus.comfyUi.models.checkpoints.length > 0 && (
+        {engineStatus?.comfyUi && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, width: '100%', color: 'var(--muted-foreground)' }}>
+            <span>checkpoints: {engineStatus.comfyUi.models?.checkpoints?.length ?? 0} · LoRAs: {engineStatus.comfyUi.models?.loras?.length ?? 0}</span>
+            {(engineStatus.comfyUi.models?.checkpoints?.length ?? 0) > 0 && (
               <select
                 aria-label="Checkpoint ComfyUI"
                 value={selectedCheckpoint}
                 onChange={(e) => void saveImageEngineSettings({ checkpoint: e.target.value })}
                 style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11 }}
               >
-                {engineStatus.comfyUi.models.checkpoints.map((checkpoint) => <option key={checkpoint} value={checkpoint}>{checkpoint}</option>)}
+                {(engineStatus.comfyUi.models?.checkpoints ?? []).map((checkpoint) => <option key={checkpoint} value={checkpoint}>{checkpoint}</option>)}
               </select>
             )}
             <select
@@ -592,7 +592,7 @@ export function CreativeStudioPanel() {
                 )}
               </div>
             )}
-            {engineStatus.comfyUi.models.controlnet.length > 0 && (
+            {(engineStatus.comfyUi.models?.controlnet?.length ?? 0) > 0 && (
               <select
                 aria-label="Modelo ControlNet ComfyUI"
                 value={selectedControlNet}
@@ -600,10 +600,10 @@ export function CreativeStudioPanel() {
                 style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
               >
                 <option value="">Sem ControlNet</option>
-                {engineStatus.comfyUi.models.controlnet.map((model) => <option key={model} value={model}>{model}</option>)}
+                {(engineStatus.comfyUi.models?.controlnet ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
             )}
-            {engineStatus.comfyUi.models.ipadapter.length > 0 && engineStatus.comfyUi.models.clip_vision.length > 0 && (
+            {(engineStatus.comfyUi.models?.ipadapter?.length ?? 0) > 0 && (engineStatus.comfyUi.models?.clip_vision?.length ?? 0) > 0 && (
               <>
                 <select
                   aria-label="Modelo IP-Adapter ComfyUI"
@@ -612,7 +612,7 @@ export function CreativeStudioPanel() {
                   style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
                 >
                   <option value="">Sem IP-Adapter</option>
-                  {engineStatus.comfyUi.models.ipadapter.map((model) => <option key={model} value={model}>{model}</option>)}
+                  {(engineStatus.comfyUi.models?.ipadapter ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
                 </select>
                 <select
                   aria-label="Encoder CLIP Vision ComfyUI"
@@ -621,7 +621,7 @@ export function CreativeStudioPanel() {
                   style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
                 >
                   <option value="">Sem encoder</option>
-                  {engineStatus.comfyUi.models.clip_vision.map((model) => <option key={model} value={model}>{model}</option>)}
+                  {(engineStatus.comfyUi.models?.clip_vision ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
                 </select>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }} title="Peso da identidade visual; exige imagem de referência">
                   peso IP
@@ -629,7 +629,7 @@ export function CreativeStudioPanel() {
                 </label>
               </>
             )}
-            {engineStatus.comfyUi.capabilities.faceDetailer && engineStatus.comfyUi.models.faceDetectors.length > 0 && (
+            {engineStatus.comfyUi.capabilities?.faceDetailer && (engineStatus.comfyUi.models?.faceDetectors?.length ?? 0) > 0 && (
               <select
                 aria-label="Detector do FaceDetailer ComfyUI"
                 value={selectedFaceDetector}
@@ -637,20 +637,20 @@ export function CreativeStudioPanel() {
                 style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
               >
                 <option value="">Sem FaceDetailer</option>
-                {engineStatus.comfyUi.models.faceDetectors.map((model) => <option key={model} value={model}>{model}</option>)}
+                {(engineStatus.comfyUi.models?.faceDetectors ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
             )}
-            {engineStatus.comfyUi.models.upscale_models.length > 0 && (
+            {(engineStatus.comfyUi.models?.upscale_models?.length ?? 0) > 0 && (
               <select
                 aria-label="Modelo de upscale ComfyUI"
                 value={selectedUpscaleModel}
                 onChange={(e) => setSelectedUpscaleModel(e.target.value)}
                 style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
               >
-                {engineStatus.comfyUi.models.upscale_models.map((model) => <option key={model} value={model}>{model}</option>)}
+                {(engineStatus.comfyUi.models?.upscale_models ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
             )}
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="Quando o ComfyUI estiver instalado, inicia o script local uma vez se o endpoint estiver offline.">
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} title="Quando o ComfyUI estiver instalado, inicia o script local uma vez se o endpoint estiver offline.">
               <input
                 type="checkbox"
                 checked={autoStartComfyUi}
@@ -658,7 +658,7 @@ export function CreativeStudioPanel() {
               />
               iniciar ComfyUI se offline
             </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
               <input
                 type="checkbox"
                 checked={releaseMemoryAfterGeneration}
@@ -672,7 +672,7 @@ export function CreativeStudioPanel() {
                   const released = await getBridge()?.creativeReleaseImageMemory?.();
                   setStatusMsg(released ? 'Memória do ComfyUI liberada.' : 'O gateway ComfyUI não expõe liberação de memória.');
                 }}
-                style={{ padding: '4px 8px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer', fontSize: 11 }}
+                style={{ padding: '4px 10px', background: 'var(--brand-lime, #d8fb4f)', color: 'var(--chip-violet-fg, #6a46d8)', border: '1px solid #b8dc35', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}
               >
                 Liberar VRAM
               </button>
@@ -723,7 +723,7 @@ export function CreativeStudioPanel() {
               aria-label="Caminho da imagem de referência"
               style={{ flex: 1.2, minWidth: 220, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
             />
-            {engineStatus?.comfyUi.models.controlnet.length && selectedControlNet ? (
+            {engineStatus?.comfyUi?.models?.controlnet?.length && selectedControlNet ? (
               <>
                 <input
                   aria-label="Imagem de condicionamento ControlNet"
@@ -901,13 +901,13 @@ export function CreativeStudioPanel() {
                 <div style={{ color: 'var(--muted-foreground)', marginTop: 4 }}>
                   LoRA {generationReport.loraSelection.mode}: {generationReport.loraSelection.explanation ?? 'sem seleção'}
                   {generationReport.loras?.length ? ` · ${generationReport.loras.map((lora) => `${lora.model} (${lora.strengthModel})`).join(' + ')}` : ''}
-                  {generationReport.loraSelection.warnings.length ? ` · ${generationReport.loraSelection.warnings.join(' ')}` : ''}
+                  {generationReport.loraSelection.warnings?.length ? ` · ${generationReport.loraSelection.warnings.join(' ')}` : ''}
                 </div>
               )}
               {generationReport.qualityAudit && (
                 <div style={{ color: generationReport.qualityAudit.passed ? 'var(--success)' : 'var(--destructive)', marginTop: 4 }}>
                   Auditoria estrutural: {generationReport.qualityAudit.passed ? 'aprovada' : 'rejeitada'} · σ luminância {generationReport.qualityAudit.metrics.lumaStdDev.toFixed(2)}
-                  {generationReport.qualityAudit.findings.length > 0 ? ` · ${generationReport.qualityAudit.findings.map((finding) => finding.message).join(' ')}` : ''}
+                  {generationReport.qualityAudit.findings?.length ? ` · ${generationReport.qualityAudit.findings.map((finding) => finding.message).join(' ')}` : ''}
                 </div>
               )}
             </div>

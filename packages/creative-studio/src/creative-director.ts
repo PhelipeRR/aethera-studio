@@ -10,6 +10,7 @@ export interface DirectorCritiqueIssue {
   code:
     | 'DUPLICATE_SUBJECT'
     | 'TEXT_SUBJECT_COLLISION'
+    | 'TEXT_TEXT_COLLISION'
     | 'TEXT_OVERFLOW_FIXED'
     | 'MISSING_CONTRAST_SCRIM'
     | 'BANNER_SAFE_AREA_ADJUSTED'
@@ -199,7 +200,55 @@ export class CreativeDirectorAgent {
       }
     }
 
-    // 5. Contrast vignette check
+    // 5. Keep editorial text layers from occupying the same rasterized zone. The headline is the
+    // movable layer of last resort: kicker/subtitle stay above it, and each move is followed by a
+    // fresh fit so the repair cannot trade a collision for truncation.
+    const textLayers = layers.filter((layer): layer is TextLayer => layer.visible && layer.type === 'text');
+    for (let i = 0; i < textLayers.length; i += 1) {
+      for (let j = i + 1; j < textLayers.length; j += 1) {
+        const first = textLayers[i]!;
+        const second = textLayers[j]!;
+        const firstRect = getLayerRect(first);
+        const secondRect = getLayerRect(second);
+        if (boxesOverlapRatio(firstRect, secondRect) <= 0.02) continue;
+
+        const moving = first.role === 'headline' && second.role !== 'headline' ? first
+          : second.role === 'headline' && first.role !== 'headline' ? second
+            : second;
+        const stationary = moving === first ? second : first;
+        const stationaryRect = getLayerRect(stationary);
+        const gap = 18;
+        const nextY = Math.max(moving.transform.y, stationaryRect.y + stationaryRect.h + gap);
+        if (nextY + moving.transform.height * moving.transform.scaleY <= doc.height) {
+          moving.transform.y = nextY;
+        } else {
+          // When there is no vertical room, place the movable layer in the opposite horizontal column.
+          const nextX = stationaryRect.x >= doc.width / 2
+            ? 48
+            : Math.max(48, doc.width - moving.transform.width * moving.transform.scaleX - 48);
+          moving.transform.x = nextX;
+        }
+        const refit = fitTextToBox({
+          text: moving.text,
+          targetW: Math.round(moving.transform.width * moving.transform.scaleX),
+          targetH: Math.round(moving.transform.height * moving.transform.scaleY),
+          fontSize: moving.fontSize,
+          lineHeight: moving.lineHeight,
+          letterSpacing: moving.letterSpacing,
+          strokeWidth: moving.strokeWidth,
+          uppercase: moving.uppercase,
+        });
+        moving.fontSize = refit.fontSize;
+        issues.push({
+          code: 'TEXT_TEXT_COLLISION',
+          severity: 'repaired',
+          message: `Colisão entre as camadas de texto "${moving.name}" e "${stationary.name}" resolvida por reflow editorial.`,
+          layerId: moving.id,
+        });
+      }
+    }
+
+    // 6. Contrast vignette check
     if (doc.artType === 'thumbnail' && layers.some((l) => l.visible && l.type === 'text')) {
       const hasContrastVignette = layers.some(
         (l) =>
@@ -215,7 +264,7 @@ export class CreativeDirectorAgent {
       }
     }
 
-    // 6. Track persistent Brand Kit identity reuse
+    // 7. Track persistent Brand Kit identity reuse
     const kit = options?.brandKit;
     if (kit) {
       const mascotId = kit.mascotAssetId ?? kit.avatarAssetId;

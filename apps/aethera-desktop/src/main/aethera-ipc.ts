@@ -2158,6 +2158,21 @@ productionConsole,
         undefined,
         visionProviderCooldowns,
         visionProviderTimeoutFailures,
+        1_500,
+        {
+          // Technical deadlines only: Scene Grounding thresholds remain unchanged.
+          // Bound fallback so acquisition can persist diagnostics and resume safely.
+          enabledProviders: ['local-vlm', 'claude-gateway', 'antigravity', 'claude', 'codex'],
+          priority: ['local-vlm', 'claude-gateway', 'antigravity', 'claude', 'codex'],
+          perProviderTimeoutMs: {
+            'local-vlm': 5_000,
+            'claude-gateway': 75_000,
+            antigravity: 45_000,
+            claude: 75_000,
+            codex: 75_000,
+          },
+          maxAttempts: 3,
+        },
       );
       const policy: VisionPolicy = {
         schemaVersion: 1,

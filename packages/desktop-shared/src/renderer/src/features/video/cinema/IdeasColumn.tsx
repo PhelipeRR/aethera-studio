@@ -132,7 +132,7 @@ export function IdeasColumn({ api, onApplyIdea }: IdeasColumnProps) {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="-ml-3 w-fit"
+                  className="w-fit"
                   disabled={applyingId !== null}
                   onClick={() => void applyHistoryIdea(entry)}
                 >

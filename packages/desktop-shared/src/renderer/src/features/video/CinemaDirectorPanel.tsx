@@ -79,6 +79,7 @@ import { MediaCoveragePanel } from './MediaCoveragePanel';
 import { VoiceDirectorPanel } from './VoiceDirectorPanel';
 import { DeletePromptDialog, promptDeleteLabel } from './DeletePromptDialog';
 import { TtsProviderSelector } from '@/features/aethera/TtsProviderSelector';
+import { loadNarrationDefaults } from '@/features/aethera/narration-defaults';
 import {
   EditorialAuditPanel,
   type EditorialAuditTrailView,
@@ -456,9 +457,9 @@ export function CinemaDirectorPanel() {
   const [videoLanguage, setVideoLanguage] = useState('pt-BR');
   const [voiceOptions, setVoiceOptions] = useState<Array<{ id: string; label: string; source?: string }>>([]);
   const [voiceStudioAvailable, setVoiceStudioAvailable] = useState(false);
-  const [selectedVoiceId, setSelectedVoiceId] = useState('9190edfa');
-  const [ttsProviderId, setTtsProviderId] = useState<'voicestudio' | 'elevenlabs'>('voicestudio');
-  const [ttsVoiceId, setTtsVoiceId] = useState('');
+  const [selectedVoiceId, setSelectedVoiceId] = useState(() => loadNarrationDefaults().voiceStudioVoiceId);
+  const [ttsProviderId, setTtsProviderId] = useState<'voicestudio' | 'elevenlabs'>(() => loadNarrationDefaults().provider);
+  const [ttsVoiceId, setTtsVoiceId] = useState(() => loadNarrationDefaults().elevenLabsVoiceId);
   const [manualControlFields, setManualControlFields] = useState<ContractControlField[]>([]);
   const [promptConflicts, setPromptConflicts] = useState<ContractConflict[]>([]);
   const [revisionNote, setRevisionNote] = useState('');
@@ -1231,7 +1232,7 @@ export function CinemaDirectorPanel() {
                     onChange={(e) => handlePromptChange(e.target.value)}
                     placeholder={BRIEFING_PLACEHOLDER}
                     rows={5}
-                    className="min-h-32 resize-y text-[15px]"
+                    className="min-h-32 resize-none text-[15px]"
                   />
                   {ideaUndo && (
                     <div role="status" className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
@@ -1357,10 +1358,10 @@ export function CinemaDirectorPanel() {
                         value={humorIntensity}
                         aria-valuetext={`${humorIntensity}% · ${humorLabelOf(humorIntensity)}`}
                         onChange={(e) => handleManualControlChange('humorIntensity', Number(e.target.value))}
-                        className="w-full min-w-0 accent-primary"
+                        className="w-full min-w-0 accent-[var(--ring,#8b6cf0)]"
                       />
                       <span className="inline-flex shrink-0 items-center gap-1.5 text-sm">
-                        <Laugh aria-hidden className="size-3.5 text-primary" />
+                        <Laugh aria-hidden className="size-3.5 text-[var(--chip-violet-fg,#8b6cf0)]" />
                         <span className="font-mono tabular-nums">{humorIntensity}%</span>
                         <span className="text-muted-foreground">{humorLabelOf(humorIntensity)}</span>
                       </span>
@@ -1432,6 +1433,7 @@ export function CinemaDirectorPanel() {
                             onVoiceChange={setTtsVoiceId}
                             disabled={busy}
                             hideProviderSelect
+                            allowCredentialEdit={false}
                           />
                         </div>
                       )}
@@ -1561,7 +1563,11 @@ export function CinemaDirectorPanel() {
                   <p className="text-xs text-muted-foreground">
                     Estimativa de render: {renderOption ? `${renderOption.label} · ${renderOption.vram}` : renderProfile}
                   </p>
-                  <Button type="submit" size="lg" disabled={busy || renderingReal || !hasBriefing}>
+                  <Button
+                    type="submit"
+                    size="lg"
+                    disabled={busy || renderingReal || !hasBriefing}
+                  >
                     {busy || renderingReal ? <LoaderCircle className="motion-safe:animate-spin" aria-hidden /> : <Sparkles aria-hidden />}
                     {busy || renderingReal ? 'Produzindo e renderizando...' : 'Gerar Direção & Storyboard'}
                   </Button>
@@ -2136,7 +2142,7 @@ function Disclosure({
           type="button"
           className="flex min-h-11 w-full items-center gap-3 py-2 text-left text-sm outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <ChevronDown aria-hidden className={cn('size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none', isOpen && 'rotate-180')} />
+          <ChevronDown aria-hidden className={cn('size-4 shrink-0 text-[var(--chip-violet-fg,#8b6cf0)] transition-transform motion-reduce:transition-none', isOpen && 'rotate-180')} />
           <span className="w-44 shrink-0 font-medium text-foreground">{label}</span>
           <span className="min-w-0 flex-1 truncate text-muted-foreground">{summary}</span>
         </button>

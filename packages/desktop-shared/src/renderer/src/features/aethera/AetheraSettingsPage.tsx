@@ -5,19 +5,16 @@ import {
   Calendar,
   CheckCircle2,
   Clapperboard,
-  Database,
   Download,
   Film,
-  Gamepad2,
   GraduationCap,
   HelpCircle,
   Mic,
   RotateCcw,
   Shield,
   Sliders,
-  Tv,
 } from 'lucide-react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { PageHeader } from '@/app/PageHeader';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import {
@@ -27,6 +24,8 @@ import {
 import { MediaSourcesSettings } from './MediaSourcesSettings';
 import { AgentExecutionSettings } from './AgentExecutionSettings';
 import { SetupTutorialDrawer } from './SetupTutorialDrawer';
+import { TtsProviderSelector } from './TtsProviderSelector';
+import { loadNarrationDefaults, saveNarrationDefaults, type NarrationDefaults } from './narration-defaults';
 import type { TutorialIntegrationId } from './settings-tutorials';
 
 interface CategoryMeta {
@@ -38,12 +37,9 @@ interface CategoryMeta {
 
 const CATEGORIES: CategoryMeta[] = [
   { id: 'general', label: 'Geral', subtitle: 'Idioma, aparência, diretórios e preferências', icon: Sliders },
-  { id: 'youtube', label: 'YouTube', subtitle: 'OAuth, canal, uploads e agendamentos', icon: Tv },
-  { id: 'twitch_igdb', label: 'Twitch / IGDB', subtitle: 'Client ID, Client Secret e pesquisa de jogos', icon: Gamepad2 },
-  { id: 'rawg', label: 'RAWG e fontes de pesquisa', subtitle: 'Chaves de API e provedores de informações', icon: Database },
-  { id: 'media_sources', label: 'Fontes de mídia', subtitle: 'Steam, YouTube, Pexels, Pixabay, anime e datasets', icon: Film },
+  { id: 'media_sources', label: 'Fontes de mídia', subtitle: 'YouTube (OAuth/API), Twitch / IGDB, RAWG, Steam, Pexels, Pixabay e datasets', icon: Film },
   { id: 'ai_agents', label: 'Agentes e IA', subtitle: 'Claude, Codex, Antigravity, modelos e fallback', icon: Bot },
-  { id: 'voice_studio', label: 'Narração e voz', subtitle: 'Voice Studio, vozes, TTS e áudio', icon: Mic },
+  { id: 'voice_studio', label: 'Narração e voz', subtitle: 'Voice Studio, ElevenLabs, vozes, TTS e áudio', icon: Mic },
   { id: 'production', label: 'Produção audiovisual', subtitle: 'Renderização, FFmpeg, GPU, SFX, VFX e presets', icon: Clapperboard },
   { id: 'academy', label: 'Academy', subtitle: 'Materiais de estudo, aprendizado e regras editoriais', icon: GraduationCap },
   { id: 'publications', label: 'Publicações', subtitle: 'Fuso horário, calendário e automações de publicação', icon: Calendar },
@@ -64,7 +60,15 @@ interface AetheraBridgeLoose {
     nvenc: boolean;
     remotion?: boolean;
   }>;
-  cinemaListVoices?: () => Promise<Array<{ id: string; name: string; engine: string; locale: string }>>;
+  cinemaListVoices?: () => Promise<
+    | Array<{ id: string; name?: string; label?: string; engine?: string; locale?: string }>
+    | {
+        available?: boolean;
+        compatible?: boolean;
+        voices?: Array<{ id: string; name?: string; label?: string; engine?: string; locale?: string }>;
+        error?: string | null;
+      }
+  >;
   cinemaAcademySnapshot?: () => Promise<{
     materials: unknown[];
     knowledge: unknown[];
@@ -135,27 +139,52 @@ interface AetheraBridgeLoose {
   }>;
 }
 
+type RawVoiceEntry = { id: string; name?: string; label?: string; engine?: string; locale?: string };
+
+function normalizeVoiceList(
+  raw:
+    | RawVoiceEntry[]
+    | { available?: boolean; voices?: RawVoiceEntry[]; error?: string | null }
+    | null
+    | undefined,
+): { voices: Array<{ id: string; name: string; engine: string; locale: string }>; error?: string | null } {
+  const items = Array.isArray(raw) ? raw : Array.isArray(raw?.voices) ? raw.voices : [];
+  const voices = items
+    .filter((v): v is RawVoiceEntry => Boolean(v && typeof v.id === 'string' && v.id))
+    .map((v) => ({
+      id: v.id,
+      name: v.name ?? v.label ?? v.id,
+      engine: v.engine ?? 'VoiceStudio',
+      locale: v.locale ?? 'pt-BR',
+    }));
+  const error = !Array.isArray(raw) ? raw?.error : undefined;
+  return { voices, ...(error !== undefined ? { error } : {}) };
+}
+
 export function AetheraSettingsPage({ description }: { description: string }) {
-  const [activeCat, setActiveCat] = useState<AetheraSettingsCategoryId>('general');
+  const [searchParams] = useSearchParams();
+  const initialCatParam = searchParams.get('category');
+  const initialCat: AetheraSettingsCategoryId =
+    initialCatParam && (AETHERA_ALLOWED_SETTINGS_CATEGORIES as readonly string[]).includes(initialCatParam)
+      ? (initialCatParam as AetheraSettingsCategoryId)
+      : 'general';
+
+  const [activeCat, setActiveCat] = useState<AetheraSettingsCategoryId>(initialCat);
   const [tutorialId, setTutorialId] = useState<TutorialIntegrationId | null>(null);
   const [highlightedFieldId, setHighlightedFieldId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    const param = searchParams.get('category');
+    if (param && (AETHERA_ALLOWED_SETTINGS_CATEGORIES as readonly string[]).includes(param)) {
+      setActiveCat(param as AetheraSettingsCategoryId);
+    }
+  }, [searchParams]);
 
   // General
   const [theme, setTheme] = useState<ThemeSource>('dark');
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
 
-  // IGDB
-  const [igdbStatus, setIgdbStatus] = useState<{ configured: boolean; clientIdHint: string | null }>({
-    configured: false,
-    clientIdHint: null,
-  });
-  const [igdbClientId, setIgdbClientId] = useState('');
-  const [igdbClientSecret, setIgdbClientSecret] = useState('');
-
-  // RAWG & Collage
-  const [rawgConfigured, setRawgConfigured] = useState(false);
-  const [rawgApiKey, setRawgApiKey] = useState('');
   // Claude Gateway
   const [gatewayEnabled, setGatewayEnabled] = useState(false);
   const [gatewayConfigured, setGatewayConfigured] = useState(false);
@@ -171,8 +200,11 @@ export function AetheraSettingsPage({ description }: { description: string }) {
   });
 
   // Voices, Capabilities, Academy, Calendar
+  const [narrationDefaults, setNarrationDefaults] = useState<NarrationDefaults>(() => loadNarrationDefaults());
   const [voices, setVoices] = useState<Array<{ id: string; name: string; engine: string; locale: string }>>([]);
-  const [selectedVoiceId, setSelectedVoiceId] = useState('');
+  const [selectedVoiceId, setSelectedVoiceId] = useState(() => loadNarrationDefaults().voiceStudioVoiceId);
+  const [elevenLabsVoiceId, setElevenLabsVoiceId] = useState(() => loadNarrationDefaults().elevenLabsVoiceId);
+  const [elevenLabsVoiceName, setElevenLabsVoiceName] = useState(() => loadNarrationDefaults().elevenLabsVoiceName ?? '');
   const [capabilities, setCapabilities] = useState<{
     ffmpeg: boolean;
     ffprobe: boolean;
@@ -198,8 +230,6 @@ export function AetheraSettingsPage({ description }: { description: string }) {
 
     nb?.theme?.get?.().then(setTheme).catch(() => {});
     nb?.app?.info?.().then(setAppInfo).catch(() => {});
-    nb?.video?.studioIgdbStatus?.().then(setIgdbStatus).catch(() => {});
-    nb?.video?.studioRawgStatus?.().then((r: { configured?: boolean }) => setRawgConfigured(Boolean(r?.configured))).catch(() => {});
     nb?.video?.studioClaudeGatewayStatus?.()
       .then((r: { enabled?: boolean; configured?: boolean; baseUrl?: string; model?: string }) => {
         setGatewayEnabled(Boolean(r?.enabled));
@@ -214,11 +244,10 @@ export function AetheraSettingsPage({ description }: { description: string }) {
       .catch(() => setYtChannel({ connected: false }));
 
     ab.cinemaCapabilities?.().then(setCapabilities).catch(() => {});
-    ab.cinemaListVoices?.().then((list) => {
-      if (Array.isArray(list)) {
-        setVoices(list);
-        if (list[0] && !selectedVoiceId) setSelectedVoiceId(list[0].id);
-      }
+    ab.cinemaListVoices?.().then((res) => {
+      const { voices: list } = normalizeVoiceList(res);
+      setVoices(list);
+      if (list[0] && !selectedVoiceId) setSelectedVoiceId(list[0].id);
     }).catch(() => {});
     ab.cinemaAcademySnapshot?.().then((snap) => {
       setAcademyCounts({
@@ -353,45 +382,6 @@ export function AetheraSettingsPage({ description }: { description: string }) {
     }
   };
 
-  const handleSaveIgdb = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!igdbClientId.trim() || !igdbClientSecret.trim()) {
-      setStatusMessage({ kind: 'error', text: 'Informe Client ID e Client Secret da Twitch/IGDB.' });
-      return;
-    }
-    try {
-      await window.neuralbridge.video.studioIgdbSave({
-        clientId: igdbClientId.trim(),
-        clientSecret: igdbClientSecret.trim(),
-      });
-      setIgdbClientId('');
-      setIgdbClientSecret('');
-      await refreshAll();
-      setStatusMessage({ kind: 'ok', text: 'Credenciais Twitch / IGDB criptografadas e salvas.' });
-    } catch (err) {
-      setStatusMessage({ kind: 'error', text: err instanceof Error ? err.message : 'Erro ao salvar IGDB.' });
-    }
-  };
-
-  const handleClearIgdb = async () => {
-    await window.neuralbridge.video.studioIgdbClear();
-    await refreshAll();
-    setStatusMessage({ kind: 'ok', text: 'Credenciais Twitch / IGDB removidas do cofre local.' });
-  };
-
-  const handleSaveRawg = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!rawgApiKey.trim()) return;
-    try {
-      await window.neuralbridge.video.studioRawgSave(rawgApiKey.trim());
-      setRawgApiKey('');
-      await refreshAll();
-      setStatusMessage({ kind: 'ok', text: 'Chave RAWG salva com segurança.' });
-    } catch (err) {
-      setStatusMessage({ kind: 'error', text: err instanceof Error ? err.message : 'Erro ao salvar RAWG.' });
-    }
-  };
-
   const handleSaveClaudeGateway = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -464,24 +454,24 @@ export function AetheraSettingsPage({ description }: { description: string }) {
     }
     if (id === 'twitch_igdb') {
       const st = await nb.video.studioIgdbStatus();
-      setIgdbStatus(st);
       return st.configured
         ? { ok: true, message: `Credenciais IGDB ativas (${st.clientIdHint ?? 'mascarado'}).` }
         : { ok: false, message: 'Credenciais Twitch/IGDB ausentes. Preencha Client ID e Client Secret.' };
     }
     if (id === 'rawg') {
       const st = await nb.video.studioRawgStatus();
-      setRawgConfigured(Boolean(st.configured));
       return st.configured
         ? { ok: true, message: 'Chave RAWG configurada e pronta no cofre local.' }
         : { ok: false, message: 'RAWG API Key não configurada.' };
     }
     if (id === 'voice_studio') {
-      const list = (await ab.cinemaListVoices?.()) ?? [];
+      const res = await ab.cinemaListVoices?.();
+      const { voices: list, error: voiceErr } = normalizeVoiceList(res);
       setVoices(list);
+      if (list[0] && !selectedVoiceId) setSelectedVoiceId(list[0].id);
       return list.length > 0
         ? { ok: true, message: `${list.length} voz(es) disponíveis no Voice Studio.` }
-        : { ok: false, message: 'Nenhuma voz TTS retornada pelo backend.' };
+        : { ok: false, message: voiceErr ? `Voice Studio indisponível: ${voiceErr}` : 'Nenhuma voz TTS retornada pelo backend.' };
     }
     if (id === 'production') {
       const cap = await ab.cinemaCapabilities?.();
@@ -631,29 +621,47 @@ export function AetheraSettingsPage({ description }: { description: string }) {
               </div>
             )}
 
-            {activeCat === 'youtube' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <h2 className="text-base font-semibold">YouTube — API, OAuth e Canal</h2>
-                    <p className="text-xs text-muted-foreground">Gerencie autenticação OAuth para uploads e agendamentos.</p>
+            {activeCat === 'media_sources' && (
+              <div className="space-y-6">
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-[#0d0d17] p-3 text-xs">
+                  <span className="text-muted-foreground">Guias rápidos de configuração:</span>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTutorialId('youtube')}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-purple-500/40 bg-purple-500/15 px-3 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/25"
+                    >
+                      <HelpCircle className="size-3.5" />
+                      YouTube OAuth
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTutorialId('twitch_igdb')}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-purple-500/40 bg-purple-500/15 px-3 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/25"
+                    >
+                      <HelpCircle className="size-3.5" />
+                      Twitch / IGDB
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTutorialId('rawg')}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-purple-500/40 bg-purple-500/15 px-3 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/25"
+                    >
+                      <HelpCircle className="size-3.5" />
+                      RAWG
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setTutorialId('youtube')}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-purple-500/40 bg-purple-500/15 px-3 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/25"
-                  >
-                    <HelpCircle className="size-3.5" />
-                    Como configurar
-                  </button>
                 </div>
 
                 <div
                   id="youtube-connect-action"
                   className={`rounded-xl border bg-[#0d0d17] p-4 space-y-3 text-xs ${fieldRing('youtube-connect-action')}`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span>Status da conexão:</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground">YouTube — OAuth e Canal</h3>
+                      <p className="text-[11px] text-muted-foreground">Autenticação OAuth do canal para uploads e agendamentos.</p>
+                    </div>
                     <span className={ytChannel.connected ? 'text-emerald-300 font-medium' : 'text-amber-300'}>
                       {ytChannel.connected ? `Conectado (${ytChannel.title})` : 'Não conectado'}
                     </span>
@@ -694,125 +702,12 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                     </button>
                   </div>
                 </div>
-              </div>
-            )}
 
-            {activeCat === 'twitch_igdb' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <h2 className="text-base font-semibold">Twitch / IGDB</h2>
-                    <p className="text-xs text-muted-foreground">Credenciais para pesquisa oficial de jogos e metadados.</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setTutorialId('twitch_igdb')}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-purple-500/40 bg-purple-500/15 px-3 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/25"
-                  >
-                    <HelpCircle className="size-3.5" />
-                    Como configurar
-                  </button>
-                </div>
-
-                <form onSubmit={(e) => void handleSaveIgdb(e)} className="space-y-3 text-xs">
-                  <div className="rounded-xl border border-border bg-[#0d0d17] p-3 flex items-center justify-between">
-                    <span>Estado atual:</span>
-                    <span className={igdbStatus.configured ? 'text-emerald-300 font-medium' : 'text-muted-foreground'}>
-                      {igdbStatus.configured ? `Configurado (${igdbStatus.clientIdHint ?? 'mascarado'})` : 'Não configurado'}
-                    </span>
-                  </div>
-
-                  <label className="block space-y-1">
-                    <span className="text-muted-foreground">Twitch Client ID</span>
-                    <input
-                      id="igdb-client-id"
-                      value={igdbClientId}
-                      onChange={(e) => setIgdbClientId(e.target.value)}
-                      placeholder="Cole o Client ID da aplicação Twitch"
-                      className={`w-full rounded-xl border bg-[#0d0d17] px-3 py-2 text-xs text-foreground ${fieldRing('igdb-client-id')}`}
-                    />
-                  </label>
-                  <label className="block space-y-1">
-                    <span className="text-muted-foreground">Twitch Client Secret (mascarado)</span>
-                    <input
-                      id="igdb-client-secret"
-                      type="password"
-                      value={igdbClientSecret}
-                      onChange={(e) => setIgdbClientSecret(e.target.value)}
-                      placeholder="••••••••••••••••"
-                      className={`w-full rounded-xl border bg-[#0d0d17] px-3 py-2 text-xs text-foreground ${fieldRing('igdb-client-secret')}`}
-                    />
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    <button type="submit" className="rounded-xl bg-primary px-4 py-2 font-semibold text-primary-foreground">
-                      Salvar Credenciais
-                    </button>
-                    {igdbStatus.configured && (
-                      <button
-                        type="button"
-                        onClick={() => void handleClearIgdb()}
-                        className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-rose-200"
-                      >
-                        Limpar
-                      </button>
-                    )}
-                  </div>
-                </form>
-              </div>
-            )}
-
-            {activeCat === 'media_sources' && <MediaSourcesSettings />}
-
-            {activeCat === 'rawg' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <h2 className="text-base font-semibold">RAWG e Fontes Externas</h2>
-                    <p className="text-xs text-muted-foreground">Chaves criptografadas para pesquisa de jogos e B-roll.</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setTutorialId('rawg')}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-purple-500/40 bg-purple-500/15 px-3 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/25"
-                  >
-                    <HelpCircle className="size-3.5" />
-                    Como configurar
-                  </button>
-                </div>
-
-                <form onSubmit={(e) => void handleSaveRawg(e)} className="space-y-2.5 text-xs rounded-xl border border-border bg-[#0d0d17] p-4">
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium text-foreground">RAWG API Key</span>
-                    <span className={rawgConfigured ? 'text-emerald-300' : 'text-muted-foreground'}>
-                      {rawgConfigured ? 'Configurada (mascarada)' : 'Não configurada'}
-                    </span>
-                  </div>
-                  <input
-                    id="rawg-api-key"
-                    type="password"
-                    value={rawgApiKey}
-                    onChange={(e) => setRawgApiKey(e.target.value)}
-                    placeholder="••••••••••••••••"
-                    className={`w-full rounded-xl border bg-[#090912] px-3 py-2 text-xs text-foreground ${fieldRing('rawg-api-key')}`}
-                  />
-                  <div className="flex gap-2">
-                    <button type="submit" className="rounded-lg bg-primary px-3 py-1.5 font-medium text-primary-foreground">
-                      Salvar RAWG
-                    </button>
-                    <button
-                      id="rawg-test-action"
-                      type="button"
-                      onClick={() => void handleTestConnection('rawg').then((r) => setStatusMessage({ kind: r.ok ? 'ok' : 'error', text: r.message }))}
-                      className={`rounded-lg border px-3 py-1.5 text-foreground ${fieldRing('rawg-test-action')}`}
-                    >
-                      Testar conexão
-                    </button>
-                  </div>
-                </form>
+                <MediaSourcesSettings />
 
                 <form onSubmit={(e) => void handleSaveCollage(e)} className="space-y-2.5 text-xs rounded-xl border border-border bg-[#0d0d17] p-4">
                   <div className="flex items-center justify-between">
-                    <span className="font-medium text-foreground">Pexels / Collage API Key (B-roll)</span>
+                    <span className="font-medium text-foreground">Pexels / Collage API Key (B-roll legado)</span>
                     <span className={collageConfigured ? 'text-emerald-300' : 'text-muted-foreground'}>
                       {collageConfigured ? 'Configurada (mascarada)' : 'Não configurada'}
                     </span>
@@ -949,11 +844,11 @@ export function AetheraSettingsPage({ description }: { description: string }) {
             )}
 
             {activeCat === 'voice_studio' && (
-              <div className="space-y-4 text-xs">
+              <div className="space-y-5 text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <div>
-                    <h2 className="text-base font-semibold">Narração e Voice Studio</h2>
-                    <p className="text-muted-foreground">{voices.length} voz(es) detectadas para narração.</p>
+                    <h2 className="text-base font-semibold">Narração e Voz</h2>
+                    <p className="text-muted-foreground">Configure o Voice Studio local, o ElevenLabs e a voz padrão para novos vídeos.</p>
                   </div>
                   <button
                     type="button"
@@ -964,28 +859,160 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                     Como configurar
                   </button>
                 </div>
-                <select
-                  id="voice-studio-select"
-                  value={selectedVoiceId}
-                  onChange={(e) => setSelectedVoiceId(e.target.value)}
-                  className={`w-full rounded-xl border bg-[#0d0d17] px-3 py-2 text-xs text-foreground ${fieldRing('voice-studio-select')}`}
-                >
-                  {voices.length === 0 ? (
-                    <option value="">Nenhuma voz carregada</option>
-                  ) : (
-                    voices.map((v) => (
-                      <option key={v.id} value={v.id}>{v.name} ({v.locale} · {v.engine})</option>
-                    ))
-                  )}
-                </select>
-                <button
-                  id="voice-studio-test-action"
-                  type="button"
-                  onClick={() => void handleTestConnection('voice_studio').then((r) => setStatusMessage({ kind: r.ok ? 'ok' : 'error', text: r.message }))}
-                  className={`rounded-xl border px-3 py-2 ${fieldRing('voice-studio-test-action')}`}
-                >
-                  Testar Voice Studio
-                </button>
+
+                <div className="rounded-xl border border-border bg-card p-4 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground">Voz padrão ao criar vídeo</h3>
+                      <p className="text-[11px] text-muted-foreground">
+                        Já vem selecionada por padrão na criação do vídeo — você ainda pode trocar na hora se quiser.
+                      </p>
+                    </div>
+                    <span className="rounded-full border border-[#b8dc35] bg-[var(--brand-lime,#d8fb4f)] px-3 py-1 text-[11px] font-semibold text-[var(--chip-violet-fg,#6a46d8)]">
+                      {narrationDefaults.provider === 'elevenlabs'
+                        ? `ElevenLabs · ${narrationDefaults.elevenLabsVoiceName || narrationDefaults.elevenLabsVoiceId || 'nenhuma voz definida'}`
+                        : `Voice Studio · ${narrationDefaults.voiceStudioVoiceName || narrationDefaults.voiceStudioVoiceId || 'padrão'}`}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] text-muted-foreground">Motor padrão:</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = saveNarrationDefaults({ provider: 'voicestudio' });
+                        setNarrationDefaults(next);
+                        setStatusMessage({ kind: 'ok', text: 'Voice Studio definido como motor padrão.' });
+                      }}
+                      className={`rounded-lg border px-3 py-1 text-[11px] font-semibold transition-colors ${
+                        narrationDefaults.provider === 'voicestudio'
+                          ? 'border-[#b8dc35] bg-[var(--brand-lime,#d8fb4f)] text-[var(--chip-violet-fg,#6a46d8)]'
+                          : 'border-border bg-background text-muted-foreground hover:border-[var(--ring,#8b6cf0)]/50 hover:text-[var(--chip-violet-fg,#6a46d8)]'
+                      }`}
+                    >
+                      Voice Studio (local)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = saveNarrationDefaults({ provider: 'elevenlabs' });
+                        setNarrationDefaults(next);
+                        setStatusMessage({ kind: 'ok', text: 'ElevenLabs definido como motor padrão.' });
+                      }}
+                      className={`rounded-lg border px-3 py-1 text-[11px] font-semibold transition-colors ${
+                        narrationDefaults.provider === 'elevenlabs'
+                          ? 'border-[#b8dc35] bg-[var(--brand-lime,#d8fb4f)] text-[var(--chip-violet-fg,#6a46d8)]'
+                          : 'border-border bg-background text-muted-foreground hover:border-[var(--ring,#8b6cf0)]/50 hover:text-[var(--chip-violet-fg,#6a46d8)]'
+                      }`}
+                    >
+                      ElevenLabs (nuvem)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3 rounded-xl border border-border bg-[#0d0d17] p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground">Voice Studio (local)</h3>
+                      <p className="text-[11px] text-muted-foreground">{voices.length} voz(es) detectadas para narração.</p>
+                    </div>
+                    {narrationDefaults.provider === 'voicestudio' && (
+                      <span className="rounded-full border border-[#b8dc35] bg-[var(--brand-lime,#d8fb4f)] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--chip-violet-fg,#6a46d8)]">
+                        Motor padrão ativo
+                      </span>
+                    )}
+                  </div>
+                  <select
+                    id="voice-studio-select"
+                    value={selectedVoiceId}
+                    onChange={(e) => setSelectedVoiceId(e.target.value)}
+                    className={`w-full rounded-xl border bg-[#090912] px-3 py-2 text-xs text-foreground ${fieldRing('voice-studio-select')}`}
+                  >
+                    {voices.length === 0 ? (
+                      <option value="">Nenhuma voz carregada</option>
+                    ) : (
+                      voices.map((v) => (
+                        <option key={v.id} value={v.id}>{v.name} ({v.locale} · {v.engine})</option>
+                      ))
+                    )}
+                  </select>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      id="voice-studio-test-action"
+                      type="button"
+                      onClick={() => void handleTestConnection('voice_studio').then((r) => setStatusMessage({ kind: r.ok ? 'ok' : 'error', text: r.message }))}
+                      className={`rounded-xl border px-3 py-2 font-medium text-[var(--chip-violet-fg,#6a46d8)] hover:border-[var(--ring,#8b6cf0)] ${fieldRing('voice-studio-test-action')}`}
+                    >
+                      Testar Voice Studio
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!selectedVoiceId}
+                      onClick={() => {
+                        const matched = voices.find((v) => v.id === selectedVoiceId);
+                        const next = saveNarrationDefaults({
+                          provider: 'voicestudio',
+                          voiceStudioVoiceId: selectedVoiceId,
+                          voiceStudioVoiceName: matched?.name ?? selectedVoiceId,
+                        });
+                        setNarrationDefaults(next);
+                        setStatusMessage({
+                          kind: 'ok',
+                          text: `Voz padrão definida: Voice Studio (${matched?.name ?? selectedVoiceId}).`,
+                        });
+                      }}
+                      className="rounded-xl border border-[#b8dc35] bg-[var(--brand-lime,#d8fb4f)] px-3.5 py-2 font-semibold text-[var(--chip-violet-fg,#6a46d8)] transition-all hover:brightness-95 disabled:opacity-40"
+                    >
+                      Definir como voz padrão
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3 rounded-xl border border-border bg-[#0d0d17] p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground">ElevenLabs (nuvem)</h3>
+                      <p className="text-[11px] text-muted-foreground">
+                        Configure a API Key do ElevenLabs (<code>xi-api-key</code>), teste a conexão, escolha e ouça prévias das vozes disponíveis.
+                      </p>
+                    </div>
+                    {narrationDefaults.provider === 'elevenlabs' && (
+                      <span className="rounded-full border border-[#b8dc35] bg-[var(--brand-lime,#d8fb4f)] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--chip-violet-fg,#6a46d8)]">
+                        Motor padrão ativo
+                      </span>
+                    )}
+                  </div>
+                  <TtsProviderSelector
+                    selectedProviderId="elevenlabs"
+                    selectedVoiceId={elevenLabsVoiceId}
+                    onVoiceChange={(id, name) => {
+                      setElevenLabsVoiceId(id);
+                      if (name) setElevenLabsVoiceName(name);
+                    }}
+                    hideProviderSelect
+                    allowCredentialEdit
+                  />
+                  <div>
+                    <button
+                      type="button"
+                      disabled={!elevenLabsVoiceId}
+                      onClick={() => {
+                        const next = saveNarrationDefaults({
+                          provider: 'elevenlabs',
+                          elevenLabsVoiceId,
+                          ...(elevenLabsVoiceName ? { elevenLabsVoiceName } : {}),
+                        });
+                        setNarrationDefaults(next);
+                        setStatusMessage({
+                          kind: 'ok',
+                          text: `Voz padrão definida: ElevenLabs (${elevenLabsVoiceName || elevenLabsVoiceId}).`,
+                        });
+                      }}
+                      className="rounded-xl border border-[#b8dc35] bg-[var(--brand-lime,#d8fb4f)] px-3.5 py-2 font-semibold text-[var(--chip-violet-fg,#6a46d8)] transition-all hover:brightness-95 disabled:opacity-40"
+                    >
+                      Definir como voz padrão
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1059,7 +1086,7 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                     Isolamento por Aplicativo & Cofre Local Ativos
                   </div>
                   <p className="text-emerald-200/90">
-                    Todas as chaves (Twitch/IGDB, RAWG, Collage/Pexels e tokens OAuth do YouTube) são criptografadas com
+                    Todas as chaves (Twitch/IGDB, RAWG, ElevenLabs, Collage/Pexels e tokens OAuth do YouTube) são criptografadas com
                     Electron <code>safeStorage</code>, mascaradas na interface e nunca registradas em logs. Configurações
                     do Singularity (Companion, Dispositivos, Azure DevOps) são isoladas fora do Aethera Studio.
                   </p>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router';
 
 interface TtsProviderInfo {
  id: string;
@@ -39,10 +40,12 @@ interface TtsProviderSelectorProps {
  selectedProviderId?: string;
  selectedVoiceId?: string;
  onProviderChange?: (providerId: string) => void;
- onVoiceChange?: (voiceId: string) => void;
+ onVoiceChange?: (voiceId: string, voiceName?: string) => void;
  disabled?: boolean;
  /** Hide the provider dropdown when the host already chose the provider. */
  hideProviderSelect?: boolean;
+ /** Allow editing/removing API credentials inline (true in Settings, false in director panels). */
+ allowCredentialEdit?: boolean;
 }
 
 export function TtsProviderSelector({
@@ -52,6 +55,7 @@ export function TtsProviderSelector({
  onVoiceChange,
  disabled,
  hideProviderSelect,
+ allowCredentialEdit = true,
 }: TtsProviderSelectorProps) {
  const [providers, setProviders] = useState<TtsProviderInfo[]>([]);
  const [voices, setVoices] = useState<TtsVoice[]>([]);
@@ -104,7 +108,7 @@ export function TtsProviderSelector({
  // Keep the host in sync with the voice the dropdown actually shows.
  const first = voiceList[0];
  if (first && !voiceList.some((v) => v.id === selectedVoiceRef.current)) {
- onVoiceChangeRef.current?.(first.id);
+ onVoiceChangeRef.current?.(first.id, first.name);
  }
  } catch (err) {
  if (seq !== fetchSeqRef.current) return;
@@ -143,7 +147,9 @@ export function TtsProviderSelector({
  };
 
  const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
- onVoiceChange?.(e.target.value);
+ const nextId = e.target.value;
+ const matched = voices.find((v) => v.id === nextId);
+ onVoiceChange?.(nextId, matched?.name);
  if (audioRef.current) {
  audioRef.current.pause();
  setPreviewPlaying(false);
@@ -233,9 +239,30 @@ export function TtsProviderSelector({
  }
  };
 
+ const handleTestConnection = async () => {
+ const bridge = getBridge();
+ if (!bridge?.ttsHealthCheck || !selectedProviderId) return;
+ setCredentialBusy(true);
+ setCredentialStatus(null);
+ try {
+ const health = await bridge.ttsHealthCheck(selectedProviderId);
+ if (health.ok) {
+ setCredentialStatus({ ok: true, text: 'Conexão com ElevenLabs verificada com sucesso.' });
+ if (voices.length === 0) await loadVoices(selectedProviderId);
+ } else {
+ setCredentialStatus({ ok: false, text: `Falha na conexão: ${health.message ?? 'erro desconhecido'}` });
+ }
+ } catch (err) {
+ setCredentialStatus({ ok: false, text: err instanceof Error ? err.message : String(err) });
+ } finally {
+ setCredentialBusy(false);
+ }
+ };
+
  const activeProvider = providers.find((p) => p.id === selectedProviderId);
  const isElevenLabs = selectedProviderId === 'elevenlabs';
- const showKeyForm = isElevenLabs && (editingKey || (activeProvider ? !activeProvider.configured : false));
+ const showKeyForm = allowCredentialEdit && isElevenLabs && (editingKey || (activeProvider ? !activeProvider.configured : false));
+ const showSettingsRedirect = !allowCredentialEdit && isElevenLabs && activeProvider && !activeProvider.configured;
  const showPreviewBtn = capabilities?.supportsPreview && selectedVoiceId;
  const requiresCredits = capabilities?.requiresCredits ?? false;
 
@@ -284,9 +311,12 @@ export function TtsProviderSelector({
  {previewPlaying ? '⏹ Parar' : '▶ Ouvir prévia'}
  </button>
  )}
- {isElevenLabs && activeProvider?.configured && !editingKey && (
+ {allowCredentialEdit && isElevenLabs && activeProvider?.configured && !editingKey && (
  <>
  <span className="text-[11px] text-emerald-300">API Key configurada</span>
+ <button type="button" onClick={() => void handleTestConnection()} disabled={disabled || credentialBusy} className={buttonClass}>
+ {credentialBusy ? 'Testando...' : 'Testar conexão'}
+ </button>
  <button type="button" onClick={() => setEditingKey(true)} disabled={disabled || credentialBusy} className={buttonClass}>
  Trocar chave
  </button>
@@ -333,6 +363,18 @@ export function TtsProviderSelector({
  A chave fica criptografada pelo sistema operacional neste computador e não é exibida de volta.
  </p>
  </form>
+ )}
+
+ {showSettingsRedirect && (
+ <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+ <span>API Key do ElevenLabs não configurada.</span>
+ <Link
+ to="/settings?category=voice_studio"
+ className="font-semibold text-purple-300 underline hover:text-purple-200"
+ >
+ Configurar em Configurações → Narração e voz
+ </Link>
+ </div>
  )}
 
  {credentialStatus && (

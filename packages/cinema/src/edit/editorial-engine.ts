@@ -219,7 +219,7 @@ export function buildClipFromShot(input: {
     mediaId: input.mediaId,
     label: input.label,
     sourceRange: {
-      start: fromFrames(0, input.fps),
+      start: fromFrames(input.startFrames, input.fps),
       duration: fromFrames(input.durationFrames, input.fps),
     },
     timelineRange: {

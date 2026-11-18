@@ -10,12 +10,15 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: 'bg-primary text-primary-foreground [a&]:hover:bg-primary/90',
-        secondary: 'bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90',
+        default:
+          'border-[#b8dc35] bg-[var(--brand-lime,#d8fb4f)] text-[var(--chip-violet-fg,#6a46d8)] font-semibold [a&]:hover:brightness-95',
+        secondary:
+          'border-[#b8dc35] bg-[var(--brand-lime,#d8fb4f)] text-[var(--chip-violet-fg,#6a46d8)] font-semibold [a&]:hover:brightness-95',
         destructive: 'bg-destructive/15 text-destructive focus-visible:ring-destructive/40 [a&]:hover:bg-destructive/25',
-        outline: 'border-border text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground',
-        ghost: '[a&]:hover:bg-accent [a&]:hover:text-accent-foreground',
-        link: 'text-primary underline-offset-4 [a&]:hover:underline',
+        outline:
+          'border-[#b8dc35] bg-[var(--brand-lime,#d8fb4f)] text-[var(--chip-violet-fg,#6a46d8)] font-medium [a&]:hover:brightness-95',
+        ghost: '[a&]:hover:bg-[var(--brand-lime,#d8fb4f)] [a&]:hover:text-[var(--chip-violet-fg,#6a46d8)]',
+        link: 'text-[var(--chip-violet-fg,#6a46d8)] underline-offset-4 [a&]:hover:underline',
         success: 'bg-success/15 text-success',
         warning: 'bg-warning/15 text-warning',
         muted: 'bg-muted text-muted-foreground',
