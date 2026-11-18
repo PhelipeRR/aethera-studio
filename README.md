@@ -67,6 +67,8 @@ flowchart TB
     class gtrends planned;
 ```
 
+[![Architecture diagram of pheliperr/aethera-studio](https://gitdiagram.com/pheliperr/aethera-studio/diagram.png)](https://gitdiagram.com/pheliperr/aethera-studio?utm_source=readme&utm_medium=picture)
+
 | Camada | Onde fica |
 |---|---|
 | Renderer (React 19, react-router, TanStack Query) | `apps/aethera-desktop/src/renderer`, com páginas em `packages/desktop-shared/src/renderer` |
