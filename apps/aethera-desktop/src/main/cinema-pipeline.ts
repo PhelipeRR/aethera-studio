@@ -94,13 +94,12 @@ import {
 import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
 import { createProductionJobId } from './production-console.js';
 
-/** Reuses the already-installed MotionVelix audio kit; no files are copied or downloaded. */
+/** Reuses the already-installed MotionVelix SFX kit for transitions/motions; no continuous rain ambience is injected. */
 function localMotionVelixAudioAssets(): RealAudioAssetsInput | undefined {
   const root = process.env['NB_VELIX_DIR'] ?? join(homedir(), '.claude', 'skills', 'motionvelix', 'assets', 'sfx');
   const license = 'motionvelix-user-kit-original-synthesized';
   const origin = 'motionvelix-user-kit';
   const useConditions = 'uso autorizado no escopo do kit';
-  const ambiencePath = join(root, 'chuva.wav');
   const sfx = [
     ['whoosh', 4_500],
     ['glitch', 12_000],
@@ -109,11 +108,8 @@ function localMotionVelixAudioAssets(): RealAudioAssetsInput | undefined {
   ]
     .map(([id, atMs]) => ({ id: String(id), path: join(root, `${String(id)}.wav`), license, origin, useConditions, atMs: Number(atMs), gainDb: -18 }))
     .filter((asset) => existsSync(asset.path));
-  if (!existsSync(ambiencePath) && sfx.length === 0) return undefined;
-  return {
-    ...(existsSync(ambiencePath) ? { ambience: { path: ambiencePath, license, origin, useConditions } } : {}),
-    ...(sfx.length > 0 ? { sfx } : {}),
-  };
+  if (sfx.length === 0) return undefined;
+  return { sfx };
 }
 
 export type ProductionStageState =

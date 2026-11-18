@@ -261,24 +261,32 @@ async function synthesizeViaVoiceStudio(
     if (!healthRes.ok) return false;
 
     const voiceId = options?.voiceId ?? (await resolveVoiceStudioVoiceId(baseUrl));
-
-    const speechRes = await fetch(`${baseUrl}/v1/audio/speech`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        input: text,
-        model: options?.modelId ?? 'omnivoice',
-        voice: voiceId,
-        response_format: 'wav',
-        language: 'pt',
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!speechRes.ok) return false;
-    const buf = Buffer.from(await speechRes.arrayBuffer());
-    if (buf.byteLength < 1024) return false;
-    writeFileSync(outWavPath, buf);
-    return existsSync(outWavPath);
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const speechRes = await fetch(`${baseUrl}/v1/audio/speech`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          input: text,
+          model: options?.modelId ?? 'omnivoice',
+          voice: voiceId,
+          response_format: 'wav',
+          language: 'pt',
+        }),
+        signal: AbortSignal.timeout(90_000),
+      });
+      if ((speechRes.status === 429 || speechRes.status === 503) && attempt < maxAttempts) {
+        const retryAfterSec = Number(speechRes.headers.get('retry-after') ?? '5');
+        await new Promise((resolve) => setTimeout(resolve, Math.max(2_000, Math.min(15_000, retryAfterSec * 1_000))));
+        continue;
+      }
+      if (!speechRes.ok) return false;
+      const buf = Buffer.from(await speechRes.arrayBuffer());
+      if (buf.byteLength < 1024) return false;
+      writeFileSync(outWavPath, buf);
+      return existsSync(outWavPath);
+    }
+    return false;
   } catch {
     return false;
   }
@@ -1334,12 +1342,9 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const sfxStem = stemByRole.get('sfx');
   const ambienceStem = stemByRole.get('ambience');
   const voiceVol = voiceStem?.muted ? '0' : `${voiceStem?.targetGainDb ?? 0}dB`;
-  const musicBaseDb = (musicStem?.targetGainDb ?? -16) + 16;
-  const musicVol = musicStem?.muted ? '0' : `${musicBaseDb}dB`;
-  const sfxBaseDb = (sfxStem?.targetGainDb ?? -8) + 8;
-  const sfxVol = sfxStem?.muted ? '0' : `${sfxBaseDb}dB`;
-  const ambienceBaseDb = (ambienceStem?.targetGainDb ?? -22) + 22;
-  const ambienceVol = ambienceStem?.muted ? '0' : `${ambienceBaseDb}dB`;
+  const musicTargetDb = musicStem?.targetGainDb ?? -16;
+  const sfxTargetDb = sfxStem?.targetGainDb ?? -8;
+  const ambienceTargetDb = ambienceStem?.targetGainDb ?? -22;
   const duckRatio = Math.max(2, Math.min(12, Math.round(Math.abs(musicStem?.duckingUnderVoiceDb ?? -9) * 0.5)));
   const targetLufs = input.pkg.soundPlan.platformProfile?.integratedLufs ?? -14.0;
   const targetTp = input.pkg.soundPlan.platformProfile?.truePeakDbtp ?? -1.0;
@@ -1352,42 +1357,56 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   const ffmpegAudioInputs: string[] = ['-i', narrationWav];
   let nextAudioInputIndex = 1;
   const musicInputIndex = resolvedRealAudio.music ? nextAudioInputIndex++ : null;
-  if (resolvedRealAudio.music) ffmpegAudioInputs.push('-i', resolvedRealAudio.music.path);
+  if (resolvedRealAudio.music) ffmpegAudioInputs.push('-stream_loop', '-1', '-i', resolvedRealAudio.music.path);
   const ambienceInputIndex = resolvedRealAudio.ambience ? nextAudioInputIndex++ : null;
-  if (resolvedRealAudio.ambience) ffmpegAudioInputs.push('-i', resolvedRealAudio.ambience.path);
+  if (resolvedRealAudio.ambience) ffmpegAudioInputs.push('-stream_loop', '-1', '-i', resolvedRealAudio.ambience.path);
   const sfxInputIndexes = resolvedRealAudio.sfx.map((asset) => {
     const index = nextAudioInputIndex++;
     ffmpegAudioInputs.push('-i', asset.path);
     return { asset, index };
   });
 
+  // Real audio assets are full-scale; apply their true targetGainDb (unlike legacy synthetic sine/noise which pre-attenuated via volume=0.14/0.015).
+  const musicVol = musicStem?.muted ? '0' : `${musicInputIndex !== null ? musicTargetDb : musicTargetDb + 16}dB`;
+  const sfxVol = sfxStem?.muted ? '0' : `${sfxInputIndexes.length > 0 ? sfxTargetDb : sfxTargetDb + 8}dB`;
+  const ambienceVol = ambienceStem?.muted ? '0' : `${ambienceInputIndex !== null ? ambienceTargetDb : ambienceTargetDb + 22}dB`;
+
+  const musicFadeOutStart = Math.max(0.5, totalDur - 2.0);
   const musicChain = musicInputIndex !== null
-    ? `[${musicInputIndex}:a]aresample=48000,atrim=duration=${totalDur},asetpts=PTS-STARTPTS,volume=${musicVol},apad=whole_dur=${totalDur}[music]`
-    : `sine=frequency=110:sample_rate=48000:duration=${totalDur},volume=0.14[m1];sine=frequency=164.81:sample_rate=48000:duration=${totalDur},volume=0.09[m2];sine=frequency=220:sample_rate=48000:duration=${totalDur},volume=0.07[m3];[m1][m2][m3]amix=inputs=3:normalize=0,afade=t=in:st=0:d=1.2,afade=t=out:st=${Math.max(0.2, totalDur - 1.5)}:d=1.5,volume=${musicVol}[music]`;
+    ? `[${musicInputIndex}:a]aresample=48000,aformat=sample_rates=48000:channel_layouts=stereo,atrim=duration=${totalDur},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=1.2,afade=t=out:st=${musicFadeOutStart}:d=2.0,volume=${musicVol},apad=whole_dur=${totalDur}[music]`
+    : input.requireRealMedia
+      ? `anullsrc=r=48000:cl=stereo:d=${totalDur}[music]`
+      : `sine=frequency=110:sample_rate=48000:duration=${totalDur},volume=0.14[m1];sine=frequency=164.81:sample_rate=48000:duration=${totalDur},volume=0.09[m2];sine=frequency=220:sample_rate=48000:duration=${totalDur},volume=0.07[m3];[m1][m2][m3]amix=inputs=3:normalize=0,aformat=sample_rates=48000:channel_layouts=stereo,afade=t=in:st=0:d=1.2,afade=t=out:st=${Math.max(0.2, totalDur - 1.5)}:d=1.5,volume=${musicVol}[music]`;
   const ambienceChain = ambienceInputIndex !== null
-    ? `[${ambienceInputIndex}:a]aresample=48000,atrim=duration=${totalDur},asetpts=PTS-STARTPTS,volume=${ambienceVol},apad=whole_dur=${totalDur},asplit=2[amb][amb_stem]`
-    : `anoisesrc=color=pink:sample_rate=48000:duration=${totalDur},volume=0.015,volume=${ambienceVol},asplit=2[amb][amb_stem]`;
+    ? `[${ambienceInputIndex}:a]aresample=48000,aformat=sample_rates=48000:channel_layouts=stereo,atrim=duration=${totalDur},asetpts=PTS-STARTPTS,volume=${ambienceVol},apad=whole_dur=${totalDur},asplit=2[amb][amb_stem]`
+    : input.requireRealMedia
+      ? `anullsrc=r=48000:cl=stereo:d=${totalDur},asplit=2[amb][amb_stem]`
+      : `anoisesrc=color=pink:sample_rate=48000:duration=${totalDur},aformat=sample_rates=48000:channel_layouts=stereo,volume=0.015,volume=${ambienceVol},asplit=2[amb][amb_stem]`;
   const sfxChains = sfxInputIndexes.length > 0
-    ? sfxInputIndexes.map(({ asset, index }, sfxIndex) => `[${index}:a]aresample=48000,asetpts=PTS-STARTPTS,volume=${sfxVol},adelay=${asset.atMs}|${asset.atMs}[sfx_asset_${sfxIndex}]`)
+    ? sfxInputIndexes.map(({ asset, index }, sfxIndex) => {
+        const clampedAtMs = Math.max(0, Math.min(Math.round(totalDur * 1000) - 200, Math.round(asset.atMs)));
+        return `[${index}:a]aresample=48000,aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,volume=${sfxVol},adelay=${clampedAtMs}|${clampedAtMs}[sfx_asset_${sfxIndex}]`;
+      })
     : [
-        `sine=frequency=520:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.32,volume=${sfxVol},adelay=${sfxDelay1Ms}|${sfxDelay1Ms}[sfx1]`,
-        `sine=frequency=780:sample_rate=48000:duration=0.22,afade=t=out:st=0.04:d=0.18,volume=0.35,volume=${sfxVol},adelay=${sfxDelay2Ms}|${sfxDelay2Ms}[sfx2]`,
-        `sine=frequency=440:sample_rate=48000:duration=0.25,afade=t=out:st=0.05:d=0.2,volume=0.30,volume=${sfxVol},adelay=${sfxDelay3Ms}|${sfxDelay3Ms}[sfx3]`,
+        `sine=frequency=520:sample_rate=48000:duration=0.25,aformat=sample_rates=48000:channel_layouts=stereo,afade=t=out:st=0.05:d=0.2,volume=0.32,volume=${sfxVol},adelay=${sfxDelay1Ms}|${sfxDelay1Ms}[sfx1]`,
+        `sine=frequency=780:sample_rate=48000:duration=0.22,aformat=sample_rates=48000:channel_layouts=stereo,afade=t=out:st=0.04:d=0.18,volume=0.35,volume=${sfxVol},adelay=${sfxDelay2Ms}|${sfxDelay2Ms}[sfx2]`,
+        `sine=frequency=440:sample_rate=48000:duration=0.25,aformat=sample_rates=48000:channel_layouts=stereo,afade=t=out:st=0.05:d=0.2,volume=0.30,volume=${sfxVol},adelay=${sfxDelay3Ms}|${sfxDelay3Ms}[sfx3]`,
       ];
   const sfxMixInputs = sfxInputIndexes.length > 0
     ? sfxInputIndexes.map((_entry, index) => `[sfx_asset_${index}]`).join('')
     : '[sfx1][sfx2][sfx3]';
-  const sfxMix = `${sfxMixInputs}amix=inputs=${Math.max(1, sfxInputIndexes.length || 3)}:duration=longest:normalize=0,apad=whole_dur=${totalDur},asplit=2[sfx_mix][sfx_stem]`;
+  const sfxMix = `${sfxMixInputs}amix=inputs=${Math.max(1, sfxInputIndexes.length || 3)}:duration=longest:normalize=0,atrim=duration=${totalDur},apad=whole_dur=${totalDur},asplit=2[sfx_mix][sfx_stem]`;
 
   // Real local assets are used when provided; generated tones remain only as a diagnostic legacy fixture fallback.
+  // Avoid running 1-pass loudnorm here before the 2-pass linear loudnorm below (double-loudnorm pumps noise).
   const audioComplex = [
-    `[0:a]apad=whole_dur=${totalDur},volume=${voiceVol},asplit=2[nar_sc][nar_mix]`,
+    `[0:a]aresample=48000,aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur=${totalDur},atrim=duration=${totalDur},volume=${voiceVol},asplit=2[nar_sc][nar_mix]`,
     musicChain,
     `[music][nar_sc]sidechaincompress=threshold=0.03:ratio=${duckRatio}:attack=25:release=250,asplit=2[ducked_music][ducked_music_stem]`,
     ambienceChain,
     ...sfxChains,
     sfxMix,
-    `[nar_mix][ducked_music][amb][sfx_mix]amix=inputs=4:duration=longest:normalize=0,loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}[aout]`,
+    `[nar_mix][ducked_music][amb][sfx_mix]amix=inputs=4:duration=longest:normalize=0,atrim=duration=${totalDur}[aout]`,
   ].join(';');
 
   const rawAudioMixPath = join(workDir, 'audio_master_raw.wav');
@@ -1462,7 +1481,18 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     twoPassApplied = false;
   }
   if (!twoPassApplied) {
-    copyFileSync(rawAudioMixPath, audioMixPath);
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-i',
+      rawAudioMixPath,
+      '-af',
+      `loudnorm=I=${targetLufs}:TP=${targetTp}:LRA=${targetLra}`,
+      '-ar',
+      '48000',
+      '-ac',
+      '2',
+      audioMixPath,
+    ]);
   }
 
   // 4. Mux final MP4 (prefer NVENC if requested and available, fallback libx264)
