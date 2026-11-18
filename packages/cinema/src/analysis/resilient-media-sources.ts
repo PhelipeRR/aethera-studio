@@ -1193,10 +1193,14 @@ export function hasCrossWorkEntityConflict(
   allSegments: readonly ScriptCoverageSegment[],
 ): boolean {
   const normalizedCand = candText.toLowerCase();
+  const rawTargetParts = [targetSegment.subject, ...(targetSegment.entities ?? [])];
   const targetTokens = new Set(
-    [targetSegment.subject, ...(targetSegment.entities ?? [])]
+    [
+      ...rawTargetParts,
+      ...rawTargetParts.flatMap((p) => p.split(/[\s:/,-]+/)),
+    ]
       .map((s) => s.trim().toLowerCase())
-      .filter((s) => s.length >= 4 && !/^(game|jogo|gameplay|trailer|intro|hook|cta|abertura|encerramento|climax)$/.test(s)),
+      .filter((s) => s.length >= 5 && !/^(game|jogo|gameplay|trailer|intro|hook|cta|abertura|encerramento|climax|official|video)$/.test(s)),
   );
   if (targetTokens.size === 0) return false;
 

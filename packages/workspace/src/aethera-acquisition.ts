@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { runVelixCommand, velixImportError } from './velix.js';
 
@@ -97,7 +97,9 @@ export function buildAcquisitionFormat(maxHeight?: number): string {
     return ACQUISITION_FORMAT;
   }
   const h = Math.round(maxHeight);
-  return `bv*[height<=${h}][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=${h}]+ba/b[height<=${h}]/bv*[vcodec^=avc1]+ba[ext=m4a]/b`;
+  // Prefer single-stream progressive MP4 <=720p first so --download-sections seeks cleanly in one HTTP Range pass,
+  // then fall back to separated H.264+M4A streams.
+  return `b[height<=${h}][ext=mp4]/bv*[height<=${h}][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=${h}]+ba/b[height<=${h}]/bv*[vcodec^=avc1]+ba[ext=m4a]/b`;
 }
 
 export function buildAcquisitionArgs(input: {
@@ -117,8 +119,9 @@ export function buildAcquisitionArgs(input: {
     '--progress-template', `download:${PROGRESS_TAG} %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s`,
     '--print', 'after_move:filepath', '-f', buildAcquisitionFormat(input.maxHeight), '--merge-output-format', 'mp4',
     ...(input.downloadSection ? ['--download-sections', input.downloadSection] : []),
-    ...(input.maxFilesize ? ['--max-filesize', input.maxFilesize] : []),
-    ...(input.ffmpeg ? ['--ffmpeg-location', input.ffmpeg] : []), '-P', input.directory, '-o', `${input.fileStem}.%(ext)s`, '--', url.href,
+    // Only enforce --max-filesize on full-file downloads; with --download-sections it rejects long source videos before cutting the clip.
+    ...(input.maxFilesize && !input.downloadSection ? ['--max-filesize', input.maxFilesize] : []),
+    ...(input.ffmpeg && (isAbsolute(input.ffmpeg) || existsSync(input.ffmpeg)) ? ['--ffmpeg-location', input.ffmpeg] : []), '-P', input.directory, '-o', `${input.fileStem}.%(ext)s`, '--', url.href,
   ];
 }
 
@@ -192,7 +195,8 @@ export async function acquireWithYtDlp(input: {
   maxFilesize?: string;
   signal?: AbortSignal;
   onProgress?: (progress: { bytesDone: number; bytesTotal: number | null }) => void;
-}): Promise<{ relativePath: string }> {
+}): Promise<{ relativePath: string; bytesTransferred: number; downloadMs: number; durationSec?: number }> {
+  const startedAt = Date.now();
   if (isAbsolute(input.relativeDir) || input.relativeDir.split(/[/\\]/).includes('..')) throw new Error('forbidden: a pasta de mídia precisa ficar dentro do projeto.');
   const base = realpathSync(input.root);
   const directory = resolve(base, input.relativeDir);
@@ -235,7 +239,14 @@ export async function acquireWithYtDlp(input: {
   if (buffer.trim() && /\.(mp4|mkv|webm)$/i.test(buffer.trim())) printed = buffer.trim();
   const final = printed ?? join(directory, `${input.fileStem}.mp4`);
   if (!existsSync(final)) throw new Error('unavailable: o yt-dlp terminou sem gerar o arquivo.');
-  const inside = relative(base, realpathSync(final));
+  const realFinal = realpathSync(final);
+  const inside = relative(base, realFinal);
   if (!inside || inside.startsWith('..') || isAbsolute(inside)) throw new Error('forbidden: o arquivo baixado ficou fora do projeto.');
-  return { relativePath: inside.split('\\').join('/') };
+  const bytesTransferred = statSync(realFinal).size;
+  return {
+    relativePath: inside.split('\\').join('/'),
+    bytesTransferred,
+    downloadMs: Date.now() - startedAt,
+    ...(sectionDurationSec ? { durationSec: sectionDurationSec } : {}),
+  };
 }

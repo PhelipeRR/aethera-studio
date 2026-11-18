@@ -98,6 +98,8 @@ export interface MediaRelevanceDecision {
   policyVersion?: string;
   /** True only when the decision can contribute verified footage to a scene. */
   assemblyEligible?: boolean;
+  /** Conservative tri-state outcome: positive visual proof (`verified`), explicit mismatch (`rejected`), or insufficient evidence (`needs_review`). */
+  verificationOutcome?: 'verified' | 'rejected' | 'needs_review';
   relevanceTier?: 'exact_segment_match' | 'same_universe_context' | 'rejected';
   correspondenceLevel?: MediaCorrespondenceLevel;
   visualVerificationStatus?: VisualVerificationStatus;
@@ -427,11 +429,26 @@ function withDecisionStatus(
   status: MediaEditorialStatus,
   assemblyEligible = false,
 ): MediaRelevanceDecision {
+  const isExplicitRejection =
+    (decision.correspondenceLevel === 'rejected' && decision.rejectionCode !== 'insufficient_metadata_and_visual_match') ||
+    decision.rejectionCode === 'wrong_game_or_topic' ||
+    decision.rejectionCode === 'wrong_anime_or_entity' ||
+    decision.rejectionCode === 'non_anime_real_person' ||
+    decision.rejectionCode === 'title_card_only_not_footage' ||
+    decision.rejectionCode === 'academy_negative_example';
+  const verificationOutcome: MediaRelevanceDecision['verificationOutcome'] =
+    decision.verificationOutcome ??
+    (assemblyEligible
+      ? 'verified'
+      : isExplicitRejection
+        ? 'rejected'
+        : 'needs_review');
   return {
     ...decision,
     editorialStatus: status,
     policyVersion: SCENE_GROUNDING_POLICY_VERSION,
     assemblyEligible,
+    verificationOutcome,
   };
 }
 
@@ -856,17 +873,22 @@ export async function evaluateMediaRelevance(
     matchedUniverseEntities.length === 0 &&
     candidateEntities.length > 0
   ) {
+    const titleLower = (candidate.title ?? '').toLowerCase();
+    const titleMatchesExpected = expectedEntities.some((e) => e.length >= 4 && titleLower.includes(e.toLowerCase()));
     return withDecisionStatus({
       mediaId: candidate.mediaId,
       accepted: false,
-      score: 0.15,
+      score: titleMatchesExpected ? 0.3 : 0.15,
       relevanceTier: 'rejected',
       correspondenceLevel: 'rejected',
+      verificationOutcome: titleMatchesExpected ? 'needs_review' : 'rejected',
       visualVerificationStatus,
       visualConfidence,
       visualEvidence,
-      rejectionCode: 'wrong_game_or_topic',
-      reason: `Mídia incompatível com o tema/jogo esperado (${expectedEntities.slice(0, 4).join(', ')}).`,
+      rejectionCode: titleMatchesExpected ? 'insufficient_metadata_and_visual_match' : 'wrong_game_or_topic',
+      reason: titleMatchesExpected
+        ? `Título menciona ${expectedEntities[0]}, mas os frames não trouxeram evidência visual positiva suficiente (needs_review).`
+        : `Mídia incompatível com o tema/jogo esperado (${expectedEntities.slice(0, 4).join(', ')}).`,
       sampledTimestampsSec,
       matchedEntities: [],
       visualCategory: dominantVisualCategory,
@@ -940,7 +962,7 @@ export async function evaluateMediaRelevance(
     ? 0.55
     : expectedEntities.length > 0
       ? Math.min(1, matchedEntities.length / Math.min(3, expectedEntities.length))
-      : 0.6;
+      : 0.25;
   const visualBonus =
     expectsAnime && dominantVisualCategory === 'anime_animation'
       ? 0.25
@@ -949,6 +971,71 @@ export async function evaluateMediaRelevance(
         : 0;
   const score = Number(Math.min(1, 0.2 + entityScore * 0.6 + visualBonus).toFixed(2));
 
+  // Conservative guard: file title/metadata alone never proves visual correspondence.
+  const positiveVisualFramesCount = perFrameMatches.filter((m) => m.fEntities.length > 0).length;
+  const knownCompetingWorks = [
+    'super mario 64',
+    'super mario bros',
+    'sonic the hedgehog',
+    'gta san andreas',
+    'grand theft auto',
+    'red dead redemption',
+    'cyberpunk 2077',
+    'elden ring',
+    'dragon ball',
+    'naruto',
+    'one piece',
+  ];
+  const expectedLowerJoined = `${segment.prompt ?? ''} ${expectedEntities.join(' ')}`.toLowerCase();
+  const observedFramesText = validVisualFrames
+    .map((f) => `${f.description} ${f.detectedEntities.join(' ')}`)
+    .join(' ')
+    .toLowerCase();
+  const competingWorkInFrames = knownCompetingWorks.find(
+    (w) => !expectedLowerJoined.includes(w) && observedFramesText.includes(w),
+  );
+  if (competingWorkInFrames) {
+    return withDecisionStatus({
+      mediaId: candidate.mediaId,
+      accepted: false,
+      score: 0.12,
+      relevanceTier: 'rejected',
+      correspondenceLevel: 'rejected',
+      verificationOutcome: 'rejected',
+      visualVerificationStatus,
+      visualConfidence,
+      visualEvidence,
+      rejectionCode: 'wrong_game_or_topic',
+      reason: `Incompatibilidade visual: frames mostram "${competingWorkInFrames}" em vez de ${expectedEntities.slice(0, 3).join(', ')}.`,
+      sampledTimestampsSec,
+      matchedEntities: [],
+      visualCategory: dominantVisualCategory,
+    }, 'candidate');
+  }
+  if (
+    validVisualFrames.length > 0 &&
+    expectedEntities.length > 0 &&
+    positiveVisualFramesCount === 0 &&
+    matchedUniverseEntities.length === 0
+  ) {
+    return withDecisionStatus({
+      mediaId: candidate.mediaId,
+      accepted: false,
+      score: Math.min(score, 0.32),
+      relevanceTier: 'rejected',
+      correspondenceLevel: 'rejected',
+      verificationOutcome: 'needs_review',
+      visualVerificationStatus,
+      visualConfidence,
+      visualEvidence,
+      rejectionCode: 'insufficient_metadata_and_visual_match',
+      reason: 'Evidência visual insuficiente nos frames para confirmar a obra além do título do arquivo.',
+      sampledTimestampsSec,
+      matchedEntities: effectiveMatched,
+      visualCategory: dominantVisualCategory,
+    }, 'candidate');
+  }
+
   if (score < 0.35) {
     return withDecisionStatus({
       mediaId: candidate.mediaId,
@@ -956,6 +1043,7 @@ export async function evaluateMediaRelevance(
       score,
       relevanceTier: 'rejected',
       correspondenceLevel: 'rejected',
+      verificationOutcome: 'needs_review',
       visualVerificationStatus,
       visualConfidence,
       visualEvidence,

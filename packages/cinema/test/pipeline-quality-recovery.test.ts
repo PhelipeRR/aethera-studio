@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildSceneAudiovisualPlan,
+  evaluateMediaRelevance,
   hasCrossWorkEntityConflict,
   interpretProductionPrompt,
   produceCinemaPackage,
@@ -13,6 +14,7 @@ import {
   selectSemanticSfxFromLibrary,
   validateSceneAudiovisualPlan,
 } from '../src/index.js';
+import { buildAcquisitionArgs, buildAcquisitionFormat } from '../../workspace/src/aethera-acquisition.js';
 
 describe('Aethera Pipeline Quality Recovery (P1-P5)', () => {
   it('parses requestedDurationSec in seconds from prompt instead of falling back to 180s', () => {
@@ -144,5 +146,148 @@ describe('Aethera Pipeline Quality Recovery (P1-P5)', () => {
       clippingDetected: false,
     });
     expect(gateCPass.verdict).toBe('pass');
+  });
+
+  it('builds partial yt-dlp args preferring progressive 720p mp4 without blocking long originals via --max-filesize', () => {
+    const fmt = buildAcquisitionFormat(720);
+    expect(fmt.startsWith('b[height<=720][ext=mp4]')).toBe(true);
+
+    const sectionedArgs = buildAcquisitionArgs({
+      url: 'https://www.youtube.com/watch?v=abc123',
+      directory: 'C:/temp',
+      fileStem: 'slot_1',
+      maxHeight: 720,
+      downloadSection: '*0:00-0:35',
+      maxFilesize: '80M',
+    });
+    expect(sectionedArgs).toContain('--download-sections');
+    expect(sectionedArgs).not.toContain('--max-filesize');
+
+    const fullArgs = buildAcquisitionArgs({
+      url: 'https://www.youtube.com/watch?v=abc123',
+      directory: 'C:/temp',
+      fileStem: 'slot_1',
+      maxHeight: 720,
+      maxFilesize: '80M',
+    });
+    expect(fullArgs).toContain('--max-filesize');
+  });
+
+  it('keeps VisionRouter/MediaRelevanceGate conservative: verified vs rejected vs needs_review across visually different games', async () => {
+    const segment = {
+      segmentId: 'scene_rdr2',
+      narrationText: 'Red Dead Redemption 2 apresenta o velho oeste com cavalgadas e acampamentos.',
+      expectedEntities: ['Red Dead Redemption 2'],
+      prompt: 'Red Dead Redemption 2',
+      requiresSpecificEventVisual: false,
+    };
+
+    // 1. Visually different urban/sci-fi game (Cyberpunk) must be rejected or never verified for RDR2
+    const urbanMismatch = await evaluateMediaRelevance(
+      {
+        mediaId: 'cand_urban',
+        title: 'Red Dead Redemption 2 trailer.mp4',
+        origin: 'yt_dlp',
+        url: 'https://youtube.com/watch?v=urban',
+        durationSec: 30,
+      },
+      segment,
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async () => [
+          {
+            timestampSec: 4,
+            visualCategory: 'gameplay',
+            detectedEntities: ['cyberpunk 2077', 'neon'],
+            detectedActions: ['pilotando motocicleta futurista'],
+            description: 'Visão em primeira pessoa pilotando motocicleta em avenida com neon rosa em Night City.',
+            confidence: 0.9,
+          },
+          {
+            timestampSec: 15,
+            visualCategory: 'gameplay',
+            detectedEntities: ['cyberpunk 2077'],
+            detectedActions: [],
+            description: 'Prédios futuristas e letreiros luminosos em cidade cyberpunk.',
+            confidence: 0.88,
+          },
+        ],
+      },
+    );
+    expect(urbanMismatch.accepted).toBe(false);
+    expect(urbanMismatch.assemblyEligible).toBe(false);
+    expect(urbanMismatch.verificationOutcome).toBe('rejected');
+
+    // 2. Title matches file name, but frames show only generic scenery without positive entity proof -> needs_review
+    const genericFrames = await evaluateMediaRelevance(
+      {
+        mediaId: 'cand_generic',
+        title: 'Red Dead Redemption 2 gameplay.mp4',
+        origin: 'yt_dlp',
+        url: 'https://youtube.com/watch?v=gen',
+        durationSec: 30,
+      },
+      segment,
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async () => [
+          {
+            timestampSec: 5,
+            visualCategory: 'gameplay',
+            detectedEntities: [],
+            detectedActions: [],
+            description: 'Paisagem genérica com árvores ao fundo sem elementos identificáveis.',
+            confidence: 0.5,
+          },
+          {
+            timestampSec: 18,
+            visualCategory: 'gameplay',
+            detectedEntities: [],
+            detectedActions: [],
+            description: 'Estrada vazia com céu nublado.',
+            confidence: 0.5,
+          },
+        ],
+      },
+    );
+    expect(genericFrames.accepted).toBe(false);
+    expect(genericFrames.assemblyEligible).toBe(false);
+    expect(genericFrames.verificationOutcome).toBe('needs_review');
+
+    // 3. Positive visual proof in multiple frames -> verified
+    const verifiedRdr2 = await evaluateMediaRelevance(
+      {
+        mediaId: 'cand_rdr2',
+        title: 'Red Dead Redemption 2 Official Trailer.mp4',
+        origin: 'yt_dlp',
+        url: 'https://youtube.com/watch?v=rdr2',
+        durationSec: 45,
+      },
+      segment,
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async () => [
+          {
+            timestampSec: 6,
+            visualCategory: 'gameplay',
+            detectedEntities: ['red dead redemption 2'],
+            detectedActions: ['cavalgando'],
+            description: 'Red Dead Redemption 2: Arthur Morgan cavalgando no velho oeste com montanhas nevadas.',
+            confidence: 0.92,
+          },
+          {
+            timestampSec: 21,
+            visualCategory: 'gameplay',
+            detectedEntities: ['red dead redemption 2'],
+            detectedActions: ['acampamento'],
+            description: 'Red Dead Redemption 2: dois vaqueiros próximos à fogueira no acampamento.',
+            confidence: 0.91,
+          },
+        ],
+      },
+    );
+    expect(verifiedRdr2.accepted).toBe(true);
+    expect(verifiedRdr2.assemblyEligible).toBe(true);
+    expect(verifiedRdr2.verificationOutcome).toBe('verified');
   });
 });
