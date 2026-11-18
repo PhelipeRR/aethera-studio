@@ -159,6 +159,12 @@ export async function generateCinematicMusicBed(
 ): Promise<RealAudioAssetRef | undefined> {
   const dur = Math.max(8, Math.min(600, Math.round(durationSec)));
   const fadeOutStart = Math.max(2, dur - 2.5);
+  // Smooth evolving harmonic pad (zero unescaped commas inside lavfi expression)
+  const padExpr =
+    '(0.13*sin(2*PI*110*t)+0.09*sin(2*PI*164.81*t)+0.08*sin(2*PI*220*t)' +
+    '+0.06*sin(2*PI*261.63*t)*(0.5+0.5*sin(2*PI*0.125*t))' +
+    '+0.05*sin(2*PI*196*t)*(0.5-0.5*sin(2*PI*0.125*t)))' +
+    '*(0.78+0.22*sin(2*PI*0.5*t))';
   try {
     mkdirSync(dirname(outputPath), { recursive: true });
     await execFileAsync(
@@ -171,9 +177,9 @@ export async function generateCinematicMusicBed(
         '-f',
         'lavfi',
         '-i',
-        `aevalsrc=0.14*sin(2*PI*110*t)+0.10*sin(2*PI*164.81*t)+0.08*sin(2*PI*220*t)+0.06*sin(2*PI*261.63*t):s=48000:c=stereo:d=${dur}`,
+        `aevalsrc=${padExpr}:s=48000:c=stereo:d=${dur}`,
         '-af',
-        `lowpass=f=900,afade=t=in:st=0:d=1.8,afade=t=out:st=${fadeOutStart}:d=2.5,volume=-10dB`,
+        `lowpass=f=1100,afade=t=in:st=0:d=1.8,afade=t=out:st=${fadeOutStart}:d=2.5,volume=-11dB`,
         outputPath,
       ],
       { maxBuffer: 4 * 1024 * 1024 },
@@ -183,7 +189,7 @@ export async function generateCinematicMusicBed(
       path: outputPath,
       license: 'aethera-synthesized-ambient-bed',
       origin: 'aethera_local_synth',
-      useConditions: 'trilha ambiente gerada localmente via FFmpeg',
+      useConditions: 'trilha musical progressiva gerada localmente via FFmpeg',
       sourceKind: 'generated',
       providerId: 'ffmpeg_synth',
     };

@@ -92,6 +92,7 @@ import {
   SCENE_GROUNDING_POLICY_VERSION,
   buildSceneAudiovisualPlan,
   generateCinematicMusicBed,
+  resolveRealAudioAssets,
   runGateAPreAssembly,
   runGateBPreRender,
   runGateCPostRender,
@@ -1108,6 +1109,7 @@ export class StagedCinemaPipeline {
     language?: string;
     manuallyChangedFields?: ContractControlField[];
     seedMediaFiles?: string[];
+    allowDeterministicScriptFallback?: boolean;
   }): Promise<StagedProductionJob> {
     const projectPaths = this.ensureProjectWorkspace(input.projectId, input.prompt);
     const contractControls: Partial<ProductionContractControls> = {
@@ -1142,7 +1144,7 @@ export class StagedCinemaPipeline {
       ...(input.deliveryPresetId ? { deliveryPresetId: input.deliveryPresetId } : {}),
       ...(input.deliveryPresetIds?.length ? { deliveryPresetIds: input.deliveryPresetIds } : {}),
       ...(input.previewProfile ? { previewProfile: input.previewProfile } : {}),
-      targetDurationSec: input.targetDurationSec ?? contract.current.controls.targetDurationSec,
+      targetDurationSec: input.targetDurationSec ?? contract.controls.targetDurationSec,
       humorIntensity: input.humorIntensity ?? 35,
       renderProfile: input.renderProfile ?? 'review_720p',
       useNvenc: input.useNvenc ?? true,
@@ -1150,6 +1152,7 @@ export class StagedCinemaPipeline {
       ...(input.ttsProviderId ? { ttsProviderId: input.ttsProviderId } : {}),
       ...(input.ttsVoiceId ? { ttsVoiceId: input.ttsVoiceId } : {}),
       ...(input.language ? { language: input.language } : {}),
+      ...(input.allowDeterministicScriptFallback !== undefined ? { allowDeterministicScriptFallback: input.allowDeterministicScriptFallback } : {}),
       state: 'prompt',
       progressPct: 5,
       message: 'Analisando prompt e extraindo intenções de cena...',
@@ -1392,6 +1395,36 @@ export class StagedCinemaPipeline {
           job.researchDossier = dossier;
           const researchEvidence = this.recordStageEvidence(job.contract, 'pesquisa', 'research', `Dossiê editorial ${dossier.dossierId} validado com ${dossier.entities.length} entidade(s).`, 'supports', [dossier.dossierId]);
           if (researchEvidence) job.contract = researchEvidence;
+        } else if (job.allowDeterministicScriptFallback) {
+          const listAfterColon = /:\s*([^.?!\n]+)/.exec(job.prompt)?.[1] ?? '';
+          const extractedNames = listAfterColon
+            .split(/,|\s+e\s+/i)
+            .map((s) => s.trim())
+            .filter((s) => s.length >= 3 && s.length <= 60);
+          if (extractedNames.length >= 2) {
+            const dossier: EditorialResearchDossier = {
+              dossierId: `dossier_det_${createHash('sha1').update(job.prompt).digest('hex').slice(0, 8)}`,
+              dossierHash: createHash('sha1').update(extractedNames.join('|')).digest('hex').slice(0, 12),
+              promptHash: nextInterpretation.promptHash,
+              workTitle: extractedNames.slice(0, 2).join(' & '),
+              theme: nextInterpretation.theme,
+              rankingCriteria: nextInterpretation.rankingCriteria,
+              entities: extractedNames.map((name, idx) => ({
+                entityName: name,
+                workTitle: name,
+                role: 'obra_destaque',
+                rankPosition: idx + 1,
+                verifiedFacts: [`${name} marcou época com seus gráficos e jogabilidade.`],
+                mechanicsOrEvents: [`gameplay de ${name}`],
+                uncertainties: [],
+                sources: [{ title: `Referência ${name}`, kind: 'agent_synthesis' }],
+              })),
+              uncertainties: [],
+              sourcesUsed: ['prompt_explicit_list'],
+              createdAt: new Date().toISOString(),
+            };
+            job.researchDossier = dossier;
+          }
         }
         job.completedStages = [...new Set([...job.completedStages, 'pesquisa'])] as ProductionStageState[];
         this.saveJob(job);
@@ -1494,7 +1527,10 @@ export class StagedCinemaPipeline {
           beatId: `nbeat_${idx + 2}_progression`,
           stage: (idx === dossier.entities.length - 1 ? 'climax' : 'progression') as NarrativeBeat['stage'],
           title: ent.rankPosition ? `#${ent.rankPosition} — ${ent.entityName}` : ent.entityName,
-          spokenText: `${ent.entityName} em ${dossier.workTitle}: ${ent.mechanicsOrEvents[0] ?? ent.verifiedFacts[0] ?? ent.role}.`,
+          spokenText:
+            ent.workTitle && ent.workTitle !== ent.entityName
+              ? `${ent.entityName} em ${ent.workTitle}: ${ent.mechanicsOrEvents[0] ?? ent.verifiedFacts[0] ?? ent.role}.`
+              : `${ent.entityName}: ${ent.mechanicsOrEvents[0] ?? ent.verifiedFacts[0] ?? ent.role}.`,
           estimatedDurationSec: Math.max(4, Math.round(job.targetDurationSec / Math.max(2, dossier.entities.length + 2))),
           approved: true,
         }));
@@ -1510,7 +1546,7 @@ export class StagedCinemaPipeline {
               beatId: 'nbeat_1_hook',
               stage: 'hook',
               title: 'Introdução',
-              spokenText: `Bem-vindo à análise de ${dossier.workTitle}: ${dossier.theme}.`,
+              spokenText: `Hoje vamos relembrar ${dossier.entities.map((e) => e.entityName).slice(0, 5).join(', ')}.`,
               estimatedDurationSec: fallbackIntroDur,
               approved: true,
             },
@@ -1520,12 +1556,32 @@ export class StagedCinemaPipeline {
               beatId: `nbeat_${entityBeats.length + 2}_resolution`,
               stage: 'resolution',
               title: 'Conclusão',
-              spokenText: `Esses foram os destaques de ${dossier.workTitle} segundo os critérios definidos.`,
-              estimatedDurationSec: 20,
+              spokenText: `Qual desses clássicos marcou a sua história? Comente abaixo!`,
+              estimatedDurationSec: fallbackIntroDur,
               approved: true,
             },
           ],
         });
+      }
+      if (job.editorialScript && job.targetDurationSec > 0) {
+        const totalEstSec = job.editorialScript.segments.reduce((s, seg) => s + seg.estimatedDurationSec, 0);
+        if (totalEstSec > job.targetDurationSec * 1.03 && job.editorialScript.segments.length > 0) {
+          const perSegTargetSec = Math.max(3, (job.targetDurationSec * 0.92) / job.editorialScript.segments.length);
+          const maxWordsPerSeg = Math.max(6, Math.floor(perSegTargetSec * 2.1));
+          job.editorialScript = {
+            ...job.editorialScript,
+            segments: job.editorialScript.segments.map((seg) => {
+              const words = seg.spokenText.trim().split(/\s+/).filter(Boolean);
+              const trimmedText =
+                words.length > maxWordsPerSeg ? `${words.slice(0, maxWordsPerSeg).join(' ').replace(/[,;:]$/, '')}.` : seg.spokenText;
+              return {
+                ...seg,
+                spokenText: trimmedText,
+                estimatedDurationSec: Math.max(3, Math.round(estimateNarrationSec(trimmedText, job.language ?? 'pt-BR'))),
+              };
+            }),
+          };
+        }
       }
       if (job.editorialScript && job.researchDossier) {
         const scriptCheck = validateScriptAgainstDossier(job.editorialScript, job.researchDossier, nextInterpretation);
@@ -2682,6 +2738,7 @@ export class StagedCinemaPipeline {
               ...(musicBed ? { music: musicBed } : {}),
             }
           : undefined;
+      const resolvedAudioForGateB = realAudioAssets ? await resolveRealAudioAssets(realAudioAssets) : undefined;
       const gateA = runGateAPreAssembly({
         requestedDurationSec: job.targetDurationSec,
         coverageReport,
@@ -2690,6 +2747,7 @@ export class StagedCinemaPipeline {
       const gateB = runGateBPreRender({
         timeline: pkg.timeline,
         requestedDurationSec: job.targetDurationSec,
+        ...(resolvedAudioForGateB ? { realAudio: resolvedAudioForGateB } : {}),
         ...(pkg.audiovisualPlan ? { audiovisualPlan: pkg.audiovisualPlan } : {}),
       });
       job.qualityGates = [gateA, gateB];

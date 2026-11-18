@@ -446,17 +446,33 @@ export function buildMediaRecoveryPlan(input: {
     if (!segment) continue;
     for (const [gapIndex, interval] of gap.uncoveredIntervals.entries()) {
       const intervalLabel = `${interval.startSec.toFixed(1)}-${interval.endSec.toFixed(1)}s`;
-      const event = segment.expectedEvent?.trim() || 'cena específica';
+      const event = segment.expectedEvent?.trim() || '';
       const core = [segment.subject, ...(segment.entities ?? []).slice(0, 2)].filter(Boolean).join(' ');
+      const isAnimeContext = input.genre === 'anime' || /\b(anime|mang[aá]|epis[oó]dio|dragon ball|naruto|one piece)\b/i.test(`${input.prompt} ${core}`);
+      const isGamingContext = input.genre === 'gameplay_essay' || /\b(gameplay|jogo|game|mario|sonic|gta|cyberpunk|red dead|boss)\b/i.test(`${input.prompt} ${core}`);
       const candidates: Array<{ query: string; strategy: MediaRecoveryQuery['strategy'] }> = [];
       for (const preferred of segment.preferredQueries ?? []) {
         candidates.push({ query: preferred, strategy: 'preferred' });
       }
-      candidates.push(
-        { query: `${core} ${event} anime scene clip`, strategy: 'event_specific' },
-        { query: `official ${core} ${event} footage scene`, strategy: 'alternative_source' },
-        { query: `${core} anime scene visual reference`, strategy: 'broader_context' },
-      );
+      if (isAnimeContext) {
+        candidates.push(
+          { query: `${core} ${event} anime scene clip`.trim(), strategy: 'event_specific' },
+          { query: `official ${core} ${event} footage scene`.trim(), strategy: 'alternative_source' },
+          { query: `${core} anime scene visual reference`.trim(), strategy: 'broader_context' },
+        );
+      } else if (isGamingContext) {
+        candidates.push(
+          { query: `${core} ${event} gameplay no commentary`.trim(), strategy: 'event_specific' },
+          { query: `${core} official trailer gameplay`.trim(), strategy: 'alternative_source' },
+          { query: `${core} gameplay`.trim(), strategy: 'broader_context' },
+        );
+      } else {
+        candidates.push(
+          { query: `${core} ${event} footage`.trim(), strategy: 'event_specific' },
+          { query: `official ${core} ${event}`.trim(), strategy: 'alternative_source' },
+          { query: `${core}`.trim(), strategy: 'broader_context' },
+        );
+      }
       const expanded = expandScriptOrientedQueries({
         prompt: input.prompt,
         segments: [segment],

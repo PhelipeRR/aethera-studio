@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import type { RealAudioAssetRef, RealSfxAssetRef } from './real-audio-assets.js';
 
@@ -107,6 +108,7 @@ export function selectSemanticSfxFromLibrary(
 
   for (const query of queries) {
     const scored = entries
+      .filter((entry) => existsSync(entry.path))
       .map((entry) => ({
         entry,
         score: scoreSemanticSfxCandidate(entry.path, query.eventType, domainText),
@@ -142,6 +144,7 @@ export function selectMusicFromLibrary(
   const lowerDomain = domainText.toLowerCase();
   return entries
     .filter((entry) => {
+      if (!existsSync(entry.path)) return false;
       const fileAndPack = `${basename(dirname(entry.path))} ${basename(entry.path)}`.toLowerCase();
       if (!/\.(wav|mp3|ogg|m4a|flac)$/i.test(fileAndPack)) return false;
       if (EXCLUDED_VEHICLE_AND_NOISE_TERMS.some((term) => fileAndPack.includes(term))) return false;

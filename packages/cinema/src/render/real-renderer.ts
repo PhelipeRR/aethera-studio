@@ -879,9 +879,19 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   let smartCaptionCacheHit = false;
   let smartCaptionCachePath = '';
   if (measuredCaptionWords.length > 0) {
+    // Clamp sub-millisecond TTS/frame rounding at timeline boundaries while preserving monotonic order
+    let prevWordEndMs = 0;
+    const clampedCaptionWords: CaptionWord[] = [];
+    for (const w of measuredCaptionWords) {
+      if (prevWordEndMs >= totalDurMs) break;
+      const startMs = Math.max(prevWordEndMs, Math.min(totalDurMs - 1, Math.round(w.startMs)));
+      const endMs = Math.max(startMs + 1, Math.min(totalDurMs, Math.round(w.endMs)));
+      clampedCaptionWords.push({ ...w, startMs, endMs });
+      prevWordEndMs = endMs;
+    }
     const safeMargins = { top: Math.round(targetHeight * safeArea.top / 100), right: safeRight, bottom: safeBottom, left: safeLeft };
     smartCaptionArtifact = compileSmartCaptions({
-      words: measuredCaptionWords,
+      words: clampedCaptionWords,
       durationMs: totalDurMs,
       width: targetWidth,
       height: targetHeight,

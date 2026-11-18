@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildSceneAudiovisualPlan,
@@ -31,23 +34,35 @@ describe('Aethera Pipeline Quality Recovery (P1-P5)', () => {
   });
 
   it('rejects motorcycle/unrelated SFX and selects semantically compatible SFX from local library', () => {
-    const entries = [
-      { id: '1', path: 'C:\\Music\\Cactuzz Sound - 1993 Suzuki VS 800 GL Intruder.wav' },
-      { id: '2', path: 'C:\\Music\\DavidDumais - ATV Arctic Cat 650 H1.wav' },
-      { id: '3', path: 'C:\\Music\\Bluezone_BC0303_futuristic_user_interface_transition_006.wav' },
-      { id: '4', path: 'C:\\Music\\Doex Studio - 90s Anime SFX Pack_whoosh_01.wav' },
-    ];
-    const selected = selectSemanticSfxFromLibrary(
-      entries,
-      [
-        { id: 'sfx_1', eventType: 'transition', atMs: 1000 },
-        { id: 'sfx_2', eventType: 'whoosh', atMs: 5000 },
-      ],
-      'vídeo sobre cinco jogos nostálgicos Super Mario 64 Sonic GTA Cyberpunk 2077',
-    );
-    expect(selected.length).toBe(2);
-    expect(selected.some((s) => /suzuki|arctic cat/i.test(s.path))).toBe(false);
-    expect(selected[0]!.path).toContain('transition');
+    const dir = mkdtempSync(join(tmpdir(), 'aethera-sfx-test-'));
+    try {
+      const files = [
+        'Cactuzz Sound - 1993 Suzuki VS 800 GL Intruder.wav',
+        'DavidDumais - ATV Arctic Cat 650 H1.wav',
+        'Bluezone_BC0303_futuristic_user_interface_transition_006.wav',
+        'Doex Studio - 90s Anime SFX Pack_whoosh_01.wav',
+      ];
+      const entries = files.map((name, idx) => {
+        const p = join(dir, name);
+        writeFileSync(p, Buffer.alloc(2048));
+        return { id: String(idx + 1), path: p };
+      });
+      entries.push({ id: '99', path: join(dir, 'missing_transition.wav') });
+
+      const selected = selectSemanticSfxFromLibrary(
+        entries,
+        [
+          { id: 'sfx_1', eventType: 'transition', atMs: 1000 },
+          { id: 'sfx_2', eventType: 'whoosh', atMs: 5000 },
+        ],
+        'vídeo sobre cinco jogos nostálgicos Super Mario 64 Sonic GTA Cyberpunk 2077',
+      );
+      expect(selected.length).toBe(2);
+      expect(selected.some((s) => /suzuki|arctic cat|missing/i.test(s.path))).toBe(false);
+      expect(selected[0]!.path).toContain('transition');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('propagates transitionIn, vfx1 clips, vfxPlan, humorBeats, and audiovisualPlan in produceCinemaPackage', () => {
