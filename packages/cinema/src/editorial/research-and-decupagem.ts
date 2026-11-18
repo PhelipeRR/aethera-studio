@@ -174,11 +174,18 @@ export function interpretProductionPrompt(
   const countMatch = /\b(?:top\s+)?(\d{1,2})\s+(?:melhores\s+|maiores\s+|principais\s+|piores\s+)?(?:chefes|bosses|upgrades|implantes|cyberwares|cibern[eé]tic[oa]s?|produtos|tecnologias|ferramentas|recursos|armas|builds|jogos|lutas|momentos|fatos|itens|personagens|batalhas|epis[oó]dios|animes|mang[aá]s|filmes|s[eé]ries|obras|games)\b/iu.exec(cleaned);
   const requestedCount = countMatch?.[1] ? Math.max(1, Math.min(25, Number(countMatch[1]))) : undefined;
 
-  // Detect duration in prompt if not explicitly provided
+  // Detect duration in prompt if not explicitly provided (supports both minutes and seconds)
   let targetDurationSec = options?.targetDurationSec ?? 0;
   if (!targetDurationSec || targetDurationSec <= 0) {
-    const minMatch = /(\d+)\s*min(?:utos?)?/i.exec(cleaned);
-    targetDurationSec = minMatch?.[1] ? Number(minMatch[1]) * 60 : 180;
+    const minMatch = /(\d+)\s*(?:minutos?|min)\b/i.exec(cleaned);
+    const secMatch = /(\d+)\s*(?:segundos?|seg|s)\b/i.exec(cleaned);
+    if (minMatch?.[1]) {
+      targetDurationSec = Number(minMatch[1]) * 60;
+    } else if (secMatch?.[1]) {
+      targetDurationSec = Number(secMatch[1]);
+    } else {
+      targetDurationSec = 180;
+    }
   }
 
   // Detect domain

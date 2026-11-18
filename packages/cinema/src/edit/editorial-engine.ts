@@ -212,6 +212,8 @@ export function buildClipFromShot(input: {
   durationFrames: number;
   fps: CanonicalTimeline['fps'];
   shotId?: string;
+  transitionIn?: TimelineClip['transitionIn'];
+  effects?: TimelineClip['effects'];
 }): TimelineClip {
   return {
     clipId: input.clipId,
@@ -228,8 +230,9 @@ export function buildClipFromShot(input: {
     },
     speed: 1,
     approved: false,
-    effects: [],
+    effects: input.effects ?? [],
     keyframes: [],
+    ...(input.transitionIn ? { transitionIn: input.transitionIn } : {}),
     ...(input.shotId ? { shotId: input.shotId } : {}),
   };
 }

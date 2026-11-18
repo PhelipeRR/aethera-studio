@@ -90,6 +90,13 @@ import {
   isMultiWorkProduction,
   isAssemblyEligibleDecision,
   SCENE_GROUNDING_POLICY_VERSION,
+  buildSceneAudiovisualPlan,
+  generateCinematicMusicBed,
+  runGateAPreAssembly,
+  runGateBPreRender,
+  runGateCPostRender,
+  type QualityGateReport,
+  fromFrames,
 } from '@neuralbridge/cinema';
 import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
 import { createProductionJobId } from './production-console.js';
@@ -235,6 +242,7 @@ export interface StagedProductionJob {
   audioDiagnostics?: RealRenderResult['audioDiagnostics'];
   musicSelection?: RealRenderResult['musicSelection'];
   deliveryGate?: RealRenderResult['deliveryGate'];
+  qualityGates?: QualityGateReport[];
   error?: string;
   startedAt?: string;
   updatedAt: string;
@@ -333,11 +341,24 @@ export function buildSceneMontage(input: {
     const takeSec = Math.min(ivSec, remainingSec);
     const takeTicks = Math.max(1, Math.round(takeSec * rate));
     const partId = parts.length === 0 ? clip.clipId : `${clip.clipId}_p${parts.length + 1}`;
+    const baseEffects = clip.effects.filter((e) => e.kind !== 'allow_procedural');
+    const hasMotionEffect = baseEffects.some((e) => e.kind.startsWith('ken_burns') || e.kind.includes('zoom'));
+    const motionEffect = hasMotionEffect
+      ? []
+      : [
+          {
+            effectId: `fx_motion_${partId}`,
+            kind: parts.length % 2 === 0 ? 'ken_burns_in' : 'ken_burns_pan',
+            enabled: true,
+            params: { zoom: 1.06, easing: 'ease_in_out' },
+          },
+        ];
     parts.push({
       ...clip,
       clipId: partId,
       mediaId: iv.mediaId,
       label: input.label,
+      transitionIn: clip.transitionIn ?? (parts.length === 0 ? 'dissolve' : parts.length % 2 === 0 ? 'j_cut' : 'cut'),
       timelineRange: {
         start: { value: clip.timelineRange.start.value + cursorTicks, rate },
         duration: { value: takeTicks, rate },
@@ -346,7 +367,7 @@ export function buildSceneMontage(input: {
         start: { value: Math.round(iv.startSec * 30), rate: 30 },
         duration: { value: Math.round(takeSec * 30), rate: 30 },
       },
-      effects: clip.effects.filter((e) => e.kind !== 'allow_procedural'),
+      effects: [...baseEffects, ...motionEffect],
     });
     if (!usedMedia.includes(iv.mediaId)) usedMedia.push(iv.mediaId);
     cursorTicks += takeTicks;
@@ -1121,7 +1142,7 @@ export class StagedCinemaPipeline {
       ...(input.deliveryPresetId ? { deliveryPresetId: input.deliveryPresetId } : {}),
       ...(input.deliveryPresetIds?.length ? { deliveryPresetIds: input.deliveryPresetIds } : {}),
       ...(input.previewProfile ? { previewProfile: input.previewProfile } : {}),
-      targetDurationSec: input.targetDurationSec ?? 36,
+      targetDurationSec: input.targetDurationSec ?? contract.current.controls.targetDurationSec,
       humorIntensity: input.humorIntensity ?? 35,
       renderProfile: input.renderProfile ?? 'review_720p',
       useNvenc: input.useNvenc ?? true,
@@ -1474,9 +1495,10 @@ export class StagedCinemaPipeline {
           stage: (idx === dossier.entities.length - 1 ? 'climax' : 'progression') as NarrativeBeat['stage'],
           title: ent.rankPosition ? `#${ent.rankPosition} — ${ent.entityName}` : ent.entityName,
           spokenText: `${ent.entityName} em ${dossier.workTitle}: ${ent.mechanicsOrEvents[0] ?? ent.verifiedFacts[0] ?? ent.role}.`,
-          estimatedDurationSec: Math.max(12, Math.round(job.targetDurationSec / Math.max(2, dossier.entities.length + 2))),
+          estimatedDurationSec: Math.max(4, Math.round(job.targetDurationSec / Math.max(2, dossier.entities.length + 2))),
           approved: true,
         }));
+        const fallbackIntroDur = Math.max(4, Math.round(job.targetDurationSec / Math.max(2, dossier.entities.length + 2)));
         job.editorialScript = buildEditorialScript({
           scriptId: `${job.projectId}_script`,
           source: 'deterministic_draft',
@@ -1489,7 +1511,7 @@ export class StagedCinemaPipeline {
               stage: 'hook',
               title: 'Introdução',
               spokenText: `Bem-vindo à análise de ${dossier.workTitle}: ${dossier.theme}.`,
-              estimatedDurationSec: 20,
+              estimatedDurationSec: fallbackIntroDur,
               approved: true,
             },
             ...entityBeats,
@@ -2356,11 +2378,48 @@ export class StagedCinemaPipeline {
         });
         const nextClips: TimelineClip[] = [];
         for (const c of pkg.timeline.clips) {
+          if (c.trackId === 'vfx1') continue;
           const replaced = c.trackId === 'v1' ? montageByClipId.get(c.clipId) : undefined;
           if (replaced) nextClips.push(...replaced);
           else nextClips.push(c);
         }
-        pkg = { ...pkg, timeline: { ...pkg.timeline, clips: nextClips } };
+        const refreshedPlan = buildSceneAudiovisualPlan({
+          requestedDurationSec: job.targetDurationSec,
+          clips: nextClips,
+          scenes: scenesForAcquisition.map((s) => ({
+            sceneId: s.sceneId,
+            subject: (s.works ?? s.entities).slice(0, 2).join(' / ') || s.expectedEvent,
+            narrationText: s.narrationText,
+            expectedEvent: s.expectedEvent,
+          })),
+          comedyBeats: pkg.timeline.comedyBeats,
+        });
+        const vfxFps = pkg.timeline.fps;
+        const refreshedVfxClips: TimelineClip[] = refreshedPlan.vfxPlan.map((v, idx) => ({
+          clipId: `vfx_clip_${idx + 1}`,
+          trackId: 'vfx1',
+          mediaId: `vfx_overlay_${v.effect}`,
+          label: `${v.effect}: ${v.sceneId}`,
+          sourceRange: {
+            start: fromFrames(0, vfxFps),
+            duration: fromFrames(Math.max(15, Math.round(v.durationSec * vfxFps.value)), vfxFps),
+          },
+          timelineRange: {
+            start: fromFrames(Math.round(v.startSec * vfxFps.value), vfxFps),
+            duration: fromFrames(Math.max(15, Math.round(v.durationSec * vfxFps.value)), vfxFps),
+          },
+          speed: 1,
+          approved: true,
+          effects: [{ effectId: `vfx_fx_${idx + 1}`, kind: v.effect, enabled: true, params: { sceneId: v.sceneId } }],
+          keyframes: [],
+        }));
+        pkg = {
+          ...pkg,
+          timeline: { ...pkg.timeline, clips: [...nextClips, ...refreshedVfxClips] },
+          audiovisualPlan: refreshedPlan,
+          vfxPlan: refreshedPlan.vfxPlan,
+          humorBeats: refreshedPlan.humorBeats,
+        };
         job.sceneAssembly = assembly;
       } else if (job.acquiredMedia.length > 0 && pkg.direction.narrativeBeats.length > 0) {
         const videoTrackClips = pkg.timeline.clips.filter((c) => c.trackId === 'v1');
@@ -2612,7 +2671,28 @@ export class StagedCinemaPipeline {
       this.saveJob(job);
 
       const segmentCacheDir = join(projectPaths.tempDir, 'segment-cache');
-      const realAudioAssets = localMotionVelixAudioAssets();
+      const baseAudioAssets = localMotionVelixAudioAssets();
+      const musicBed =
+        baseAudioAssets?.music ??
+        (await generateCinematicMusicBed(join(projectPaths.tempDir, 'cinematic_music_bed.wav'), job.targetDurationSec));
+      const realAudioAssets: RealAudioAssetsInput | undefined =
+        baseAudioAssets || musicBed
+          ? {
+              ...(baseAudioAssets ?? {}),
+              ...(musicBed ? { music: musicBed } : {}),
+            }
+          : undefined;
+      const gateA = runGateAPreAssembly({
+        requestedDurationSec: job.targetDurationSec,
+        coverageReport,
+        plannedDurationSec: job.targetDurationSec,
+      });
+      const gateB = runGateBPreRender({
+        timeline: pkg.timeline,
+        requestedDurationSec: job.targetDurationSec,
+        ...(pkg.audiovisualPlan ? { audiovisualPlan: pkg.audiovisualPlan } : {}),
+      });
+      job.qualityGates = [gateA, gateB];
       let render = await renderRealCinemaMp4({
         pkg,
         outputDir: projectPaths.rendersDir,
@@ -2657,6 +2737,16 @@ export class StagedCinemaPipeline {
       job.audioDiagnostics = render.audioDiagnostics;
       job.musicSelection = render.musicSelection;
       job.deliveryGate = render.deliveryGate;
+      const gateC = runGateCPostRender({
+        requestedDurationSec: job.targetDurationSec,
+        actualDurationSec: render.probe.durationSec,
+        width: render.probe.width,
+        height: render.probe.height,
+        hasAudio: Boolean(render.probe.audioCodec),
+        blackFramesCount: render.probe.blackFramesCount,
+        clippingDetected: render.probe.truePeakDbtp !== null && render.probe.truePeakDbtp > -0.1,
+      });
+      job.qualityGates = [...(job.qualityGates ?? []), gateC];
       const previewEvidence = this.recordStageEvidence(
         job.contract,
         'previa',
@@ -2927,6 +3017,16 @@ export class StagedCinemaPipeline {
       job.audioDiagnostics = render.audioDiagnostics;
       job.musicSelection = render.musicSelection;
       job.deliveryGate = render.deliveryGate;
+      const gateCFinal = runGateCPostRender({
+        requestedDurationSec: job.targetDurationSec,
+        actualDurationSec: render.probe.durationSec,
+        width: render.probe.width,
+        height: render.probe.height,
+        hasAudio: Boolean(render.probe.audioCodec),
+        blackFramesCount: render.probe.blackFramesCount,
+        clippingDetected: render.probe.truePeakDbtp !== null && render.probe.truePeakDbtp > -0.1,
+      });
+      job.qualityGates = [...(job.qualityGates ?? []), gateCFinal];
       this.deps.onRenderReady(job.projectId, render);
       job.completedStages = [...new Set([...job.completedStages, 'previa', 'editor'])] as ProductionStageState[];
 

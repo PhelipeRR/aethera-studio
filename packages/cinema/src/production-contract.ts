@@ -395,7 +395,7 @@ function buildInferredControls(prompt: string, interpretation: PromptInterpretat
   const sourceLines: Partial<Record<ContractControlField, string>> = {
     ...(genre ? { genre: firstMatchingLine(prompt, /ranking|top\s*\d+|melhores/i) } : {}),
     ...(format ? { format: firstMatchingLine(prompt, /youtube|16\s*:\s*9|9\s*:\s*16|shorts?/i) } : {}),
-    ...(targetDurationSec ? { targetDurationSec: firstMatchingLine(prompt, /dura[cç][aã]o|\d+\s*min/i) } : {}),
+    ...(targetDurationSec ? { targetDurationSec: firstMatchingLine(prompt, /dura[cç][aã]o|\d+\s*(?:minutos?|min|segundos?|seg|s\b)/i) } : {}),
     ...(humor ? { humorIntensity: humor.sourceText } : {}),
     ...(resolution ? { renderProfile: firstMatchingLine(prompt, /full\s*hd|\d{3,4}\s*[x×]\s*\d{3,4}/i) } : {}),
     ...(language ? { language: firstMatchingLine(prompt, /portugu[eê]s|pt[-\s]?br|ingl[eê]s|en[-\s]?us/i) } : {}),

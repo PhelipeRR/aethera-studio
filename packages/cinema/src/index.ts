@@ -7,6 +7,7 @@ export * from './analysis/media-providers/index.js';
 export * from './analysis/media-approval.js';
 export * from './analysis/scene-work-reference.js';
 export * from './director/cinematography-director.js';
+export * from './director/scene-audiovisual-plan.js';
 export * from './director/aethera-format-catalog.js';
 export * from './editorial/editorial-integrity.js';
 export * from './editorial/research-and-decupagem.js';
@@ -24,7 +25,9 @@ export * from './audio/sound-director.js';
 export * from './audio/voice-director.js';
 export * from './audio/audio-first-timeline.js';
 export * from './audio/real-audio-assets.js';
+export * from './audio/semantic-audio-selector.js';
 export * from './qc/qc-engine.js';
+export * from './qc/audiovisual-gates.js';
 export * from './qc/real-media-probe.js';
 export * from './qc/delivery-quality-gate.js';
 export * from './qc/waveform-extractor.js';
@@ -41,6 +44,11 @@ export * from './evolution/director-orchestrator.js';
 export * from './evolution/academy-engine.js';
 export * from './evolution/transition-academy.js';
 export * from './calendar/editorial-calendar-engine.js';
+
+import {
+  buildSceneAudiovisualPlan,
+  type SceneAudiovisualPlan,
+} from './director/scene-audiovisual-plan.js';
 
 import {
   createEmptyCanonicalTimeline,
@@ -156,6 +164,9 @@ export interface CinemaProductionPackage {
   releaseGates: ReleaseGateResult;
   repairSummary?: TargetedRepairResult;
   appliedLearningRules?: Array<{ memoryId: string; rule: string; directorId: string }>;
+  audiovisualPlan?: SceneAudiovisualPlan;
+  vfxPlan?: SceneAudiovisualPlan['vfxPlan'];
+  humorBeats?: SceneAudiovisualPlan['humorBeats'];
 }
 
 export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaProductionPackage {
@@ -257,7 +268,7 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
   }
 
   const fallbackMediaId = catalog[0]?.mediaId ?? `${input.projectId}_src_main`;
-  timeline.clips = direction.shots.map((shot, idx) =>
+  const v1Clips = direction.shots.map((shot, idx) =>
     buildClipFromShot({
       clipId: `clip_${idx + 1}`,
       trackId: 'v1',
@@ -267,6 +278,21 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
       durationFrames: toFrames(shot.timeRange.duration, fps),
       fps,
       shotId: shot.shotId,
+      transitionIn: shot.transitionIn,
+      effects: [
+        {
+          effectId: `fx_motion_${idx + 1}`,
+          kind: idx % 2 === 0 ? 'ken_burns_in' : 'ken_burns_pan',
+          enabled: true,
+          params: { zoom: 1.06, easing: 'ease_in_out' },
+        },
+        {
+          effectId: `fx_grade_${idx + 1}`,
+          kind: 'color_grade_rec709',
+          enabled: true,
+          params: { contrast: 1.04, saturation: 1.05 },
+        },
+      ],
     }),
   );
 
@@ -279,6 +305,33 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
   });
   timeline.comedyBeats = comedyBeats;
+
+  const audiovisualPlan = buildSceneAudiovisualPlan({
+    requestedDurationSec: targetDur,
+    clips: v1Clips,
+    scenes: direction.narrativeBeats.map((b, idx) => ({
+      sceneId: `scene_${idx + 1}`,
+      subject: b.summary.slice(0, 60),
+      narrationText: b.summary,
+      expectedEvent: String(b.stage),
+    })),
+    comedyBeats,
+  });
+
+  const vfxClips = audiovisualPlan.vfxPlan.map((v, idx) => ({
+    clipId: `vfx_clip_${idx + 1}`,
+    trackId: 'vfx1',
+    mediaId: `vfx_overlay_${v.effect}`,
+    label: `${v.effect}: ${v.sceneId}`,
+    sourceRange: { start: fromFrames(0, fps), duration: fromFrames(Math.max(15, Math.round(v.durationSec * fps.value)), fps) },
+    timelineRange: { start: fromFrames(Math.round(v.startSec * fps.value), fps), duration: fromFrames(Math.max(15, Math.round(v.durationSec * fps.value)), fps) },
+    speed: 1,
+    approved: true,
+    effects: [{ effectId: `vfx_fx_${idx + 1}`, kind: v.effect, enabled: true, params: { sceneId: v.sceneId } }],
+    keyframes: [],
+  }));
+
+  timeline.clips = [...v1Clips, ...vfxClips];
   timeline = recomputeTimelineFingerprints(timeline);
 
   const colorPlan = buildColorPipelinePlan(timeline);
@@ -357,5 +410,8 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
     releaseGates,
     ...(repairSummary ? { repairSummary } : {}),
     ...(input.appliedMemories?.length ? { appliedLearningRules: input.appliedMemories } : {}),
+    audiovisualPlan,
+    vfxPlan: audiovisualPlan.vfxPlan,
+    humorBeats: audiovisualPlan.humorBeats,
   };
 }

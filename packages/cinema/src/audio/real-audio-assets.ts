@@ -1,7 +1,11 @@
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, statSync } from 'node:fs';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { promisify } from 'node:util';
 import type { MusicTrack } from '@neuralbridge/shared';
+
+const execFileAsync = promisify(execFile);
 
 export interface RealAudioAssetRef {
   path: string;
@@ -143,5 +147,48 @@ export async function resolveRealAudioAssets(input: RealAudioAssetsInput = {}, o
     ...(ambienceResult.asset ? { ambience: ambienceResult.asset } : {}),
     sfx,
   };
+}
+
+/**
+ * Generates a clean cinematic ambient music bed WAV via FFmpeg (48 kHz stereo, warm pad chord
+ * with smooth fade-in/fade-out) when no external/library music track is available.
+ */
+export async function generateCinematicMusicBed(
+  outputPath: string,
+  durationSec: number,
+): Promise<RealAudioAssetRef | undefined> {
+  const dur = Math.max(8, Math.min(600, Math.round(durationSec)));
+  const fadeOutStart = Math.max(2, dur - 2.5);
+  try {
+    mkdirSync(dirname(outputPath), { recursive: true });
+    await execFileAsync(
+      'ffmpeg',
+      [
+        '-y',
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        `aevalsrc=0.14*sin(2*PI*110*t)+0.10*sin(2*PI*164.81*t)+0.08*sin(2*PI*220*t)+0.06*sin(2*PI*261.63*t):s=48000:c=stereo:d=${dur}`,
+        '-af',
+        `lowpass=f=900,afade=t=in:st=0:d=1.8,afade=t=out:st=${fadeOutStart}:d=2.5,volume=-10dB`,
+        outputPath,
+      ],
+      { maxBuffer: 4 * 1024 * 1024 },
+    );
+    if (!existsSync(outputPath) || statSync(outputPath).size < 1_024) return undefined;
+    return {
+      path: outputPath,
+      license: 'aethera-synthesized-ambient-bed',
+      origin: 'aethera_local_synth',
+      useConditions: 'trilha ambiente gerada localmente via FFmpeg',
+      sourceKind: 'generated',
+      providerId: 'ffmpeg_synth',
+    };
+  } catch {
+    return undefined;
+  }
 }
 

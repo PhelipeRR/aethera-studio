@@ -1183,6 +1183,39 @@ export function triageCandidateMetadata(
 }
 
 /**
+ * Prevents cross-work recycling (e.g., assigning Mario/Sonic gameplay to GTA/RDR2/Cyberpunk scenes).
+ * Returns true if the candidate text clearly identifies a competing work from other segments without
+ * mentioning the target segment's own primary work/entities.
+ */
+export function hasCrossWorkEntityConflict(
+  candText: string,
+  targetSegment: ScriptCoverageSegment,
+  allSegments: readonly ScriptCoverageSegment[],
+): boolean {
+  const normalizedCand = candText.toLowerCase();
+  const targetTokens = new Set(
+    [targetSegment.subject, ...(targetSegment.entities ?? [])]
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => s.length >= 4 && !/^(game|jogo|gameplay|trailer|intro|hook|cta|abertura|encerramento|climax)$/.test(s)),
+  );
+  if (targetTokens.size === 0) return false;
+
+  const targetMatched = [...targetTokens].some((tok) => normalizedCand.includes(tok));
+  if (targetMatched) return false;
+
+  for (const other of allSegments) {
+    if (other.segmentId === targetSegment.segmentId) continue;
+    const otherTokens = [other.subject, ...(other.entities ?? [])]
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => s.length >= 5 && !targetTokens.has(s) && !/^(game|jogo|gameplay|trailer|intro|hook|cta|abertura|encerramento|climax)$/.test(s));
+    if (otherTokens.some((tok) => normalizedCand.includes(tok))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Autonomous multi-round coverage-driven acquisition:
  * expands queries across all available sources for uncovered segments within configurable limits,
  * never reuses incompatible media, and sends only truly unresolved gaps to the Review Room.
@@ -2250,8 +2283,9 @@ export async function runAutonomousMediaAcquisition(input: {
             candidateStates.set(candKey, 'pending_visual_verification');
 
             const mediaId = `auto_${cand.origin}_${acquiredFilesCount}`;
-            let durationSec = cand.durationSec ?? 12;
-            if (input.probeDurationFn) {
+            const isImageFile = IMAGE_EXTS.has(extname(filePath).toLowerCase());
+            let durationSec = isImageFile ? Math.max(8, task.segment.expectedDurationSec) : (cand.durationSec ?? 12);
+            if (!isImageFile && input.probeDurationFn) {
               try {
                 durationSec = await input.probeDurationFn(filePath);
               } catch {
@@ -2259,10 +2293,24 @@ export async function runAutonomousMediaAcquisition(input: {
               }
             }
             localPathByMediaId.set(mediaId, filePath);
+            const candIdentityText = `${cand.title ?? ''} ${cand.description ?? ''} ${cand.url}`;
             const assignedSegments = [...discoveredBySegment.entries()]
-              .flatMap(([segmentId, entries]) => entries.some((entry) => `${entry.cand.origin}:${entry.cand.url}` === candKey) ? [segmentId] : [])
-              .filter((segmentId, index, all) => all.indexOf(segmentId) === index);
-            if (!assignedSegments.includes(task.segment.segmentId)) assignedSegments.unshift(task.segment.segmentId);
+              .flatMap(([segmentId, entries]) =>
+                entries.some((entry) => `${entry.cand.origin}:${entry.cand.url}` === candKey)
+                  ? [segmentId]
+                  : [],
+              )
+              .filter((segmentId, index, all) => all.indexOf(segmentId) === index)
+              .filter((segmentId) => {
+                const segObj = segmentById.get(segmentId);
+                return !segObj || !hasCrossWorkEntityConflict(candIdentityText, segObj, input.segments);
+              });
+            if (
+              !assignedSegments.includes(task.segment.segmentId) &&
+              !hasCrossWorkEntityConflict(candIdentityText, task.segment, input.segments)
+            ) {
+              assignedSegments.unshift(task.segment.segmentId);
+            }
             for (const segmentId of assignedSegments) {
               const pendingKey = candidateSegmentKey(segmentId, candKey);
               pendingVerificationAssets.set(pendingKey, {
@@ -2658,9 +2706,14 @@ export async function runAutonomousMediaAcquisition(input: {
         if (segCov.covered || segCov.usableDurationSec > 0) continue;
         const pool = verifiedContextualFallbacksBySegment.get(segCov.segmentId);
         if (!pool || pool.length === 0) continue;
-        const eligiblePool = pool.filter(
-          (entry) => (entry.decision.matchedIntervals?.filter((iv) => iv.segmentId === segCov.segmentId).length ?? 0) >= 2,
-        );
+        const eligiblePool = pool.filter((entry) => {
+          const ivCount = entry.decision.matchedIntervals?.filter((iv) => iv.segmentId === segCov.segmentId).length ?? 0;
+          if (ivCount < 2) return false;
+          const targetSeg = input.segments.find((s) => s.segmentId === segCov.segmentId);
+          if (!targetSeg) return true;
+          const evidenceText = `${entry.item.cand.title ?? ''} ${entry.item.cand.description ?? ''} ${(entry.decision.visualEvidence ?? []).map((v) => v.description).join(' ')}`;
+          return !hasCrossWorkEntityConflict(evidenceText, targetSeg, input.segments);
+        });
         if (eligiblePool.length === 0) continue;
         const ranked = [...eligiblePool].sort((a, b) => {
         const scoreDiff = (b.decision.score ?? 0) - (a.decision.score ?? 0);
