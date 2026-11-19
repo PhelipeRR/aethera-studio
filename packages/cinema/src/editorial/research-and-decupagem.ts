@@ -190,13 +190,13 @@ export function interpretProductionPrompt(
 
   // Detect domain
   let domain: PromptDomain = 'general';
-  if (/\b(elden ring|cyberpunk\s*2077|cyberpunk|dark souls|sekiro|bloodborne|witcher|baldur|hollow knight|god of war|zelda|minecraft|gameplay|boss|chefe|cyberware|implante|cibern[eé]tica|jogo|game|soulslike)\b/i.test(lower)) {
+  if (/\b(elden ring|cyberpunk\s*2077|cyberpunk|dark souls|sekiro|bloodborne|witcher|baldur|hollow knight|god of war|zelda|minecraft|gameplay|boss|chefe|cyberware|implante|cibern[eé]tica|jogos?|games?|soulslike|trailer|trailers)\b/i.test(lower)) {
     domain = 'gaming';
   } else if (/\b(dragon ball|naruto|one piece|animes?|mang[aá]s?|bleach|jujutsu|attack on titan|black clover|fairy tail|hunter x hunter)\b/i.test(lower)) {
     domain = 'anime';
   } else if (/\b(tecnologia|produto|hardware|software|smartphone|iphone|notebook|laptop|placa de v[ií]deo|gpu|rtx|nvidia|amd|intel|apple|samsung|review|benchmark)\b/i.test(lower)) {
     domain = 'technology';
-  } else if (/\b(document[aá]rio|hist[oó]ria|guerra|biografia|ci[eê]ncia|apollo|espa[çc]o|civiliza[çc][ãa]o)\b/i.test(lower)) {
+  } else if (/\b(document[aá]rio|hist[oó]ria|guerra|biografia|ci[eê]ncia|cient[ií]fic|apollo|espa[çc]o|civiliza[çc][ãa]o|fus[aã]o nuclear|quantica|qu[aâ]ntica|crispr|bioassinatura|marte|iter|james webb|descoberta)\b/i.test(lower)) {
     domain = 'documentary';
   }
 
@@ -212,6 +212,17 @@ export function interpretProductionPrompt(
     [/\bdark souls\s*(?:3|iii)?\b/i, 'Dark Souls'],
     [/\bsekiro\b/i, 'Sekiro: Shadows Die Twice'],
     [/\bbloodborne\b/i, 'Bloodborne'],
+    // One Piece and key characters — ensures workTitle and entity extraction work for anime prompts
+    [/\bone piece\b/i, 'One Piece'],
+    [/\bnaruto(?:\s+shippuden)?\b/i, 'Naruto'],
+    [/\bjujutsu kaisen\b/i, 'Jujutsu Kaisen'],
+    [/\battack on titan\b/i, 'Attack on Titan'],
+    [/\bdemon slayer\b/i, 'Demon Slayer'],
+    [/\bhunter x hunter\b/i, 'Hunter x Hunter'],
+    [/\bbleach\b/i, 'Bleach'],
+    [/\bfairy tail\b/i, 'Fairy Tail'],
+    [/\bblack clover\b/i, 'Black Clover'],
+    [/\bfullmetal alchemist\b/i, 'Fullmetal Alchemist'],
   ];
   for (const [re, canonical] of knownWorks) {
     if (re.test(cleaned)) {
@@ -220,7 +231,28 @@ export function interpretProductionPrompt(
     }
   }
   const multiWork = isMultiWorkPrompt(cleaned);
-  const referenceWorks = detectReferenceWorks(cleaned);
+  let referenceWorks = detectReferenceWorks(cleaned);
+  // For single-work anime prompts like "O MAIOR SEGREDO DE SHANKS: ... sobre o One Piece",
+  // detectReferenceWorks returns empty because there's no "fãs de" / "quem gostou de" trigger.
+  // Extract the work title and key character names from the prompt structure directly.
+  if (referenceWorks.length === 0 && domain === 'anime' && !multiWork) {
+    const extracted: string[] = [];
+    // Match "de/do/da X" where X is a proper noun (character or work name)
+    const deMatch = /\b(?:de|do|da)\s+([A-ZÀ-Ý][A-ZÀ-Ýa-zà-ÿ\s'-]{1,30}?)(?:\s*[:–—,.]|\s+(?:o|a|os|as|que|qual|quando|como|por|para|sobre)\b)/u.exec(cleaned);
+    if (deMatch?.[1]) {
+      const name = deMatch[1].trim();
+      if (name.length >= 2 && name.length <= 40) extracted.push(name);
+    }
+    // Match "sobre o/a X" for work titles
+    const sobreMatch = /\bsobre\s+(?:o|a)\s+([A-ZÀ-Ý][A-ZÀ-Ýa-zà-ÿ\s'-]{1,40}?)(?:\s*[?!.]|$)/u.exec(cleaned);
+    if (sobreMatch?.[1]) {
+      const name = sobreMatch[1].trim();
+      if (name.length >= 2 && name.length <= 40 && !extracted.some((e) => e.toLowerCase() === name.toLowerCase())) {
+        extracted.push(name);
+      }
+    }
+    if (extracted.length > 0) referenceWorks = extracted;
+  }
   if (multiWork) {
     // A ranking of several works has no single "work": the label is the list's theme, never a search prefix.
     const heading = (cleaned.split(/\r?\n/).find((l) => l.trim().length > 0) ?? cleaned)
@@ -477,7 +509,12 @@ function buildSpecificMediaQueries(
   const cleanEntity = cleanEntityForQuery(entity.entityName);
   const mechanic = entity.mechanicsOrEvents[0] ?? entity.attackPatternsOrPhases?.[0] ?? '';
   const cleanMechanic = mechanic.replace(/[^\p{L}\p{N}\s-]/gu, ' ').split(/\s+/).slice(0, 5).join(' ').trim();
-  const base = `${workTitle} ${cleanEntity}`.trim();
+  const redundantWorkPrefix =
+    !workTitle ||
+    workTitle.includes(' & ') ||
+    workTitle.toLowerCase().includes(cleanEntity.toLowerCase()) ||
+    cleanEntity.toLowerCase().includes(workTitle.toLowerCase());
+  const base = redundantWorkPrefix ? cleanEntity : `${workTitle} ${cleanEntity}`.trim();
 
   switch (visualIntent) {
     case 'gameplay_boss_fight':
@@ -522,6 +559,13 @@ function buildSpecificMediaQueries(
       ].slice(0, 3);
     case 'product_demonstration':
     case 'hardware_benchmark':
+      if (domain === 'documentary' || domain === 'general') {
+        return [
+          `${base} documentary footage`,
+          `${base} real footage`,
+          ...(cleanMechanic ? [`${base} ${cleanMechanic}`] : []),
+        ].slice(0, 3);
+      }
       return [
         `${base} hands on review`,
         `${base} ${visualIntent === 'hardware_benchmark' ? 'benchmark performance test' : 'feature demonstration'}`.trim(),
@@ -540,10 +584,17 @@ function buildSpecificMediaQueries(
           `${base} scene`,
         ].slice(0, 3);
       }
+      if (domain === 'gaming') {
+        return [
+          `${base} gameplay showcase`,
+          ...(cleanMechanic ? [`${base} ${cleanMechanic}`] : []),
+          `${base} demonstration`,
+        ].slice(0, 3);
+      }
       return [
-        `${base} gameplay showcase`,
-        ...(cleanMechanic ? [`${base} ${cleanMechanic}`] : []),
-        `${base} demonstration`,
+        `${base} documentary footage`,
+        `${base} real footage`,
+        `${base} overview`,
       ].slice(0, 3);
   }
 }
@@ -659,15 +710,20 @@ export function buildSemanticDecupagem(
     const isIntroOrOutro =
       beat.stage === 'hook' || beat.stage === 'promise' || beat.stage === 'cta' || beat.stage === 'resolution';
     const secondary = multiWork && !isIntroOrOutro ? resolved.secondaryEntity : undefined;
+    // When dossier.entities is empty (E2E scripts without researchDossier), fall back to referenceWorks extracted
+    // from the prompt so buildContextualSceneQueries receives a non-empty work string and generates real queries.
+    const fallbackWorks = referenceWorks.length > 0 ? referenceWorks.map((w) => cleanEntityForQuery(w)) : [];
     const sceneWorks = matchedEntity
       ? multiWork
         ? [cleanEntityForQuery(matchedEntity.entityName), ...(secondary ? [cleanEntityForQuery(secondary.entityName)] : [])]
         : [dossier.workTitle]
       : resolved.referenceWork
         ? [resolved.referenceWork]
-        : multiWork
+        : overviewWorks.length > 0
           ? overviewWorks
-          : [dossier.workTitle];
+          : fallbackWorks.length > 0
+            ? fallbackWorks
+            : [dossier.workTitle];
     const entities = matchedEntity
       ? [matchedEntity.entityName, ...(secondary ? [secondary.entityName] : [])]
       : resolved.referenceWork
