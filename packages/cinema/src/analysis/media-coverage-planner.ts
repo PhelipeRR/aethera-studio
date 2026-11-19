@@ -699,7 +699,17 @@ export function planMediaCoverage(input: {
         return false;
       }
       if (decision?.correspondenceLevel === 'contextual_support' && expectation.requiresSpecificEventVisual) {
-        return false;
+        // Contextual B-roll from the correct universe is eligible as partial coverage when no exact_match
+        // exists for this segment. It is labeled as editorial B-roll (not factual proof) and counted at
+        // reduced weight so the planner does not fabricate gaps that block autonomous assembly.
+        const hasExactForSegment = input.relevanceDecisions?.some(
+          (d) =>
+            d.correspondenceLevel === 'exact_match' &&
+            d.assemblyEligible === true &&
+            (d.eligibleSegmentIds ?? []).includes(seg.segmentId),
+        );
+        if (hasExactForSegment) return false;
+        return decision.visualVerificationStatus === 'visually_verified' && decision.score >= 0.35;
       }
       if (decision?.eligibleSegmentIds && decision.eligibleSegmentIds.length > 0) {
         if (decision.eligibleSegmentIds.includes(seg.segmentId)) {
@@ -713,7 +723,7 @@ export function planMediaCoverage(input: {
           (asset.relevantToEntities ?? decision.matchedEntities).some(
             (e) =>
               e.trim().length >= 5 &&
-              !/^(super|game|jogo|part|edition|ultimate|classic|retro|world|land|city|fundo)$/i.test(e.trim()) &&
+              !/^(super|game|jogo|part|edition|ultimate|classic|retro|world|land|city|fundo|espacial|space|telescopio|telescope|sonda|probe|ciencia|science|historia|history|universo|universe|sistema|system|projeto|project)$/i.test(e.trim()) &&
               entities.some((segEnt) => segEnt.toLowerCase() === e.toLowerCase()),
           );
         if (sharesWork && !expectation.requiresSpecificEventVisual) return true;

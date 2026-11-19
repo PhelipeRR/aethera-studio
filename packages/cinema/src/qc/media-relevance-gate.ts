@@ -126,6 +126,7 @@ export interface MediaRelevanceDecision {
   eligibleSegmentIds?: string[];
   rejectionCode?:
     | 'unrelated_real_person'
+    | 'non_anime_real_person'
     | 'wrong_anime_or_entity'
     | 'same_universe_wrong_event'
     | 'wrong_game_or_topic'
@@ -133,7 +134,8 @@ export interface MediaRelevanceDecision {
     | 'generic_anime_style_without_entity'
     | 'unverified_no_visual_evidence'
     | 'insufficient_metadata_and_visual_match'
-    | 'academy_negative_example';
+    | 'academy_negative_example'
+    | 'title_card_only_not_footage';
   reason: string;
   sampledTimestampsSec: number[];
   extractedFramePaths?: string[];
@@ -437,14 +439,20 @@ function normalizedFrameObservedText(frame: DistributedFrameAnalysis): string {
   );
 }
 
-/** A title card may have a confident OCR result, but it has no depicted subject to ground. */
-function isTextOnlyFrame(frame: DistributedFrameAnalysis): boolean {
+/** A title card or sponsor/partner logo splash may have confident OCR, but has no depicted subject/scene to ground. */
+export function isTextOnlyFrame(frame: DistributedFrameAnalysis): boolean {
   const observed = normalizedFrameObservedText(frame);
+  const visibleJoined = (frame.visibleText ?? []).join(' ').toLowerCase();
+  const sponsorOrLogo =
+    /\b(official\s+(?:gaming\s+)?partner|sponsored\s+by|in\s+partnership\s+with|presented\s+by|rockstar\s+games\s+presents|thanks\s+for\s+watching|subscribe|inscreva[- ]se|patrocinad[oa]|parceiro\s+oficial)\b/i.test(
+      `${observed} ${visibleJoined}`,
+    );
+  if (sponsorOrLogo) return true;
   const hasText = (frame.visibleText?.length ?? 0) > 0;
   if (!hasText) return false;
   const explicitCard =
     frame.visualCategory === 'motion_graphic' ||
-    /\b(cart[aã]o|t[ií]tulo|title card|black screen|fundo preto|fundo branco|texto sobre|text card|quote card|logo)\b/i.test(observed);
+    /\b(cart[aã]o|t[ií]tulo|title card|black screen|fundo preto|fundo branco|tela preta|texto sobre|text card|quote card|logo|logotipo|logomarca|marca)\b/i.test(observed);
   const hasDepictedAction = (frame.detectedActions?.length ?? 0) > 0;
   const hasDepictedEntity = (frame.detectedEntities?.length ?? 0) > 0;
   return explicitCard || (!hasDepictedAction && !hasDepictedEntity);
@@ -1019,7 +1027,7 @@ export async function evaluateMediaRelevance(
   ];
   const expectedLowerJoined = `${segment.prompt ?? ''} ${expectedEntities.join(' ')}`.toLowerCase();
   const observedFramesText = validVisualFrames
-    .map((f) => `${f.description} ${f.detectedEntities.join(' ')}`)
+    .map((f) => `${f.description} ${(f.detectedEntities ?? []).join(' ')}`)
     .join(' ')
     .toLowerCase();
   const competingWorkInFrames = knownCompetingWorks.find(
@@ -1226,12 +1234,28 @@ export async function evaluateMediaRelevance(
       ? 'exact_match'
       : 'contextual_support';
 
-  const assemblyEligible = correspondenceLevel === 'exact_match';
+  // Contextual B-roll from the correct universe is assembly-eligible when visually verified with
+  // sufficient entity match (score >= 0.45). It is labeled as editorial B-roll, not factual proof,
+  // and the coverage planner counts it at reduced weight. This prevents autonomous production from
+  // blocking on segments where exact event footage is unavailable but correct-universe B-roll exists.
+  const contextualAssemblyEligible =
+    correspondenceLevel === 'contextual_support' &&
+    visualVerificationStatus === 'visually_verified' &&
+    score >= 0.45 &&
+    matchedEntities.length > 0 &&
+    !isSameUniverseOnly;
+  const assemblyEligible = correspondenceLevel === 'exact_match' || contextualAssemblyEligible;
   const editorialStatus: MediaEditorialStatus = assemblyEligible
     ? 'approved_for_scene'
     : visualVerificationStatus === 'visually_verified'
       ? 'visually_verified'
       : 'candidate';
+  const reasonText =
+    correspondenceLevel === 'exact_match'
+      ? `Correspondência exata (${effectiveMatched.slice(0, 4).join(', ')}) em ${sampledTimestampsSec.length} frames distribuídos (${visualVerificationStatus}).`
+      : contextualAssemblyEligible
+        ? `B-roll editorial do mesmo universo (${effectiveMatched.slice(0, 4).join(', ')}); verificado visualmente, não comprova o evento específico.`
+        : `Apoio contextual do mesmo universo (${effectiveMatched.slice(0, 4).join(', ')}); verificação visual: ${visualVerificationStatus}.`;
   return withDecisionStatus({
     mediaId: candidate.mediaId,
     accepted: visualVerificationStatus === 'visually_verified',
@@ -1244,10 +1268,7 @@ export async function evaluateMediaRelevance(
     matchedActions,
     matchedIntervals,
     eligibleSegmentIds: assemblyEligible ? [segment.segmentId] : [],
-    reason:
-      correspondenceLevel === 'contextual_support'
-        ? `Apoio contextual do mesmo universo (${effectiveMatched.slice(0, 4).join(', ')}); verificação visual: ${visualVerificationStatus}.`
-        : `Correspondência exata (${effectiveMatched.slice(0, 4).join(', ')}) em ${sampledTimestampsSec.length} frames distribuídos (${visualVerificationStatus}).`,
+    reason: reasonText,
     sampledTimestampsSec,
     matchedEntities: effectiveMatched,
     visualCategory: dominantVisualCategory,

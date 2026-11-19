@@ -141,7 +141,7 @@ export interface ResilientAcquisitionDeps {
     mediaDir: string,
     signal?: AbortSignal,
     downloadSection?: string,
-    onProgress?: (progress: { bytesDone: number; bytesTotal: number | null }) => void,
+    onProgress?: (progress: { bytesDone: number; bytesTotal: number | null; pct?: number | null }) => void,
   ) => Promise<string | null>;
   /** Optional `yt-dlp -g` resolver for Level 1 pre-download remote frame sampling. */
   resolveStreamUrlFn?: (
@@ -1430,7 +1430,7 @@ export async function runAutonomousMediaAcquisition(input: {
       };
       candKey: string;
       decision: MediaRelevanceDecision;
-      recoveryAttemptForAsset?: AutonomousRecoveryAttempt;
+      recoveryAttemptForAsset?: AutonomousAcquisitionAuditReport['recoveryAttempts'][number];
     }>
   >();
   const approvedSegmentByMediaId = new Map<string, string>();
@@ -1464,6 +1464,7 @@ export async function runAutonomousMediaAcquisition(input: {
   interface PendingVerificationAsset {
     candidateKey: string;
     segmentId: string;
+    segment: ScriptCoverageSegment;
     cand: MediaSourceCandidate;
     filePath: string;
     fileSizeBytes: number;
@@ -2311,7 +2312,9 @@ export async function runAutonomousMediaAcquisition(input: {
                           ...(task.segment.entities ? { expectedEntities: task.segment.entities } : {}),
                         },
                       );
-                      const analyses = Array.isArray(rawAnalyses) ? rawAnalyses : rawAnalyses.analyses;
+                      const analyses: DistributedFrameAnalysis[] = Array.isArray(rawAnalyses)
+                        ? rawAnalyses
+                        : (rawAnalyses as { analyses?: DistributedFrameAnalysis[] }).analyses ?? [];
                       const preDecision = await evaluateMediaRelevance(
                         {
                           mediaId: `pre_${acqSeq + 1}`,
@@ -2335,7 +2338,7 @@ export async function runAutonomousMediaAcquisition(input: {
                         },
                       );
                       const combinedSampleText = analyses
-                        .map((a) => `${a.description} ${a.detectedEntities.join(' ')}`)
+                        .map((a: DistributedFrameAnalysis) => `${a.description} ${(a.detectedEntities ?? []).join(' ')}`)
                         .join(' ');
                       const hasConflict = hasCrossWorkEntityConflict(
                         combinedSampleText,
@@ -2476,11 +2479,13 @@ export async function runAutonomousMediaAcquisition(input: {
               try {
                 const win = selectRelevantDownloadWindow(cand, task.segment);
                 const onDlProgress = input.deps.onDownloadProgress
-                  ? (p: { bytesDone: number; bytesTotal: number | null }) => {
+                  ? (p: { bytesDone: number; bytesTotal: number | null; pct?: number | null }) => {
                       const pct =
-                        p.bytesTotal && p.bytesTotal > 0
-                          ? Math.min(100, Math.round((p.bytesDone / p.bytesTotal) * 100))
-                          : null;
+                        p.pct !== undefined && p.pct !== null
+                          ? Math.min(100, Math.max(0, Math.round(p.pct)))
+                          : p.bytesTotal && p.bytesTotal > 0
+                            ? Math.min(100, Math.round((p.bytesDone / p.bytesTotal) * 100))
+                            : null;
                       input.deps.onDownloadProgress?.({
                         url: cand.url,
                         slotIndex: acqSeq,
@@ -2602,6 +2607,7 @@ export async function runAutonomousMediaAcquisition(input: {
               pendingVerificationAssets.set(pendingKey, {
                 candidateKey: candKey,
                 segmentId,
+                segment: task.segment,
                 cand,
                 filePath,
                 fileSizeBytes,
@@ -2801,7 +2807,7 @@ export async function runAutonomousMediaAcquisition(input: {
               });
               const hasSegmentIntervals = decision.matchedIntervals?.some((iv) => iv.segmentId === seg.segmentId) ?? false;
               const licenseAllowed =
-                item.cand.licenseDecision?.status !== 'rejected' &&
+                item.cand.licenseDecision?.status !== 'blocked' &&
                 (item.cand.licenseDecision?.status !== 'pending_human_review' ||
                   licensePolicy === 'assemble_with_rights_review');
               if (
@@ -3002,8 +3008,9 @@ export async function runAutonomousMediaAcquisition(input: {
           if (approvedAssets.some((a) => a.mediaId === entry.item.mediaId)) return false;
           const isStaticImg = /\.(jpe?g|png|webp)(\?|$)/i.test(entry.item.filePath) || /\.(jpe?g|png|webp)(\?|$)/i.test(entry.item.cand.url);
           const ivCount = entry.decision.matchedIntervals?.filter((iv) => iv.segmentId === segCov.segmentId).length ?? 0;
-          if (!isStaticImg && ivCount < 2) return false;
-          if (isStaticImg && ivCount < 1) return false;
+          // Relaxed: one verified interval is sufficient for contextual B-roll promotion.
+          // Previously required >=2 for video, which blocked most promotions in practice.
+          if (ivCount < 1) return false;
           const targetSeg = input.segments.find((s) => s.segmentId === segCov.segmentId);
           if (!targetSeg) return true;
           if (targetSeg.entities && targetSeg.entities.length > 0) {

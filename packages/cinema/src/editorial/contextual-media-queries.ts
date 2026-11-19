@@ -41,6 +41,64 @@ const PT_EN_GLOSSARY: Array<[RegExp, string]> = [
   [/torneio|exame/i, 'exam'],
   [/treinamento|treino/i, 'training'],
   [/abertura/i, 'opening'],
+  // One Piece vocabulary
+  [/haki(?:\s+(?:do\s+)?(?:armamento|observa[cç][aã]o|conquistador|rei))?/i, 'haki'],
+  [/yonko|imperador(?:es)?(?:\s+do\s+mar)?/i, 'yonko emperor of the sea'],
+  [/marinha|marines?\b/i, 'marines'],
+  [/shichibukai|guerreiro[s]?\s+dos?\s+mares?/i, 'shichibukai warlord'],
+  [/akuma\s*no\s*mi|fruta\s+do\s+diabo|devil\s+fruit/i, 'devil fruit akuma no mi'],
+  [/grand\s*line|grande\s+linha/i, 'grand line'],
+  [/novo\s+mundo|new\s+world/i, 'new world'],
+  [/marineford/i, 'marineford'],
+  [/wano(?:\s+kuni)?/i, 'wano kuni'],
+  [/fish[\s-]?man(?:\s+island)?|ilha\s+dos\s+homens[\s-]?peixe/i, 'fish-man island'],
+  [/pirata[s]?|kaizoku/i, 'pirates'],
+  [/tripula[cç][aã]o|nakama|crew/i, 'crew nakama'],
+  [/tesouro|one\s*piece/i, 'treasure one piece'],
+  [/golpe|attack|technique/i, 'attack technique'],
+  [/espada|sword|katana/i, 'sword katana'],
+  [/barba\s*(?:negra|branca)|blackbeard|whitebeard/i, 'blackbeard whitebeard'],
+  [/luffy|monkey\s+d\.\s+luffy/i, 'monkey d luffy'],
+  [/zoro|roronoa\s+zoro/i, 'roronoa zoro'],
+  [/sanji|vinsmoke\s+sanji/i, 'vinsmoke sanji'],
+  [/nami/i, 'nami'],
+  [/usopp/i, 'usopp'],
+  [/chopper|tony\s+tony/i, 'tony tony chopper'],
+  [/robin|nico\s+robin/i, 'nico robin'],
+  [/franky/i, 'franky'],
+  [/brook/i, 'brook'],
+  [/jinbe/i, 'jinbe'],
+  [/ace|portgas\s+d\.\s+ace/i, 'portgas d ace'],
+  [/shanks|akagami\s+no\s+shanks|ruivo/i, 'red hair shanks'],
+  [/mihawk|hawk\s*eyes/i, 'mihawk hawk eyes'],
+  [/kaido/i, 'kaido'],
+  [/big\s*mom|charlotte\s+linlin/i, 'big mom charlotte linlin'],
+  [/law|trafalgar\s+law/i, 'trafalgar law'],
+  [/doflamingo/i, 'doflamingo'],
+  [/crocodile/i, 'crocodile'],
+  [/enel/i, 'enel'],
+  [/arlong/i, 'arlong'],
+  [/smoker/i, 'smoker'],
+  [/coby|koby/i, 'koby'],
+  [/garp|monkey\s+d\.\s+garp/i, 'monkey d garp'],
+  [/sengoku/i, 'sengoku'],
+  [/rayleigh|silvers?\s+rayleigh/i, 'silvers rayleigh'],
+  [/roger|gol\s+d\.\s+roger/i, 'gol d roger'],
+  [/sab[oó]/i, 'sabo'],
+  [/dragon|monkey\s+d\.\s+dragon/i, 'monkey d dragon'],
+  [/revolucion[aá]rio|revolutionary/i, 'revolutionary army'],
+  [/gorosei|cinco\s+anci[aã]os/i, 'five elders gorosei'],
+  [/imu|im-sama/i, 'imu'],
+  [/void\s+century|s[eé]culo\s+vazio/i, 'void century'],
+  [/poneglyph|poneglifo/i, 'poneglyph'],
+  [/laugh\s*tale|raftel/i, 'laugh tale raftel'],
+  [/will\s+of\s+d|d\s+no\s+ishi/i, 'will of d'],
+  [/joy\s+boy/i, 'joy boy'],
+  [/gear\s*(?:second|third|fourth|fifth|2nd|3rd|4th|5th)/i, 'gear transformation'],
+  [/conqueror'?s?\s+haki|haki\s+do\s+conquistador/i, 'conquerors haki'],
+  [/observation\s+haki|haki\s+da\s+observa[cç][aã]o/i, 'observation haki'],
+  [/armament\s+haki|haki\s+do\s+armamento/i, 'armament haki'],
+  [/supreme\s+king|rei\s+dos\s+piratas/i, 'pirate king'],
 ];
 
 export function normalizeQueryText(text: string): string {
@@ -141,6 +199,19 @@ export function detectReferenceWorks(prompt: string): string[] {
     const raw = REFERENCE_NAME_PATTERN.exec(rest)?.[1] ?? '';
     const name = raw.replace(/[\s:–—-]+$/u, '').replace(/\s+(?:of|no|wo|the|x)$/i, '').trim();
     if (name.length >= 3 && name.split(/\s+/).length <= 6) out.push(name);
+  }
+  // Fallback for TOP N / ranking prompts: extract proper nouns after ":" separated by commas or " e ".
+  // Covers prompts like "TOP 5 jogos: Tomb Raider, Exodus e Fable" where no fan-of trigger exists.
+  if (out.length === 0 && /top\s*\d+|ranking|\b\d+\s+(?:jogos|filmes|animes|descobertas|produtos)/i.test(prompt)) {
+    const afterColon = prompt.split(':').slice(1).join(':');
+    if (afterColon) {
+      const segments = afterColon.split(/[,;]|\s+e\s+/i).map((s) => s.trim()).filter(Boolean);
+      for (const seg of segments) {
+        const match = REFERENCE_NAME_PATTERN.exec(seg);
+        const name = match?.[1]?.replace(/[\s:–—-]+$/u, '').replace(/\s+(?:of|no|wo|the|x)$/i, '').trim() ?? '';
+        if (name.length >= 3 && name.split(/\s+/).length <= 6) out.push(name);
+      }
+    }
   }
   return [...new Set(out)];
 }
@@ -291,6 +362,14 @@ export function buildContextualSceneQueries(input: ContextualQueryInput): string
       if (act) out.push(`${work} ${act} anime`);
       if (second) out.push(`${work} ${second} anime`);
       if (char) out.push(`${work} ${char} cena dublado`);
+      // Episode/arc-specific queries for deeper coverage
+      if (char && second) out.push(`${work} ${char} vs ${second} anime`);
+      if (char) out.push(`${work} ${char} backstory anime`);
+      if (char) out.push(`${work} ${char} reveal anime scene`);
+      if (act) out.push(`${work} ${act} moment anime`);
+      // Location/setting queries
+      out.push(`${work} anime iconic scene`);
+      out.push(`${work} anime emotional moment`);
       out.push(`${work} anime official trailer`, `${work} anime fight scene`, `${work} cena anime`);
     }
   } else if (input.domain === 'gaming') {

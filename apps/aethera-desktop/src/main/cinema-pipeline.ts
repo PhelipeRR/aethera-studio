@@ -96,6 +96,9 @@ import {
   runGateAPreAssembly,
   runGateBPreRender,
   runGateCPostRender,
+  runGateDEditorialQuality,
+  countPlannedSfxCues,
+  type GateDEditorialSceneInput,
   type QualityGateReport,
   fromFrames,
 } from '@neuralbridge/cinema';
@@ -291,7 +294,13 @@ export interface SceneAssemblyRecord {
 }
 
 /** Below this share of verified real footage across the whole video, the production pauses for human media review. */
+/**
+ * Minimum ratio of assembly-eligible footage to proceed without pausing for human review.
+ * When verified contextual B-roll exists (same universe, visually confirmed, labeled as editorial),
+ * the threshold drops to allow autonomous assembly with clearly identified non-literal coverage.
+ */
 export const MIN_REAL_FOOTAGE_RATIO_TO_ASSEMBLE = 0.35;
+export const MIN_REAL_FOOTAGE_RATIO_WITH_CONTEXTUAL_FALLBACKS = 0.2;
 
 type V1Clip = TimelineClip;
 
@@ -339,26 +348,42 @@ export function buildSceneMontage(input: {
   intervals: Array<{ mediaId: string; startSec: number; endSec: number }>;
   availableMediaIds: ReadonlySet<string>;
   allowGraphicRecovery: boolean;
+  /** Adaptive shot pacing cap (seconds). When multiple intervals exist, interleaves them cleanly instead of holding one shot too long. */
+  maxShotSec?: number;
 }): { clips: V1Clip[]; record: SceneAssemblyRecord } {
   const { clip } = input;
   const rate = Math.max(1, clip.timelineRange.duration.rate);
   const totalTicks = clip.timelineRange.duration.value;
   const totalSec = totalTicks / rate;
+  const maxShotSec = input.maxShotSec ? Math.max(3, input.maxShotSec) : Number.POSITIVE_INFINITY;
   const parts: V1Clip[] = [];
   const usedMedia: string[] = [];
   let cursorTicks = 0;
   let realSec = 0;
   const seen = new Set<string>();
-  for (const iv of input.intervals) {
-    if (!input.availableMediaIds.has(iv.mediaId)) continue;
+  const validIntervals = input.intervals.filter((iv) => {
+    if (!input.availableMediaIds.has(iv.mediaId)) return false;
     const key = `${iv.mediaId}:${iv.startSec.toFixed(2)}`;
-    if (seen.has(key)) continue;
+    if (seen.has(key) || iv.endSec - iv.startSec < 1) return false;
     seen.add(key);
+    return true;
+  });
+  // Interleave intervals across distinct mediaId sources when available, and cap single-shot holds to maxShotSec.
+  const pool = validIntervals.map((iv) => ({ ...iv }));
+  let lastMediaId = '';
+  while (pool.length > 0) {
     const remainingSec = (totalTicks - cursorTicks) / rate;
     if (remainingSec < 1) break;
+    const preferredIdx = pool.findIndex((iv) => iv.mediaId !== lastMediaId && iv.endSec - iv.startSec >= 1);
+    const idx = preferredIdx >= 0 ? preferredIdx : 0;
+    const iv = pool[idx]!;
     const ivSec = iv.endSec - iv.startSec;
-    if (ivSec < 1) continue;
-    const takeSec = Math.min(ivSec, remainingSec);
+    if (ivSec < 1) {
+      pool.splice(idx, 1);
+      continue;
+    }
+    const hasAnotherOption = pool.some((other, oi) => oi !== idx && other.endSec - other.startSec >= 1);
+    const takeSec = hasAnotherOption ? Math.min(ivSec, remainingSec, maxShotSec) : Math.min(ivSec, remainingSec);
     const takeTicks = Math.max(1, Math.round(takeSec * rate));
     const partId = parts.length === 0 ? clip.clipId : `${clip.clipId}_p${parts.length + 1}`;
     const baseEffects = clip.effects.filter((e) => e.kind !== 'allow_procedural');
@@ -371,6 +396,8 @@ export function buildSceneMontage(input: {
             kind: parts.length % 2 === 0 ? 'ken_burns_in' : 'ken_burns_pan',
             enabled: true,
             params: { zoom: 1.06, easing: 'ease_in_out' },
+            estimatedCostMs: 12,
+            fallbackMode: 'cpu_basic' as const,
           },
         ];
     parts.push({
@@ -390,8 +417,13 @@ export function buildSceneMontage(input: {
       effects: [...baseEffects, ...motionEffect],
     });
     if (!usedMedia.includes(iv.mediaId)) usedMedia.push(iv.mediaId);
+    lastMediaId = iv.mediaId;
     cursorTicks += takeTicks;
     realSec += takeTicks / rate;
+    iv.startSec += takeSec;
+    if (iv.endSec - iv.startSec < 1) {
+      pool.splice(idx, 1);
+    }
   }
   const leftoverTicks = totalTicks - cursorTicks;
   let recoverySec = 0;
@@ -572,6 +604,23 @@ export interface StagedPipelineDeps {
   } | null>;
 }
 
+/**
+ * Host callbacks the pipeline cannot run without: `onPackageReady` hands the assembled package to the Editor
+ * (registration + persistence) and `onRenderReady` publishes the MP4. Untyped hosts (.mjs harnesses) can omit them;
+ * without this check the omission only surfaced at `montagem`, after the whole acquisition budget was spent.
+ */
+const REQUIRED_HOST_CALLBACKS = ['onPackageReady', 'onRenderReady'] as const satisfies ReadonlyArray<keyof StagedPipelineDeps>;
+
+function assertRequiredHostCallbacks(deps: StagedPipelineDeps): void {
+  const invalid = REQUIRED_HOST_CALLBACKS.filter((name) => typeof (deps as Partial<StagedPipelineDeps>)[name] !== 'function');
+  if (invalid.length > 0) {
+    throw new TypeError(
+      `StagedCinemaPipeline: dependência(s) obrigatória(s) ausente(s) ou inválida(s): ${invalid.join(', ')}. ` +
+        'O host precisa fornecê-las como funções antes de iniciar uma produção.',
+    );
+  }
+}
+
 const LOCAL_MEDIA_EXT_RE = /\.(mp4|mov|webm|mkv|png|jpe?g|webp)$/i;
 
 function classifyContractRevisionStages(instruction: string): ProductionStageState[] {
@@ -693,6 +742,7 @@ export class StagedCinemaPipeline {
   readonly cache: CinemaSmartCache;
 
   constructor(private readonly deps: StagedPipelineDeps) {
+    assertRequiredHostCallbacks(deps);
     mkdirSync(deps.jobsDir, { recursive: true });
     mkdirSync(deps.mediaDir, { recursive: true });
     const baseDir = dirname(deps.jobsDir);
@@ -1426,6 +1476,9 @@ export class StagedCinemaPipeline {
             .map((s) => s.trim())
             .filter((s) => s.length >= 3 && s.length <= 60);
           if (extractedNames.length >= 2) {
+            const isGamingDossier =
+              nextInterpretation.domain === 'gaming' ||
+              /\b(jogo|jogos|game|games|gameplay|console|playstation|xbox|nintendo|steam)\b/i.test(job.prompt);
             const dossier: EditorialResearchDossier = {
               dossierId: `dossier_det_${createHash('sha1').update(job.prompt).digest('hex').slice(0, 8)}`,
               dossierHash: createHash('sha1').update(extractedNames.join('|')).digest('hex').slice(0, 12),
@@ -1436,10 +1489,14 @@ export class StagedCinemaPipeline {
               entities: extractedNames.map((name, idx) => ({
                 entityName: name,
                 workTitle: name,
-                role: 'obra_destaque',
+                role: isGamingDossier ? 'obra_destaque' : 'marco_tematico',
                 rankPosition: idx + 1,
-                verifiedFacts: [`${name} marcou época com seus gráficos e jogabilidade.`],
-                mechanicsOrEvents: [`gameplay de ${name}`],
+                verifiedFacts: isGamingDossier
+                  ? [`${name} marcou época com seus gráficos e jogabilidade.`]
+                  : [`${name} consolidou avanços históricos e registros visuais marcantes em sua área.`],
+                mechanicsOrEvents: isGamingDossier
+                  ? [`gameplay de ${name}`]
+                  : [`registros visuais reais e contexto histórico de ${name}`],
                 uncertainties: [],
                 sources: [{ title: `Referência ${name}`, kind: 'agent_synthesis' }],
               })),
@@ -1546,19 +1603,60 @@ export class StagedCinemaPipeline {
         });
       } else if (!job.editorialScript && job.allowDeterministicScriptFallback && job.researchDossier) {
         const dossier = job.researchDossier;
-        const entityBeats = dossier.entities.map((ent, idx) => ({
-          segmentId: `seg_${idx + 2}`,
-          beatId: `nbeat_${idx + 2}_progression`,
-          stage: (idx === dossier.entities.length - 1 ? 'climax' : 'progression') as NarrativeBeat['stage'],
-          title: ent.rankPosition ? `#${ent.rankPosition} — ${ent.entityName}` : ent.entityName,
-          spokenText:
-            ent.workTitle && ent.workTitle !== ent.entityName
-              ? `${ent.entityName} em ${ent.workTitle}: ${ent.mechanicsOrEvents[0] ?? ent.verifiedFacts[0] ?? ent.role}.`
-              : `${ent.entityName}: ${ent.mechanicsOrEvents[0] ?? ent.verifiedFacts[0] ?? ent.role}.`,
-          estimatedDurationSec: Math.max(4, Math.round(job.targetDurationSec / Math.max(2, dossier.entities.length + 2))),
-          approved: true,
-        }));
-        const fallbackIntroDur = Math.max(4, Math.round(job.targetDurationSec / Math.max(2, dossier.entities.length + 2)));
+        const lang = job.language ?? 'pt-BR';
+        const totalSegs = Math.max(2, dossier.entities.length + 2);
+        const perSegSec = Math.max(4, job.targetDurationSec / totalSegs);
+        const targetWordsPerSeg = Math.max(12, Math.round(perSegSec * 2.25));
+        const buildEntityLine = (ent: EditorialResearchDossier['entities'][number]) => {
+          const name = ent.entityName.trim();
+          const rawDetails = [...(ent.verifiedFacts ?? []), ...(ent.mechanicsOrEvents ?? []), ent.role]
+            .map((d) => (d ?? '').trim())
+            .filter(
+              (d) =>
+                d.length >= 8 &&
+                !/^(?:gameplay|cenas|imagens|video)\s+de\s+/i.test(d) &&
+                d.toLowerCase() !== name.toLowerCase(),
+            );
+          const uniqueDetails: string[] = [];
+          for (const d of rawDetails) {
+            if (!uniqueDetails.some((u) => u.toLowerCase() === d.toLowerCase())) uniqueDetails.push(d);
+          }
+          const lead = ent.workTitle && ent.workTitle !== name ? `${name}, em ${ent.workTitle},` : name;
+          const sentences: string[] = [];
+          if (uniqueDetails[0]) {
+            const first = uniqueDetails[0].replace(/\.+$/, '');
+            sentences.push(`${lead} se destaca por ${first.charAt(0).toLowerCase()}${first.slice(1)}.`);
+          } else {
+            sentences.push(`${lead} marcou sua geração com identidade visual própria e momentos memoráveis.`);
+          }
+          for (const extra of uniqueDetails.slice(1)) {
+            if (sentences.join(' ').split(/\s+/).length >= targetWordsPerSeg) break;
+            const clean = extra.replace(/\.+$/, '');
+            sentences.push(`${clean.charAt(0).toUpperCase()}${clean.slice(1)}.`);
+          }
+          if (sentences.join(' ').split(/\s+/).length < Math.max(12, targetWordsPerSeg - 3)) {
+            sentences.push(`A estética e o ritmo de ${name} ilustram por que essa obra permanece como referência até hoje.`);
+          }
+          return sentences.join(' ');
+        };
+        const entityNames = dossier.entities.map((e) => e.entityName).slice(0, 5);
+        const introText =
+          entityNames.length >= 2
+            ? `Hoje vamos explorar ${entityNames.join(', ')}, observando em cena o que torna cada um desses marcos visualmente inesquecível.`
+            : `Hoje vamos explorar ${dossier.workTitle}, destacando os momentos e detalhes visuais mais marcantes do tema.`;
+        const outroText = `Cada cena reforça por que esse tema continua relevante até hoje. Qual desses momentos mais chamou a sua atenção?`;
+        const entityBeats = dossier.entities.map((ent, idx) => {
+          const spokenText = buildEntityLine(ent);
+          return {
+            segmentId: `seg_${idx + 2}`,
+            beatId: `nbeat_${idx + 2}_progression`,
+            stage: (idx === dossier.entities.length - 1 ? 'climax' : 'progression') as NarrativeBeat['stage'],
+            title: ent.rankPosition ? `#${ent.rankPosition} — ${ent.entityName}` : ent.entityName,
+            spokenText,
+            estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(spokenText, lang))),
+            approved: true,
+          };
+        });
         job.editorialScript = buildEditorialScript({
           scriptId: `${job.projectId}_script`,
           source: 'deterministic_draft',
@@ -1570,8 +1668,8 @@ export class StagedCinemaPipeline {
               beatId: 'nbeat_1_hook',
               stage: 'hook',
               title: 'Introdução',
-              spokenText: `Hoje vamos relembrar ${dossier.entities.map((e) => e.entityName).slice(0, 5).join(', ')}.`,
-              estimatedDurationSec: fallbackIntroDur,
+              spokenText: introText,
+              estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(introText, lang))),
               approved: true,
             },
             ...entityBeats,
@@ -1580,31 +1678,57 @@ export class StagedCinemaPipeline {
               beatId: `nbeat_${entityBeats.length + 2}_resolution`,
               stage: 'resolution',
               title: 'Conclusão',
-              spokenText: `Qual desses clássicos marcou a sua história? Comente abaixo!`,
-              estimatedDurationSec: fallbackIntroDur,
+              spokenText: outroText,
+              estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(outroText, lang))),
               approved: true,
             },
           ],
         });
       }
       if (job.editorialScript && job.targetDurationSec > 0) {
-        const totalEstSec = job.editorialScript.segments.reduce((s, seg) => s + seg.estimatedDurationSec, 0);
-        if (totalEstSec > job.targetDurationSec * 1.05 && job.editorialScript.segments.length > 0) {
-          const perSegTargetSec = Math.max(3, (job.targetDurationSec * 1.04) / job.editorialScript.segments.length);
+        const lang = job.language ?? 'pt-BR';
+        // Measure real spoken duration from actual word count instead of trusting placeholder segment estimates.
+        const measuredSegments = job.editorialScript.segments.map((seg) => ({
+          ...seg,
+          estimatedDurationSec: Math.max(3, Math.round(estimateNarrationSec(seg.spokenText, lang))),
+        }));
+        const totalMeasuredSec = measuredSegments.reduce((s, seg) => s + seg.estimatedDurationSec, 0);
+        if (totalMeasuredSec < job.targetDurationSec * 0.85 && measuredSegments.length > 0 && job.researchDossier) {
+          const perSegTargetWords = Math.max(10, Math.round((job.targetDurationSec * 0.94 / measuredSegments.length) * 2.25));
+          const expanded = measuredSegments.map((seg, idx) => {
+            const words = seg.spokenText.trim().split(/\s+/).filter(Boolean);
+            if (words.length >= perSegTargetWords) return seg;
+            const ent = job.researchDossier?.entities[Math.max(0, idx - 1)];
+            const extraFact = ent?.verifiedFacts?.find((f) => !seg.spokenText.toLowerCase().includes(f.slice(0, 18).toLowerCase()))
+              ?? ent?.mechanicsOrEvents?.find((f) => !/^(?:gameplay|cenas)\s+de\s+/i.test(f) && !seg.spokenText.toLowerCase().includes(f.slice(0, 18).toLowerCase()));
+            const bridge = extraFact
+              ? `${seg.spokenText.replace(/\.+$/, '')}. ${extraFact.replace(/\.+$/, '')}.`
+              : `${seg.spokenText.replace(/\.+$/, '')}, revelando detalhes visuais que traduzem o impacto dessa passagem na tela.`;
+            return {
+              ...seg,
+              spokenText: bridge,
+              estimatedDurationSec: Math.max(3, Math.round(estimateNarrationSec(bridge, lang))),
+            };
+          });
+          job.editorialScript = { ...job.editorialScript, segments: expanded };
+        } else if (totalMeasuredSec > job.targetDurationSec * 1.05 && measuredSegments.length > 0) {
+          const perSegTargetSec = Math.max(3, (job.targetDurationSec * 1.04) / measuredSegments.length);
           const maxWordsPerSeg = Math.max(7, Math.floor(perSegTargetSec * 2.35));
           job.editorialScript = {
             ...job.editorialScript,
-            segments: job.editorialScript.segments.map((seg) => {
+            segments: measuredSegments.map((seg) => {
               const words = seg.spokenText.trim().split(/\s+/).filter(Boolean);
               const trimmedText =
                 words.length > maxWordsPerSeg ? `${words.slice(0, maxWordsPerSeg).join(' ').replace(/[,;:]$/, '')}.` : seg.spokenText;
               return {
                 ...seg,
                 spokenText: trimmedText,
-                estimatedDurationSec: Math.max(3, Math.round(estimateNarrationSec(trimmedText, job.language ?? 'pt-BR'))),
+                estimatedDurationSec: Math.max(3, Math.round(estimateNarrationSec(trimmedText, lang))),
               };
             }),
           };
+        } else {
+          job.editorialScript = { ...job.editorialScript, segments: measuredSegments };
         }
       }
       if (job.editorialScript && job.researchDossier) {
@@ -1669,7 +1793,11 @@ export class StagedCinemaPipeline {
       this.saveJob(job);
 
       const scenesForAcquisition = job.sceneDecupagem ?? [];
-      const multiWorkProduction = isMultiWorkProduction(nextInterpretation);
+      const multiWorkProduction =
+        isMultiWorkProduction(nextInterpretation) ||
+        nextInterpretation.workTitle.includes(' & ') ||
+        (job.researchDossier?.workTitle.includes(' & ') ?? false) ||
+        (job.researchDossier?.entities?.length ?? 0) >= 2;
       // Content domain of the project (anime/game/movie…) from the briefing interpretation, reconciled with the
       // semantic evidence of the prompt and the researched works. The narrative format (genre) never decides it.
       const projectDomainInference = resolveProjectDomain({
@@ -1764,7 +1892,7 @@ export class StagedCinemaPipeline {
                   // prefixing it to every subject/entity made searches and the identity gate look for a title
                   // that does not exist.
                   subject: multiWorkProduction
-                    ? `${(s.works ?? s.entities).slice(0, 2).join(' / ') || s.expectedEvent}${s.visualKeywords?.[0] ? ` — ${s.visualKeywords[0]}` : ''}`
+                    ? `${(s.entities.length > 0 ? s.entities : (s.works ?? []).flatMap((w) => w.split(/\s*&\s*/))).slice(0, 2).join(' / ') || s.expectedEvent}${s.visualKeywords?.[0] ? ` — ${s.visualKeywords[0]}` : ''}`
                     : s.entities[0]
                       ? `${s.workTitle} ${s.entities[0].replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim()}`
                       : s.expectedEvent,
@@ -1776,12 +1904,18 @@ export class StagedCinemaPipeline {
                     return work ? { work } : {};
                   })(),
                   entities: (() => {
+                    const sceneWorks = (s.works ?? []).flatMap((w) => w.split(/\s*&\s*/).map((p) => p.trim()).filter(Boolean));
+                    const dossierEntityNames = (job.researchDossier?.entities ?? []).map((e) => e.entityName).filter(Boolean);
                     const raw =
                       s.matchingCriteria.requiredEntities.length > 0
                         ? multiWorkProduction
-                          ? [...(s.works ?? []), ...s.matchingCriteria.requiredEntities]
+                          ? [...(s.entities.length > 0 ? s.entities : sceneWorks), ...s.matchingCriteria.requiredEntities]
                           : [s.workTitle, ...s.matchingCriteria.requiredEntities]
-                        : extractTopicEntities(`${multiWorkProduction ? '' : s.workTitle} ${s.entities.join(' ')} ${s.narrationText}`);
+                        : s.entities.length > 0
+                          ? s.entities
+                          : multiWorkProduction && dossierEntityNames.length > 0
+                            ? dossierEntityNames
+                            : extractTopicEntities(`${multiWorkProduction ? '' : s.workTitle} ${s.entities.join(' ')} ${s.narrationText}`);
                     const expanded = new Set<string>();
                     for (const item of raw) {
                       const clean = item.replace(/\([^)]*\)/g, '').trim();
@@ -1844,7 +1978,9 @@ export class StagedCinemaPipeline {
               const progressText =
                 progress.pct !== null && progress.bytesTotal
                   ? `${progress.pct}% (${doneMb} / ${(progress.bytesTotal / (1024 * 1024)).toFixed(1)} MB)`
-                  : `${doneMb} MB recebidos`;
+                  : progress.pct !== null
+                    ? `${progress.pct}%`
+                    : `${doneMb} MB recebidos`;
               job.message = `Baixando mídia "${shortLabel}": ${progressText}`;
               job.downloadProgress = {
                 label: shortLabel,
@@ -1883,6 +2019,7 @@ export class StagedCinemaPipeline {
             ...(baseDeps.ytDlpAcquireFn
               ? {
                   ytDlpAcquireFn: async (targetUrl, idx, dir, sig, downloadSection, onProgress) => {
+                    lastDownloadProgressEmitMs = 0;
                     job.message = `Iniciando download [slot ${idx + 1}]: ${targetUrl}`;
                     job.downloadProgress = {
                       label: `slot ${idx + 1} · ${targetUrl}`,
@@ -1891,7 +2028,12 @@ export class StagedCinemaPipeline {
                       bytesTotal: null,
                     };
                     this.deps.onProgress?.(job);
-                    return baseDeps.ytDlpAcquireFn!(targetUrl, idx, dir, sig, downloadSection, onProgress);
+                    try {
+                      return await baseDeps.ytDlpAcquireFn!(targetUrl, idx, dir, sig, downloadSection, onProgress);
+                    } finally {
+                      delete job.downloadProgress;
+                      this.deps.onProgress?.(job);
+                    }
                   },
                 }
               : {}),
@@ -2177,9 +2319,13 @@ export class StagedCinemaPipeline {
           // Partial completion: uncovered scenes are assembled with labeled graphic recovery and reported as pending.
           // Only when verified footage is too scarce to make a real video does the production stop for human review
           // (with the concrete alternatives in `autonomousAudit.sceneDiagnostics`).
+          const hasContextualFallbacks = (audit.coverageReport.contextualMediaDurationSec ?? 0) > 0;
+          const effectiveMinRatio = hasContextualFallbacks
+            ? MIN_REAL_FOOTAGE_RATIO_WITH_CONTEXTUAL_FALLBACKS
+            : MIN_REAL_FOOTAGE_RATIO_TO_ASSEMBLE;
           if (
             audit.unresolvedGapsForReview.length > 0 &&
-            (job.acquiredMedia.length === 0 || audit.coverageReport.coverageRatio < MIN_REAL_FOOTAGE_RATIO_TO_ASSEMBLE)
+            (job.acquiredMedia.length === 0 || audit.coverageReport.coverageRatio < effectiveMinRatio)
           ) {
             for (let gIdx = 0; gIdx < audit.unresolvedGapsForReview.length; gIdx += 1) {
               const gap = audit.unresolvedGapsForReview[gIdx]!;
@@ -2490,6 +2636,7 @@ export class StagedCinemaPipeline {
             intervals: remaining,
             availableMediaIds,
             allowGraphicRecovery: true,
+            maxShotSec: job.targetDurationSec <= 90 ? 5.5 : 8.5,
           });
           // Consume what this clip used so a later clip of the same scene never repeats the same source seconds.
           for (const part of clips) {
@@ -2541,7 +2688,7 @@ export class StagedCinemaPipeline {
           },
           speed: 1,
           approved: true,
-          effects: [{ effectId: `vfx_fx_${idx + 1}`, kind: v.effect, enabled: true, params: { sceneId: v.sceneId } }],
+          effects: [{ effectId: `vfx_fx_${idx + 1}`, kind: v.effect, enabled: true, params: { sceneId: v.sceneId }, estimatedCostMs: 6, fallbackMode: 'skip' }],
           keyframes: [],
         }));
         pkg = {
@@ -2886,7 +3033,103 @@ export class StagedCinemaPipeline {
         blackFramesCount: render.probe.blackFramesCount,
         clippingDetected: render.probe.truePeakDbtp !== null && render.probe.truePeakDbtp > -0.1,
       });
-      job.qualityGates = [...(job.qualityGates ?? []), gateC];
+      const buildGateDScenes = (currentPkg: CinemaProductionPackage): GateDEditorialSceneInput[] => {
+        const currentV1 = currentPkg.timeline.clips.filter((c) => c.trackId === 'v1');
+        return currentV1.map((c, idx) => {
+          const segId = sceneIdByClipId.get(c.clipId) ?? scenesForAcquisition[idx]?.sceneId ?? c.clipId;
+          const scDec = scenesForAcquisition.find((s) => s.sceneId === segId);
+          const scriptSeg = job.editorialScript?.segments.find((s) => s.segmentId === segId) ?? job.editorialScript?.segments[idx];
+          const dec = relevanceDecisions.find((d) => d.mediaId === c.mediaId);
+          const srcMedia = currentPkg.timeline.sourceMedia[c.mediaId];
+          const sRate = Math.max(1, c.sourceRange.start.rate);
+          const sStart = c.sourceRange.start.value / sRate;
+          const sDur = c.sourceRange.duration.value / Math.max(1, c.sourceRange.duration.rate);
+          return {
+            sceneId: segId,
+            clipId: c.clipId,
+            mediaId: c.mediaId,
+            startSec: c.timelineRange.start.value / Math.max(1, c.timelineRange.start.rate),
+            durationSec: c.timelineRange.duration.value / Math.max(1, c.timelineRange.duration.rate),
+            sourceStartSec: sStart,
+            sourceEndSec: sStart + sDur,
+            isStaticImage: srcMedia?.kind === 'image',
+            hasMotionEffect: c.effects.some((e) => e.enabled && (e.kind.startsWith('ken_burns') || e.kind.includes('zoom'))),
+            ...(scriptSeg?.spokenText ? { spokenText: scriptSeg.spokenText } : scDec?.narrationText ? { spokenText: scDec.narrationText } : {}),
+            ...(scDec?.entities ? { expectedEntities: scDec.entities } : {}),
+            ...(dec?.matchedEntities ? { matchedEntities: dec.matchedEntities } : {}),
+          };
+        });
+      };
+      let gateD = runGateDEditorialQuality({
+        requestedDurationSec: job.targetDurationSec,
+        actualDurationSec: render.probe.durationSec,
+        measuredNarrationDurationMs: render.audioFirstTimeline?.measuredNarrationDurationMs ?? Math.round(render.probe.durationSec * 1000),
+        scenes: buildGateDScenes(pkg),
+        sfxCount: resolvedAudioForGateB?.sfx?.length ?? 0,
+        plannedSfxCount: countPlannedSfxCues(pkg.audiovisualPlan),
+      });
+      // Localized editorial repair when Gate D detects pacing/repetition/desync defects without redoing global acquisition.
+      if (gateD.verdict === 'fail' && gateD.repairHints && gateD.repairHints.length > 0) {
+        const affectedSceneIds = new Set(gateD.repairHints.map((h) => h.sceneId));
+        const hasPacingOrRepetition = gateD.repairHints.some(
+          (h) => h.issueCode === 'sluggish_pacing' || h.issueCode === 'consecutive_visual_repetition',
+        );
+        if (hasPacingOrRepetition && pkg.timeline.clips.some((c) => c.trackId === 'v1')) {
+          const nextV1 = pkg.timeline.clips.map((c) => {
+            if (c.trackId !== 'v1') return c;
+            const segId = sceneIdByClipId.get(c.clipId) ?? c.clipId;
+            if (!affectedSceneIds.has(segId)) return c;
+            const hasMotion = c.effects.some((e) => e.enabled && (e.kind.startsWith('ken_burns') || e.kind.includes('zoom')));
+            return hasMotion
+              ? c
+              : {
+                  ...c,
+                  effects: [
+                    ...c.effects,
+                    {
+                      effectId: `fx_repair_motion_${c.clipId}`,
+                      kind: 'ken_burns_pan',
+                      enabled: true,
+                      params: { zoom: 1.08, easing: 'ease_in_out' },
+                      estimatedCostMs: 0,
+                      fallbackMode: 'skip' as const,
+                    },
+                  ],
+                };
+          });
+          pkg = { ...pkg, timeline: { ...pkg.timeline, clips: nextV1 } };
+          render = await renderRealCinemaMp4({
+            pkg,
+            outputDir: projectPaths.rendersDir,
+            fileName: `${job.projectId}.mp4`,
+            useNvenc: job.useNvenc,
+            requireRealMedia: job.acquiredMedia.length > 0,
+            voiceStudioVoiceId: job.voiceStudioVoiceId || '9190edfa',
+            ...(job.ttsProviderId ? { ttsProviderId: job.ttsProviderId } : {}),
+            ...(job.ttsVoiceId ? { ttsVoiceId: job.ttsVoiceId } : {}),
+            ...this.ttsCredentialsFor(job.ttsProviderId),
+            evolution: this.deps.evolutionCore,
+            prompt: job.prompt,
+            previewQuality: 'fast_preview',
+            renderTarget: 'preview',
+            ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
+            previewProfile: previewProfileForJob(job),
+            segmentCacheDir,
+            ...(realAudioAssets ? { realAudioAssets } : {}),
+            ...(job.genre ? { genre: job.genre } : {}),
+            ...(job.language ? { language: job.language } : {}),
+          });
+          gateD = runGateDEditorialQuality({
+            requestedDurationSec: job.targetDurationSec,
+            actualDurationSec: render.probe.durationSec,
+            measuredNarrationDurationMs: render.audioFirstTimeline?.measuredNarrationDurationMs ?? Math.round(render.probe.durationSec * 1000),
+            scenes: buildGateDScenes(pkg),
+            sfxCount: resolvedAudioForGateB?.sfx?.length ?? 0,
+            plannedSfxCount: countPlannedSfxCues(pkg.audiovisualPlan),
+          });
+        }
+      }
+      job.qualityGates = [...(job.qualityGates ?? []), gateC, gateD];
       const previewEvidence = this.recordStageEvidence(
         job.contract,
         'previa',
