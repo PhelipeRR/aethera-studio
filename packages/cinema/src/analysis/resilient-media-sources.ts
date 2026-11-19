@@ -1,7 +1,12 @@
 import { canonicalQueryKey } from '../editorial/contextual-media-queries.js';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
+import {
+  computeAdaptiveSampleTimestamps,
+  RemoteSamplingCache,
+  sampleRemoteFramesWithFfmpeg,
+} from './remote-frame-sampler.js';
 import {
   computeVisionDecisionCacheKey,
   evaluateMediaRelevance,
@@ -138,6 +143,17 @@ export interface ResilientAcquisitionDeps {
     downloadSection?: string,
     onProgress?: (progress: { bytesDone: number; bytesTotal: number | null }) => void,
   ) => Promise<string | null>;
+  /** Optional `yt-dlp -g` resolver for Level 1 pre-download remote frame sampling. */
+  resolveStreamUrlFn?: (
+    url: string,
+    signal?: AbortSignal,
+  ) => Promise<{
+    streamUrl: string | null;
+    httpHeaders?: Record<string, string>;
+    ageGated?: boolean;
+    latencyMs?: number;
+    error?: string;
+  }>;
   onDownloadProgress?: (progress: {
     url: string;
     slotIndex: number;
@@ -859,6 +875,30 @@ export interface VisionVerificationRecord {
   editorialDisposition?: 'approved' | 'contextual' | 'rejected';
 }
 
+export interface PipelineAcquisitionComparisonMetrics {
+  avgTimePerCandidateMs: number;
+  bytesTransferredPerCandidate: number;
+  totalBytesTransferred: number;
+  remoteSampleBytes: number;
+  downloadedVideoBytes: number;
+  remoteSampleRequests: number;
+  remoteSampleLatencyMs: number;
+  preDownloadCheckedCount: number;
+  preDownloadRejectionRate: number;
+  falsePositiveRate: number;
+  fallbackPartialDownloadCount: number;
+  totalAcquisitionMs: number;
+  semanticCoverageByScene: Array<{
+    segmentId: string;
+    subject: string;
+    coveredSec: number;
+    expectedSec: number;
+    coverageRatio: number;
+    distinctClipsCount: number;
+  }>;
+  distinctClipsPerScene: Record<string, number>;
+}
+
 export interface AutonomousAcquisitionAuditReport {
   roundsExecuted: number;
   elapsedMs: number;
@@ -956,6 +996,7 @@ export interface AutonomousAcquisitionAuditReport {
       estimatedRemainingMs: number;
     };
   };
+  pipelineMetrics?: PipelineAcquisitionComparisonMetrics;
 }
 
 async function runWithConcurrency<T>(
@@ -1124,6 +1165,9 @@ export function scoreCandidateRelevancePriority(
   }
   if (cand.origin === 'local_library') score += 3;
   if (cand.origin === 'sakugabooru' && !isGamingTopic) score += 5;
+  if (isGamingTopic && (cand.origin === 'steam' || cand.origin === 'igdb')) score += 4;
+  if (isGamingTopic && cand.origin === 'yt_dlp') score += 2;
+  if (isGamingTopic && cand.origin === 'internet_archive') score -= 2;
   if (/\b(fighting|beams|explosions|impact_frames|lightning)\b/i.test(text)) score += 3;
   if (/\b(logo|mural|poster|banner|cover)\b/i.test(text)) score -= 4;
   if (/\b(anime|cena|scene|clip|episodio|episode|dublado|legendado|luta|fight|transforma)\b/i.test(text)) {
@@ -1139,7 +1183,10 @@ export function scoreCandidateRelevancePriority(
     score -= 5;
   }
   if (cand.durationSec && cand.durationSec > 180) score -= 2;
-  if (cand.durationSec && cand.durationSec >= 8 && cand.durationSec <= 120) score += 1;
+  if (cand.durationSec && cand.durationSec > 600) score -= 4;
+  if (/\b(full\s*game|full\s*playthrough|longplay|100%\s*walkthrough)\b/i.test(text)) score -= 5;
+  if (/\b(official\s*trailer|trailer)\b/i.test(text)) score += 2;
+  if (cand.durationSec && cand.durationSec >= 8 && cand.durationSec <= 180) score += 2;
   return score;
 }
 
@@ -1193,7 +1240,9 @@ export function hasCrossWorkEntityConflict(
   allSegments: readonly ScriptCoverageSegment[],
 ): boolean {
   const normalizedCand = candText.toLowerCase();
-  const rawTargetParts = [targetSegment.subject, ...(targetSegment.entities ?? [])];
+  const rawTargetParts = [targetSegment.subject, ...(targetSegment.entities ?? [])].filter(
+    (s): s is string => typeof s === 'string' && s.trim().length > 0,
+  );
   const targetTokens = new Set(
     [
       ...rawTargetParts,
@@ -1210,6 +1259,7 @@ export function hasCrossWorkEntityConflict(
   for (const other of allSegments) {
     if (other.segmentId === targetSegment.segmentId) continue;
     const otherTokens = [other.subject, ...(other.entities ?? [])]
+      .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
       .map((s) => s.trim().toLowerCase())
       .filter((s) => s.length >= 5 && !targetTokens.has(s) && !/^(game|jogo|gameplay|trailer|intro|hook|cta|abertura|encerramento|climax)$/.test(s));
     if (otherTokens.some((tok) => normalizedCand.includes(tok))) {
@@ -1240,6 +1290,13 @@ export async function runAutonomousMediaAcquisition(input: {
     timestampsSec: number[],
     segment: ScriptSegmentExpectation,
   ) => Promise<DistributedFrameAnalysis[] | DistributedFrameAnalysisResult>;
+  /** Optional Level 1 pre-download batch analyzer for remotely sampled JPEG frames. */
+  analyzeRemoteFramesFn?: (
+    framePaths: string[],
+    timestampsSec: number[],
+    segment: ScriptSegmentExpectation,
+  ) => Promise<DistributedFrameAnalysis[] | DistributedFrameAnalysisResult>;
+  remoteSamplingCache?: RemoteSamplingCache;
   requireVisualVerification?: boolean;
   visionModelVersion?: string;
   evolution?: AetheraEvolutionCore;
@@ -1283,12 +1340,13 @@ export async function runAutonomousMediaAcquisition(input: {
   const maxQueriesTotal = Math.max(input.segments.length, input.limits?.maxQueriesTotal ?? Math.max(36, input.segments.length * 4));
   const maxCandidateDurationSec = input.limits?.maxCandidateDurationSec ?? 600;
   const maxSectionedCandidateDurationSec =
-    input.limits?.maxCandidateDurationSec ?? (input.deps.ytDlpAcquireFn ? 86_400 : maxCandidateDurationSec);
+    input.limits?.maxCandidateDurationSec ?? (input.deps.ytDlpAcquireFn ? 900 : maxCandidateDurationSec);
   const discoveryConcurrency = Math.max(1, input.limits?.discoveryConcurrency ?? 3);
   const acquisitionConcurrency = Math.max(1, input.limits?.acquisitionConcurrency ?? 2);
-  // Vision is the slowest stage (tens of seconds per asset): two assets in parallel halve the wall time without
-  // flooding a single provider.
-  const verificationConcurrency = Math.max(1, input.limits?.verificationConcurrency ?? 2);
+  // VisionRouter serializes all calls on visionGpuScheduler (FIFO lease), and its per-provider timer starts
+  // when route() is entered (including queue wait). Defaulting verificationConcurrency to 1 prevents queued items
+  // from exhausting their maxLatencyMs while waiting for the active vision call to finish.
+  const verificationConcurrency = Math.max(1, input.limits?.verificationConcurrency ?? 1);
   const discoveryBudgetRatio = Math.min(0.6, Math.max(0.15, input.limits?.discoveryBudgetRatio ?? 0.3));
   const acquisitionBudgetRatio = Math.min(0.6, Math.max(0.2, input.limits?.acquisitionBudgetRatio ?? 0.4));
   const roundReserveRatio = Math.min(0.5, Math.max(0, input.limits?.roundReserveRatio ?? 0.25));
@@ -1311,6 +1369,17 @@ export async function runAutonomousMediaAcquisition(input: {
   const candidatesByProvider: Record<string, number> = {};
   const seenCandidateKeys = new Set<string>();
   const seenFileHashes = new Set<string>();
+  const remoteSamplingCache = input.remoteSamplingCache ?? new RemoteSamplingCache();
+  let preDownloadCheckedCount = 0;
+  let preDownloadRejectedCount = 0;
+  let preDownloadPassedCount = 0;
+  let preDownloadFallbackCount = 0;
+  let postDownloadRejectedAfterPrePass = 0;
+  let remoteSampleBytes = 0;
+  let downloadedVideoBytes = 0;
+  let remoteSampleRequests = 0;
+  let remoteSampleLatencyMs = 0;
+  const preDownloadPassedKeys = new Set<string>();
   const downloadedTempPaths = new Set<string>();
   const rejectedCandidates: AutonomousAcquisitionAuditReport['rejectedCandidates'] = [];
   const rejectedSegmentByMediaId = new Map<string, string>();
@@ -2059,11 +2128,17 @@ export async function runAutonomousMediaAcquisition(input: {
         for (const list of discoveredBySegment.values()) {
           list.sort((a, b) => b.priorityScore - a.priorityScore);
         }
+        const prioritizedSegments = [...targetSegments].sort((a, b) => {
+          const ua = segMetricsMap.get(a.segmentId)?.usableDurationSec ?? 0;
+          const ub = segMetricsMap.get(b.segmentId)?.usableDurationSec ?? 0;
+          if ((ua === 0) !== (ub === 0)) return ua === 0 ? -1 : 1;
+          return ua / Math.max(1, a.expectedDurationSec) - ub / Math.max(1, b.expectedDurationSec);
+        });
         const acquisitionQueue: Array<{ segment: ScriptCoverageSegment; cand: MediaSourceCandidate; candKey: string }> = [];
-        const maxPerSegThisRound = round === 1 ? (targetSegments.length > 6 ? 1 : 2) : 2;
+        const maxPerSegThisRound = round === 1 ? (prioritizedSegments.length > 6 ? 1 : 2) : 2;
         const queuedCandKeys = new Set<string>();
         for (let rank = 0; rank < maxPerSegThisRound; rank += 1) {
-          for (const s of targetSegments) {
+          for (const s of prioritizedSegments) {
             const list = discoveredBySegment.get(s.segmentId) ?? [];
             // Next candidate of this segment not already queued by another segment sharing the same results.
             const entry = list.find((e, i) => i >= rank && !queuedCandKeys.has(`${e.cand.origin}:${e.cand.url}`));
@@ -2071,6 +2146,25 @@ export async function runAutonomousMediaAcquisition(input: {
               const candKey = `${entry.cand.origin}:${entry.cand.url}`;
               queuedCandKeys.add(candKey);
               acquisitionQueue.push({ segment: entry.segment, cand: entry.cand, candKey });
+            }
+          }
+        }
+        // In round >= 2, queue up to 2 distinct static images per uncovered/partial scene so long scenes fill cleanly
+        if (round >= 2) {
+          for (const s of prioritizedSegments) {
+            const list = discoveredBySegment.get(s.segmentId) ?? [];
+            const imgEntries = list
+              .filter(
+                (e) =>
+                  /\.(jpe?g|png|webp)(\?|$)/i.test(e.cand.url) &&
+                  !queuedCandKeys.has(`${e.cand.origin}:${e.cand.url}`) &&
+                  candidateStates.get(`${e.cand.origin}:${e.cand.url}`) === 'discovered',
+              )
+              .slice(0, 2);
+            for (const imgEntry of imgEntries) {
+              const candKey = `${imgEntry.cand.origin}:${imgEntry.cand.url}`;
+              queuedCandKeys.add(candKey);
+              acquisitionQueue.unshift({ segment: imgEntry.segment, cand: imgEntry.cand, candKey });
             }
           }
         }
@@ -2102,7 +2196,11 @@ export async function runAutonomousMediaAcquisition(input: {
           const acqSeq = downloadAttemptSeq;
           downloadAttemptSeq += 1;
           candidateStates.set(candKey, 'downloading');
-          const opSig = createScopedSignal(perDownloadTimeoutMs, perDownloadLimitMs);
+          const candTimeoutMs =
+            cand.acquisitionMethod === 'hls'
+              ? Math.min(perDownloadTimeoutMs, 45_000)
+              : perDownloadTimeoutMs;
+          const opSig = createScopedSignal(candTimeoutMs, perDownloadLimitMs);
           // A download aborted by its own timeout or the stage deadline is a timeout, not a user cancellation.
           const classifyOpFailure = (err: unknown) => {
             const base = classifyDownloadFailure(err);
@@ -2117,6 +2215,189 @@ export async function runAutonomousMediaAcquisition(input: {
           let filePath: string | null = null;
           let downloadFailure: { reasonCode: DownloadFailureReasonCode; detail: string } | null = null;
           try {
+            // Level 1 (Pre-Download): remote stream resolution (`yt-dlp -g`) + adaptive FFmpeg frame sampling
+            const isStaticCand = /\.(jpe?g|png|webp)(\?|$)/i.test(cand.url);
+            if (
+              !cand.localPath &&
+              !isStaticCand &&
+              cand.origin === 'yt_dlp' &&
+              input.deps.resolveStreamUrlFn &&
+              input.analyzeRemoteFramesFn
+            ) {
+              const win = selectRelevantDownloadWindow(cand, task.segment);
+              const intervalKey = win.sectionArg ?? '0-35';
+              const cachedPre = remoteSamplingCache.get(cand.url, intervalKey, cand.title);
+              if (cachedPre?.preDownloadVerdict === 'rejected_pre_download') {
+                preDownloadCheckedCount += 1;
+                preDownloadRejectedCount += 1;
+                candidateStates.set(candKey, 'rejected');
+                rejectedCandidates.push({
+                  mediaId: `pre_${acqSeq + 1}`,
+                  title: cand.title ?? cand.url,
+                  origin: cand.origin,
+                  rejectionCode: 'rejected_pre_download_cached',
+                  reason: cachedPre.reasons?.[0] ?? 'Rejeitado em pré-verificação remota (cache).',
+                });
+                return;
+              }
+              if (!cachedPre || cachedPre.preDownloadVerdict !== 'passed_pre_download') {
+                preDownloadCheckedCount += 1;
+                const streamRes = cachedPre?.streamUrl
+                  ? { streamUrl: cachedPre.streamUrl, ageGated: false, latencyMs: 0 }
+                  : await input.deps.resolveStreamUrlFn(cand.url, opSig);
+                if (streamRes.ageGated) {
+                  preDownloadRejectedCount += 1;
+                  candidateStates.set(candKey, 'failed');
+                  failedDownloads.push({
+                    segmentId: task.segment.segmentId,
+                    url: cand.url,
+                    title: cand.title ?? cand.url,
+                    origin: cand.origin,
+                    reasonCode: 'anti_bot',
+                    detail: 'Age-gate 18+ detectado em pré-verificação (sem bypass).',
+                  });
+                  remoteSamplingCache.set({
+                    mediaIdentifier: cand.url,
+                    intervalKey,
+                    ...(cand.title ? { sourceVersion: cand.title } : {}),
+                    streamUrl: null,
+                    preDownloadVerdict: 'rejected_pre_download',
+                    reasons: ['Age-gate 18+'],
+                  });
+                  return;
+                }
+                if (streamRes.streamUrl) {
+                  const remoteOutDir = join(input.mediaDir, '_remote_probe', `probe_${acqSeq + 1}`);
+                  const adaptiveTimestamps = computeAdaptiveSampleTimestamps({
+                    ...(cand.durationSec !== undefined ? { durationSec: cand.durationSec } : {}),
+                    ...(cand.chapters ? { chapters: cand.chapters } : {}),
+                    targetInterval: { startSec: win.startSec, endSec: win.endSec },
+                    ...(task.segment.entities ? { entities: task.segment.entities } : {}),
+                    query: task.segment.subject,
+                  }).slice(0, 4);
+                  const probe = await sampleRemoteFramesWithFfmpeg({
+                    streamUrl: streamRes.streamUrl,
+                    outDir: remoteOutDir,
+                    timestampsSec: adaptiveTimestamps,
+                    perFrameTimeoutMs: 12_000,
+                    maxTotalBytes: 8 * 1024 * 1024,
+                    ...(streamRes.httpHeaders ? { httpHeaders: streamRes.httpHeaders } : {}),
+                    signal: opSig,
+                  });
+                  remoteSampleBytes += probe.telemetry.bytesTransferred;
+                  remoteSampleRequests += probe.telemetry.requestsCount;
+                  remoteSampleLatencyMs += probe.telemetry.latencyMs + (streamRes.latencyMs ?? 0);
+                  if (!probe.telemetry.seekSupported || probe.framePaths.length < 2) {
+                    preDownloadFallbackCount += 1;
+                    remoteSamplingCache.set({
+                      mediaIdentifier: cand.url,
+                      intervalKey,
+                      ...(cand.title ? { sourceVersion: cand.title } : {}),
+                      streamUrl: streamRes.streamUrl,
+                      streamResolvedAtMs: Date.now(),
+                      preDownloadVerdict: 'fallback_partial_download',
+                      telemetry: probe.telemetry,
+                    });
+                  } else {
+                    try {
+                      const rawAnalyses = await input.analyzeRemoteFramesFn(
+                        probe.framePaths,
+                        probe.timestampsSec,
+                        {
+                          segmentId: task.segment.segmentId,
+                          prompt: input.prompt,
+                          narrationText: task.segment.narrationText,
+                          ...(input.genre ? { genre: input.genre } : {}),
+                          ...(task.segment.entities ? { expectedEntities: task.segment.entities } : {}),
+                        },
+                      );
+                      const analyses = Array.isArray(rawAnalyses) ? rawAnalyses : rawAnalyses.analyses;
+                      const preDecision = await evaluateMediaRelevance(
+                        {
+                          mediaId: `pre_${acqSeq + 1}`,
+                          uri: probe.framePaths[0]!,
+                          ...(cand.title ? { title: cand.title } : {}),
+                          ...(cand.description ? { description: cand.description } : {}),
+                          origin: cand.origin,
+                          durationSec: cand.durationSec ?? 30,
+                          projectId: input.projectId,
+                        },
+                        {
+                          segmentId: task.segment.segmentId,
+                          prompt: input.prompt,
+                          narrationText: task.segment.narrationText,
+                          ...(input.genre ? { genre: input.genre } : {}),
+                          ...(task.segment.entities ? { expectedEntities: task.segment.entities } : {}),
+                        },
+                        {
+                          analyzeFrames: async () => analyses,
+                          requireVisualVerification: true,
+                        },
+                      );
+                      const combinedSampleText = analyses
+                        .map((a) => `${a.description} ${a.detectedEntities.join(' ')}`)
+                        .join(' ');
+                      const hasConflict = hasCrossWorkEntityConflict(
+                        combinedSampleText,
+                        task.segment,
+                        input.segments,
+                      );
+                      const hasExpectedEntities = (task.segment.entities?.length ?? 0) > 0;
+                      const lackedPositiveVisualProof =
+                        hasExpectedEntities &&
+                        preDecision.verificationOutcome === 'needs_review' &&
+                        preDecision.matchedEntities.length === 0;
+                      if (
+                        hasConflict ||
+                        lackedPositiveVisualProof ||
+                        preDecision.verificationOutcome === 'rejected' ||
+                        preDecision.rejectionCode === 'wrong_anime_or_entity' ||
+                        preDecision.rejectionCode === 'wrong_game_or_topic' ||
+                        preDecision.rejectionCode === 'unrelated_real_person'
+                      ) {
+                        preDownloadRejectedCount += 1;
+                        candidateStates.set(candKey, 'rejected');
+                        rejectedCandidates.push({
+                          mediaId: `pre_${acqSeq + 1}`,
+                          title: cand.title ?? cand.url,
+                          origin: cand.origin,
+                          rejectionCode: preDecision.rejectionCode ?? 'rejected_pre_download',
+                          reason: `Pré-verificação remota descartou antes do download (${lackedPositiveVisualProof ? 'sem evidência visual da obra no trecho' : 'incompatível'}): ${preDecision.reason}`,
+                        });
+                        remoteSamplingCache.set({
+                          mediaIdentifier: cand.url,
+                          intervalKey,
+                          ...(cand.title ? { sourceVersion: cand.title } : {}),
+                          streamUrl: streamRes.streamUrl,
+                          streamResolvedAtMs: Date.now(),
+                          preDownloadVerdict: 'rejected_pre_download',
+                          reasons: [preDecision.reason],
+                          telemetry: probe.telemetry,
+                        });
+                        try { rmSync(remoteOutDir, { recursive: true, force: true }); } catch { /* ignore */ }
+                        return;
+                      }
+                      preDownloadPassedCount += 1;
+                      preDownloadPassedKeys.add(candKey);
+                      remoteSamplingCache.set({
+                        mediaIdentifier: cand.url,
+                        intervalKey,
+                        ...(cand.title ? { sourceVersion: cand.title } : {}),
+                        streamUrl: streamRes.streamUrl,
+                        streamResolvedAtMs: Date.now(),
+                        preDownloadVerdict: 'passed_pre_download',
+                        telemetry: probe.telemetry,
+                      });
+                    } catch {
+                      preDownloadFallbackCount += 1;
+                    }
+                  }
+                  try { rmSync(remoteOutDir, { recursive: true, force: true }); } catch { /* ignore */ }
+                } else {
+                  preDownloadFallbackCount += 1;
+                }
+              }
+            }
             if (cand.localPath && existsSync(cand.localPath)) {
               filePath = cand.localPath;
             } else if (cand.providerItem && input.deps.mediaProviders) {
@@ -2251,6 +2532,7 @@ export async function runAutonomousMediaAcquisition(input: {
               downloadedTempPaths.add(resolve(filePath));
             }
             const fileSizeBytes = statSync(filePath).size;
+            downloadedVideoBytes += fileSizeBytes;
             if (fileSizeBytes < 1024) {
               candidateStates.set(candKey, 'failed');
               failedDownloads.push({
@@ -2362,11 +2644,14 @@ export async function runAutonomousMediaAcquisition(input: {
           candidateStates.set(candKey, 'pending_visual_verification');
           return;
         }
-        const cacheTimestamps = [
-          0,
-          Number((item.durationSec * 0.5).toFixed(2)),
-          Number(Math.max(0, item.durationSec - 1).toFixed(2)),
-        ];
+        const cacheTimestamps = /\.(jpe?g|png|webp)(\?|$)/i.test(item.filePath)
+          ? [0]
+          : computeAdaptiveSampleTimestamps({
+              durationSec: item.durationSec,
+              ...(item.cand.chapters ? { chapters: item.cand.chapters } : {}),
+              ...(seg.entities ? { entities: seg.entities } : {}),
+              query: seg.subject,
+            });
         const visionCacheKey = computeVisionDecisionCacheKey({
           sha256: item.sha256,
           timestampsSec: cacheTimestamps,
@@ -2468,6 +2753,9 @@ export async function runAutonomousMediaAcquisition(input: {
 
           if (!canUseCachedDecision && input.analyzeFrames) visionDiagnostics.callsSucceeded += 1;
           pendingVerificationAssets.delete(pendingKey);
+          if (decision.verificationOutcome === 'rejected' && preDownloadPassedKeys.has(candKey)) {
+            postDownloadRejectedAfterPrePass += 1;
+          }
           relevanceDecisions.push(decision);
           const recoveryAttemptForAsset = findRecoveryAttempt(candKey, seg.segmentId);
           if (recoveryAttemptForAsset && !recoveryAttemptForAsset.acquiredMediaIds.includes(item.mediaId)) {
@@ -2707,14 +2995,25 @@ export async function runAutonomousMediaAcquisition(input: {
     let promotedContextualFallback = false;
     if (stageMode !== 'verify_pending_only') {
       for (const segCov of latestCoverage.segments) {
-        if (segCov.covered || segCov.usableDurationSec > 0) continue;
+        if (segCov.covered) continue;
         const pool = verifiedContextualFallbacksBySegment.get(segCov.segmentId);
         if (!pool || pool.length === 0) continue;
         const eligiblePool = pool.filter((entry) => {
+          if (approvedAssets.some((a) => a.mediaId === entry.item.mediaId)) return false;
+          const isStaticImg = /\.(jpe?g|png|webp)(\?|$)/i.test(entry.item.filePath) || /\.(jpe?g|png|webp)(\?|$)/i.test(entry.item.cand.url);
           const ivCount = entry.decision.matchedIntervals?.filter((iv) => iv.segmentId === segCov.segmentId).length ?? 0;
-          if (ivCount < 2) return false;
+          if (!isStaticImg && ivCount < 2) return false;
+          if (isStaticImg && ivCount < 1) return false;
           const targetSeg = input.segments.find((s) => s.segmentId === segCov.segmentId);
           if (!targetSeg) return true;
+          if (targetSeg.entities && targetSeg.entities.length > 0) {
+            const targetEnts = targetSeg.entities.map((e) => e.toLowerCase());
+            const hasEntityOverlap = entry.decision.matchedEntities.some((m) => {
+              const ml = m.toLowerCase();
+              return targetEnts.some((te) => te.includes(ml) || ml.includes(te));
+            });
+            if (!hasEntityOverlap) return false;
+          }
           const evidenceText = `${entry.item.cand.title ?? ''} ${entry.item.cand.description ?? ''} ${(entry.decision.visualEvidence ?? []).map((v) => v.description).join(' ')}`;
           return !hasCrossWorkEntityConflict(evidenceText, targetSeg, input.segments);
         });
@@ -2735,6 +3034,7 @@ export async function runAutonomousMediaAcquisition(input: {
         accepted: true,
         assemblyEligible: true,
         editorialStatus: 'approved_for_scene',
+        verificationOutcome: 'verified',
         eligibleSegmentIds: [...new Set([...(best.decision.eligibleSegmentIds ?? []), segCov.segmentId])],
         reason: `Apoio contextual verificado visualmente promovido para cena sem match literal: ${best.decision.reason}`,
       };
@@ -3146,5 +3446,48 @@ export async function runAutonomousMediaAcquisition(input: {
         };
       })(),
     },
+    pipelineMetrics: (() => {
+      const totalElapsedMs = Date.now() - startedAt;
+      const totalBytesTransferred = remoteSampleBytes + downloadedVideoBytes;
+      const totalChecked = Math.max(1, preDownloadCheckedCount + acquiredFilesCount);
+      const distinctClipsPerScene: Record<string, number> = {};
+      const semanticCoverageByScene = latestCoverage.segments.map((s) => {
+        const distinctClipsCount = new Set(s.relevantIntervals.map((iv) => iv.mediaId)).size;
+        distinctClipsPerScene[s.segmentId] = distinctClipsCount;
+        return {
+          segmentId: s.segmentId,
+          subject: s.subject,
+          coveredSec: Number(s.usableDurationSec.toFixed(2)),
+          expectedSec: Number(s.expectedDurationSec.toFixed(2)),
+          coverageRatio:
+            s.expectedDurationSec > 0
+              ? Number(Math.min(1, s.usableDurationSec / s.expectedDurationSec).toFixed(2))
+              : 0,
+          distinctClipsCount,
+        };
+      });
+      return {
+        avgTimePerCandidateMs: Math.round(totalElapsedMs / totalChecked),
+        bytesTransferredPerCandidate: Math.round(totalBytesTransferred / totalChecked),
+        totalBytesTransferred,
+        remoteSampleBytes,
+        downloadedVideoBytes,
+        remoteSampleRequests,
+        remoteSampleLatencyMs,
+        preDownloadCheckedCount,
+        preDownloadRejectionRate:
+          preDownloadCheckedCount > 0
+            ? Number((preDownloadRejectedCount / preDownloadCheckedCount).toFixed(3))
+            : 0,
+        falsePositiveRate:
+          preDownloadPassedCount > 0
+            ? Number((postDownloadRejectedAfterPrePass / preDownloadPassedCount).toFixed(3))
+            : 0,
+        fallbackPartialDownloadCount: preDownloadFallbackCount,
+        totalAcquisitionMs: totalElapsedMs,
+        semanticCoverageByScene,
+        distinctClipsPerScene,
+      };
+    })(),
   };
 }

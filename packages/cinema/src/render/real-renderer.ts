@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CinemaProductionPackage } from '../index.js';
@@ -93,6 +94,7 @@ export interface RealRenderInput {
   /** Procedural formant audio is never accepted silently; opt in only for explicit technical fixtures. */
   allowProceduralVoiceFallback?: boolean;
   /** Scene Grounding selections are applied before clip specs are read; the Audio-First clock remains authoritative. */
+  useVelix?: boolean;
   brollSelections?: readonly BrollTimelineSelection[];
   /** Measured word timestamps on the final Audio-First clock. Caption rendering never invents or stretches them. */
   captionWords?: readonly CaptionWord[];
@@ -801,6 +803,13 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
   });
   const minClipDur = Math.min(...clipSpecs.map((s) => s.effectiveDur));
   const xfadeDur = Number(Math.min(0.4, minClipDur * 0.28).toFixed(2));
+  if (clipSpecs.length > 1 && xfadeDur > 0) {
+    // Compensate xfade transition overlap so the concatenated MP4 preserves the planned timeline duration (e.g. 60s).
+    for (let i = 0; i < clipSpecs.length - 1; i += 1) {
+      const spec = clipSpecs[i];
+      if (spec) spec.effectiveDur = Number((spec.effectiveDur + xfadeDur).toFixed(2));
+    }
+  }
   const plannedVideoDur = Number(
     (
       clipSpecs.reduce((acc, s) => acc + s.effectiveDur, 0) -
@@ -965,6 +974,27 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     'Encerramento',
   ];
 
+  const velixKit = (() => {
+    const candidates = [
+      process.env['NB_VELIX_DIR'],
+      join(process.cwd(), '.claude', 'skills', 'motionvelix'),
+      join(homedir(), '.claude', 'skills', 'motionvelix'),
+    ].filter((p): p is string => Boolean(p));
+    for (const root of candidates) {
+      const renderScript = join(root, 'engine', 'render.mjs');
+      const overlayTemplate = join(root, 'templates', 'aethera-cinema-overlay.html');
+      if (existsSync(renderScript) && existsSync(overlayTemplate)) {
+        return { root, renderScript, overlayTemplate };
+      }
+    }
+    return null;
+  })();
+  const useVelixOverlay =
+    input.useVelix !== false &&
+    !isTechnicalSample &&
+    measuredCaptionWords.length > 0 &&
+    velixKit !== null;
+
   for (let i = 0; i < clipSpecs.length; i += 1) {
     const spec = clipSpecs[i];
     if (!spec) continue;
@@ -1016,6 +1046,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     const hasRealFootage = Boolean(spec.sourceUri);
     const isGenericShotLabel = /^shot_\d+$/i.test(rawTitle) || /^Cena\s+\d+$/i.test(rawTitle);
     const hideTitle =
+      useVelixOverlay ||
       (spec.clip?.effects?.some((e) => e.kind === 'hide_title' && e.enabled) ?? false) ||
       (hasRealFootage && isGenericShotLabel);
     const headlineSize = Math.round((isDiscrete ? 22 : directives?.elaborateMotionGraphics ? 36 : 34) * baseScale);
@@ -1023,7 +1054,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     const lowerBoxHeight = Math.round((hasRealFootage ? 52 : isDiscrete ? 82 : 130) * baseScale);
     // Place scene label badge at the top when captions occupy the bottom safe zone to avoid text overlap
     const hasCaptionsOverlay = measuredCaptionWords.length > 0 || subtitleClips.length > 0;
-    const lowerBoxY = hasCaptionsOverlay && hasRealFootage
+    const lowerBoxY = hasCaptionsOverlay
       ? Math.max(16, Math.round((targetHeight * safeArea.top) / 100))
       : Math.max(0, targetHeight - safeBottom - lowerBoxHeight);
     const lowerBoxWidth = Math.max(1, targetWidth - safeLeft - safeRight);
@@ -1136,6 +1167,8 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
           targetWidth,
           targetHeight,
           renderTarget,
+          blackCleanV1: true,
+          useVelixOverlay,
         }),
       )
       .digest('hex');
@@ -1186,6 +1219,101 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       'veryfast',
       outScene,
     ]);
+
+    // Guard against internal black fades inside real footage clips (e.g. game Act Clear fades).
+    if (hasRealFootage && !isImageSource && !input.injectRealBlackFrameDefect) {
+      try {
+        const bdRes = await execFileAsync('ffmpeg', [
+          '-hide_banner',
+          '-nostats',
+          '-i',
+          outScene,
+          '-vf',
+          'blackdetect=d=0.15:pix_th=0.10',
+          '-an',
+          '-f',
+          'null',
+          '-',
+        ]);
+        const bdMatch = /black_start:([0-9.]+)\s+black_end:([0-9.]+)\s+black_duration:([0-9.]+)/.exec(bdRes.stderr ?? '');
+        if (bdMatch) {
+          const blackStart = Number(bdMatch[1]);
+          const blackEnd = Number(bdMatch[2]);
+          let nextStart = sourceRangeStartSec;
+          let nextDur = sourceRangeDurationSec;
+          let shouldReRender = false;
+
+          if (sourceRange && blackStart >= 0.6 && blackStart < sourceRangeDurationSec) {
+            // Black fade near end of looped interval: trim interval before the fade
+            nextDur = Math.max(0.5, blackStart - 0.1);
+            shouldReRender = true;
+          } else if (blackEnd > 0) {
+            // Black fade at/near start: advance start past the black segment
+            const shift = blackEnd + 0.15;
+            nextStart = (sourceRange ? sourceRangeStartSec : trimStartSec) + shift;
+            if (sourceRange && sourceRangeDurationSec > shift + 0.5) {
+              nextDur = sourceRangeDurationSec - shift;
+            }
+            shouldReRender = true;
+          }
+
+          if (shouldReRender) {
+            const nextLoopFrames = Math.max(1, Math.round(nextDur * sourceFps));
+            const nextRangeFilter = sourceRange
+              ? `trim=start=${nextStart.toFixed(3)}:duration=${nextDur.toFixed(3)},setpts=PTS-STARTPTS,loop=loop=-1:size=${nextLoopFrames}:start=0,setpts=N/FRAME_RATE/TB`
+              : '';
+            const nextVf = [
+              nextRangeFilter,
+              baseFilter,
+              ...transformFilters,
+              motionBar,
+              lowerBox,
+              ...(hideTitle
+                ? []
+                : hasRealFootage
+                  ? [`drawtext=text='${headline}'${resolveFontOption()}:expansion=none:x=${safeLeft + Math.round(32 * baseScale)}:y=${headlineY}:fontsize=${headlineSize}:fontcolor=white`]
+                  : [
+                      `drawtext=text='${headline}'${resolveFontOption()}:expansion=none:x=${safeLeft + Math.round(32 * baseScale)}:y=${headlineY}:fontsize=${headlineSize}:fontcolor=white`,
+                      `drawtext=text='${subline}'${resolveFontOption()}:expansion=none:x=${safeLeft + Math.round(32 * baseScale)}:y=${sublineY}:fontsize=${sublineSize}:fontcolor=0xf59e0b`,
+                    ]),
+              `vignette=PI/6`,
+              colorFilterChain,
+              blackOverlay.replace(/^,/, ''),
+            ]
+              .filter(Boolean)
+              .join(',');
+            const nextInputArgs = nextRangeFilter
+              ? ['-i', spec.sourceUri!]
+              : [
+                  ...(nextStart > 0 ? ['-ss', String(nextStart)] : []),
+                  '-stream_loop',
+                  '-1',
+                  '-t',
+                  String(spec.effectiveDur * Math.max(0.25, spec.clip?.speed ?? 1) + 0.5),
+                  '-i',
+                  spec.sourceUri!,
+                ];
+            await execFileAsync('ffmpeg', [
+              '-y',
+              ...nextInputArgs,
+              '-vf',
+              nextVf,
+              '-t',
+              String(spec.effectiveDur),
+              '-c:v',
+              'libx264',
+              '-pix_fmt',
+              'yuv420p',
+              '-preset',
+              'veryfast',
+              outScene,
+            ]);
+          }
+        }
+      } catch {
+        // Non-fatal: keep original scene render if blackdetect probe fails
+      }
+    }
     const tmpCachePath = `${cachedScenePath}.tmp`;
     copyFileSync(outScene, tmpCachePath);
     renameSync(tmpCachePath, cachedScenePath);
@@ -1241,9 +1369,97 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     ]);
   }
 
-  // 2b. Burn measured word captions with libass. This is deliberately after xfade: the ASS clock is the
-  // measured Audio-First clock, so scene edits do not cause a second, estimated caption clock.
-  if (smartCaptionArtifact && smartCaptionCachePath) {
+  // 2b. Render animated captions, scene badges & SFX with MotionVelix (--alpha) when available, else libass.
+  let velixOverlaySfxWav: string | null = null;
+  let velixApplied = false;
+  if (useVelixOverlay && velixKit) {
+    try {
+      const velixOverlayJson = join(workDir, 'velix_overlay.json');
+      const velixOverlayMov = join(workDir, 'velix_overlay.mov');
+      const velixVideoPath = join(workDir, 'video_velix_composited.mp4');
+      const lowers: Array<{ at: number; dur: number; nome: string; cargo?: string }> = [];
+      let sceneCursorSec = 0;
+      let prevBadgeTitle = '';
+      for (let i = 0; i < clipSpecs.length; i += 1) {
+        const spec = clipSpecs[i];
+        if (!spec) continue;
+        const title = renderedHeadlines[i] ?? '';
+        const isGeneric = /^shot_\d+$/i.test(title) || /^Cena\s+\d+$/i.test(title);
+        if (title && !isGeneric && title !== prevBadgeTitle) {
+          lowers.push({
+            at: Number((sceneCursorSec + 0.15).toFixed(2)),
+            dur: Number(Math.min(3.5, Math.max(1.6, spec.effectiveDur - 0.5)).toFixed(2)),
+            nome: title,
+          });
+          prevBadgeTitle = title;
+        }
+        sceneCursorSec += Math.max(0.5, spec.effectiveDur - (i < clipSpecs.length - 1 ? xfadeDur : 0));
+      }
+      const totalDurSec = Number((totalDurMs / 1000).toFixed(2));
+      writeFileSync(
+        velixOverlayJson,
+        JSON.stringify({
+          w: targetWidth,
+          h: targetHeight,
+          fps: targetFps,
+          dur: totalDurSec,
+          theme: 't-roxo-neon',
+          style: 'destaque',
+          progress: true,
+          keywords: input.captionKeywords ?? [],
+          words: measuredCaptionWords.map((w) => ({
+            w: w.text,
+            s: Number((w.startMs / 1000).toFixed(3)),
+            e: Number((w.endMs / 1000).toFixed(3)),
+          })),
+          lowers,
+        }),
+        'utf8',
+      );
+      await execFileAsync(
+        'node',
+        [
+          velixKit.renderScript,
+          velixKit.overlayTemplate,
+          velixOverlayMov,
+          '--alpha',
+          '--mb',
+          '2',
+          '--data',
+          velixOverlayJson,
+        ],
+        { timeout: 240_000, windowsHide: true },
+      );
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-i',
+        rawVideoPath,
+        '-i',
+        velixOverlayMov,
+        '-filter_complex',
+        '[0:v][1:v]overlay=0:0:shortest=1[vout]',
+        '-map',
+        '[vout]',
+        '-c:v',
+        'libx264',
+        '-pix_fmt',
+        'yuv420p',
+        '-preset',
+        'veryfast',
+        velixVideoPath,
+      ]);
+      copyFileSync(velixVideoPath, rawVideoPath);
+      const candidateSfx = velixOverlayMov.replace(/\.mov$/i, '.sfx.wav');
+      if (existsSync(candidateSfx) && statSync(candidateSfx).size > 128) {
+        velixOverlaySfxWav = candidateSfx;
+      }
+      velixApplied = true;
+    } catch {
+      velixApplied = false;
+    }
+  }
+
+  if (!velixApplied && smartCaptionArtifact && smartCaptionCachePath) {
     const subVideoPath = join(workDir, 'video_smart_captioned.mp4');
     await execFileAsync('ffmpeg', [
       '-y',
@@ -1465,6 +1681,26 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     '1',
     ambienceStemPath,
   ]);
+  if (velixOverlaySfxWav && existsSync(velixOverlaySfxWav)) {
+    const rawWithVelixSfx = join(workDir, 'audio_master_velix_sfx.wav');
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-i',
+      rawAudioMixPath,
+      '-i',
+      velixOverlaySfxWav,
+      '-filter_complex',
+      '[1:a]aresample=48000,aformat=sample_rates=48000:channel_layouts=stereo,volume=-8dB[vsfx];[0:a][vsfx]amix=inputs=2:duration=first:normalize=0[aout]',
+      '-map',
+      '[aout]',
+      '-ar',
+      '48000',
+      '-ac',
+      '2',
+      rawWithVelixSfx,
+    ]);
+    copyFileSync(rawWithVelixSfx, rawAudioMixPath);
+  }
 
   // 2-pass measured EBU R128 loudness normalization to hit exact targetLufs (-14.0 LUFS) and targetTp (-1.0 dBTP)
   let twoPassApplied = false;

@@ -363,7 +363,7 @@ export async function extractVerificationFrames(
   let lastError: unknown = null;
   for (let i = 0; i < timestampsSec.length; i += 1) {
     const ts = Math.max(0, timestampsSec[i] ?? 0);
-    const outPath = join(framesDir, `frame_${String(i + 1).padStart(2, '0')}_${ts}s.png`);
+    const outPath = join(framesDir, `frame_${String(i + 1).padStart(2, '0')}_${ts}s.jpg`);
     try {
       await execFileAsync('ffmpeg', [
         '-y',
@@ -371,8 +371,12 @@ export async function extractVerificationFrames(
         String(ts),
         '-i',
         mp4Path,
+        '-vf',
+        "scale='min(640,iw)':-2",
         '-frames:v',
         '1',
+        '-q:v',
+        '4',
         outPath,
       ]);
       if (existsSync(outPath)) {

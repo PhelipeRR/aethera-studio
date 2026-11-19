@@ -118,7 +118,8 @@ export class SteamAdapter implements MediaProviderAdapter {
       provenance: { provider: 'steam' as const, providerItemId, retrievedAt, apiEndpoint, subject: { gameTitle, gameId: String(appId), publisher: publishers } },
       tags: [gameTitle],
     });
-    const out: ProviderMediaItem[] = [];
+    const videos: ProviderMediaItem[] = [];
+    const images: ProviderMediaItem[] = [];
     if (kinds.has('video')) {
       for (const m of d.movies ?? []) {
         const direct = m.mp4?.max ?? m.mp4?.['480'];
@@ -127,8 +128,8 @@ export class SteamAdapter implements MediaProviderAdapter {
         if (!acquisition) continue;
         const title = `${gameTitle} — ${m.name ?? 'Trailer'}`;
         const cls = classifyProviderItem({ provider: 'steam', hint: 'steam_movie', kind: 'video', title: m.name ?? 'Trailer', officialPublishers: publishers });
-        out.push({
-          ...base(`movie_${m.id ?? out.length}`, 'appdetails.movies'),
+        videos.push({
+          ...base(`movie_${m.id ?? videos.length}`, 'appdetails.movies'),
           kind: 'video',
           title,
           ...(m.thumbnail ? { previewUrl: m.thumbnail } : {}),
@@ -145,8 +146,8 @@ export class SteamAdapter implements MediaProviderAdapter {
       for (const s of d.screenshots ?? []) {
         if (!s.path_full) continue;
         const cls = classifyProviderItem({ provider: 'steam', hint: 'steam_screenshot', kind: 'image', title: gameTitle });
-        out.push({
-          ...base(`ss_${appId}_${s.id ?? out.length}`, 'appdetails.screenshots'),
+        images.push({
+          ...base(`ss_${appId}_${s.id ?? images.length}`, 'appdetails.screenshots'),
           kind: 'image',
           title: `${gameTitle} — screenshot ${(s.id ?? 0) + 1}`,
           ...(s.path_thumbnail ? { previewUrl: s.path_thumbnail } : {}),
@@ -161,7 +162,7 @@ export class SteamAdapter implements MediaProviderAdapter {
       }
       if (d.header_image) {
         const cls = classifyProviderItem({ provider: 'steam', hint: 'steam_store_art', kind: 'image', title: gameTitle });
-        out.push({
+        images.push({
           ...base(`header_${appId}`, 'appdetails.header_image'),
           kind: 'image',
           title: `${gameTitle} — arte da loja`,
@@ -175,7 +176,8 @@ export class SteamAdapter implements MediaProviderAdapter {
         });
       }
     }
-    return out;
+    // Keep top trailers first while ensuring official screenshots fit inside the first page (perPage=8).
+    return [...videos.slice(0, 3), ...images.slice(0, 4), ...videos.slice(3), ...images.slice(4)];
   }
 
   healthCheck(signal?: AbortSignal) {

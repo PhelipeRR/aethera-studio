@@ -462,8 +462,9 @@ export function buildMediaRecoveryPlan(input: {
         );
       } else if (isGamingContext) {
         candidates.push(
-          { query: `${core} ${event} gameplay no commentary`.trim(), strategy: 'event_specific' },
-          { query: `${core} official trailer gameplay`.trim(), strategy: 'alternative_source' },
+          { query: `${core} official trailer`.trim(), strategy: 'preferred' },
+          { query: `${core} ${event} gameplay showcase`.trim(), strategy: 'event_specific' },
+          { query: `${core} gameplay 60fps`.trim(), strategy: 'alternative_source' },
           { query: `${core} gameplay`.trim(), strategy: 'broader_context' },
         );
       } else {
@@ -708,11 +709,15 @@ export function planMediaCoverage(input: {
         // scene of that work, as long as this scene does not narrate a specific event the clip was never checked for.
         // The unused-interval pool below keeps each source second from counting twice.
         const sharesWork =
-          decision.correspondenceLevel === 'exact_match' &&
           decision.visualVerificationStatus === 'visually_verified' &&
-          (asset.relevantToEntities ?? decision.matchedEntities).some((e) => entities.includes(e));
+          (asset.relevantToEntities ?? decision.matchedEntities).some(
+            (e) =>
+              e.trim().length >= 5 &&
+              !/^(super|game|jogo|part|edition|ultimate|classic|retro|world|land|city|fundo)$/i.test(e.trim()) &&
+              entities.some((segEnt) => segEnt.toLowerCase() === e.toLowerCase()),
+          );
         if (sharesWork && !expectation.requiresSpecificEventVisual) return true;
-        return decision.correspondenceLevel === 'contextual_support' && !expectation.requiresSpecificEventVisual;
+        return false;
       }
       if (!asset.relevantToEntities || asset.relevantToEntities.length === 0) {
         return !input.requireRelevanceApproval || entities.length === 0;

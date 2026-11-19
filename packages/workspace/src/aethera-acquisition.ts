@@ -30,7 +30,8 @@ export function parseYtDlpInfo(line: string): YtDlpVideoInfo | null {
   let raw: Record<string, unknown>;
   try { raw = JSON.parse(line) as Record<string, unknown>; } catch { return null; }
   const id = typeof raw['id'] === 'string' ? raw['id'] : null;
-  const url = typeof raw['webpage_url'] === 'string' ? raw['webpage_url'] : null;
+  const rawUrl = typeof raw['webpage_url'] === 'string' ? raw['webpage_url'] : typeof raw['url'] === 'string' ? raw['url'] : null;
+  const url = rawUrl && /^https?:\/\//i.test(rawUrl) ? rawUrl : id ? `https://www.youtube.com/watch?v=${id}` : null;
   const title = typeof raw['title'] === 'string' ? raw['title'] : null;
   if (!id || !url || !title || !/^https?:\/\//i.test(url)) return null;
   const formats = Array.isArray(raw['formats']) ? (raw['formats'] as Array<Record<string, unknown>>) : [];
@@ -56,8 +57,18 @@ export function parseYtDlpInfo(line: string): YtDlpVideoInfo | null {
   };
 }
 
-async function ytDlpJson(ytDlp: YtDlpCommand, targets: string[], signal?: AbortSignal): Promise<YtDlpVideoInfo[]> {
-  const args = [...ytDlp.prefix, '-j', '--skip-download', '--no-warnings', '--no-playlist', '--ignore-errors', '--', ...targets];
+async function ytDlpJson(ytDlp: YtDlpCommand, targets: string[], signal?: AbortSignal, flatSearch = false): Promise<YtDlpVideoInfo[]> {
+  const args = [
+    ...ytDlp.prefix,
+    '-j',
+    ...(flatSearch ? ['--flat-playlist'] : []),
+    '--skip-download',
+    '--no-warnings',
+    '--no-playlist',
+    '--ignore-errors',
+    '--',
+    ...targets,
+  ];
   const stdout = await new Promise<string>((done, fail) => {
     execFile(ytDlp.command, args, { windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 180_000, env: { ...process.env, PYTHONUTF8: '1' }, ...(signal ? { signal } : {}) }, (error, out, err) => {
       if (signal?.aborted) return fail(new Error('cancelled: consulta interrompida.'));
@@ -72,14 +83,14 @@ async function ytDlpJson(ytDlp: YtDlpCommand, targets: string[], signal?: AbortS
 /** Metadata of known video URLs (e.g. the YouTube ids IGDB links to a game), without downloading. */
 export function ytDlpVideoInfo(ytDlp: YtDlpCommand, urls: readonly string[], signal?: AbortSignal): Promise<YtDlpVideoInfo[]> {
   const safe = urls.filter((url) => /^https:\/\//i.test(url));
-  return safe.length ? ytDlpJson(ytDlp, safe, signal) : Promise.resolve([]);
+  return safe.length ? ytDlpJson(ytDlp, safe, signal, false) : Promise.resolve([]);
 }
 
 /** YouTube search through yt-dlp (no API key). The query is one argument, never a shell string. */
 export function ytDlpSearch(ytDlp: YtDlpCommand, query: string, count: number, signal?: AbortSignal): Promise<YtDlpVideoInfo[]> {
   const clean = query.replace(/[\r\n]/g, ' ').trim().slice(0, 200);
   if (!clean) return Promise.resolve([]);
-  return ytDlpJson(ytDlp, [`ytsearch${Math.max(1, Math.min(10, Math.floor(count)))}:${clean}`], signal);
+  return ytDlpJson(ytDlp, [`ytsearch${Math.max(1, Math.min(10, Math.floor(count)))}:${clean}`], signal, true);
 }
 
 /** The installed yt-dlp version, recorded in each asset's provenance; null when yt-dlp is missing. */
@@ -249,4 +260,84 @@ export async function acquireWithYtDlp(input: {
     downloadMs: Date.now() - startedAt,
     ...(sectionDurationSec ? { durationSec: sectionDurationSec } : {}),
   };
+}
+
+export interface ResolvedStreamUrlResult {
+  streamUrl: string | null;
+  /** Headers bound to the signed stream URL (yt-dlp `http_headers`), to be reused by the sampler. */
+  httpHeaders?: Record<string, string>;
+  latencyMs: number;
+  ageGated: boolean;
+  error?: string;
+}
+
+/**
+ * Resolves a direct progressive media stream URL via `yt-dlp -g` without downloading the video.
+ * Never bypasses age-gates, login walls, or anti-bot checks.
+ */
+export async function resolveYtDlpStreamUrl(input: {
+  ytDlp: YtDlpCommand;
+  url: string;
+  maxHeight?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}): Promise<ResolvedStreamUrlResult> {
+  const startedAt = Date.now();
+  const h = Math.min(720, Math.max(240, Math.round(input.maxHeight ?? 480)));
+  // Frame sampling only needs video. YouTube increasingly serves video-only DASH (no progressive "b" formats), so
+  // prefer a video-only HTTPS stream (byte-range seekable, avc1 decodes fastest) and only then progressive/HLS.
+  const format =
+    `bv*[height<=${h}][vcodec^=avc1][protocol^=https]/bv*[height<=${h}][protocol^=https]/` +
+    `b[height<=${h}][ext=mp4]/b[height<=${h}]/bv*[height<=720]/b`;
+  const args = [
+    ...input.ytDlp.prefix,
+    '--print', 'urls', '--print', '%(http_headers)j',
+    '--no-playlist',
+    '--no-warnings',
+    '-f',
+    format,
+    '--',
+    input.url,
+  ];
+  return new Promise<ResolvedStreamUrlResult>((resolveResult) => {
+    execFile(
+      input.ytDlp.command,
+      args,
+      {
+        windowsHide: true,
+        maxBuffer: 2 * 1024 * 1024,
+        timeout: input.timeoutMs ?? 15_000,
+        env: { ...process.env, PYTHONUTF8: '1' },
+        ...(input.signal ? { signal: input.signal } : {}),
+      },
+      (error, stdout, stderr) => {
+        const latencyMs = Date.now() - startedAt;
+        const errText = `${error?.message ?? ''} ${String(stderr ?? '')}`.trim();
+        const ageGated = /confirm your age|age[- ]restricted|sign in|cookies|not a bot|login required/i.test(errText);
+        if (error) {
+          resolveResult({
+            streamUrl: null,
+            latencyMs,
+            ageGated,
+            error: errText.slice(0, 300),
+          });
+          return;
+        }
+        const lines = String(stdout ?? '').split(/\r?\n/).map((l) => l.trim());
+        const firstUrl = lines.find((l) => /^https?:\/\//i.test(l));
+        let httpHeaders: Record<string, string> | undefined;
+        try {
+          const raw = lines.find((l) => l.startsWith('{'));
+          if (raw) httpHeaders = JSON.parse(raw) as Record<string, string>;
+        } catch { /* headers optional */ }
+        resolveResult({
+          streamUrl: firstUrl ?? null,
+          ...(httpHeaders ? { httpHeaders } : {}),
+          latencyMs,
+          ageGated,
+          ...(!firstUrl ? { error: 'yt-dlp -g returned no stream URL' } : {}),
+        });
+      },
+    );
+  });
 }

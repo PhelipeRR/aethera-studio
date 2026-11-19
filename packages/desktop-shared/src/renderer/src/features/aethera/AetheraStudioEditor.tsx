@@ -893,7 +893,16 @@ export function AetheraStudioEditor() {
   // Keyboard shortcuts: Ctrl+Z / Ctrl+Y / Space
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
       if (e.code === 'Space') {
         e.preventDefault();
         setPlaying((p) => !p);

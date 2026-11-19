@@ -10,7 +10,7 @@ import {
   type WorkReference,
 } from './media-providers/semantic-media.js';
 import type { LicenseDecision, ProviderMediaItem } from './media-providers/types.js';
-import { isAssemblyEligibleDecision, type MediaRelevanceDecision } from '../qc/media-relevance-gate.js';
+import { expandNarrativeAliases, isAssemblyEligibleDecision, type MediaRelevanceDecision } from '../qc/media-relevance-gate.js';
 
 /**
  * Per-scene media approval with four independent verdicts:
@@ -80,7 +80,7 @@ export interface ApprovalSceneInput {
 }
 
 const GENERIC_VISUAL_DESCRIPTOR_RE =
-  /\b(cidade|pessoa|personagem|homem|mulher|garoto|garota|menino|menina|crianca|criança|carro|veiculo|veículo|moto|rua|avenida|predio|prédio|edificio|edifício|noite|noturna|luz|luminoso|luminosos|paineis|painéis|maquina|máquina|maquinas|máquinas|estrutura|estruturas|tela|cenario|cenário|paisagem|ambiente|fundo|objeto|arma|espada|armadura|city|person|character|man|woman|car|vehicle|street|building|night|light|lights|panel|machine|structure|screen|scenery|landscape|background|object|weapon|sword|armor|crowd|people)\b/i;
+  /\b(cidade|pessoa|pessoas|personagem|personagens|pedestre|pedestres|multidao|multidão|homem|homens|mulher|mulheres|garoto|garota|menino|menina|crianca|criança|carro|carros|automovel|automóvel|porsche|ferrari|lamborghini|sedan|suv|caminhao|caminhão|veiculo|veículo|veiculos|veículos|moto|motos|motocicleta|rua|ruas|avenida|predio|prédio|predios|prédios|edificio|edifício|edificios|edifícios|noite|noturna|noturno|luz|luzes|luminoso|luminosos|iluminada|iluminadas|iluminado|iluminados|neon|neons|holograma|hologramas|letreiro|letreiros|paineis|painéis|maquina|máquina|maquinas|máquinas|estrutura|estruturas|tela|cenario|cenário|paisagem|ambiente|fundo|objeto|arma|armas|espada|armadura|canoa|barco|navio|cavalo|cavalos|floresta|montanha|rio|mar|lago|agua|água|fogo|explosao|explosão|ceu|céu|nuvem|estrada|trilha|casa|casas|cabana|cabanas|rancho|fazenda|celeiro|acampamento|fogueira|igreja|loja|ponte|trem|aviao|avião|helicoptero|helicóptero|arvore|árvore|animal|animais|lobo|urso|passaro|pássaro|sol|lua|neve|chuva|deserto|praia|vilarejo|vila|aldeia|ribeirinho|estacionado|estacionados|freira|padre|monge|policial|policiais|policia|polícia|soldado|soldados|guerreiro|mago|zumbi|robo|robô|cyborg|ciborgue|android|androide|ninja|samurai|pirata|cowboy|xerife|bandido|mercenário|mercenario|city|person|character|characters|pedestrian|pedestrians|man|men|woman|women|car|cars|vehicle|vehicles|street|streets|building|buildings|night|light|lights|neon|hologram|sign|signs|panel|machine|structure|screen|scenery|landscape|background|object|weapon|weapons|sword|armor|crowd|people|canoe|boat|ship|horse|horses|forest|mountain|river|lake|water|fire|explosion|sky|cloud|road|trail|house|cabin|cabins|ranch|barn|farm|camp|campfire|bridge|train|plane|helicopter|tree|animal|snow|rain|desert|beach|village|town|riverside|parked|nun|priest|monk|cop|cops|police|soldier|soldiers|warrior|wizard|zombie|robot|cyborg|detective|doctor|nurse|hud|interface|menu|gameplay)\b/i;
 
 function isGenericVisualDescriptor(entity: string): boolean {
   const trimmed = entity.trim();
@@ -102,11 +102,20 @@ export function observedIdentityFromDecision(decision: MediaRelevanceDecision, e
   if (decision.visualVerificationStatus !== 'visually_verified') return undefined;
   const frames = (decision.visualEvidence ?? []).filter((f) => f.confidence >= 0.4);
   if (frames.length === 0) return undefined;
-  const proving = frames.filter((f) => expected.some((e) => f.detectedEntities.some((d) => mentionsName(d, e) || mentionsName(e, d))));
+  const frameMatchesExpected = (f: (typeof frames)[number], exp: string): boolean => {
+    const expanded = expandNarrativeAliases(
+      `${f.description ?? ''} ${f.detectedEntities.join(' ')}`
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase(),
+    );
+    return f.detectedEntities.some((d) => mentionsName(d, exp) || mentionsName(exp, d)) || mentionsName(expanded, exp);
+  };
+  const proving = frames.filter((f) => expected.some((e) => frameMatchesExpected(f, e)));
   // Same proof density the gate requires for exact matches (≥30% of confident frames, at least one).
   const minFrames = Math.max(1, Math.ceil(frames.length * 0.3));
   if (proving.length >= minFrames) {
-    const name = expected.find((e) => proving.some((f) => f.detectedEntities.some((d) => mentionsName(d, e) || mentionsName(e, d)))) ?? expected[0] ?? '';
+    const name = expected.find((e) => proving.some((f) => frameMatchesExpected(f, e))) ?? expected[0] ?? '';
     const confidence = proving.reduce((acc, f) => acc + f.confidence, 0) / proving.length;
     return { detectedWork: name, confidence: Number(confidence.toFixed(2)), source: 'vision' };
   }
@@ -115,7 +124,8 @@ export function observedIdentityFromDecision(decision: MediaRelevanceDecision, e
   const others = new Map<string, { n: number; conf: number }>();
   for (const f of frames) {
     for (const d of f.detectedEntities) {
-      if (expected.some((e) => mentionsName(d, e) || mentionsName(e, d))) continue;
+      const expandedD = expandNarrativeAliases(d.toLowerCase());
+      if (expected.some((e) => mentionsName(d, e) || mentionsName(e, d) || mentionsName(expandedD, e))) continue;
       if (isGenericVisualDescriptor(d)) continue;
       const cur = others.get(d) ?? { n: 0, conf: 0 };
       others.set(d, { n: cur.n + 1, conf: cur.conf + f.confidence });
@@ -168,6 +178,11 @@ export function buildSceneMediaApproval(
   const expected = [scene.work?.canonicalTitle, ...(scene.work?.alternativeTitles ?? []), ...(scene.entities ?? [])].filter((e): e is string => Boolean(e && e.trim()));
   const observed = observedIdentityFromDecision(decision, expected);
   const identity = assessIdentity(subject, ctx, observed);
+  const gateEligible = isAssemblyEligibleDecision(decision);
+  const visuallyVerified = decision.visualVerificationStatus === 'visually_verified';
+  const intervals = toIntervals(decision, scene.sceneId);
+  const ceilingForbidsLiteral = cand.assessment !== undefined && !cand.assessment.canProveScene;
+
   const identityApproval: SceneMediaApproval['identity']['approval'] =
     identity.status === 'not_required'
       ? 'not_required'
@@ -176,11 +191,6 @@ export function buildSceneMediaApproval(
         : identity.status === 'confirmed_by_analysis'
           ? 'approved'
           : 'pending';
-
-  const gateEligible = isAssemblyEligibleDecision(decision);
-  const visuallyVerified = decision.visualVerificationStatus === 'visually_verified';
-  const intervals = toIntervals(decision, scene.sceneId);
-  const ceilingForbidsLiteral = cand.assessment !== undefined && !cand.assessment.canProveScene;
 
   let effectiveDecision = decision;
   let downgrade: SceneMediaApproval['downgrade'];
@@ -213,7 +223,8 @@ export function buildSceneMediaApproval(
     };
   }
 
-  const literal = isAssemblyEligibleDecision(effectiveDecision) && effectiveDecision.correspondenceLevel === 'exact_match' && intervals.length > 0;
+  const effectiveIntervals = toIntervals(effectiveDecision, scene.sceneId);
+  const literal = isAssemblyEligibleDecision(effectiveDecision) && effectiveDecision.correspondenceLevel === 'exact_match' && effectiveIntervals.length > 0;
   const contextualEligible =
     !literal &&
     identityApproval !== 'rejected' &&

@@ -102,19 +102,38 @@ import {
 import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
 import { createProductionJobId } from './production-console.js';
 
-/** Reuses the already-installed MotionVelix SFX kit for transitions/motions; no continuous rain ambience is injected. */
-function localMotionVelixAudioAssets(): RealAudioAssetsInput | undefined {
+/** Maps planned audiovisualPlan SFX cues (sfxEventType + sfxAtMs) to matching MotionVelix WAV assets; never uses hardcoded timestamps. */
+function resolvePlannedSfxAssets(
+  audiovisualPlan: CinemaProductionPackage['audiovisualPlan'] | undefined,
+): RealAudioAssetsInput | undefined {
+  const scenes = audiovisualPlan?.scenes ?? [];
+  if (scenes.length === 0) return undefined;
   const root = process.env['NB_VELIX_DIR'] ?? join(homedir(), '.claude', 'skills', 'motionvelix', 'assets', 'sfx');
   const license = 'motionvelix-user-kit-original-synthesized';
   const origin = 'motionvelix-user-kit';
   const useConditions = 'uso autorizado no escopo do kit';
-  const sfx = [
-    ['whoosh', 4_500],
-    ['glitch', 12_000],
-    ['impacto', 26_500],
-    ['whoosh_rapido', 39_500],
-  ]
-    .map(([id, atMs]) => ({ id: String(id), path: join(root, `${String(id)}.wav`), license, origin, useConditions, atMs: Number(atMs), gainDb: -18 }))
+  const sfxFileByEvent: Record<string, string> = {
+    reveal: 'swish_suave',
+    whoosh: 'whoosh_rapido',
+    ui_pop: 'deslize',
+    comic_sting: 'pop_agudo',
+    impact: 'impacto',
+    riser: 'riser',
+  };
+  const sfx = scenes
+    .filter((scene) => scene.sfxEventType && typeof scene.sfxAtMs === 'number')
+    .map((scene) => {
+      const stem = sfxFileByEvent[scene.sfxEventType] ?? 'swish_suave';
+      return {
+        id: `${scene.sceneId}_${stem}`,
+        path: join(root, `${stem}.wav`),
+        license,
+        origin,
+        useConditions,
+        atMs: Math.max(0, Math.round(scene.sfxAtMs)),
+        gainDb: -20,
+      };
+    })
     .filter((asset) => existsSync(asset.path));
   if (sfx.length === 0) return undefined;
   return { sfx };
@@ -475,6 +494,11 @@ export interface StagedPipelineDeps {
   resolveTtsCredentials?: (providerId: string) => { apiKey: string; modelId?: string } | null;
   analyzeFrames?: (
     uri: string,
+    timestampsSec: number[],
+    segment: ScriptSegmentExpectation,
+  ) => Promise<DistributedFrameAnalysis[]>;
+  analyzeRemoteFramesFn?: (
+    framePaths: string[],
     timestampsSec: number[],
     segment: ScriptSegmentExpectation,
   ) => Promise<DistributedFrameAnalysis[]>;
@@ -1688,6 +1712,50 @@ export class StagedCinemaPipeline {
           this.deps.autonomousAcquisitionDeps &&
           (job.acquiredMedia.length < queries.length || groundingPolicyChanged || mediaRecoveryRequested)
         ) {
+          const plannedSceneDurationById = new Map<string, number>();
+          if (scenesForAcquisition.length > 0 && job.targetDurationSec > 0) {
+            try {
+              const dryPkg = produceCinemaPackage({
+                projectId: job.projectId,
+                prompt: job.prompt,
+                ...(job.genre ? { genre: job.genre } : {}),
+                ...(job.format ? { format: job.format } : {}),
+                ...(job.creativeSelection ? { creativeSelection: job.creativeSelection } : {}),
+                ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
+                ...(job.deliveryPresetIds?.length ? { deliveryPresetIds: job.deliveryPresetIds } : {}),
+                previewProfile: previewProfileForJob(job),
+                targetDurationSec: job.targetDurationSec,
+                humorIntensity: job.humorIntensity,
+                renderProfile: job.renderProfile,
+                mediaCatalog: [],
+                ...(job.editorialScript ? { editorialScript: job.editorialScript } : {}),
+                ...(job.contract ? { productionContract: job.contract } : {}),
+              });
+              const dryV1 = dryPkg.timeline.clips
+                .filter((c) => c.trackId === 'v1')
+                .sort((a, b) => a.timelineRange.start.value / a.timelineRange.start.rate - b.timelineRange.start.value / b.timelineRange.start.rate);
+              dryV1.forEach((clip, idx) => {
+                const sceneIdx =
+                  dryV1.length === scenesForAcquisition.length
+                    ? idx
+                    : Math.min(scenesForAcquisition.length - 1, Math.floor((idx * scenesForAcquisition.length) / Math.max(1, dryV1.length)));
+                const sc = scenesForAcquisition[sceneIdx];
+                if (!sc) return;
+                const durSec = clip.timelineRange.duration.value / Math.max(1, clip.timelineRange.duration.rate);
+                plannedSceneDurationById.set(sc.sceneId, (plannedSceneDurationById.get(sc.sceneId) ?? 0) + durSec);
+              });
+            } catch {
+              // fallback to scaled narrationSec below
+            }
+          }
+          const rawSceneDurationSum = scenesForAcquisition.reduce(
+            (sum, s) => sum + Math.max(4, s.narrationSec ?? s.durationSec),
+            0,
+          );
+          const durationScale =
+            job.targetDurationSec > 0 && rawSceneDurationSum > 0 && rawSceneDurationSum < job.targetDurationSec * 0.9
+              ? job.targetDurationSec / rawSceneDurationSum
+              : 1;
           const initialSegments =
             scenesForAcquisition.length > 0
               ? scenesForAcquisition.map((s) => ({
@@ -1723,7 +1791,13 @@ export class StagedCinemaPipeline {
                     }
                     return [...expanded];
                   })(),
-                  expectedDurationSec: Math.max(4, s.narrationSec ?? s.durationSec),
+                  expectedDurationSec: Math.max(
+                    4,
+                    Math.round(
+                      plannedSceneDurationById.get(s.sceneId) ??
+                        Math.max(4, s.narrationSec ?? s.durationSec) * durationScale,
+                    ),
+                  ),
                 }))
               : queries.map((q, idx) => ({
                   segmentId: `slot_${idx + 1}`,
@@ -1937,6 +2011,7 @@ export class StagedCinemaPipeline {
                   },
                 }
               : {}),
+            ...(this.deps.analyzeRemoteFramesFn ? { analyzeRemoteFramesFn: this.deps.analyzeRemoteFramesFn } : {}),
             requireVisualVerification: this.deps.requireVisualVerification ?? true,
             evolution: this.deps.evolutionCore,
             limits: {
@@ -2627,14 +2702,21 @@ export class StagedCinemaPipeline {
               Math.round((job.targetDurationSec ?? 90) / Math.max(1, pkg.direction.narrativeBeats.length)),
             ),
           }));
+      const auditAssetDurationById = new Map(
+        (job.autonomousAudit?.approvedAssets ?? []).map((a) => [a.mediaId, a.durationSec]),
+      );
       const coverageAssets = job.acquiredMedia.map((m) => {
         const decision = relevanceDecisions.find((d) => d.mediaId === m.mediaId);
+        const rawDur = m.duration.value / Math.max(1, m.duration.rate);
+        const auditDur = auditAssetDurationById.get(m.mediaId);
+        const effectiveDur =
+          m.kind === 'image' && auditDur && auditDur > rawDur ? auditDur : rawDur;
         return {
           mediaId: m.mediaId,
           uri: m.uri,
           title: basename(m.uri),
           origin: m.origin,
-          durationSec: m.duration.value / Math.max(1, m.duration.rate),
+          durationSec: effectiveDur,
           compatible: decision ? isAssemblyEligibleDecision(decision) : false,
           ...(decision?.matchedEntities ? { relevantToEntities: decision.matchedEntities } : {}),
           ...(decision && !decision.accepted ? { rejectedReason: decision.reason } : {}),
@@ -2727,7 +2809,7 @@ export class StagedCinemaPipeline {
       this.saveJob(job);
 
       const segmentCacheDir = join(projectPaths.tempDir, 'segment-cache');
-      const baseAudioAssets = localMotionVelixAudioAssets();
+      const baseAudioAssets = resolvePlannedSfxAssets(pkg.audiovisualPlan);
       const musicBed =
         baseAudioAssets?.music ??
         (await generateCinematicMusicBed(join(projectPaths.tempDir, 'cinematic_music_bed.wav'), job.targetDurationSec));
@@ -2930,10 +3012,23 @@ export class StagedCinemaPipeline {
               const needAdjustVfx = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'adjust_vfx');
               const needAdjustTypo = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'adjust_typography');
               const recoveredId = recoveredMediaByScene.get(c.clipId);
+              const clipSegId = clipSegmentMap.get(c.clipId) ?? sceneIdByClipId.get(c.clipId);
+              const eligibleAltId = clipSegId
+                ? altMediaPool.find(
+                    (id) =>
+                      id !== c.mediaId &&
+                      relevanceDecisions.some(
+                        (d) =>
+                          d.mediaId === id &&
+                          d.verificationOutcome === 'verified' &&
+                          d.eligibleSegmentIds?.includes(clipSegId),
+                      ),
+                  )
+                : undefined;
               const nextMediaId = recoveredId
                 ? recoveredId
-                : needSwapClip && altMediaPool.length > 1
-                  ? altMediaPool.find((id) => id !== c.mediaId) ?? c.mediaId
+                : needSwapClip && eligibleAltId
+                  ? eligibleAltId
                   : c.mediaId;
               const nextSourceRange = needBlackTrim
                 ? {

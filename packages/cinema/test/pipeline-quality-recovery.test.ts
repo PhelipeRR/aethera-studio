@@ -286,8 +286,46 @@ describe('Aethera Pipeline Quality Recovery (P1-P5)', () => {
         ],
       },
     );
-    expect(verifiedRdr2.accepted).toBe(true);
-    expect(verifiedRdr2.assemblyEligible).toBe(true);
-    expect(verifiedRdr2.verificationOutcome).toBe('verified');
+    // 4. In-universe tokens (NCPD, Arasaka, armas/tiroteio) map to Cyberpunk 2077 / combat without bypassing identity checks
+    const cpSegment = {
+      segmentId: 'scene_cp',
+      narrationText: 'Cyberpunk 2077 entrega ação futurista em Night City com visuais neon e combate intenso.',
+      expectedEntities: ['Cyberpunk 2077', 'Night City'],
+      prompt: 'Cyberpunk 2077',
+    };
+    const cpVerified = await evaluateMediaRelevance(
+      {
+        mediaId: 'cand_cp',
+        title: 'Cyberpunk 2077 Gameplay.mp4',
+        origin: 'yt_dlp',
+        url: 'https://youtube.com/watch?v=cp2077',
+        durationSec: 30,
+      },
+      cpSegment,
+      {
+        requireVisualVerification: true,
+        analyzeFrames: async () => [
+          {
+            timestampSec: 5,
+            visualCategory: 'gameplay',
+            detectedEntities: ['ncpd', 'arasaka'],
+            detectedActions: ['atirando com rifle'],
+            description: 'Tiroteio em rua iluminada por neon contra viaturas da NCPD.',
+            confidence: 0.9,
+          },
+          {
+            timestampSec: 18,
+            visualCategory: 'gameplay',
+            detectedEntities: ['night city'],
+            detectedActions: ['disparando pistola'],
+            description: 'Combate em primeira pessoa com armas futuristas em Night City.',
+            confidence: 0.91,
+          },
+        ],
+      },
+    );
+    expect(cpVerified.accepted).toBe(true);
+    expect(cpVerified.assemblyEligible).toBe(true);
+    expect(cpVerified.verificationOutcome).toBe('verified');
   });
 });

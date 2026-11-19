@@ -213,7 +213,11 @@ export interface CacheEntryMetadata {
 const STOPWORDS = new Set([
   'para', 'como', 'sobre', 'mais', 'menos', 'entre', 'depois', 'antes', 'ainda', 'muito', 'muita',
   'todo', 'toda', 'todos', 'todas', 'esse', 'essa', 'isso', 'este', 'esta', 'isto', 'aquele', 'aquela',
-  'with', 'from', 'that', 'this', 'what', 'when', 'where', 'about', 'into', 'video', 'analise', 'completa',
+  'com', 'sem', 'por', 'dos', 'das', 'nos', 'nas', 'uma', 'uns', 'umas', 'nao', 'sim', 'que', 'mas',
+  'seu', 'sua', 'seus', 'suas', 'cinco', 'segundos', 'minutos', 'nostalgicos', 'curta', 'curto',
+  'cenas', 'cena', 'cada', 'imagens', 'imagem', 'gameplays', 'gameplay', 'abertura', 'encerramento',
+  'crie', 'apresente', 'narracao', 'jovem', 'portugues', 'brasileiro', 'legendas', 'animadas', 'fundo',
+  'with', 'from', 'that', 'this', 'what', 'when', 'where', 'about', 'into', 'the', 'and', 'for', 'video', 'analise', 'completa',
   'anime', 'manga', 'jogo', 'jogos', 'game', 'games', 'historia', 'episodio', 'capitulo',
 ]);
 
@@ -224,9 +228,31 @@ const UNIVERSE_ALIASES: Array<[RegExp, string]> = [
   [/\bnamek\b/g, 'namekusei namek'],
   [/\bfrieza\b/g, 'freeza frieza'],
   [/\bkrillin\b/g, 'kuririn krillin'],
+  [/\bncpd\b/g, 'ncpd night city police department cyberpunk 2077 night city'],
+  [/\barasaka\b/g, 'arasaka cyberpunk 2077 night city'],
+  [/\bmilitech\b/g, 'militech cyberpunk 2077 night city'],
+  [/\bmaxtac\b/g, 'maxtac cyberpunk 2077 night city'],
+  [/\btrauma\s+team\b/g, 'trauma team cyberpunk 2077 night city'],
+  [/\bmox(?:es)?\b/g, 'mox cyberpunk 2077 night city'],
+  [/\bmaelstrom\b/g, 'maelstrom cyberpunk 2077 night city'],
+  [/\btyger\s+claws\b/g, 'tyger claws cyberpunk 2077 night city'],
+  [/\bjohnny\s+silverhand\b/g, 'johnny silverhand cyberpunk 2077 night city'],
+  [/\bdogtown\b/g, 'dogtown cyberpunk 2077 night city'],
+  [/\bgrove\s+street\b/g, 'grove street gta san andreas grand theft auto: san andreas los santos'],
+  [/\bballas\b/g, 'ballas gta san andreas grand theft auto: san andreas los santos'],
+  [/\bcarl\s+johnson\b/g, 'carl johnson cj gta san andreas grand theft auto: san andreas'],
+  [/\blos\s+santos\b/g, 'los santos gta san andreas grand theft auto: san andreas'],
+  [/\bsan\s+fierro\b/g, 'san fierro gta san andreas grand theft auto: san andreas'],
+  [/\blas\s+venturas\b/g, 'las venturas gta san andreas grand theft auto: san andreas'],
+  [/\bgreen\s+hill(?:\s+zone)?\b/g, 'green hill zone sonic the hedgehog sonic'],
+  [/\beggman\b|\brobotnik\b/g, 'eggman robotnik sonic the hedgehog sonic'],
+  [/\bmario(?:\s*64)?\b/g, 'mario super mario 64'],
+  [/\b(?:princess\s+)?peach(?:'s)?(?:\s+castle)?\b|\bcastelo\s+da\s+princesa\s+peach\b/g, 'peach super mario 64 mario'],
+  [/\bbowser\b|\byoshi\b|\bgoomba\b|\bkoopa\b|\blakitu\b|\bbob-omb\b/g, 'bowser super mario 64 mario'],
+  [/\barthur\s+morgan\b|\bjohn\s+marston\b|\bdutch\s+van\s+der\s+linde\b|\bvalentine\b|\bsaint\s+denis\b|\bpinkerton\b/g, 'arthur morgan red dead redemption 2'],
 ];
 
-function expandNarrativeAliases(normalizedText: string): string {
+export function expandNarrativeAliases(normalizedText: string): string {
   let out = normalizedText;
   for (const [pattern, replacement] of UNIVERSE_ALIASES) {
     out = out.replace(pattern, replacement);
@@ -278,7 +304,7 @@ const NARRATIVE_ACTION_PATTERNS: Array<{ key: string; regex: RegExp }> = [
   { key: 'fusao', regex: /\b(fusao|fusion|funde|fundir|fuse)\b/i },
   { key: 'genki_dama', regex: /\b(genki dama|spirit bomb)\b/i },
   { key: 'morte_sacrificio', regex: /\b(morte|morre\w*|morto|death|die\w*|(?<!red\s)dead(?!\s+redemption)|sacrific\w*|caido|cai diante|fallen)\b/i },
-  { key: 'batalha_confronto', regex: /\b(luta\w*|batalha\w*|enfrent\w*|confront\w*|derrot\w*|defeat\w*|ataque|attack\w*|golpe\w*|strike\w*|slash\w*|chute|soco|energia|ki|vs|fight\w*|combat\w*|battle\w*|boss\s+fight|duel\w*|clash\w*)\b/i },
+  { key: 'batalha_confronto', regex: /\b(luta\w*|batalha\w*|enfrent\w*|confront\w*|derrot\w*|defeat\w*|ataque|attack\w*|golpe\w*|strike\w*|slash\w*|chute|soco|energia|ki|vs|fight\w*|combat\w*|battle\w*|boss\s+fight|duel\w*|clash\w*|tiroteio|tiro\w*|atir\w*|dispar\w*|shoot\w*|gunfight|arma\w*|weapon\w*|rifle|pistola|katana|espingarda|explos\w*)\b/i },
   { key: 'chegada_desembarque', regex: /\b(chegada|chegam|chega\w*|arriv\w*|desembarc\w*|esconder|nave|capsula|pouso|aterriss\w*|land\w*)\b/i },
   { key: 'explosao', regex: /\b(explos\w*|explod\w*|destruic\w*|destruct\w*)\b/i },
   { key: 'treinamento', regex: /\b(trein\w*|train\w*|gravidade|gravity)\b/i },
@@ -560,7 +586,8 @@ export async function evaluateMediaRelevance(
       notifyVisualVerification({ ...diagnostics, error: diagnostics.error ?? visualVerificationError });
     }
 
-    if (frameAnalyses.length > 0 && candidate.durationSec >= 5) {
+    const isStaticUri = /\.(jpe?g|png|webp)(\?|$)/i.test(candidate.uri) || /\.(jpe?g|png|webp)(\?|$)/i.test(candidate.url ?? '');
+    if (frameAnalyses.length > 0 && candidate.durationSec >= 5 && !isStaticUri) {
       const initialValid = frameAnalyses.filter((f) => f.confidence > 0.15);
       const promisingAnchors = initialValid.filter((f) => {
         const fText = expandNarrativeAliases(
@@ -577,7 +604,11 @@ export async function evaluateMediaRelevance(
         return hasEntity || hasAction;
       });
 
-      if (promisingAnchors.length > 0 && promisingAnchors.length < initialValid.length + 1) {
+      const minToSatisfy = candidate.durationSec > 10 ? 2 : 1;
+      const needsDensePass =
+        promisingAnchors.length > 0 &&
+        (promisingAnchors.length < minToSatisfy || promisingAnchors.length / Math.max(1, initialValid.length) < 0.4);
+      if (needsDensePass) {
         const denseSet: number[] = [];
         const sortedAnchors = promisingAnchors.slice().sort((a, b) => a.timestampSec - b.timestampSec);
         for (let ai = 0; ai < sortedAnchors.length - 1; ai += 1) {
@@ -1117,11 +1148,15 @@ export async function evaluateMediaRelevance(
   }
   groupedIntervals.sort((a, b) => b.weight - a.weight);
 
+  const isStaticImageAsset =
+    /\.(jpe?g|png|webp)(\?|$)/i.test(candidate.uri ?? '') ||
+    /\.(jpe?g|png|webp)(\?|$)/i.test(candidate.url ?? '') ||
+    /\.(jpe?g|png|webp)(\?|$)/i.test(candidate.title ?? '');
   let matchedIntervals =
     groupedIntervals.length > 0
       ? groupedIntervals.map(({ startSec, endSec, segmentId, provingTimestampsSec, provingDescriptions }) => ({
-          startSec,
-          endSec,
+          startSec: isStaticImageAsset ? 0 : startSec,
+          endSec: isStaticImageAsset ? Math.max(endSec, Number(candidate.durationSec.toFixed(2))) : endSec,
           segmentId,
           provingTimestampsSec,
           provingDescriptions,
@@ -1176,7 +1211,7 @@ export async function evaluateMediaRelevance(
   // Strict exact_match gate: low scores, sparse proof, or universe-only matches stay contextual_support.
   const hasProvingIntervals =
     visualVerificationStatus === 'visually_verified' && groupedIntervals.length > 0;
-  const minimumProvingFrames = candidate.durationSec > 10 ? 2 : 1;
+  const minimumProvingFrames = isStaticImageAsset ? 1 : candidate.durationSec > 10 ? 2 : 1;
   const hasEnoughProvingFrames =
     visualVerificationStatus === 'visually_verified' &&
     new Set(eventMatchingFrames.map((m) => m.frame.timestampSec.toFixed(2))).size >= minimumProvingFrames &&

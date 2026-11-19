@@ -233,6 +233,7 @@ import {
   renderMotionProject,
   renderStyleMix,
   resolveStyleRender,
+  resolveYtDlpStreamUrl,
   saveNarrationTimeline,
   saveVelixResearch,
   transcribeVelixMotionVoice,
@@ -1263,7 +1264,7 @@ productionConsole,
                   const status = await detectAntigravityCli();
                   return status.installed ? { available: true } : { available: false, reason: status.problems[0] ?? 'Antigravity CLI não encontrado.' };
                 },
-                runPrompt: ({ prompt, cwd, model, signal }) => runAntigravityPrompt({ prompt, cwd, mode: 'read-only', ...(model ? { model } : {}), ...(signal ? { signal } : {}), timeoutMs: 45_000 }),
+                runPrompt: ({ prompt, cwd, model, signal }) => runAntigravityPrompt({ prompt, cwd, mode: 'read-only', ...(model ? { model } : {}), ...(signal ? { signal } : {}), timeoutMs: 90_000 }),
               }),
               ...(taskEngine ? [
                 createTaskEngineVisionProvider({ id: 'claude', model: '', root: rootDir, projectId, enabled: true, taskEngine, checkAvailable: async () => findClientCli('claude') ? { available: true } : { available: false, reason: 'Claude CLI não encontrado.' } }),
@@ -1274,7 +1275,7 @@ productionConsole,
           visionConfig: {
             enabledProviders: ['local-vlm', 'antigravity', 'claude', 'codex'],
             priority: ['local-vlm', 'antigravity', 'claude', 'codex'],
-            perProviderTimeoutMs: { 'local-vlm': 30_000, antigravity: 45_000, claude: 30_000, codex: 30_000 },
+            perProviderTimeoutMs: { 'local-vlm': 30_000, antigravity: 90_000, claude: 30_000, codex: 30_000 },
             maxAttempts: 4,
           },
           policy: visualIndexPolicy,
@@ -1957,7 +1958,7 @@ productionConsole,
             mode: 'read-only',
             ...(model ? { model } : {}),
             ...(signal ? { signal } : {}),
-            timeoutMs: 45_000,
+            timeoutMs: 90_000,
           }),
       }),
       ...(taskEngine
@@ -2111,6 +2112,8 @@ productionConsole,
         return dirs;
       })(),
       ytDlpSearchFn: (q, count, sig) => ytDlpSearch(ytDlp, q, count, sig),
+      resolveStreamUrlFn: (targetUrl, sig) =>
+        resolveYtDlpStreamUrl({ ytDlp, url: targetUrl, maxHeight: 480, timeoutMs: 12_000, ...(sig ? { signal: sig } : {}) }),
       ytDlpAcquireFn: async (targetUrl, idx, dir, sig, downloadSection, onProgress) => {
         const relativeDir = `acq_${idx + 1}_${Date.now().toString(36)}`;
         mkdirSync(join(dir, relativeDir), { recursive: true });
@@ -2327,6 +2330,77 @@ productionConsole,
         durationMs: visionDurationMs,
       };
       return output;
+    },
+    analyzeRemoteFramesFn: async (framePaths, timestampsSec, segment) => {
+      const validPaths = framePaths.filter((p) => existsSync(p));
+      if (validPaths.length === 0) return [];
+      const visionCache = new Map<string, unknown>();
+      const frameDir = dirname(validPaths[0]!);
+      const framesPayload = validPaths.slice(0, 4).map((framePath, idx) => ({
+        path: framePath,
+        hash: createHash('sha256').update(readFileSync(framePath)).digest('hex'),
+        atMs: Math.round((timestampsSec[idx] ?? 0) * 1000),
+      }));
+      const router = new VisionRouter(
+        buildAetheraVisionProviders(frameDir, null),
+        {
+          get: (k) => visionCache.get(JSON.stringify(k)),
+          put: (k, v) => {
+            visionCache.set(JSON.stringify(k), v);
+          },
+        },
+        [],
+        undefined,
+        undefined,
+        visionProviderCooldowns,
+        visionProviderTimeoutFailures,
+        1_500,
+        {
+          enabledProviders: ['local-vlm', 'claude-gateway', 'antigravity', 'claude', 'codex'],
+          priority: ['local-vlm', 'claude-gateway', 'antigravity', 'claude', 'codex'],
+          perProviderTimeoutMs: {
+            'local-vlm': 5_000,
+            'claude-gateway': 60_000,
+            antigravity: 60_000,
+            claude: 60_000,
+            codex: 60_000,
+          },
+          maxAttempts: 2,
+        },
+      );
+      const analyzed = await router.analyze({
+        frames: framesPayload,
+        context: `Pré-triagem rápida "${segment.segmentId}": ${segment.narrationText.slice(0, 180)}${segment.expectedEntities?.length ? ` | Obra/personagens esperados: ${segment.expectedEntities.slice(0, 6).join(', ')}` : ''}`,
+        policy: {
+          schemaVersion: 1,
+          task: 'describe',
+          chain: [...AETHERA_VISION_CHAIN],
+          scope: 'project',
+          thresholds: null,
+          version: 'aethera-scene-grounding-pre-v1',
+          budgetUsd: 0.25,
+          maxLatencyMs: 60_000,
+        },
+      });
+      if (!analyzed.value || analyzed.provider === 'ffmpeg-heuristics') {
+        throw new Error(analyzed.attempts.map((a) => `${a.provider}:${a.outcome}`).join('; ') || 'pre_vision_failed');
+      }
+      const segVal = analyzed.value;
+      return framesPayload.map((f, idx) => {
+        const mf = segVal.frames[idx];
+        return {
+          timestampSec: f.atMs / 1000,
+          visualCategory: 'gameplay' as VisualCategory,
+          detectedEntities: segVal.entities
+            .filter((e) => e.basis === 'observed')
+            .map((e) => e.name.toLowerCase()),
+          detectedActions: segVal.actions
+            .filter((a) => a.basis === 'observed')
+            .map((a) => a.description.toLowerCase()),
+          description: mf?.observed ?? segVal.description,
+          confidence: segVal.confidence ?? 0.85,
+        };
+      });
     },
     onProgress: (job: StagedProductionJob) => {
       // Identity of this execution: jobId + attempt. projectId only says which workspace the job writes to.

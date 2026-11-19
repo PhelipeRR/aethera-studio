@@ -161,7 +161,8 @@ function countMatches(re: RegExp, text: string): string[] {
  */
 export function inferContentDomain(context: SceneSourceContext & { query?: string }): DomainInference {
   if (context.projectDomain) {
-    return { domain: context.projectDomain, confidence: 1, evidence: [`Domínio declarado no briefing: ${context.projectDomain}.`], ambiguous: false };
+    const normalizedDomain = String(context.projectDomain) === 'gaming' ? 'game' : context.projectDomain;
+    return { domain: normalizedDomain, confidence: 1, evidence: [`Domínio declarado no briefing: ${normalizedDomain}.`], ambiguous: false };
   }
   const work = context.work;
   const projectText = context.prompt ?? '';
@@ -344,6 +345,9 @@ export function assessIdentity(item: IdentitySubject, context: SceneSourceContex
   }
   const matchesExpected = (name: string) => expected.some((e) => mentionsName(name, e) || mentionsName(e, name));
 
+  const STUDIO_OR_RATING_SPLASH_PATTERN =
+    /^(?:rockstar(?:\s+games|\s+north)?|cd\s*projekt(?:\s*red)?|esrb|pegi|nintendo|sega|capcom|ubisoft|activision|bandai\s*namco|square\s*enix|electronic\s*arts|ea\s+games|take[- ]two|sony|microsoft|xbox|playstation|steam|pc|nvidia|geforce|amd|intel|dlss|rtx|trailer|gameplay|official\s+trailer)$/i;
+
   if (observed) {
     if (matchesExpected(observed.detectedWork)) {
       if (observed.confidence >= 0.6) {
@@ -358,6 +362,8 @@ export function assessIdentity(item: IdentitySubject, context: SceneSourceContex
         };
       }
       ambiguities.push(`Análise (${observed.source}) sugere "${observed.detectedWork}" com confiança baixa (${observed.confidence.toFixed(2)}).`);
+    } else if (STUDIO_OR_RATING_SPLASH_PATTERN.test(observed.detectedWork.trim())) {
+      ambiguities.push(`Análise (${observed.source}) detectou splash de estúdio/classificação ("${observed.detectedWork}"), insuficiente para confirmar ou rejeitar a obra.`);
     } else if (observed.confidence >= 0.6) {
       return {
         expectedWorks: expected,
@@ -574,7 +580,9 @@ export function buildSemanticQueries(context: SceneSourceContext, domain: Conten
   const canonical = work.canonicalTitle ?? entities[0];
   if (!canonical) return [];
   const characters = (work.characters ?? entities.slice(1)).filter((c) => !mentionsName(canonical, c)).slice(0, 2);
-  const terms = MEDIA_TERMS[domain];
+  const terms =
+    MEDIA_TERMS[domain] ??
+    (String(domain) === 'gaming' ? MEDIA_TERMS.game : MEDIA_TERMS.generic);
   const out: SemanticQuery[] = [];
   const seen = new Set<string>();
   const push = (query: string, strategy: SemanticQuery['strategy']) => {
