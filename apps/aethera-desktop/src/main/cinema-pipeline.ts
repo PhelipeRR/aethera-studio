@@ -1601,6 +1601,47 @@ export class StagedCinemaPipeline {
             approved: true,
           })),
         });
+      } else if (!job.editorialScript && job.allowDeterministicScriptFallback && !job.researchDossier) {
+        // Minimal script from interpretation alone: enables autonomous production when no external agent
+        // direction and no research dossier exist (e.g., single-work anime prompts without configured research).
+        const lang = job.language ?? 'pt-BR';
+        const workTitle = nextInterpretation.workTitle || job.prompt.slice(0, 60);
+        const theme = nextInterpretation.theme || job.prompt;
+        const refWorks = nextInterpretation.referenceWorks ?? [];
+        const entityHint = refWorks.length > 0 ? refWorks.join(', ') : workTitle;
+        const totalSegs = Math.max(3, Math.round((job.targetDurationSec ?? 90) / 45));
+        const perSegSec = Math.max(4, (job.targetDurationSec ?? 90) / totalSegs);
+        const segments: Array<{
+          segmentId: string; beatId: string; stage: NarrativeBeat['stage'];
+          title: string; spokenText: string; estimatedDurationSec: number; approved: boolean;
+        }> = [];
+        // Hook
+        const hookText = `Hoje vamos explorar ${entityHint}, destacando os momentos e detalhes visuais mais marcantes sobre ${theme}.`;
+        segments.push({
+          segmentId: 'seg_1', beatId: 'nbeat_1_hook', stage: 'hook', title: 'Introdução',
+          spokenText: hookText, estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(hookText, lang))), approved: true,
+        });
+        // Progression beats derived from prompt structure
+        for (let i = 1; i < totalSegs - 1; i++) {
+          const beatStage = i === totalSegs - 2 ? 'climax' : 'progression';
+          const spokenText = `Em ${workTitle}, este momento revela camadas profundas da narrativa que conectam ${entityHint} ao tema central de ${theme}.`;
+          segments.push({
+            segmentId: `seg_${i + 1}`, beatId: `nbeat_${i + 1}_${beatStage}`, stage: beatStage,
+            title: `Cena ${i + 1}`, spokenText,
+            estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(spokenText, lang))), approved: true,
+          });
+        }
+        // Resolution
+        const outroText = `Cada cena reforça por que ${workTitle} continua relevante até hoje. Qual desses momentos mais chamou a sua atenção?`;
+        segments.push({
+          segmentId: `seg_${totalSegs}`, beatId: `nbeat_${totalSegs}_resolution`, stage: 'resolution',
+          title: 'Conclusão', spokenText: outroText,
+          estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(outroText, lang))), approved: true,
+        });
+        job.editorialScript = buildEditorialScript({
+          scriptId: `${job.projectId}_script`, source: 'deterministic_draft',
+          treatment: `${workTitle}: ${theme}`, academyRulesApplied: [], segments,
+        });
       } else if (!job.editorialScript && job.allowDeterministicScriptFallback && job.researchDossier) {
         const dossier = job.researchDossier;
         const lang = job.language ?? 'pt-BR';
