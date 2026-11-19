@@ -119,6 +119,7 @@ async function main() {
     targetDurationSec: 300,
     humorIntensity: 0.3,
     language: 'pt-BR',
+    allowDeterministicScriptFallback: true,
   });
 
   console.log('---');
