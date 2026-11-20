@@ -1604,43 +1604,63 @@ export class StagedCinemaPipeline {
       } else if (!job.editorialScript && job.allowDeterministicScriptFallback && !job.researchDossier) {
         // Minimal script from interpretation alone: enables autonomous production when no external agent
         // direction and no research dossier exist (e.g., single-work anime prompts without configured research).
+        // Extracts specific entities and events from the prompt to generate distinct per-scene narration
+        // and targeted media queries that can recover exact_match footage.
         const lang = job.language ?? 'pt-BR';
         const workTitle = nextInterpretation.workTitle || job.prompt.slice(0, 60);
         const theme = nextInterpretation.theme || job.prompt;
         const refWorks = nextInterpretation.referenceWorks ?? [];
-        const entityHint = refWorks.length > 0 ? refWorks.join(', ') : workTitle;
+        // Extract character/entity names from the prompt for scene-specific narration and queries.
+        // Matches proper nouns (capitalized words >= 3 chars) excluding common Portuguese stop words.
+        const promptEntities = [...new Set(
+          (job.prompt.match(/\b[A-ZÀ-Ý][a-zà-ÿ]{2,}(?:\s+[A-ZÀ-Ý][a-zà-ÿ]{2,}){0,2}\b/gu) ?? [])
+            .map((e) => e.trim())
+            .filter((e) => e.length >= 3 && !/^(?:Maior|Segredo|Sobre|Realmente|Sabe|Este|Momento|Revela|Camadas|Profundas|Narrativa|Que|Conectam|Tema|Central|Cada|Cena|Reforça|Porque|Continua|Relevante|Até|Hoje|Qual|Desses|Momentos|Mais|Chamou|Sua|Atenção|Vamos|Explorar|Destacando|Marcantes)$/i.test(e))
+        )];
+        const allEntities = [...new Set([...refWorks, ...promptEntities, workTitle].filter(Boolean))];
+        const primaryEntity = promptEntities.find((e) => e.toLowerCase() !== workTitle.toLowerCase()) ?? workTitle;
         const totalSegs = Math.max(3, Math.round((job.targetDurationSec ?? 90) / 45));
-        const perSegSec = Math.max(4, (job.targetDurationSec ?? 90) / totalSegs);
         const segments: Array<{
           segmentId: string; beatId: string; stage: NarrativeBeat['stage'];
           title: string; spokenText: string; estimatedDurationSec: number; approved: boolean;
         }> = [];
-        // Hook
-        const hookText = `Hoje vamos explorar ${entityHint}, destacando os momentos e detalhes visuais mais marcantes sobre ${theme}.`;
+        // Hook: introduces the primary entity and the central mystery/theme
+        const hookText = `Hoje vamos investigar ${primaryEntity} em ${workTitle}, revelando os detalhes que poucos fãs perceberam sobre ${theme}.`;
         segments.push({
-          segmentId: 'seg_1', beatId: 'nbeat_1_hook', stage: 'hook', title: 'Introdução',
+          segmentId: 'seg_1', beatId: 'nbeat_1_hook', stage: 'hook', title: `Introdução: ${primaryEntity}`,
           spokenText: hookText, estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(hookText, lang))), approved: true,
         });
-        // Progression beats derived from prompt structure
+        // Progression beats: each scene focuses on a different aspect of the primary entity with distinct narration
+        const progressionTopics = [
+          { topic: 'origem e motivações', event: `${primaryEntity} origem backstory` },
+          { topic: 'confrontos e batalhas decisivas', event: `${primaryEntity} fight battle confrontation` },
+          { topic: 'relacionamentos e alianças', event: `${primaryEntity} allies relationships crew` },
+          { topic: 'poderes e habilidades únicas', event: `${primaryEntity} powers abilities haki technique` },
+          { topic: 'momentos icônicos na história', event: `${primaryEntity} iconic moment reveal` },
+          { topic: 'teorias e mistérios não resolvidos', event: `${primaryEntity} mystery theory secret` },
+        ];
         for (let i = 1; i < totalSegs - 1; i++) {
           const beatStage = i === totalSegs - 2 ? 'climax' : 'progression';
-          const spokenText = `Em ${workTitle}, este momento revela camadas profundas da narrativa que conectam ${entityHint} ao tema central de ${theme}.`;
+          const topicIdx = (i - 1) % progressionTopics.length;
+          const topic = progressionTopics[topicIdx]!;
+          const spokenText = `Quando analisamos ${topic.topic} de ${primaryEntity} em ${workTitle}, percebemos como esse elemento conecta diretamente ao grande mistério de ${theme}.`;
           segments.push({
             segmentId: `seg_${i + 1}`, beatId: `nbeat_${i + 1}_${beatStage}`, stage: beatStage,
-            title: `Cena ${i + 1}`, spokenText,
+            title: `${primaryEntity}: ${topic.topic}`,
+            spokenText,
             estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(spokenText, lang))), approved: true,
           });
         }
-        // Resolution
-        const outroText = `Cada cena reforça por que ${workTitle} continua relevante até hoje. Qual desses momentos mais chamou a sua atenção?`;
+        // Resolution: ties back to the central theme with a call to engagement
+        const outroText = `Esses detalhes sobre ${primaryEntity} mostram por que ${workTitle} continua fascinando milhões de fãs. Qual teoria sobre ${theme} você acha mais convincente?`;
         segments.push({
           segmentId: `seg_${totalSegs}`, beatId: `nbeat_${totalSegs}_resolution`, stage: 'resolution',
-          title: 'Conclusão', spokenText: outroText,
+          title: `Conclusão: ${primaryEntity}`, spokenText: outroText,
           estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(outroText, lang))), approved: true,
         });
         job.editorialScript = buildEditorialScript({
           scriptId: `${job.projectId}_script`, source: 'deterministic_draft',
-          treatment: `${workTitle}: ${theme}`, academyRulesApplied: [], segments,
+          treatment: `${workTitle}: ${primaryEntity} — ${theme}`, academyRulesApplied: [], segments,
         });
       } else if (!job.editorialScript && job.allowDeterministicScriptFallback && job.researchDossier) {
         const dossier = job.researchDossier;
