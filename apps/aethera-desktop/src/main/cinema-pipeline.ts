@@ -1611,11 +1611,18 @@ export class StagedCinemaPipeline {
         const theme = nextInterpretation.theme || job.prompt;
         const refWorks = nextInterpretation.referenceWorks ?? [];
         // Extract character/entity names from the prompt for scene-specific narration and queries.
-        // Matches proper nouns (capitalized words >= 3 chars) excluding common Portuguese stop words.
+        // Matches both Title Case ("Shanks") and ALL CAPS ("SHANKS") proper nouns >= 3 chars,
+        // excluding common Portuguese stop words. Normalizes ALL CAPS to Title Case for consistent output.
+        const titleCasePattern = /\b[A-ZÀ-Ý][a-zà-ÿ]{2,}(?:\s+[A-ZÀ-Ý][a-zà-ÿ]{2,}){0,2}\b/gu;
+        const allCapsPattern = /\b[A-ZÀ-Ý]{3,}\b/gu;
+        const rawMatches = [
+          ...(job.prompt.match(titleCasePattern) ?? []),
+          ...(job.prompt.match(allCapsPattern) ?? []).map((w) => w.charAt(0) + w.slice(1).toLowerCase()),
+        ];
         const promptEntities = [...new Set(
-          (job.prompt.match(/\b[A-ZÀ-Ý][a-zà-ÿ]{2,}(?:\s+[A-ZÀ-Ý][a-zà-ÿ]{2,}){0,2}\b/gu) ?? [])
+          rawMatches
             .map((e) => e.trim())
-            .filter((e) => e.length >= 3 && !/^(?:Maior|Segredo|Sobre|Realmente|Sabe|Este|Momento|Revela|Camadas|Profundas|Narrativa|Que|Conectam|Tema|Central|Cada|Cena|Reforça|Porque|Continua|Relevante|Até|Hoje|Qual|Desses|Momentos|Mais|Chamou|Sua|Atenção|Vamos|Explorar|Destacando|Marcantes)$/i.test(e))
+            .filter((e) => e.length >= 3 && !/^(?:Maior|Segredo|Sobre|Realmente|Sabe|Este|Momento|Revela|Camadas|Profundas|Narrativa|Que|Conectam|Tema|Central|Cada|Cena|Reforça|Porque|Continua|Relevante|Até|Hoje|Qual|Desses|Momentos|Mais|Chamou|Sua|Atenção|Vamos|Explorar|Destacando|Marcantes|One|Piece)$/i.test(e))
         )];
         const allEntities = [...new Set([...refWorks, ...promptEntities, workTitle].filter(Boolean))];
         const primaryEntity = promptEntities.find((e) => e.toLowerCase() !== workTitle.toLowerCase()) ?? workTitle;
