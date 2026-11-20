@@ -26,3 +26,7 @@ artifacts/
 apps/aethera-web/data/
 apps/aethera-remote-host/data/
 .aethera-secrets/
+*.mp4
+*.png
+*.wav
+*.webp

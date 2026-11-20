@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "chapterId": "nano-machine-cap-01-tech-preview",
+  "renderTarget": "preview",
+  "completedStages": [
+    "audio_sync",
+    "visual_plan",
+    "captions",
+    "preview_render",
+    "gate_h"
+  ],
+  "lastUpdatedAtIso": "2026-11-20T22:18:40.921Z",
+  "synthesizedSegments": [
+    {
+      "sceneId": "tech-scene-1",
+      "audioPath": "C:\\dev\\neuralbridge-studio\\.aethera-recap-data\\phase3-technical-preview\\render\\audio\\tech-scene-1.wav",
+      "speechDurationMs": 5000,
+      "pauseAfterMs": 300,
+      "provider": "deterministic-technical-fallback-tts",
+      "isFallback": true
+    },
+    {
+      "sceneId": "tech-scene-2",
+      "audioPath": "C:\\dev\\neuralbridge-studio\\.aethera-recap-data\\phase3-technical-preview\\render\\audio\\tech-scene-2.wav",
+      "speechDurationMs": 5385,
+      "pauseAfterMs": 300,
+      "provider": "deterministic-technical-fallback-tts",
+      "isFallback": true
+    },
+    {
+      "sceneId": "tech-scene-3",
+      "audioPath": "C:\\dev\\neuralbridge-studio\\.aethera-recap-data\\phase3-technical-preview\\render\\audio\\tech-scene-3.wav",
+      "speechDurationMs": 5385,
+      "pauseAfterMs": 300,
+      "provider": "deterministic-technical-fallback-tts",
+      "isFallback": true
+    },
+    {
+      "sceneId": "tech-scene-4",
+      "audioPath": "C:\\dev\\neuralbridge-studio\\.aethera-recap-data\\phase3-technical-preview\\render\\audio\\tech-scene-4.wav",
+      "speechDurationMs": 5385,
+      "pauseAfterMs": 300,
+      "provider": "deterministic-technical-fallback-tts",
+      "isFallback": true
+    }
+  ],
+  "planPath": "C:\\dev\\neuralbridge-studio\\.aethera-recap-data\\phase3-technical-preview\\render\\recap-audiovisual-plan.json",
+  "captionsPath": "C:\\dev\\neuralbridge-studio\\.aethera-recap-data\\phase3-technical-preview\\render\\recap-captions.ass",
+  "previewMp4Path": "C:\\dev\\neuralbridge-studio\\.aethera-recap-data\\phase3-technical-preview\\render\\recap-preview.mp4",
+  "gateHVerdict": "needs_review",
+  "warnings": []
+}
