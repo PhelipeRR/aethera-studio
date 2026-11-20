@@ -5,6 +5,7 @@
   "isSyntheticFixture": true,
   "approvalStatus": "technical_fixture_unapproved",
   "renderTarget": "preview",
+  "aspectRatio": "16:9",
   "width": 1280,
   "height": 720,
   "fps": 24,
@@ -33,6 +34,9 @@
       },
       "transitionIn": "dip_black",
       "balloonSafeZoneProtected": false,
+      "framingCropRisk": {
+        "atRisk": false
+      },
       "emotion": "tension",
       "narrativeIntent": "exposition"
     },
@@ -59,6 +63,9 @@
       },
       "transitionIn": "cut",
       "balloonSafeZoneProtected": true,
+      "framingCropRisk": {
+        "atRisk": false
+      },
       "emotion": "determination",
       "narrativeIntent": "rising_action"
     },
@@ -85,6 +92,9 @@
       },
       "transitionIn": "cut",
       "balloonSafeZoneProtected": true,
+      "framingCropRisk": {
+        "atRisk": false
+      },
       "emotion": "tension",
       "narrativeIntent": "rising_action"
     },
@@ -111,6 +121,9 @@
       },
       "transitionIn": "flash_white",
       "balloonSafeZoneProtected": false,
+      "framingCropRisk": {
+        "atRisk": false
+      },
       "emotion": "anger",
       "narrativeIntent": "climax"
     }
@@ -596,5 +609,5 @@
       }
     ]
   },
-  "createdAtIso": "2026-11-20T22:18:38.222Z"
+  "createdAtIso": "2026-11-20T22:26:53.549Z"
 }

@@ -9,7 +9,7 @@
     "preview_render",
     "gate_h"
   ],
-  "lastUpdatedAtIso": "2026-11-20T22:18:40.921Z",
+  "lastUpdatedAtIso": "2026-11-20T22:26:55.699Z",
   "synthesizedSegments": [
     {
       "sceneId": "tech-scene-1",
@@ -48,5 +48,9 @@
   "captionsPath": "C:\\dev\\neuralbridge-studio\\.aethera-recap-data\\phase3-technical-preview\\render\\recap-captions.ass",
   "previewMp4Path": "C:\\dev\\neuralbridge-studio\\.aethera-recap-data\\phase3-technical-preview\\render\\recap-preview.mp4",
   "gateHVerdict": "needs_review",
+  "reusedShotsCount": 0,
+  "renderedShotsCount": 4,
+  "sfxAppliedCount": 4,
+  "subtitlesBurnedIn": false,
   "warnings": []
 }

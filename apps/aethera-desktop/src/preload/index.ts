@@ -234,4 +234,5 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeSaveImageEngineSettings: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:save-image-engine-settings', input),
   recapGetReadiness: (input?: { chapterId?: string }) => ipcRenderer.invoke('recap:get-readiness', input),
   recapPlanRevision: (input: { prompt: string; script: unknown; availablePanelIds?: string[] }) => ipcRenderer.invoke('recap:plan-revision', input),
+  recapStartProduction: (input: Record<string, unknown>) => ipcRenderer.invoke('recap:start-production', input),
 });

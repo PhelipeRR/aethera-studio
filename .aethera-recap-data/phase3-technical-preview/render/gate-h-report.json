@@ -1,7 +1,7 @@
 {
   "gate": "H_audiovisual_quality",
   "verdict": "needs_review",
-  "checkedAtIso": "2026-11-20T22:18:40.921Z",
+  "checkedAtIso": "2026-11-20T22:26:55.699Z",
   "reasons": [
     "Roteiro sintético/técnico (não homologado para publicação final)."
   ],
@@ -14,6 +14,7 @@
     "duplicateConsecutivePanels": 0,
     "sceneOrderViolations": 0,
     "balloonReadabilityRisks": 0,
+    "framingCropRisks": 0,
     "missingPanelFiles": 0,
     "mp4ProbeMismatches": 0,
     "isSyntheticFixture": true

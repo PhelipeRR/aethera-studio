@@ -1,3 +1,5 @@
+import { existsSync as recapExistsSync, readdirSync as recapReaddirSync, readFileSync as recapReadFileSync, writeFileSync as recapWriteFileSync } from 'node:fs';
+import { join as recapJoin } from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -264,6 +266,76 @@ export function createRemoteHostApp(config: RemoteHostConfig): RemoteHostInstanc
   app.get('/api/projects', requireScope('projects:read'), (_req, res) => {
     res.json(scanAuthorizedProjects(db, config.monorepoRoot));
   });
+
+  // Phase 7.2 — Aethera Recap remote monitoring & preview approval routes
+  const resolveRecapDataRoot = () => process.env['NB_RECAP_DATA_DIR'] ?? recapJoin(config.monorepoRoot, '.aethera-recap-data');
+  const readRecapProjects = () => {
+    const root = resolveRecapDataRoot();
+    if (!recapExistsSync(root)) return [];
+    const entries = recapReaddirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory());
+    return entries.map((dir) => {
+      const base = recapJoin(root, dir.name);
+      const stateFile = recapJoin(base, 'state', 'recap-orchestrator-state.json');
+      const gateHFile = recapJoin(base, 'render', 'gate-h-report.json');
+      const planFile = recapJoin(base, 'render', 'recap-audiovisual-plan.json');
+      const previewMp4 = recapJoin(base, 'render', 'recap-preview.mp4');
+      let state: unknown = null;
+      let gateH: unknown = null;
+      let planSummary: unknown = null;
+      try { if (recapExistsSync(stateFile)) state = JSON.parse(recapReadFileSync(stateFile, 'utf-8')); } catch { /* ignore */ }
+      try { if (recapExistsSync(gateHFile)) gateH = JSON.parse(recapReadFileSync(gateHFile, 'utf-8')); } catch { /* ignore */ }
+      try {
+        if (recapExistsSync(planFile)) {
+          const p = JSON.parse(recapReadFileSync(planFile, 'utf-8')) as Record<string, unknown>;
+          planSummary = {
+            chapterId: p['chapterId'],
+            scriptTitle: p['scriptTitle'],
+            aspectRatio: p['aspectRatio'],
+            totalDurationMs: p['totalDurationMs'],
+            approvalStatus: p['approvalStatus'],
+            isSyntheticFixture: p['isSyntheticFixture'],
+          };
+        }
+      } catch { /* ignore */ }
+      return {
+        id: dir.name,
+        hasPreviewMp4: recapExistsSync(previewMp4),
+        state,
+        gateH,
+        planSummary,
+      };
+    });
+  };
+
+  app.get('/api/recap/projects', requireScope('projects:read'), (_req, res) => {
+    res.json({ projects: readRecapProjects() });
+  });
+
+  app.get('/api/recap/projects/:chapterId', requireScope('projects:read'), (req, res) => {
+    const match = readRecapProjects().find((p) => p.id === req.params.chapterId);
+    if (!match) {
+      res.status(404).json({ error: 'Projeto Recap não encontrado no host remoto.' });
+      return;
+    }
+    res.json(match);
+  });
+
+  app.post('/api/recap/projects/:chapterId/approve-master', requireScope('jobs:approve'), (req, res) => {
+    const root = resolveRecapDataRoot();
+    const approvalFile = recapJoin(root, String(req.params.chapterId), 'master-approval.json');
+    if (!recapExistsSync(recapJoin(root, String(req.params.chapterId)))) {
+      res.status(404).json({ error: 'Projeto Recap não encontrado no host remoto.' });
+      return;
+    }
+    const payload = {
+      chapterId: req.params.chapterId,
+      approved: true,
+      approvedAtIso: new Date().toISOString(),
+    };
+    recapWriteFileSync(approvalFile, JSON.stringify(payload, null, 2), 'utf-8');
+    res.json(payload);
+  });
+
 
   // Global real-time SSE stream
   app.get('/api/events', requireScope('jobs:read'), (_req, res) => {

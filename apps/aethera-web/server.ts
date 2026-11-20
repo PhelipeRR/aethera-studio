@@ -1,3 +1,5 @@
+import { existsSync as webRecapExistsSync, readdirSync as webRecapReaddirSync, readFileSync as webRecapReadFileSync } from 'node:fs';
+import { join as webRecapJoin } from 'node:path';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -193,6 +195,39 @@ export function createAetheraApiApp(opts: CreateAppOptions = {}) {
         monorepoRoot: MONOREPO_ROOT,
       }),
     );
+  });
+
+
+  // Phase 7.2 — Aethera Recap Web status & review endpoint (respects local/remote host boundary)
+  app.get('/api/recap/projects', (_req, res) => {
+    const root = process.env['NB_RECAP_DATA_DIR'] ?? webRecapJoin(process.cwd(), '.aethera-recap-data');
+    if (!webRecapExistsSync(root)) {
+      res.json({
+        mode: 'remote_host_required',
+        projects: [],
+        note: 'Nenhum diretório local de Recap encontrado; conecte um Remote Host para listar projetos com GPU/arquivos locais.',
+      });
+      return;
+    }
+    const projects = webRecapReaddirSync(root, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => {
+        const planPath = webRecapJoin(root, d.name, 'render', 'recap-audiovisual-plan.json');
+        const gatePath = webRecapJoin(root, d.name, 'render', 'gate-h-report.json');
+        let plan: Record<string, unknown> | null = null;
+        let gateH: Record<string, unknown> | null = null;
+        try { if (webRecapExistsSync(planPath)) plan = JSON.parse(webRecapReadFileSync(planPath, 'utf-8')) as Record<string, unknown>; } catch { /* ignore */ }
+        try { if (webRecapExistsSync(gatePath)) gateH = JSON.parse(webRecapReadFileSync(gatePath, 'utf-8')) as Record<string, unknown>; } catch { /* ignore */ }
+        return {
+          id: d.name,
+          title: plan?.['scriptTitle'] ?? d.name,
+          aspectRatio: plan?.['aspectRatio'] ?? '16:9',
+          totalDurationMs: plan?.['totalDurationMs'] ?? 0,
+          approvalStatus: plan?.['approvalStatus'] ?? 'unknown',
+          gateHVerdict: gateH?.['verdict'] ?? null,
+        };
+      });
+    res.json({ mode: 'local_host', projects });
   });
 
   app.get('/api/bootstrap', (_req, res) => {

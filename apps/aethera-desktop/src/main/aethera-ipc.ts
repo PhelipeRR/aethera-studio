@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AgentCircuitBreaker, checkRecapProductionReadiness, planRecapRevisionImpact, type RecapScript } from '@neuralbridge/cinema';
+import { AgentCircuitBreaker, checkRecapProductionReadiness, createTesseractOcrAdapter, extractPanels, importChapter, planRecapRevisionImpact, runRecapProductionOrchestrator, type RecapScript } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -4976,6 +4976,106 @@ productionConsole,
       ...(input.availablePanelIds ? { availablePanelIds: input.availablePanelIds } : {}),
     });
   });
+
+
+  ipcMain.handle(
+    'recap:start-production',
+    async (
+      event,
+      input: {
+        archivePath: string;
+        workTitle: string;
+        language?: string;
+        scriptStyle?: string;
+        aspectRatio?: '16:9' | '9:16';
+        ttsProvider?: string;
+        enableOcr?: boolean;
+        resumeCheckpoint?: boolean;
+        masterApproved?: boolean;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const chapterId = `${input.workTitle || 'recap'}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'recap-chapter';
+      const recapWorkspace = join(userDataDir, 'recap-workspace');
+      const importDir = join(recapWorkspace, 'import', chapterId);
+      const gwCfg = claudeGatewaySecretStore.load();
+
+      const imported = await importChapter({
+        chapterId,
+        archivePath: input.archivePath,
+        outputDir: importDir,
+        readingOrder: 'vertical',
+      });
+      const extracted = await extractPanels({
+        chapter: imported,
+        outputDir: importDir,
+        ...(input.enableOcr ? { ocrAdapter: createTesseractOcrAdapter({ languages: ['por', 'eng'] }) } : {}),
+      });
+
+      const result = await runRecapProductionOrchestrator({
+        runId: `recap-${Date.now()}`,
+        chapterId,
+        workTitle: input.workTitle || 'Aethera Recap',
+        panels: extracted.panels.slice(0, 24),
+        workspaceDir: recapWorkspace,
+        circuitBreaker: recapCircuitBreaker,
+        plannerOptions: {
+          aspectRatio: input.aspectRatio ?? '16:9',
+        },
+        ...(input.masterApproved ? { masterApproved: true } : {}),
+        providers: [
+          {
+            id: 'claude',
+            label: 'Claude CLI',
+            detect: async () => {
+              const st = await claude.detect();
+              return st.installed && st.authenticated !== false && st.problems.length === 0
+                ? { available: true }
+                : { available: false, reason: st.problems[0] ?? 'Claude CLI indisponível.' };
+            },
+          },
+          {
+            id: 'claude-gateway',
+            label: 'Claude Gateway',
+            detect: async () =>
+              gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl
+                ? { available: true }
+                : { available: false, reason: 'Claude Gateway não configurado.' },
+          },
+          {
+            id: 'codex',
+            label: 'Codex CLI',
+            detect: async () => {
+              const st = await codex.detect();
+              return st.installed && st.authenticated !== false && st.problems.length === 0
+                ? { available: true }
+                : { available: false, reason: st.problems[0] ?? 'Codex CLI indisponível.' };
+            },
+          },
+          {
+            id: 'antigravity',
+            label: 'Antigravity CLI (agy)',
+            detect: async () => {
+              const st = await detectAntigravityCli();
+              return st.installed && st.problems.length === 0
+                ? { available: true }
+                : { available: false, reason: st.problems[0] ?? 'Antigravity CLI indisponível.' };
+            },
+          },
+        ],
+      });
+
+      return {
+        ok: result.record.state !== 'failed' && result.record.state !== 'paused_provider_unavailable',
+        state: result.record.state,
+        message:
+          result.record.lastError ??
+          `Estado atual: ${result.record.state}${result.record.previewMp4Path ? ` (prévia pronta)` : ''}.`,
+        previewMp4Path: result.record.previewMp4Path ?? undefined,
+        exportBundleDir: result.record.exportBundleDir ?? undefined,
+      };
+    },
+  );
 
   // Keep unused imports referenced for proxy/agent orchestration readiness
   void AetheraMediaProxyRepository;
