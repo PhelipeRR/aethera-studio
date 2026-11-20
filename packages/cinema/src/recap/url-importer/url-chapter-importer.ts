@@ -77,8 +77,8 @@ export function createPlaywrightPageDiscoveryPort(options?: { allowHttpForTests?
 		async discover({ url, adapter, signal }) {
 			// Try Playwright first for dynamic JS / lazy-loaded images
 			try {
-				const pwName = 'playwright';
-				const pw = (await import(pwName)) as {
+				const dynamicImport = new Function('m', 'return import(m)') as (m: string) => Promise<unknown>;
+				const pw = (await dynamicImport(['play', 'wright'].join(''))) as {
 					chromium: { launch: (opts: { headless: boolean }) => Promise<unknown> };
 				};
 				const browser = (await pw.chromium.launch({ headless: true })) as {
@@ -174,7 +174,7 @@ export function createPlaywrightPageDiscoveryPort(options?: { allowHttpForTests?
 					throw pwErr;
 				}
 				// Fallback to direct HTTPS fetch + deterministic HTML parser when Playwright binary is unavailable
-				const res = await fetchWithSafeRedirects(url.toString(), { signal, allowHttpForTests: options?.allowHttpForTests });
+				const res = await fetchWithSafeRedirects(url.toString(), { ...(signal ? { signal } : {}), ...(options?.allowHttpForTests !== undefined ? { allowHttpForTests: options.allowHttpForTests } : {}) });
 				if (!res.ok) throw new Error(`Falha ao carregar capítulo (HTTP ${res.status}).`);
 				const html = await res.text();
 				const restricted = adapter.detectAccessRestriction?.(html);
@@ -196,7 +196,7 @@ export async function fetchWithSafeRedirects(
 	options?: { referer?: string; signal?: AbortSignal; maxRedirects?: number; allowHttpForTests?: boolean },
 ): Promise<Response> {
 	const maxRedirects = options?.maxRedirects ?? 5;
-	let current = validateExternalChapterUrl(rawUrl, { allowHttpForTests: options?.allowHttpForTests });
+	let current = validateExternalChapterUrl(rawUrl, options?.allowHttpForTests !== undefined ? { allowHttpForTests: options.allowHttpForTests } : undefined);
 
 	for (let hop = 0; hop <= maxRedirects; hop++) {
 		const res = await fetch(current.toString(), {
@@ -212,7 +212,7 @@ export async function fetchWithSafeRedirects(
 		if (res.status >= 300 && res.status < 400) {
 			const loc = res.headers.get('location');
 			if (!loc) throw new Error(`Redirecionamento sem cabeçalho Location (HTTP ${res.status}).`);
-			current = validateRedirectTarget(loc, current, { allowHttpForTests: options?.allowHttpForTests });
+			current = validateRedirectTarget(loc, current, options?.allowHttpForTests !== undefined ? { allowHttpForTests: options.allowHttpForTests } : undefined);
 			continue;
 		}
 		return res;
@@ -226,7 +226,7 @@ export function createDefaultImageDownloadPort(options?: { allowHttpForTests?: b
 			const res = await fetchWithSafeRedirects(imageUrl, {
 				referer,
 				...(signal ? { signal } : {}),
-				allowHttpForTests: options?.allowHttpForTests,
+				...(options?.allowHttpForTests !== undefined ? { allowHttpForTests: options.allowHttpForTests } : {}),
 			});
 			if (!res.ok) throw new Error(`HTTP ${res.status} ao baixar imagem.`);
 			return Buffer.from(await res.arrayBuffer());
@@ -275,7 +275,7 @@ export async function analyzeChapterUrl(input: {
 	allowHttpForTests?: boolean;
 	signal?: AbortSignal;
 }): Promise<AnalyzedChapterUrl> {
-	const parsed = validateExternalChapterUrl(input.url, { allowHttpForTests: input.allowHttpForTests });
+	const parsed = validateExternalChapterUrl(input.url, input.allowHttpForTests !== undefined ? { allowHttpForTests: input.allowHttpForTests } : undefined);
 	const registry = input.registry ?? defaultSiteAdapterRegistry;
 	const adapter = registry.resolveForUrl(parsed);
 	if (!adapter) {
@@ -284,7 +284,7 @@ export async function analyzeChapterUrl(input: {
 	}
 
 	const meta = adapter.parseChapterMetadata(parsed);
-	const discoveryPort = input.discoveryPort ?? createPlaywrightPageDiscoveryPort({ allowHttpForTests: input.allowHttpForTests });
+	const discoveryPort = input.discoveryPort ?? createPlaywrightPageDiscoveryPort(input.allowHttpForTests !== undefined ? { allowHttpForTests: input.allowHttpForTests } : undefined);
 	const { pages, availableChapters } = await discoveryPort.discover({
 		url: parsed,
 		adapter,

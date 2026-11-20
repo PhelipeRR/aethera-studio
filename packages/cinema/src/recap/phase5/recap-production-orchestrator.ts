@@ -235,7 +235,7 @@ export async function runRecapProductionOrchestrator(
 		...(gateGReport ? { gateGReport } : {}),
 		...(masterResult.mp4Path ? { mp4Path: masterResult.mp4Path } : {}),
 		captionsPath: masterResult.captionsPath,
-		thumbnailPanelPath: input.panels[0]?.croppedImagePath ?? input.panels[0]?.pagePath,
+		...((input.panels[0]?.croppedImagePath ?? input.panels[0]?.pagePath) ? { thumbnailPanelPath: (input.panels[0]?.croppedImagePath ?? input.panels[0]?.pagePath)! } : {}),
 	});
 	completedSteps.add('release_bundle');
 

@@ -176,16 +176,13 @@ export function createElevenLabsRecapTtsPort(options: {
 	return {
 		name: `elevenlabs-tts[${options.voiceId}]`,
 		async synthesizeScene(input): Promise<SynthesizedSceneAudio> {
-			const res = await synthesizeElevenLabsWav({
+			await synthesizeElevenLabsWav({
 				apiKey: options.apiKey,
 				voiceId: options.voiceId,
 				text: input.text,
-				outputPath: input.outputPath,
+				outWavPath: input.outputPath,
 				...(options.modelId ? { modelId: options.modelId } : {}),
 			});
-			if (!res.ok) {
-				throw new Error(res.reason || 'ElevenLabs TTS falhou.');
-			}
 			const speechDurationMs = await measureAudioFileDurationMs(input.outputPath);
 			return {
 				sceneId: input.sceneId,

@@ -149,7 +149,7 @@ export function registerRecapUrlImportRoutes(input: {
 
     try {
       for (const item of job.items) {
-        if (ctrl.signal.aborted || job.status === 'cancelled') return;
+        if (ctrl.signal.aborted || (job.status as string) === 'cancelled') return;
         if (item.status === 'completed') continue;
         try {
           item.status = 'analyzing';
@@ -195,7 +195,7 @@ export function registerRecapUrlImportRoutes(input: {
           emit(job);
         }
       }
-      if (job.status !== 'cancelled') {
+      if ((job.status as string) !== 'cancelled') {
         job.status = job.items.some((i) => i.status === 'failed') ? 'failed' : 'completed';
       }
       emit(job);

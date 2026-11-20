@@ -501,6 +501,8 @@ export interface StoryEngineOptions {
 	chapterId: string;
 	panels: ExtractedPanel[];
 	outputDir: string;
+	/** Optional durable checkpoint directory (defaults to <outputDir>/<chapterId>/checkpoints). */
+	checkpointDir?: string;
 	visionAdapter?: VisionAdapter;
 	ocrAdapter?: OcrAdapter;
 	scriptStyle?: ScriptStyle;

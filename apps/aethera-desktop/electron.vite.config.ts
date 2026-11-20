@@ -31,6 +31,7 @@ export default defineConfig({
     build: {
       externalizeDeps: { exclude: WORKSPACE_PACKAGES },
       rollupOptions: {
+        external: ['playwright', 'playwright-core', 'chromium-bidi'],
         input: {
           index: resolve('src/main/index.ts'),
           'mcp-server': resolve('../../packages/mcp-server/src/cli.ts'),

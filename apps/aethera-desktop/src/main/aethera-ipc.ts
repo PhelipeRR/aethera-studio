@@ -5009,7 +5009,7 @@ productionConsole,
       const extracted = await extractPanels({
         chapter: imported,
         outputDir: importDir,
-        ...(input.enableOcr ? { ocrAdapter: createTesseractOcrAdapter({ languages: ['por', 'eng'] }) } : {}),
+        ...(input.enableOcr ? { ocrAdapter: createTesseractOcrAdapter({ languages: 'por+eng' }) } : {}),
       });
 
       const result = await runRecapProductionOrchestrator({

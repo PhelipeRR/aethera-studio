@@ -518,10 +518,6 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		...(renderTarget === 'preview' && mp4Path ? { previewMp4Path: mp4Path } : {}),
 		...(renderTarget === 'master' && mp4Path ? { masterMp4Path: mp4Path } : {}),
 		gateHVerdict: gateHReport.verdict,
-		reusedShotsCount,
-		renderedShotsCount,
-		sfxAppliedCount,
-		subtitlesBurnedIn,
 		warnings,
 	};
 	savePhase3Checkpoint(checkpointDir, finalCheckpoint);
@@ -537,6 +533,10 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		captionsPath,
 		mp4Path,
 		...(mp4ProbeResult ? { mp4Probe: mp4ProbeResult } : {}),
+		reusedShotsCount,
+		renderedShotsCount,
+		sfxAppliedCount,
+		subtitlesBurnedIn,
 		warnings,
 	};
 }

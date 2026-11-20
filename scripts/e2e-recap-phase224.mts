@@ -193,7 +193,7 @@ async function main() {
 	});
 	log('IMPORT', `${imported.pageCount} paginas importadas de Nano-Machine-Capitulo-01.cbz`);
 
-	const ocrAdapter = ENABLE_OCR ? createTesseractOcrAdapter({ languages: ['por', 'eng'] }) : undefined;
+	const ocrAdapter = ENABLE_OCR ? createTesseractOcrAdapter({ languages: 'por+eng' }) : undefined;
 	const extracted = await extractPanels({
 		chapter: imported,
 		outputDir: OUTPUT_DIR,

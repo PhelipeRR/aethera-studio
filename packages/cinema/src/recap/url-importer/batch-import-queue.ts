@@ -204,7 +204,7 @@ export class RecapImportJobManager {
 
 		try {
 			for (const item of job.items) {
-				if (controller.signal.aborted || job.status === 'cancelled') {
+				if (controller.signal.aborted || (job.status as RecapImportJobStatus) === 'cancelled') {
 					return;
 				}
 				if (this.pausedFlags.get(id)) {
@@ -278,7 +278,7 @@ export class RecapImportJobManager {
 					job.completedChapters = job.items.filter((x) => x.status === 'completed' || x.status === 'skipped_existing').length;
 					this.emit(job);
 				} catch (err) {
-					if (controller.signal.aborted || job.status === 'cancelled') {
+					if (controller.signal.aborted || (job.status as RecapImportJobStatus) === 'cancelled') {
 						item.status = 'cancelled';
 						this.emit(job);
 						return;
@@ -294,7 +294,7 @@ export class RecapImportJobManager {
 			} else if (job.items.some((i) => i.status === 'failed')) {
 				job.status = 'failed';
 				job.error = 'Um ou mais capítulos falharam durante a importação.';
-			} else if (job.status !== 'cancelled') {
+			} else if ((job.status as RecapImportJobStatus) !== 'cancelled') {
 				job.status = 'completed';
 			}
 			this.emit(job);
