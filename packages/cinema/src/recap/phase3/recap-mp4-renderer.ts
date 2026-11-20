@@ -11,6 +11,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -19,6 +20,7 @@ import type {
 	GateHReport,
 	RecapAudiovisualPlan,
 	RecapPanelShot,
+	RecapSfxKind,
 	RecapPhase3Checkpoint,
 	RecapPhase3Stage,
 	RecapTtsSynthesisPort,
@@ -106,6 +108,43 @@ export function createDeterministicFallbackTtsPort(): RecapTtsSynthesisPort {
 	};
 }
 
+
+const MOTIONVELIX_SFX_MAP: Record<RecapSfxKind, string> = {
+	whoosh: 'whoosh.wav',
+	impact_hit: 'impacto.wav',
+	tension_riser: 'riser.wav',
+	page_turn: 'papel.wav',
+	emotional_swell: 'brilho.wav',
+};
+
+/**
+ * Resolves a real MotionVelix SFX WAV file on disk if available.
+ */
+export function resolveMotionVelixSfxFile(sfxKind: RecapSfxKind, sfxDir: string): string | null {
+	const candidate = join(sfxDir, MOTIONVELIX_SFX_MAP[sfxKind]);
+	return existsSync(candidate) ? candidate : null;
+}
+
+/**
+ * Deterministic hash for partial per-shot rendering (Phase 3.4):
+ * unchanged shots reuse their already-encoded MP4 clip.
+ */
+export function computeShotRenderHash(shot: RecapPanelShot, width: number, height: number, fps: number): string {
+	return createHash('sha256')
+		.update(JSON.stringify({
+			imagePath: shot.imagePath,
+			durationMs: shot.durationMs,
+			motionStyle: shot.motionStyle,
+			focalStart: shot.focalStart,
+			focalEnd: shot.focalEnd,
+			width,
+			height,
+			fps,
+		}))
+		.digest('hex')
+		.slice(0, 16);
+}
+
 function buildShotZoompanFilter(shot: RecapPanelShot, width: number, height: number, fps: number): string {
 	const frames = Math.max(1, Math.round((shot.durationMs / 1000) * fps));
 	const z0 = shot.focalStart.zoom;
@@ -158,6 +197,10 @@ export interface RenderRecapVideoInput {
 	checkpointDir?: string;
 	ttsPort?: RecapTtsSynthesisPort;
 	musicBedPath?: string;
+	/** Directory containing MotionVelix SFX WAVs (e.g. .agents/skills/motionvelix/assets/sfx). */
+	sfxAssetsDir?: string;
+	/** Burn ASS captions into video stream when libass is available. Default: false (exports external .ass). */
+	burnSubtitles?: boolean;
 	plannerOptions?: RecapVisualPlannerOptions;
 	/** Set to true only after preview review to authorize master export. */
 	masterApproved?: boolean;
@@ -173,6 +216,10 @@ export interface RenderRecapVideoResult {
 	captionsPath: string;
 	mp4Path: string | null;
 	mp4Probe?: { hasVideo: boolean; hasAudio: boolean; durationMs: number };
+	reusedShotsCount: number;
+	renderedShotsCount: number;
+	sfxAppliedCount: number;
+	subtitlesBurnedIn: boolean;
 	warnings: string[];
 }
 
@@ -272,6 +319,10 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 	// ─── Stage 4: Render MP4 via FFmpeg (Motion + Ducking + Loudnorm) ────────
 	let mp4Path: string | null = null;
 	let mp4ProbeResult: { hasVideo: boolean; hasAudio: boolean; durationMs: number } | undefined;
+	let reusedShotsCount = 0;
+	let renderedShotsCount = 0;
+	let sfxAppliedCount = 0;
+	let subtitlesBurnedIn = false;
 
 	if (!dryRunRender) {
 		const targetFile = join(outputDir, renderTarget === 'master' ? 'recap-master.mp4' : 'recap-preview.mp4');
@@ -279,6 +330,16 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 
 		for (const shot of plan.shots) {
 			const clipPath = join(shotsDir, `${shot.shotId}.mp4`);
+			const hashPath = join(shotsDir, `${shot.shotId}.hash`);
+			const expectedHash = computeShotRenderHash(shot, plan.width, plan.height, plan.fps);
+
+			// Partial render cache (Phase 3.4): skip re-encoding unchanged shots
+			if (existsSync(clipPath) && existsSync(hashPath) && readFileSync(hashPath, 'utf-8').trim() === expectedHash) {
+				reusedShotsCount++;
+				shotClips.push(clipPath);
+				continue;
+			}
+
 			const vf = buildShotZoompanFilter(shot, plan.width, plan.height, plan.fps);
 			await execFileAsync(
 				'ffmpeg',
@@ -297,6 +358,8 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 				],
 				{ timeout: 60_000, windowsHide: true },
 			);
+			writeFileSync(hashPath, expectedHash, 'utf-8');
+			renderedShotsCount++;
 			shotClips.push(clipPath);
 		}
 
@@ -336,12 +399,35 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 			ffmpegAudioInputs.push('-f', 'lavfi', '-t', totalSec, '-i', `sine=frequency=110:sample_rate=44100`);
 		}
 
+		// Optional real MotionVelix SFX cues (Phase 3.3)
+		const sfxFilterParts: string[] = [];
+		const sfxLabels: string[] = [];
+		if (input.sfxAssetsDir && existsSync(input.sfxAssetsDir)) {
+			let nextIdx = musicInputIdx + 1;
+			for (const cue of plan.sfxCues) {
+				const sfxFile = resolveMotionVelixSfxFile(cue.sfxKind, input.sfxAssetsDir);
+				if (!sfxFile) continue;
+				ffmpegAudioInputs.push('-i', sfxFile);
+				const delayMs = Math.max(0, Math.round(cue.timeMs));
+				const label = `sfx${sfxAppliedCount}`;
+				sfxFilterParts.push(
+					`[${nextIdx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=${cue.gainDb}dB,adelay=${delayMs}|${delayMs}[${label}]`,
+				);
+				sfxLabels.push(`[${label}]`);
+				sfxAppliedCount++;
+				nextIdx++;
+			}
+		}
+
+		const mixInputs = `[voice_mix][music_ducked]${sfxLabels.join('')}`;
+		const totalMixCount = 2 + sfxLabels.length;
 		const fullAudioFilter = [
 			...audioFilterParts,
 			`${concatVoiceInputs}concat=n=${streamCount}:v=0:a=1,apad=whole_dur=${totalSec},asplit=2[voice_mix][voice_sc]`,
 			`[${musicInputIdx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=${plan.ducking.musicBaseGainDb}dB,atrim=0:${totalSec}[music_raw]`,
 			`[music_raw][voice_sc]${plan.ducking.sidechainFilter}[music_ducked]`,
-			`[voice_mix][music_ducked]amix=inputs=2:duration=first:dropout_transition=2,${plan.ducking.loudnormFilter}[aout]`,
+			...sfxFilterParts,
+			`${mixInputs}amix=inputs=${totalMixCount}:duration=first:dropout_transition=2,${plan.ducking.loudnormFilter}[aout]`,
 		].join(';');
 
 		const mixedAudioPath = join(audioDir, 'mixed-master.m4a');
@@ -360,21 +446,50 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 			{ timeout: 60_000, windowsHide: true },
 		);
 
-		// Mux final MP4 (faststart for streaming/preview)
-		await execFileAsync(
-			'ffmpeg',
-			[
-				'-y',
-				'-i', concatVideoPath,
-				'-i', mixedAudioPath,
-				'-c:v', 'copy',
-				'-c:a', 'copy',
-				'-movflags', '+faststart',
-				'-shortest',
-				targetFile,
-			],
-			{ timeout: 60_000, windowsHide: true },
-		);
+		// Mux final MP4 (with optional ASS subtitle burn-in and graceful fallback)
+		let burned = false;
+		if (input.burnSubtitles) {
+			try {
+				const escapedAss = captionsPath.replaceAll('\\', '/').replaceAll(':', '\\:');
+				await execFileAsync(
+					'ffmpeg',
+					[
+						'-y',
+						'-i', concatVideoPath,
+						'-i', mixedAudioPath,
+						'-vf', `ass='${escapedAss}'`,
+						'-c:v', 'libx264',
+						'-preset', renderTarget === 'master' ? 'medium' : 'ultrafast',
+						'-pix_fmt', 'yuv420p',
+						'-c:a', 'copy',
+						'-movflags', '+faststart',
+						'-shortest',
+						targetFile,
+					],
+					{ timeout: 90_000, windowsHide: true },
+				);
+				burned = true;
+				subtitlesBurnedIn = true;
+			} catch {
+				warnings.push('Burn-in de legendas ASS indisponível neste build do FFmpeg; mantendo arquivo .ass externo sincronizado.');
+			}
+		}
+		if (!burned) {
+			await execFileAsync(
+				'ffmpeg',
+				[
+					'-y',
+					'-i', concatVideoPath,
+					'-i', mixedAudioPath,
+					'-c:v', 'copy',
+					'-c:a', 'copy',
+					'-movflags', '+faststart',
+					'-shortest',
+					targetFile,
+				],
+				{ timeout: 60_000, windowsHide: true },
+			);
+		}
 
 		mp4Path = targetFile;
 		mp4ProbeResult = await probeMp4(targetFile);
@@ -403,6 +518,10 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		...(renderTarget === 'preview' && mp4Path ? { previewMp4Path: mp4Path } : {}),
 		...(renderTarget === 'master' && mp4Path ? { masterMp4Path: mp4Path } : {}),
 		gateHVerdict: gateHReport.verdict,
+		reusedShotsCount,
+		renderedShotsCount,
+		sfxAppliedCount,
+		subtitlesBurnedIn,
 		warnings,
 	};
 	savePhase3Checkpoint(checkpointDir, finalCheckpoint);

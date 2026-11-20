@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { AetheraMark } from './AetheraMark.js';
 import { CreativeStudioPanel } from './CreativeStudioPanel.js';
+import { RecapProductionPanel } from './RecapProductionPanel.js';
 import { ProductionConsoleAccordion } from '@/features/video/ProductionConsoleAccordion';
 import { TtsProviderSelector } from '@/features/aethera/TtsProviderSelector';
 
@@ -80,7 +81,7 @@ interface AetheraStatus {
   peers: Array<{ appId: string; pid: number; baseUrl: string }>;
 }
 
-type Tab = 'produce' | 'creative' | 'runs' | 'review' | 'calendar' | 'ecosystem';
+type Tab = 'produce' | 'recap' | 'creative' | 'runs' | 'review' | 'calendar' | 'ecosystem';
 
 declare global {
   interface Window {
@@ -249,6 +250,8 @@ export function App() {
             {error}
           </div>
         )}
+
+        {tab === 'recap' && <RecapProductionPanel />}
 
         {tab === 'produce' && (
           <section style={BENTO_CARD_STYLE}>

@@ -69,7 +69,16 @@ function selectMotionForScene(
 		};
 	}
 
-	if (scene.narrativeIntent === 'exposition' || scene.narrativeIntent === 'world_building') {
+	if (scene.narrativeIntent === 'world_building') {
+		return {
+			motionStyle: 'parallax',
+			focalStart: { x: 0.46, y: 0.48, zoom: 1.12 },
+			focalEnd: { x: 0.54, y: 0.52, zoom: 1.04 },
+			balloonSafeZoneProtected: false,
+		};
+	}
+
+	if (scene.narrativeIntent === 'exposition') {
 		return {
 			motionStyle: 'ken_burns_out',
 			focalStart: { x: 0.5, y: 0.48, zoom: 1.1 },
@@ -84,6 +93,36 @@ function selectMotionForScene(
 		focalEnd: { x: 0.5, y: 0.48, zoom: 1.09 },
 		balloonSafeZoneProtected: false,
 	};
+}
+
+
+/**
+ * Detects whether a shot's zoom/pan or aspect mismatch risks cropping characters,
+ * speech balloons, or key action regions (Phase 3.1).
+ */
+export function detectFramingCropRisk(input: {
+	panel: ExtractedPanel | undefined;
+	viewportWidth: number;
+	viewportHeight: number;
+	focalStart: RecapMotionKeyframe;
+	focalEnd: RecapMotionKeyframe;
+}): { atRisk: boolean; reason?: string } {
+	const maxZoom = Math.max(input.focalStart.zoom, input.focalEnd.zoom);
+	const isDialogue = input.panel?.metadata.classification === 'dialogue';
+	if (isDialogue && maxZoom > 1.08) {
+		return { atRisk: true, reason: `Zoom ${maxZoom.toFixed(2)}x em painel de diálogo pode cortar balões de texto.` };
+	}
+	if (maxZoom > 1.35) {
+		return { atRisk: true, reason: `Zoom excessivo (${maxZoom.toFixed(2)}x) pode cortar personagens ou ação principal.` };
+	}
+	if (input.panel && input.panel.width > 0 && input.panel.height > 0) {
+		const panelRatio = input.panel.width / input.panel.height;
+		const viewportRatio = input.viewportWidth / input.viewportHeight;
+		if (Math.abs(Math.log(panelRatio / viewportRatio)) > 1.35 && maxZoom > 1.18) {
+			return { atRisk: true, reason: 'Divergência acentuada de proporção com zoom alto pode cortar bordas relevantes.' };
+		}
+	}
+	return { atRisk: false };
 }
 
 function selectTransitionForScene(scene: Scene, index: number): RecapTransitionKind {
@@ -181,8 +220,12 @@ export function buildRecapAudiovisualPlan(input: {
 	}
 
 	const renderTarget = options.renderTarget ?? 'preview';
-	const width = options.width ?? (renderTarget === 'master' ? 1920 : 1280);
-	const height = options.height ?? (renderTarget === 'master' ? 1080 : 720);
+	const aspectRatio = options.aspectRatio ?? '16:9';
+	const defaultDims = aspectRatio === '9:16'
+		? (renderTarget === 'master' ? { w: 1080, h: 1920 } : { w: 720, h: 1280 })
+		: (renderTarget === 'master' ? { w: 1920, h: 1080 } : { w: 1280, h: 720 });
+	const width = options.width ?? defaultDims.w;
+	const height = options.height ?? defaultDims.h;
 	const fps = options.fps ?? (renderTarget === 'master' ? 30 : 24);
 	const platform = options.platform ?? 'youtube';
 	const loudnessProfile = LOUDNESS_PROFILES[platform];
@@ -278,6 +321,7 @@ export function buildRecapAudiovisualPlan(input: {
 				focalEnd: motion.focalEnd,
 				transitionIn: pIdx === 0 ? selectTransitionForScene(scene, sIdx) : 'cut',
 				balloonSafeZoneProtected: motion.balloonSafeZoneProtected,
+				framingCropRisk: detectFramingCropRisk({ panel, viewportWidth: width, viewportHeight: height, focalStart: motion.focalStart, focalEnd: motion.focalEnd }),
 				emotion: scene.emotion,
 				narrativeIntent: scene.narrativeIntent,
 			});
@@ -328,6 +372,7 @@ export function buildRecapAudiovisualPlan(input: {
 		isSyntheticFixture,
 		approvalStatus,
 		renderTarget,
+		aspectRatio,
 		width,
 		height,
 		fps,

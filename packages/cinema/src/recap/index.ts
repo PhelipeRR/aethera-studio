@@ -208,3 +208,4 @@ export {
 
 // ─── Phase 3 — Audiovisual Production Exports ────────────────────────────────
 export * from './phase3/index.js';
+export * from './production-readiness.js';

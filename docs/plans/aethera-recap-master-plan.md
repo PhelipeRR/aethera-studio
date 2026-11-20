@@ -355,3 +355,34 @@ Adicionar a skill YouTube Agent como recurso opcional de pesquisa contextual.
 | runVideoResearch | `packages/orchestrator/src/video-research.ts` | Pesquisa de vídeo contextual |
 | AgentAdapter (Claude/Codex) | `packages/agents/src/` | Autenticação e execução de CLIs |
 | SegmentAnalysis schema | `packages/shared/src/aethera-visual-analysis.ts` | Schema de análise visual estruturada |
+
+
+---
+
+## Reconciliação do Roadmap Expandido — Fases 3 a 7 (Proposta Incorporada em 2026-11-20)
+
+> **Reconciliação de numeração:** As Fases 1, 2, 2.1 e 2.2 (com homologação E2E real da 2.2.4 pendente de quota dos agentes) permanecem intactas como linha de base oficial. O escopo anteriormente distribuído em Fases 3–5 foi expandido para Fases 3–7 para cobrir produção audiovisual completa, interface/editor por prompt, automação resiliente, qualidade E2E e release Desktop/Web.
+
+| Fase | Entrega principal | Subetapas | Critério de conclusão (Gate) |
+|---|---|---|---|
+| **Fase 3 — Motor de produção audiovisual** | Vídeo MP4 com motion, voz, SFX, VFX, música e legendas | **3.1** MotionVelix e direção cinematográfica (16:9 & 9:16, zoom/pan/parallax, detecção de corte); **3.2** Narração e sincronização Audio-First; **3.3** SFX, VFX, música com ducking e legendas; **3.4** Renderização MP4, checkpoints por cena/etapa e revisão técnica | Vídeo técnico completo passa no Gate H (não substitui homologação narrativa da 2.2.4) |
+| **Fase 4 — Interface de criação e edição** | Criação de projeto, painel de produção, editor de cenas e revisão por prompt | **4.1** Criação do projeto; **4.2** Painel de produção (quotas, circuit breakers, retomada); **4.3** Editor de cenas; **4.4** Revisão por prompt com plano de impacto | Criar, acompanhar, revisar e exportar projeto pela interface sem terminal |
+| **Fase 5 — Automação completa e orquestração** | Fluxo ponta a ponta por único prompt com máquina de estados persistente | **5.1** Orquestrador de produção; **5.2** Disponibilidade e fallback (VisionRouter); **5.3** Recuperação automática/idempotência; **5.4** Edição incremental por grafo de dependências | Um prompt inicia produção, recupera falhas tratáveis e entrega prévia para aprovação |
+| **Fase 6 — Qualidade, testes e otimização** | Homologação narrativa (2.2.4 real) + audiovisual + E2E + performance | **6.1** Qualidade narrativa (Gate G pré/pós-Humanize); **6.2** Qualidade audiovisual (Gate H); **6.3** Testes E2E completos; **6.4** Performance e cache | Todos os critérios críticos aprovados em testes e em pelo menos 1 capítulo real completo |
+| **Fase 7 — Integração final e release** | Recap estável no Aethera Desktop e Web | **7.1** Integração Desktop; **7.2** Integração Web/Remote Host; **7.3** Exportação e organização; **7.4** Release, instalador e documentação | Criar, retomar, revisar e finalizar recap pelo app instalado sem comandos dev |
+
+### Auditoria Concluída da Fase 3.1 (Componentes Existentes Reutilizados)
+- **MotionVelix v2.7.3** (`.agents/skills/motionvelix/`): `engine/render.mjs`, `scripts/mv_edit.py`, `assets/sfx`, `assets/fonts`, `assets/lottie`.
+- **Velix Motion & Schema** (`packages/workspace/src/velix-motion.ts`, `velix-motion-adapter.ts`, `packages/orchestrator/src/video-motion.ts`, `packages/shared/src/motion.ts`).
+- **Formatos e Direção** (`packages/cinema/src/director/aethera-format-catalog.ts` — categoria `anime-manga`, direções `manga`/`anime`/`cinematic`, presets 16:9 e 9:16; `cinematography-director.ts`; `scene-audiovisual-plan.ts`).
+- **Áudio, Legendas e Render** (`audio/audio-first-timeline.ts`, `audio/sound-engine.ts`, `audio/voice-director.ts`, `captions/smart-captions.ts`, `render/real-renderer.ts`, `qc/real-media-probe.ts`).
+
+### Critérios Globais Obrigatórios (Fases 3 a 7)
+1. **Reutilização:** não duplicar motores existentes do Aethera Studio.
+2. **Resiliência:** nenhum pipeline depende da disponibilidade simultânea de Claude, Codex e Antigravity.
+3. **Fidelidade:** não inventar diálogos, acontecimentos ou fontes.
+4. **Áudio primeiro:** a duração real da narração orienta a montagem.
+5. **Revisão humana:** apresentar prévia antes da aprovação final.
+6. **Edição incremental:** reprocessar apenas o necessário.
+7. **Observabilidade:** registrar métricas, erros, agentes e artefatos.
+8. **Qualidade:** SFX, VFX, legendas e áudio fazem parte obrigatória da validação.

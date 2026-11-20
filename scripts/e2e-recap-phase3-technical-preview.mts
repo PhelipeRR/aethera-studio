@@ -123,6 +123,8 @@ async function main() {
 		panels: samplePanels,
 		outputDir: RENDER_DIR,
 		checkpointDir: CHECKPOINT_DIR,
+		sfxAssetsDir: join(REPO_ROOT, '.agents', 'skills', 'motionvelix', 'assets', 'sfx'),
+		burnSubtitles: process.env['NB_RECAP_BURN_SUBTITLES'] === '1',
 		plannerOptions: {
 			renderTarget: 'preview',
 			isSyntheticFixture: true,

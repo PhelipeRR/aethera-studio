@@ -13,9 +13,18 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
 	buildRecapAudiovisualPlan,
+	detectFramingCropRisk,
 	runGateHAudiovisualQuality,
 	renderRecapVideo,
 	loadPhase3Checkpoint,
+	auditNarrationAudioClip,
+	createChainedRecapTtsPort,
+	resolveMotionVelixSfxFile,
+	computeShotRenderHash,
+	checkRecapProductionReadiness,
+	AgentCircuitBreaker,
+	classifyVisionError,
+	saveCheckpoint,
 	type ExtractedPanel,
 	type RecapScript,
 	type RecapTtsSynthesisPort,
@@ -287,6 +296,204 @@ describe('Phase 3 — Audiovisual Production (Synthetic Fixtures)', () => {
 				dryRunRender: true,
 			});
 			expect(ttsAttempts).toBe(3);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('Phase 3.1: supports 16:9 and 9:16 aspect ratios, parallax motion on world_building, and framing crop risk detection', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'recap-p31-aspect-'));
+		try {
+			const p0 = join(dir, 'p0.png');
+			const p1 = join(dir, 'p1.png');
+			const p2 = join(dir, 'p2.png');
+			writeFileSync(p0, 'img0');
+			writeFileSync(p1, 'img1');
+			writeFileSync(p2, 'img2');
+
+			const panels = [
+				makeSyntheticPanel('p-0', 0, p0, 'establishing', 800, 800),
+				makeSyntheticPanel('p-1', 1, p1, 'dialogue', 800, 900),
+				makeSyntheticPanel('p-2', 2, p2, 'action', 800, 800),
+			];
+			const script = makeSyntheticScript(panels);
+			script.scenes[0]!.narrativeIntent = 'world_building';
+
+			const plan916 = buildRecapAudiovisualPlan({
+				script,
+				panels,
+				options: { renderTarget: 'preview', aspectRatio: '9:16', isSyntheticFixture: true },
+			});
+			expect(plan916.aspectRatio).toBe('9:16');
+			expect(plan916.width).toBe(720);
+			expect(plan916.height).toBe(1280);
+			expect(plan916.shots[0]!.motionStyle).toBe('parallax');
+			expect(plan916.shots[0]!.framingCropRisk.atRisk).toBe(false);
+
+			const risky = detectFramingCropRisk({
+				panel: panels[1],
+				viewportWidth: 1280,
+				viewportHeight: 720,
+				focalStart: { x: 0.5, y: 0.5, zoom: 1.0 },
+				focalEnd: { x: 0.5, y: 0.5, zoom: 1.25 },
+			});
+			expect(risky.atRisk).toBe(true);
+			expect(risky.reason).toContain('diálogo');
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('Phase 3.2: audits WAV narration clips (valid, silent, clipped) and chains TTS providers with fallback', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'recap-p32-tts-'));
+		try {
+			// Helper to write a 16-bit PCM WAV
+			const writeWav = (path: string, sampleVal: number, durationSec = 1.0) => {
+				const sr = 44100;
+				const n = Math.round(sr * durationSec);
+				const buf = Buffer.alloc(44 + n * 2);
+				buf.write('RIFF', 0);
+				buf.writeUInt32LE(36 + n * 2, 4);
+				buf.write('WAVE', 8);
+				buf.write('fmt ', 12);
+				buf.writeUInt32LE(16, 16);
+				buf.writeUInt16LE(1, 20);
+				buf.writeUInt16LE(1, 22);
+				buf.writeUInt32LE(sr, 24);
+				buf.writeUInt32LE(sr * 2, 28);
+				buf.writeUInt16LE(2, 32);
+				buf.writeUInt16LE(16, 34);
+				buf.write('data', 36);
+				buf.writeUInt32LE(n * 2, 40);
+				for (let i = 0; i < n; i++) buf.writeInt16LE(sampleVal, 44 + i * 2);
+				writeFileSync(path, buf);
+			};
+
+			const validWav = join(dir, 'valid.wav');
+			const silentWav = join(dir, 'silent.wav');
+			const clippedWav = join(dir, 'clipped.wav');
+			writeWav(validWav, 5000, 1.2);
+			writeWav(silentWav, 0, 1.2);
+			writeWav(clippedWav, 32767, 1.2);
+
+			const validAudit = await auditNarrationAudioClip(validWav);
+			expect(validAudit.ok).toBe(true);
+			expect(validAudit.durationMs).toBeGreaterThanOrEqual(1100);
+
+			const silentAudit = await auditNarrationAudioClip(silentWav);
+			expect(silentAudit.ok).toBe(false);
+			expect(silentAudit.issues.some((i) => i.includes('Silêncio'))).toBe(true);
+
+			const clippedAudit = await auditNarrationAudioClip(clippedWav);
+			expect(clippedAudit.ok).toBe(false);
+			expect(clippedAudit.issues.some((i) => i.includes('Clipping'))).toBe(true);
+
+			// Chained TTS: failing primary falls back to deterministic when allowed
+			const failingPort: RecapTtsSynthesisPort = {
+				name: 'primary-offline',
+				async synthesizeScene() { throw new Error('Connection refused'); },
+			};
+			const chained = createChainedRecapTtsPort({ ports: [failingPort], allowDeterministicFallback: true });
+			const outWav = join(dir, 'fallback.wav');
+			const seg = await chained.synthesizeScene({
+				sceneId: 's1',
+				text: 'Teste de narração com fallback determinístico.',
+				emotion: 'neutral',
+				estimatedDurationSec: 2,
+				outputPath: outWav,
+			});
+			expect(seg.isFallback).toBe(true);
+			expect(seg.speechDurationMs).toBeGreaterThanOrEqual(1200);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('Phase 3.3 & 3.4: resolves real MotionVelix SFX files and computes deterministic per-shot render hashes', () => {
+		const sfxDir = join(process.cwd(), '.agents', 'skills', 'motionvelix', 'assets', 'sfx');
+		const whoosh = resolveMotionVelixSfxFile('whoosh', sfxDir);
+		const impact = resolveMotionVelixSfxFile('impact_hit', sfxDir);
+		expect(whoosh).toContain('whoosh.wav');
+		expect(impact).toContain('impacto.wav');
+
+		const dir = mkdtempSync(join(tmpdir(), 'recap-p34-hash-'));
+		try {
+			const p0 = join(dir, 'p0.png');
+			writeFileSync(p0, 'img0');
+			const panels = [makeSyntheticPanel('p-0', 0, p0, 'action'), makeSyntheticPanel('p-1', 1, p0, 'dialogue'), makeSyntheticPanel('p-2', 2, p0, 'action')];
+			const plan = buildRecapAudiovisualPlan({ script: makeSyntheticScript(panels), panels, options: { isSyntheticFixture: true } });
+			const shot = plan.shots[0]!;
+			const h1 = computeShotRenderHash(shot, 1280, 720, 24);
+			const h2 = computeShotRenderHash(shot, 1280, 720, 24);
+			const hChanged = computeShotRenderHash({ ...shot, durationMs: shot.durationMs + 500 }, 1280, 720, 24);
+			expect(h1).toBe(h2);
+			expect(h1).not.toBe(hChanged);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('Phase 4.2: production readiness preflight reports circuit breakers and recommends auto-resume when a provider recovers', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'recap-p42-ready-'));
+		const ckptDir = join(dir, 'checkpoints');
+		try {
+			const p0 = join(dir, 'p0.png');
+			writeFileSync(p0, 'img0');
+			const panels = [makeSyntheticPanel('p-0', 0, p0), makeSyntheticPanel('p-1', 1, p0)];
+			saveCheckpoint(ckptDir, {
+				chapterId: 'nano-machine-cap-01',
+				completedStages: ['import', 'extraction'],
+				lastUpdatedAtIso: new Date().toISOString(),
+				sourceHash: 'hash-0',
+				extractedPanels: panels,
+				panelAnalyses: [
+					{
+						panelId: 'p-0',
+						characters: ['Protagonista'],
+						dialogues: [],
+						actions: [{ type: 'observation', description: 'Observa' }],
+						emotions: ['tension'],
+						evidence: [],
+						analysisConfidence: 0.9,
+						analyzedBy: 'claude',
+						analyzedAtIso: new Date().toISOString(),
+					},
+				],
+			});
+
+			const cb = new AgentCircuitBreaker();
+			cb.recordError('claude', classifyVisionError("You've hit your weekly limit · resets Nov 22, 3pm (America/Sao_Paulo)", 'claude'));
+			cb.recordError('codex', classifyVisionError('usage limit until 2026-11-23', 'codex'));
+
+			// All circuits open -> ready: false, checkpoint preserved
+			const blocked = await checkRecapProductionReadiness({
+				providers: [
+					{ id: 'claude', label: 'Claude CLI', detect: async () => ({ available: true }) },
+					{ id: 'codex', label: 'Codex CLI', detect: async () => ({ available: true }) },
+				],
+				circuitBreaker: cb,
+				checkpointDir: ckptDir,
+				expectedTotalPanels: 2,
+			});
+			expect(blocked.ready).toBe(false);
+			expect(blocked.checkpoint.completedPanels).toBe(1);
+			expect(blocked.checkpoint.pendingPanels).toBe(1);
+			expect(blocked.checkpoint.canResume).toBe(true);
+			expect(blocked.summaryMessage).toContain('QUOTA_EXCEEDED');
+
+			// One provider available -> ready: true and autoResumeRecommended: true
+			const readyReport = await checkRecapProductionReadiness({
+				providers: [
+					{ id: 'claude', label: 'Claude CLI', detect: async () => ({ available: true }) },
+					{ id: 'claude-gateway', label: 'Claude Gateway', detect: async () => ({ available: true }) },
+				],
+				circuitBreaker: cb,
+				checkpointDir: ckptDir,
+				expectedTotalPanels: 2,
+			});
+			expect(readyReport.ready).toBe(true);
+			expect(readyReport.operationalProviders).toEqual(['claude-gateway']);
+			expect(readyReport.autoResumeRecommended).toBe(true);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

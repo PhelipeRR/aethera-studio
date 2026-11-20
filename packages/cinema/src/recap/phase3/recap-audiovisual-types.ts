@@ -17,7 +17,8 @@ export type RecapMotionStyle =
 	| 'pan_vertical'
 	| 'pan_horizontal'
 	| 'static_focus'
-	| 'impact_push';
+	| 'impact_push'
+	| 'parallax';
 
 export type RecapTransitionKind = 'cut' | 'crossfade' | 'flash_white' | 'dip_black';
 
@@ -53,6 +54,8 @@ export interface RecapPanelShot {
 	transitionIn: RecapTransitionKind;
 	/** True when motion/VFX parameters are constrained to preserve speech balloon legibility. */
 	balloonSafeZoneProtected: boolean;
+	/** Framing crop audit (Phase 3.1): flags if zoom/aspect could clip characters, text, or key action. */
+	framingCropRisk: { atRisk: boolean; reason?: string };
 	emotion: Emotion;
 	narrativeIntent: NarrativeIntent;
 }
@@ -94,6 +97,7 @@ export interface RecapAudiovisualPlan {
 	isSyntheticFixture: boolean;
 	approvalStatus: RecapScriptApprovalStatus;
 	renderTarget: 'preview' | 'master';
+	aspectRatio: '16:9' | '9:16';
 	width: number;
 	height: number;
 	fps: number;
@@ -165,7 +169,8 @@ export type GateHIssueCode =
 	| 'balloon_readability_risk'
 	| 'missing_panel_file'
 	| 'synthetic_fixture_unapproved'
-	| 'mp4_probe_mismatch';
+	| 'mp4_probe_mismatch'
+	| 'framing_crop_risk';
 
 export interface GateHFinding {
 	code: GateHIssueCode;
@@ -186,6 +191,7 @@ export interface GateHReport {
 
 export interface RecapVisualPlannerOptions {
 	renderTarget?: 'preview' | 'master';
+	aspectRatio?: '16:9' | '9:16';
 	width?: number;
 	height?: number;
 	fps?: number;

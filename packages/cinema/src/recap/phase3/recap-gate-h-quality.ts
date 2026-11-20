@@ -159,8 +159,24 @@ export function runGateHAudiovisualQuality(input: GateHInput): GateHReport {
 			}
 		}
 	}
+	let framingCropRisks = 0;
+	for (const shot of plan.shots) {
+		if (shot.framingCropRisk?.atRisk) {
+			framingCropRisks++;
+			findings.push({
+				code: 'framing_crop_risk',
+				severity: 'warning',
+				shotId: shot.shotId,
+				sceneId: shot.sceneId,
+				detail: shot.framingCropRisk.reason ?? 'Risco de corte de enquadramento detectado.',
+			});
+		}
+	}
 	if (balloonReadabilityRisks > 0) {
 		reasons.push(`${balloonReadabilityRisks} risco(s) de legibilidade dos balões de diálogo.`);
+	}
+	if (framingCropRisks > 0) {
+		reasons.push(`${framingCropRisks} shot(s) com risco de corte de personagem/texto no enquadramento.`);
 	}
 
 	// 6. Missing panel image files check
@@ -234,6 +250,7 @@ export function runGateHAudiovisualQuality(input: GateHInput): GateHReport {
 			duplicateConsecutivePanels,
 			sceneOrderViolations,
 			balloonReadabilityRisks,
+			framingCropRisks,
 			missingPanelFiles,
 			mp4ProbeMismatches,
 			isSyntheticFixture: plan.isSyntheticFixture,
