@@ -25,3 +25,4 @@ docs/aethera/cinema/**/stems*/
 artifacts/
 apps/aethera-web/data/
 apps/aethera-remote-host/data/
+.aethera-secrets/

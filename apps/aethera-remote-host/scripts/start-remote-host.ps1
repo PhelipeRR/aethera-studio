@@ -115,25 +115,46 @@ if ($Tunnel -eq 'ngrok') {
   if (-not $ngrokCmd) {
     Write-Host '[Aethera Remote] AVISO: ngrok não encontrado no PATH. Instale ou rode com -Tunnel cloudflared.' -ForegroundColor Yellow
   } else {
-    Write-Host "[Aethera Remote] Iniciando túnel HTTPS ngrok para http://127.0.0.1:$EffectivePort ..." -ForegroundColor Cyan
-    $tunnelProc = Start-Process -FilePath $ngrokCmd.Source `
-      -ArgumentList @('http', "http://127.0.0.1:$EffectivePort", '--log=stdout') `
-      -WindowStyle Hidden `
-      -RedirectStandardOutput (Join-Path $PidDir 'tunnel.out.log') `
-      -RedirectStandardError (Join-Path $PidDir 'tunnel.err.log') `
-      -PassThru
-    $tunnelProc.Id | Set-Content -Path (Join-Path $PidDir 'tunnel.pid') -Encoding ASCII
+    # Verificar se já existe um túnel ngrok ativo apontando para outra porta (ex.: localhost:8080)
+    $existingWrongTunnel = $null
+    try {
+      $existing = Invoke-RestMethod -Uri 'http://127.0.0.1:4040/api/tunnels' -TimeoutSec 2
+      $matching = $existing.tunnels | Where-Object { $_.public_url -like 'https://*' -and $_.config.addr -match ":$EffectivePort$" } | Select-Object -First 1
+      if ($matching) {
+        $publicUrl = $matching.public_url
+        Write-Host "[Aethera Remote] Túnel ngrok já apontando para 127.0.0.1:$EffectivePort ($publicUrl)." -ForegroundColor Green
+      } else {
+        $existingWrongTunnel = $existing.tunnels | Select-Object -First 1
+      }
+    } catch {}
 
-    for ($i = 0; $i -lt 20; $i++) {
-      Start-Sleep -Milliseconds 500
-      try {
-        $tunnels = Invoke-RestMethod -Uri 'http://127.0.0.1:4040/api/tunnels' -TimeoutSec 2
-        $httpsTunnel = $tunnels.tunnels | Where-Object { $_.public_url -like 'https://*' } | Select-Object -First 1
-        if ($httpsTunnel) {
-          $publicUrl = $httpsTunnel.public_url
-          break
-        }
-      } catch {}
+    if (-not $publicUrl) {
+      if ($existingWrongTunnel) {
+        Write-Host "[Aethera Remote] Encerrando túnel ngrok antigo que apontava para $($existingWrongTunnel.config.addr)..." -ForegroundColor Yellow
+        Get-Process -Name 'ngrok' -ErrorAction SilentlyContinue | Stop-Process -Force
+        Start-Sleep -Milliseconds 600
+      }
+
+      Write-Host "[Aethera Remote] Iniciando túnel HTTPS ngrok para http://127.0.0.1:$EffectivePort ..." -ForegroundColor Cyan
+      $tunnelProc = Start-Process -FilePath $ngrokCmd.Source `
+        -ArgumentList @('http', "http://127.0.0.1:$EffectivePort", '--log=stdout') `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput (Join-Path $PidDir 'tunnel.out.log') `
+        -RedirectStandardError (Join-Path $PidDir 'tunnel.err.log') `
+        -PassThru
+      $tunnelProc.Id | Set-Content -Path (Join-Path $PidDir 'tunnel.pid') -Encoding ASCII
+
+      for ($i = 0; $i -lt 20; $i++) {
+        Start-Sleep -Milliseconds 500
+        try {
+          $tunnels = Invoke-RestMethod -Uri 'http://127.0.0.1:4040/api/tunnels' -TimeoutSec 2
+          $httpsTunnel = $tunnels.tunnels | Where-Object { $_.public_url -like 'https://*' -and $_.config.addr -match ":$EffectivePort$" } | Select-Object -First 1
+          if ($httpsTunnel) {
+            $publicUrl = $httpsTunnel.public_url
+            break
+          }
+        } catch {}
+      }
     }
   }
 } elseif ($Tunnel -eq 'cloudflared') {

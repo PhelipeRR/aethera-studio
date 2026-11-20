@@ -13,6 +13,7 @@ import {
   Play,
   Plug,
   RefreshCw,
+  Settings,
   ShieldCheck,
   Square,
   Terminal,
@@ -27,7 +28,10 @@ import type {
   RemoteJobRecord,
   RemoteOperationType,
 } from '../../../aethera-remote-host/src/contracts/v1';
+import { BidirectionalSyncPanel } from '../components/BidirectionalSyncPanel';
+import { useAuth } from '../store/auth-store';
 import { useRemoteHost } from '../store/remote-host-store';
+import { useStudio } from '../store/studio-store';
 
 const JOB_STATUS_LABEL: Record<RemoteJobRecord['status'], string> = {
   queued: 'Na fila',
@@ -40,12 +44,15 @@ const JOB_STATUS_LABEL: Record<RemoteJobRecord['status'], string> = {
 };
 
 export function RemoteHostPage() {
+  const { createComputer, updateComputer } = useAuth();
+  const { openSettingsTab } = useStudio();
   const {
     connectionState,
-    baseUrl,
-    hasTokenInMemory,
+    activeComputer,
+    computers,
     error,
     lastSyncedAt,
+    nextRetryAt,
     sseConnected,
     hostStatus,
     agentsInfo,
@@ -53,7 +60,7 @@ export function RemoteHostPage() {
     jobs,
     selectedJobId,
     selectedJobEvents,
-    connect,
+    reconnectNow,
     disconnect,
     refreshAll,
     selectJob,
@@ -63,8 +70,10 @@ export function RemoteHostPage() {
     mintArtifactTicket,
   } = useRemoteHost();
 
-  const [urlInput, setUrlInput] = useState(baseUrl);
-  const [tokenInput, setTokenInput] = useState('');
+  // First-time quick bind form (persisted encrypted on server; never stored in browser storage)
+  const [quickName, setQuickName] = useState('PC Principal Windows');
+  const [quickUrl, setQuickUrl] = useState('');
+  const [quickToken, setQuickToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -78,7 +87,7 @@ export function RemoteHostPage() {
   const [useGpu, setUseGpu] = useState(true);
   const [mediaQuery, setMediaQuery] = useState('');
 
-  // Signed preview state (ephemeral 60s HMAC ticket)
+  // Signed preview state (same-origin cookie-authenticated proxy URLs)
   const [previewVideo, setPreviewVideo] = useState<{
     artifactId: string;
     filename: string;
@@ -92,17 +101,44 @@ export function RemoteHostPage() {
     [jobs, selectedJobId],
   );
 
-  const isConnected = connectionState === 'connected' || connectionState === 'reconnecting';
+  const isConnected = connectionState === 'connected';
 
-  const handleConnect = async () => {
+  const handleQuickBind = async () => {
     setBusy(true);
     setNotice(null);
     try {
-      const ok = await connect(urlInput, tokenInput);
-      if (ok) {
-        setTokenInput(''); // Clear raw input after storing securely in memory ref
-        setNotice('Conectado ao Aethera Remote Host com autenticação Bearer em memória.');
+      const res = await createComputer({
+        name: quickName.trim() || 'PC Principal Windows',
+        baseUrl: quickUrl.trim(),
+        bearerToken: quickToken.trim(),
+        autoConnect: true,
+        setActive: true,
+      });
+      setQuickToken(''); // Clear raw credential immediately
+      setQuickUrl('');
+      if (res.probe.ok) {
+        await reconnectNow(res.computer.id);
+        setNotice(`Computador "${res.computer.name}" vinculado com AES-256-GCM e conectado automaticamente.`);
+      } else {
+        setNotice(
+          `Computador "${res.computer.name}" salvo com credencial criptografada no servidor. ${res.probe.error ?? 'Reconexão automática ativa.'}`,
+        );
       }
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSwitchComputer = async (computerId: string) => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      await updateComputer(computerId, { isActive: true });
+      await reconnectNow(computerId);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -187,7 +223,7 @@ export function RemoteHostPage() {
             className={`h-9 px-3.5 rounded-full text-xs font-bold inline-flex items-center gap-2 ${
               connectionState === 'connected'
                 ? 'bg-[#d8fb4f] text-[#111111]'
-                : connectionState === 'reconnecting'
+                : connectionState === 'reconnecting' || connectionState === 'connecting'
                   ? 'bg-[#fef3c7] text-[#92400e]'
                   : 'bg-[#f4f4f6] text-[#62626c]'
             }`}
@@ -200,89 +236,161 @@ export function RemoteHostPage() {
                   ? 'Reconectando...'
                   : connectionState === 'connecting'
                     ? 'Conectando...'
-                    : 'PC Offline / Desconectado'}
+                    : connectionState === 'offline'
+                      ? 'PC Offline'
+                      : connectionState === 'unconfigured'
+                        ? 'Nenhum PC vinculado'
+                        : 'Desconectado'}
             </span>
           </span>
 
-          {isConnected && (
+          {activeComputer && (
             <>
               <button
                 type="button"
-                onClick={() => void refreshAll()}
-                className="h-9 px-3.5 rounded-full bg-[#f4f4f6] hover:bg-[#e3e3e8] text-xs font-semibold text-[#111111] inline-flex items-center gap-1.5"
+                onClick={() => void (isConnected ? refreshAll() : reconnectNow())}
+                className="h-9 px-3.5 rounded-full bg-[#111111] hover:bg-[#24242c] text-xs font-semibold text-white inline-flex items-center gap-1.5"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Atualizar</span>
+                <RefreshCw className="w-3.5 h-3.5 text-[#d8fb4f]" />
+                <span>{isConnected ? 'Atualizar' : 'Reconectar Agora'}</span>
               </button>
-              <button
-                type="button"
-                onClick={disconnect}
-                className="h-9 px-3.5 rounded-full bg-[#fde7f3] text-[#b42840] text-xs font-bold inline-flex items-center gap-1.5"
-              >
-                <Unplug className="w-3.5 h-3.5" />
-                <span>Desconectar</span>
-              </button>
+              {isConnected && (
+                <button
+                  type="button"
+                  onClick={disconnect}
+                  className="h-9 px-3.5 rounded-full bg-[#fde7f3] text-[#b42840] text-xs font-bold inline-flex items-center gap-1.5"
+                >
+                  <Unplug className="w-3.5 h-3.5" />
+                  <span>Desconectar</span>
+                </button>
+              )}
             </>
           )}
+
+          <button
+            type="button"
+            onClick={() => openSettingsTab('computers')}
+            className="h-9 px-3.5 rounded-full bg-[#f4f4f6] hover:bg-[#e3e3e8] text-xs font-semibold text-[#111111] inline-flex items-center gap-1.5"
+          >
+            <Settings className="w-3.5 h-3.5" />
+            <span>Meus Computadores</span>
+          </button>
         </div>
       </div>
 
-      {/* Security & Connection Card */}
+      {/* Account-Linked Automatic Proxy Connection Card */}
       <section className="rounded-[28px] bg-white p-6 shadow-2xs space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-base font-bold text-[#111111] inline-flex items-center gap-2">
             <Plug className="w-4 h-4 text-[#6a46d8]" />
-            <span>Conexão Autenticada ao PC Windows</span>
+            <span>Conexão Automática via Proxy Autenticado</span>
           </h2>
-          <span className="px-3 py-1 rounded-full bg-[#efe9fd] text-[#2a1d5c] text-[11px] font-semibold inline-flex items-center gap-1.5">
-            <Lock className="w-3 h-3" />
-            <span>Token mantido apenas em memória (nunca salvo em localStorage)</span>
+          <span className="text-xs text-[#62626c] inline-flex items-center gap-1.5">
+            <Lock className="w-3.5 h-3.5 text-[#6a46d8]" />
+            <span>Credencial criptografada em AES-256-GCM no backend · token nunca enviado ao navegador</span>
           </span>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
-          <div className="lg:col-span-5">
-            <label htmlFor="remote-host-url" className="block text-xs font-semibold text-[#111111] mb-1">
-              URL HTTPS do túnel (ngrok / Cloudflare) ou loopback local
-            </label>
-            <input
-              id="remote-host-url"
-              type="url"
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              placeholder="https://seu-subdominio.ngrok-free.app ou http://127.0.0.1:4848"
-              className="w-full h-10 rounded-2xl bg-[#f4f4f6] border border-[#e3e3e8] px-3.5 text-xs font-mono text-[#111111]"
-            />
-          </div>
+        {activeComputer ? (
+          <div className="rounded-2xl bg-[#f4f4f6] p-4 flex flex-wrap items-center justify-between gap-4">
+            <div className="space-y-1 min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-bold text-[#111111]">{activeComputer.name}</span>
+                <span className="text-xs font-mono text-[#62626c]">({activeComputer.stableHostId})</span>
+              </div>
+              <div className="text-xs font-mono text-[#62626c] break-all">{activeComputer.baseUrl}</div>
+              <div className="text-[11px] font-mono text-[#62626c] tabular-nums">
+                Cofre: {activeComputer.hasCredential ? activeComputer.tokenFingerprint : 'Revogado'} · Auto-conexão:{' '}
+                {activeComputer.autoConnect ? 'Ativa' : 'Manual'}
+                {lastSyncedAt ? ` · Última sinc.: ${new Date(lastSyncedAt).toLocaleTimeString('pt-BR')}` : ''}
+                {sseConnected ? ' · SSE Ativo' : ''}
+              </div>
+            </div>
 
-          <div className="lg:col-span-5">
-            <label htmlFor="remote-host-token" className="block text-xs font-semibold text-[#111111] mb-1">
-              Token Bearer (<code className="font-mono text-[11px] text-[#6a46d8]">AETHERA_REMOTE_TOKEN</code> do{' '}
-              <code className="font-mono text-[11px]">.env.local</code> no Windows)
-            </label>
-            <input
-              id="remote-host-token"
-              type="password"
-              autoComplete="off"
-              value={tokenInput}
-              onChange={(e) => setTokenInput(e.target.value)}
-              placeholder={hasTokenInMemory ? 'Token ativo em memória — informe novo para trocar' : 'Cole o token gerado pelo start-remote-host.ps1'}
-              className="w-full h-10 rounded-2xl bg-[#f4f4f6] border border-[#e3e3e8] px-3.5 text-xs font-mono text-[#111111]"
-            />
+            {computers.length > 1 && (
+              <div className="flex items-center gap-2">
+                <label htmlFor="switch-active-pc" className="text-xs font-semibold text-[#111111]">
+                  Trocar PC:
+                </label>
+                <select
+                  id="switch-active-pc"
+                  disabled={busy}
+                  value={activeComputer.id}
+                  onChange={(e) => void handleSwitchComputer(e.target.value)}
+                  className="h-9 rounded-full bg-white border border-[#e3e3e8] px-3 text-xs font-semibold text-[#111111]"
+                >
+                  {computers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs text-[#62626c]">
+              Vincule seu PC Windows uma única vez abaixo (ou em <strong>Configurações &gt; Meus Computadores</strong>). Depois disso, basta estar logado para reconectar automaticamente em qualquer dispositivo.
+            </p>
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
+              <div className="lg:col-span-3">
+                <label htmlFor="remote-quick-name" className="block text-xs font-semibold text-[#111111] mb-1">
+                  Nome do computador
+                </label>
+                <input
+                  id="remote-quick-name"
+                  type="text"
+                  value={quickName}
+                  onChange={(e) => setQuickName(e.target.value)}
+                  placeholder="PC Principal Windows"
+                  className="w-full h-10 rounded-2xl bg-[#f4f4f6] border border-[#e3e3e8] px-3.5 text-xs text-[#111111]"
+                />
+              </div>
 
-          <div className="lg:col-span-2">
-            <button
-              type="button"
-              disabled={busy || !urlInput.trim() || (!tokenInput.trim() && !hasTokenInMemory)}
-              onClick={() => void handleConnect()}
-              className="w-full h-10 rounded-full bg-[#111111] text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 hover:bg-[#24242c] disabled:opacity-50"
-            >
-              <Plug className="w-3.5 h-3.5 text-[#d8fb4f]" />
-              <span>{isConnected ? 'Reconectar' : 'Conectar PC'}</span>
-            </button>
+              <div className="lg:col-span-4">
+                <label htmlFor="remote-host-url" className="block text-xs font-semibold text-[#111111] mb-1">
+                  URL HTTPS do túnel ngrok
+                </label>
+                <input
+                  id="remote-host-url"
+                  type="url"
+                  value={quickUrl}
+                  onChange={(e) => setQuickUrl(e.target.value)}
+                  placeholder="https://seu-subdominio.ngrok-free.app"
+                  className="w-full h-10 rounded-2xl bg-[#f4f4f6] border border-[#e3e3e8] px-3.5 text-xs font-mono text-[#111111]"
+                />
+              </div>
+
+              <div className="lg:col-span-3">
+                <label htmlFor="remote-host-token" className="block text-xs font-semibold text-[#111111] mb-1">
+                  Credencial Remote Host (salva no servidor)
+                </label>
+                <input
+                  id="remote-host-token"
+                  type="password"
+                  autoComplete="off"
+                  value={quickToken}
+                  onChange={(e) => setQuickToken(e.target.value)}
+                  placeholder="AETHERA_REMOTE_TOKEN"
+                  className="w-full h-10 rounded-2xl bg-[#f4f4f6] border border-[#e3e3e8] px-3.5 text-xs font-mono text-[#111111]"
+                />
+              </div>
+
+              <div className="lg:col-span-2">
+                <button
+                  type="button"
+                  disabled={busy || !quickUrl.trim() || quickToken.trim().length < 12}
+                  onClick={() => void handleQuickBind()}
+                  className="w-full h-10 rounded-full bg-[#111111] text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 hover:bg-[#24242c] disabled:opacity-50"
+                >
+                  <Plug className="w-3.5 h-3.5 text-[#d8fb4f]" />
+                  <span>{busy ? 'Salvando...' : 'Vincular PC'}</span>
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="rounded-2xl bg-[#f4f4f6] px-4 py-3 text-xs text-[#62626c] flex flex-wrap items-center justify-between gap-2">
           <span>
@@ -290,20 +398,30 @@ export function RemoteHostPage() {
             <code className="px-1.5 py-0.5 rounded bg-white text-[#111111] font-mono">
               .\apps\aethera-remote-host\scripts\start-remote-host.ps1 -Tunnel ngrok
             </code>{' '}
-            para iniciar o host em <strong className="text-[#111111]">127.0.0.1:4848</strong> e abrir o túnel HTTPS seguro.
+            para manter o host ativo em <strong className="text-[#111111]">127.0.0.1:4848</strong> com túnel HTTPS.
           </span>
-          {lastSyncedAt && (
-            <span className="font-mono text-[11px]">
-              Última sinc.: {new Date(lastSyncedAt).toLocaleTimeString('pt-BR')} • SSE:{' '}
-              {sseConnected ? 'Ativo' : 'Aguardando job'}
+          {nextRetryAt && (connectionState === 'offline' || connectionState === 'reconnecting') && (
+            <span className="font-mono text-[11px] text-[#92400e]">
+              Próxima tentativa automática: {new Date(nextRetryAt).toLocaleTimeString('pt-BR')}
             </span>
           )}
         </div>
 
         {error && (
-          <div className="rounded-2xl bg-[#fde7f3] px-4 py-3 text-xs font-semibold text-[#b42840] flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-            <span>{error}</span>
+          <div className="rounded-2xl bg-[#fde7f3] px-4 py-3 text-xs font-semibold text-[#b42840] flex flex-wrap items-center justify-between gap-2">
+            <span className="inline-flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{error}</span>
+            </span>
+            {activeComputer && (
+              <button
+                type="button"
+                onClick={() => void reconnectNow()}
+                className="h-7 px-3 rounded-full bg-white text-[#111111] text-[11px] font-bold hover:bg-[#f4f4f6]"
+              >
+                Tentar agora
+              </button>
+            )}
           </div>
         )}
 
@@ -316,6 +434,9 @@ export function RemoteHostPage() {
           </div>
         )}
       </section>
+
+      {/* Bidirectional Sync Authority Panel (Web <-> Remote Host <-> Desktop) */}
+      <BidirectionalSyncPanel />
 
       {/* Hardware Telemetry & Engine Status */}
       {hostStatus && (

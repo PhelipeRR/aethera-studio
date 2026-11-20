@@ -144,10 +144,10 @@ export function createCorsMiddleware(allowedOrigins: readonly string[]) {
 
     res.setHeader('Access-Control-Allow-Origin', originHeader);
     res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Authorization, Content-Type, Accept, Last-Event-ID, X-Aethera-Client, ngrok-skip-browser-warning',
+      'Authorization, Content-Type, Accept, Last-Event-ID, Idempotency-Key, X-Aethera-Client, ngrok-skip-browser-warning',
     );
     res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Content-Disposition');
     if (req.headers['access-control-request-private-network'] === 'true') {

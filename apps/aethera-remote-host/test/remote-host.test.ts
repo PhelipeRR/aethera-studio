@@ -81,7 +81,7 @@ test('Auth, CORS, Rate Limiting, and Closed Operation Catalog protect Remote Hos
     assert.equal(health.status, 200);
     const healthJson = (await health.json()) as { ok: boolean; schemaVersion: string };
     assert.equal(healthJson.ok, true);
-    assert.equal(healthJson.schemaVersion, '1.0.0');
+    assert.equal(healthJson.schemaVersion, '1.1.0');
 
     // Missing Bearer token -> 401
     const unauth = await fetch(`${ctx.baseUrl}/api/host/status`);

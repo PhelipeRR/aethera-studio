@@ -11,6 +11,7 @@ import {
   ImagePlus,
   Library,
   ListOrdered,
+  LogOut,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -21,9 +22,11 @@ import {
   ShieldCheck,
   Sparkles,
   SquareTerminal,
+  User,
   X,
 } from 'lucide-react';
 import type { NavSectionId } from '../domain/types';
+import { useAuth } from '../store/auth-store';
 import { useRemoteHost } from '../store/remote-host-store';
 import { useStudio } from '../store/studio-store';
 import { AetheraMark } from './AetheraMark';
@@ -61,10 +64,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     canGoBack,
     canGoForward,
     navigate,
+    openSettingsTab,
     goBack,
     goForward,
   } = useStudio();
-  const { connectionState: remoteState, jobs: remoteJobs } = useRemoteHost();
+  const { user, logout } = useAuth();
+  const { connectionState: remoteState, activeComputer, jobs: remoteJobs } = useRemoteHost();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
@@ -190,16 +195,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </kbd>
         </button>
 
-        {/* Right Remote Host Status + Cinema IA Quick Action */}
+        {/* Right Remote Host Status + Account + Logout */}
         <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={() => navigate('remote')}
             aria-label="Abrir painel do Remote Host Windows"
-            className={`h-9 px-3 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 shadow-2xs transition-colors ${
+            title={activeComputer ? `${activeComputer.name} (${remoteState})` : 'Vincular PC Windows'}
+            className={`h-9 px-3 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 shadow-2xs transition-colors whitespace-nowrap shrink-0 ${
               remoteState === 'connected'
                 ? 'bg-[#111111] text-white hover:bg-[#24242c]'
-                : 'bg-white text-[#111111] hover:bg-[#f4f4f6]'
+                : remoteState === 'offline'
+                  ? 'bg-[#fde7f3] text-[#b42840] hover:bg-[#fbd0e7]'
+                  : 'bg-white text-[#111111] hover:bg-[#f4f4f6]'
             }`}
           >
             <span
@@ -208,23 +216,53 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   ? 'bg-[#d8fb4f]'
                   : remoteState === 'reconnecting' || remoteState === 'connecting'
                     ? 'bg-[#b8a4f4] animate-pulse'
-                    : 'bg-[#9b9ba6]'
+                    : remoteState === 'offline'
+                      ? 'bg-[#dc2626]'
+                      : 'bg-[#9b9ba6]'
               }`}
             />
             <Server className="w-3.5 h-3.5" />
             <span className="hidden md:inline">
-              {remoteState === 'connected' ? 'PC Online' : 'PC Remoto'}
+              {remoteState === 'connected'
+                ? 'PC Online'
+                : remoteState === 'offline'
+                  ? 'PC Offline'
+                  : remoteState === 'reconnecting' || remoteState === 'connecting'
+                    ? 'Reconectando'
+                    : 'PC Remoto'}
             </span>
           </button>
 
           <button
             type="button"
             onClick={() => navigate('production')}
-            className="shrink-0 h-9 px-3 sm:px-3.5 rounded-full bg-white text-[#111111] text-xs font-semibold inline-flex items-center gap-1.5 sm:gap-2 shadow-2xs hover:bg-[#d8fb4f] transition-colors"
+            className="shrink-0 h-9 px-3 sm:px-3.5 rounded-full bg-white text-[#111111] text-xs font-semibold inline-flex items-center gap-1.5 sm:gap-2 shadow-2xs hover:bg-[#d8fb4f] transition-colors whitespace-nowrap"
           >
-            <span className="w-2 h-2 rounded-full bg-[#d8fb4f] ring-2 ring-[#111111]/10" />
             <Sparkles className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Cinema IA</span>
+          </button>
+
+          {user && (
+            <button
+              type="button"
+              onClick={() => openSettingsTab('account')}
+              aria-label={`Minha conta (${user.name})`}
+              className="hidden sm:inline-flex items-center gap-1.5 h-9 px-3 rounded-full bg-white text-[#111111] text-xs font-semibold hover:bg-[#f4f4f6] shadow-2xs max-w-[140px]"
+            >
+              <User className="w-3.5 h-3.5 text-[#6a46d8] shrink-0" />
+              <span className="truncate">{user.name}</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => void logout()}
+            aria-label="Sair da conta"
+            title="Sair da conta"
+            className="h-9 w-9 sm:w-auto sm:px-3 rounded-full bg-white text-[#62626c] hover:text-[#b42840] hover:bg-[#fde7f3] text-xs font-semibold inline-flex items-center justify-center gap-1.5 shadow-2xs transition-colors shrink-0"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="hidden xl:inline">Sair</span>
           </button>
         </div>
       </header>

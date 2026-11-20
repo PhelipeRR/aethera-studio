@@ -20,6 +20,7 @@ import {
 } from './system-backup.js';
 import { ManagedMediaLibrary } from './managed-media-library.js';
 import { StagedCinemaPipeline, type StagedProductionJob } from './cinema-pipeline.js';
+import { CinemaProjectSyncBridge } from './project-sync-bridge.js';
 import {
   createProductionConsoleService,
   type EmitProductionLogInput,
@@ -1727,26 +1728,23 @@ productionConsole,
   const cinemaRenders = new Map<string, RealRenderResult & { mediaUrl: string }>();
   const cinemaProjectsDir = join(app.getPath('userData'), 'cinema-projects');
   const cinemaThumbsDir = join(app.getPath('userData'), 'cinema-thumbs');
+  const cinemaSyncBridge = new CinemaProjectSyncBridge(cinemaProjectsDir);
   let latestCinemaProjectId: string | null = null;
   const toMediaUrl = (filePath: string) =>
     `aethera-media://local?path=${encodeURIComponent(filePath)}`;
   const persistCinemaRender = (projectId: string, render: RealRenderResult & { mediaUrl: string }) => {
-    const safeId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_');
-    mkdirSync(cinemaProjectsDir, { recursive: true });
-    writeFileSync(
-      join(cinemaProjectsDir, `${safeId}.render.json`),
-      JSON.stringify(render, null, 2),
-      'utf8',
-    );
+    cinemaSyncBridge.writeRenderAtomic(projectId, render);
   };
   const resolvePersistedRender = (
     projectId: string,
     pkg?: CinemaProductionPackage | null,
   ): (RealRenderResult & { mediaUrl: string }) | null => {
-    const cached = cinemaRenders.get(projectId);
-    if (cached && existsSync(cached.mp4Path)) return cached;
     const safeId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_');
     const renderMetaFile = join(cinemaProjectsDir, `${safeId}.render.json`);
+    const cached = cinemaRenders.get(projectId);
+    if (cached && existsSync(cached.mp4Path) && !cinemaSyncBridge.isRenderCacheStale(projectId, renderMetaFile)) {
+      return cached;
+    }
     if (existsSync(renderMetaFile)) {
       try {
         const parsed = JSON.parse(readFileSync(renderMetaFile, 'utf8')) as RealRenderResult & {
@@ -1758,6 +1756,7 @@ productionConsole,
             mediaUrl: toMediaUrl(parsed.mp4Path),
           };
           cinemaRenders.set(projectId, hydrated);
+          cinemaSyncBridge.recordRenderLoaded(projectId, renderMetaFile);
           return hydrated;
         }
       } catch {
@@ -1822,13 +1821,23 @@ productionConsole,
   };
   const persistCinemaProject = (pkg: CinemaProductionPackage) => {
     latestCinemaProjectId = pkg.timeline.projectId;
-    mkdirSync(cinemaProjectsDir, { recursive: true });
-    writeFileSync(
-      join(cinemaProjectsDir, `${pkg.timeline.projectId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`),
-      JSON.stringify(pkg, null, 2),
-      'utf8',
-    );
+    cinemaSyncBridge.writeProjectAtomic(pkg.timeline.projectId, pkg);
   };
+  cinemaSyncBridge.startWatching((syncEvent) => {
+    if (syncEvent.kind === 'project') {
+      cinemaPackages.delete(syncEvent.projectId);
+    } else if (syncEvent.kind === 'render') {
+      cinemaRenders.delete(syncEvent.projectId);
+    }
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('cinema:projects-synced', syncEvent);
+      }
+    }
+  });
+  app.once('will-quit', () => {
+    cinemaSyncBridge.close();
+  });
   const listPersistedCinemaProjects = () => {
     const seen = new Map<
       string,
@@ -1840,11 +1849,13 @@ productionConsole,
         hasRender: boolean;
         updatedAt: string;
         mtimeMs: number;
+        syncVersion?: number;
+        syncUpdatedBy?: 'web' | 'desktop' | 'remote_host';
       }
     >();
     if (existsSync(cinemaProjectsDir)) {
       for (const fileName of readdirSync(cinemaProjectsDir)) {
-        if (!fileName.endsWith('.json') || fileName.endsWith('.render.json')) continue;
+        if (!fileName.endsWith('.json') || fileName.endsWith('.render.json') || fileName.endsWith('.sync.json')) continue;
         const fullPath = join(cinemaProjectsDir, fileName);
         try {
           const stat = statSync(fullPath);
@@ -1855,6 +1866,7 @@ productionConsole,
             parsed.direction?.brief?.prompt?.slice(0, 72) ||
             parsed.direction?.treatment?.slice(0, 72) ||
             id;
+          const sidecar = cinemaSyncBridge.readSyncSidecar(id);
           seen.set(id, {
             projectId: id,
             title,
@@ -1863,6 +1875,7 @@ productionConsole,
             hasRender: Boolean(resolvePersistedRender(id, parsed)),
             updatedAt: stat.mtime.toISOString(),
             mtimeMs: stat.mtimeMs,
+            ...(sidecar ? { syncVersion: sidecar.version, syncUpdatedBy: sidecar.updatedBy } : {}),
           });
         } catch {
           // Ignore malformed project file
@@ -1898,6 +1911,8 @@ productionConsole,
         durationSec: item.durationSec,
         hasRender: item.hasRender,
         updatedAt: item.updatedAt,
+        ...(item.syncVersion !== undefined ? { syncVersion: item.syncVersion } : {}),
+        ...(item.syncUpdatedBy ? { syncUpdatedBy: item.syncUpdatedBy } : {}),
       }));
   };
   const ensureTrusted = (senderFrame: Electron.WebFrameMain | null) => {
@@ -3533,17 +3548,19 @@ productionConsole,
       }
       targetId = resolvedLatest;
     }
+    const file = cinemaSyncBridge.getProjectFilePath(targetId);
     let pkg = cinemaPackages.get(targetId) ?? null;
-    if (!pkg) {
-      const file = join(cinemaProjectsDir, `${targetId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`);
+    if (!pkg || cinemaSyncBridge.isProjectCacheStale(targetId, file)) {
       if (existsSync(file)) {
         pkg = JSON.parse(readFileSync(file, 'utf8')) as CinemaProductionPackage;
         cinemaPackages.set(targetId, pkg);
+        cinemaSyncBridge.recordProjectLoaded(targetId, file);
       }
     }
     return {
       pkg,
       lastRender: resolvePersistedRender(targetId, pkg),
+      syncMeta: cinemaSyncBridge.readSyncSidecar(targetId),
     };
   });
   ipcMain.handle(

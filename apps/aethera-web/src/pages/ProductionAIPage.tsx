@@ -7,14 +7,18 @@ import {
   Pause,
   Play,
   Plus,
+  RefreshCw,
   Search,
   Server,
   ShieldCheck,
   Sparkles,
   SquareTerminal,
 } from 'lucide-react';
+import { SyncConflictCard } from '../components/SyncConflictCard';
+import { SyncStatusBadge } from '../components/SyncStatusBadge';
 import { parseBriefingIntent } from '../domain/briefing-parser';
 import { computeQualityScore, getPipelineProgressPct } from '../domain/pipeline-engine';
+import { productionProjectToSyncedData } from '../domain/sync-mapper';
 import type { ProductionProject, TrendIdea } from '../domain/types';
 import { useRemoteHost } from '../store/remote-host-store';
 import { useStudio } from '../store/studio-store';
@@ -46,7 +50,12 @@ export function ProductionAIPage() {
   const {
     connectionState: remoteState,
     hostStatus: remoteHostStatus,
+    syncedProjects,
+    syncConflicts,
     submitJob: submitRemoteJob,
+    upsertSyncedProject,
+    resolveSyncConflict,
+    getProjectSyncBadge,
   } = useRemoteHost();
 
   const [tab, setTab] = useState<SubTab>('create');
@@ -65,6 +74,8 @@ export function ProductionAIPage() {
   );
   const [ideaFilter, setIdeaFilter] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [syncingProjectId, setSyncingProjectId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [remoteDispatching, setRemoteDispatching] = useState(false);
 
@@ -151,6 +162,33 @@ export function ProductionAIPage() {
           : qualityPreset === 'master_1080p'
             ? 'master_1080p'
             : 'review_720p';
+
+      // Create/register project in Bidirectional Sync Authority first so Desktop & Web share the exact same projectId
+      const syncResult = await upsertSyncedProject({
+        data: {
+          title: briefing.trim().slice(0, 72),
+          briefing: briefing.trim(),
+          creationMode: 'ai',
+          format,
+          style,
+          aspectRatio,
+          language: parsedIntent?.language ?? preferences.defaultLanguage,
+          durationMin,
+          humorLevel,
+          ttsProvider,
+          ttsVoice,
+          qualityPreset,
+          status: 'producing',
+          scheduledDate: null,
+          humanizedScript: null,
+          scenes: [],
+          revisions: [],
+          latestJobId: null,
+          latestRenderMediaRefId: null,
+          mediaRefs: [],
+        },
+      });
+
       await submitRemoteJob({
         operation: 'cinema.produce',
         title: briefing.trim().slice(0, 72),
@@ -158,6 +196,7 @@ export function ProductionAIPage() {
         aspectRatio,
         qualityPreset: mappedQuality,
         useGpu: true,
+        ...(syncResult.project ? { projectId: syncResult.project.id } : {}),
       });
       navigate('remote');
     } catch (err) {
@@ -167,7 +206,38 @@ export function ProductionAIPage() {
     }
   };
 
+  const handleSyncProjectToPc = async (project: ProductionProject) => {
+    setSyncingProjectId(project.id);
+    setSyncNotice(null);
+    try {
+      const existing = syncedProjects.find((p) => p.id === project.id);
+      const res = await upsertSyncedProject({
+        id: project.id,
+        expectedVersion: existing ? existing.version : null,
+        data: productionProjectToSyncedData(project),
+      });
+      if (res.queued) {
+        setSyncNotice('Alteração enfileirada como Pendente — será enviada ao PC assim que reconectar.');
+      } else if (res.conflict) {
+        setSyncNotice('Conflito de versão detectado! Resolva abaixo antes de sobrescrever.');
+      } else if (res.ok && res.project) {
+        setSyncNotice(`Projeto sincronizado com o PC/Desktop (v${res.project.version}).`);
+      } else if (res.error) {
+        setSyncNotice(res.error);
+      }
+    } finally {
+      setSyncingProjectId(null);
+    }
+  };
+
+  const desktopOnlySyncedProjects = useMemo(() => {
+    const localIds = new Set(projects.map((p) => p.id));
+    return syncedProjects.filter((sp) => !localIds.has(sp.id));
+  }, [projects, syncedProjects]);
+
   const currentProject = activeProject ?? projects[0];
+  const currentBadge = currentProject ? getProjectSyncBadge(currentProject.id) : null;
+  const currentConflict = currentProject ? syncConflicts[currentProject.id] : undefined;
   const currentPct = currentProject ? getPipelineProgressPct(currentProject.stages) : 0;
 
   return (
@@ -216,10 +286,11 @@ export function ProductionAIPage() {
             <span>Nova produção</span>
           </button>
 
-          <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-0.5">
+          <div className="space-y-1.5 max-h-[380px] overflow-y-auto pr-0.5">
             {projects.map((proj) => {
               const selected = currentProject?.id === proj.id;
               const pct = getPipelineProgressPct(proj.stages);
+              const badge = getProjectSyncBadge(proj.id);
               return (
                 <button
                   key={proj.id}
@@ -235,14 +306,46 @@ export function ProductionAIPage() {
                   }`}
                 >
                   <div className="text-xs font-semibold line-clamp-2">{proj.title}</div>
-                  <div className="mt-2 flex items-center justify-between text-[11px]">
+                  <div className="mt-2 flex items-center justify-between gap-1.5 text-[11px]">
                     <span className={selected ? 'text-[#d8fb4f]' : 'text-[#6a46d8]'}>{proj.style}</span>
                     <span className={`font-mono ${selected ? 'text-white/80' : 'text-[#62626c]'}`}>{pct}%</span>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-1">
+                    <SyncStatusBadge state={badge.state} version={badge.version} inverted={selected} />
                   </div>
                 </button>
               );
             })}
           </div>
+
+          {desktopOnlySyncedProjects.length > 0 && (
+            <div className="pt-3 border-t border-[#e3e3e8] space-y-2">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[#6a46d8]">
+                  NO PC / DESKTOP
+                </span>
+                <span className="text-[11px] font-mono font-semibold text-[#6a46d8]">
+                  {desktopOnlySyncedProjects.length}
+                </span>
+              </div>
+              <div className="space-y-1.5 max-h-[180px] overflow-y-auto pr-0.5">
+                {desktopOnlySyncedProjects.map((sp) => (
+                  <button
+                    key={sp.id}
+                    type="button"
+                    onClick={() => navigate('remote')}
+                    className="w-full text-left rounded-2xl bg-[#efe9fd] hover:bg-[#e5dbfc] p-2.5 transition-colors space-y-1.5"
+                  >
+                    <div className="text-xs font-semibold text-[#111111] line-clamp-1">{sp.data.title}</div>
+                    <div className="flex items-center justify-between gap-1">
+                      <SyncStatusBadge state="synced" version={sp.version} />
+                      <span className="text-[10px] font-mono text-[#6a46d8]">{sp.origin}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </aside>
 
         {/* Center Main Panel */}
@@ -488,17 +591,60 @@ export function ProductionAIPage() {
 
           {tab === 'active' && currentProject && (
             <div className="space-y-4">
+              {syncNotice && (
+                <div className="rounded-2xl bg-[#f3fdd0] px-4 py-2.5 text-xs font-semibold text-[#111111] flex items-center justify-between gap-2">
+                  <span>{syncNotice}</span>
+                  <button type="button" onClick={() => setSyncNotice(null)} className="text-[#62626c] hover:text-[#111111]">
+                    Fechar
+                  </button>
+                </div>
+              )}
+
+              {currentConflict && (
+                <SyncConflictCard
+                  conflict={currentConflict}
+                  onResolve={async (projectId, strategy, clientData) => {
+                    const res = await resolveSyncConflict(projectId, strategy, clientData);
+                    if (res.ok) {
+                      setSyncNotice(`Conflito resolvido com sucesso (${strategy}).`);
+                    } else if (res.error) {
+                      setSyncNotice(res.error);
+                    }
+                  }}
+                />
+              )}
+
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <span className="px-2.5 py-0.5 rounded-full bg-[#efe8ff] text-[#6a46d8] text-[11px] font-semibold">
-                    StagedCinemaPipeline • {currentPct}%
-                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="px-2.5 py-0.5 rounded-full bg-[#efe8ff] text-[#6a46d8] text-[11px] font-semibold">
+                      StagedCinemaPipeline • {currentPct}%
+                    </span>
+                    {currentBadge && (
+                      <SyncStatusBadge state={currentBadge.state} version={currentBadge.version} />
+                    )}
+                  </div>
                   <h2 className="mt-1.5 text-lg font-bold text-[#111111]">{currentProject.title}</h2>
                   <p className="text-xs text-[#62626c] mt-0.5">
                     {currentProject.style} • ~{currentProject.durationMin} min • {currentProject.aspectRatio}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={syncingProjectId === currentProject.id}
+                    onClick={() => void handleSyncProjectToPc(currentProject)}
+                    className="h-9 px-3.5 rounded-full bg-[#efe9fd] hover:bg-[#e4d9fb] text-[#2a1d5c] text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${syncingProjectId === currentProject.id ? 'animate-spin' : ''}`} />
+                    <span>
+                      {syncingProjectId === currentProject.id
+                        ? 'Sincronizando...'
+                        : currentBadge?.state === 'synced'
+                          ? 'Atualizar no PC'
+                          : 'Sincronizar com PC/Desktop'}
+                    </span>
+                  </button>
                   {currentPct < 100 && (
                     <>
                       <button

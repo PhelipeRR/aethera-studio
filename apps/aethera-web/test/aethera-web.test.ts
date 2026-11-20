@@ -204,6 +204,7 @@ test('Express API endpoints persist manual project, package, channel, and report
   const { app, db } = createAetheraApiApp({
     dbPath: path.join(tmpDir, 'api.db'),
     rendersDir: path.join(tmpDir, 'renders'),
+    credentialKey: 'test-key-aethera-api-integration-0123456789abcdef',
   });
 
   const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
@@ -215,7 +216,34 @@ test('Express API endpoints persist manual project, package, channel, and report
     assert.ok(addr && typeof addr === 'object');
     const base = `http://127.0.0.1:${addr.port}`;
 
-    const bootRes = await fetch(`${base}/api/bootstrap`);
+    // Private routes must reject unauthenticated requests
+    const unauthBoot = await fetch(`${base}/api/bootstrap`);
+    assert.equal(unauthBoot.status, 401);
+
+    // Bootstrap initial admin account
+    const setupRes = await fetch(`${base}/api/auth/setup-admin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Admin Studio',
+        email: 'admin@aethera.local',
+        password: 'AetheraSecurePassword2026!',
+      }),
+    });
+    assert.equal(setupRes.status, 201);
+    const setCookie = setupRes.headers.get('set-cookie') ?? '';
+    const cookieHeader = setCookie.split(';')[0];
+    assert.ok(cookieHeader.startsWith('aethera_sid='));
+    const setupBody = (await setupRes.json()) as { csrfToken: string };
+    assert.ok(setupBody.csrfToken.length > 20);
+
+    const authHeaders = {
+      'Content-Type': 'application/json',
+      Cookie: cookieHeader,
+      'X-CSRF-Token': setupBody.csrfToken,
+    };
+
+    const bootRes = await fetch(`${base}/api/bootstrap`, { headers: { Cookie: cookieHeader } });
     assert.equal(bootRes.status, 200);
     const boot = (await bootRes.json()) as { projects: ProductionProject[]; channels: unknown[]; capabilities: { items: Array<{ id: string }> } };
     assert.ok(boot.projects.length >= 4);
@@ -223,7 +251,7 @@ test('Express API endpoints persist manual project, package, channel, and report
 
     const createRes = await fetch(`${base}/api/projects`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders,
       body: JSON.stringify({
         title: 'Documentário Manual API Test',
         briefing: 'Teste de integração completa com SQLite',
@@ -236,7 +264,7 @@ test('Express API endpoints persist manual project, package, channel, and report
 
     const pkgRes = await fetch(`${base}/api/projects/${created.id}/package`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders,
       body: JSON.stringify({
         title: 'Documentário Manual — Pacote Aprovado',
         approvalStatus: 'approved',
@@ -248,7 +276,7 @@ test('Express API endpoints persist manual project, package, channel, and report
 
     const ytDlpRes = await fetch(`${base}/api/media/acquire-ytdlp`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders,
       body: JSON.stringify({ query: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }),
     });
     // Container without yt-dlp must honestly return 503 + blocked (never fake success)

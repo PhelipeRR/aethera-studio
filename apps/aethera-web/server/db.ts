@@ -30,6 +30,10 @@ export class AetheraDatabase {
     this.seedIfEmpty();
   }
 
+  public raw(): DatabaseSync {
+    return this.db;
+  }
+
   private initSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS studio_projects (

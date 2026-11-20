@@ -43,9 +43,21 @@ import {
   testAgentProvider,
 } from './server/agent-orchestrator';
 import { probeSystemCapabilities } from './server/capabilities';
+import {
+  createGeneralRateLimiter,
+  createHttpsEnforcementMiddleware,
+  createRequireAuthMiddleware,
+  createRequireCsrfMiddleware,
+  createRestrictiveCorsMiddleware,
+} from './server/auth-middleware';
+import { registerAuthAndComputerRoutes } from './server/auth-routes';
+import { AuthStore } from './server/auth-store';
+import { CredentialVault } from './server/crypto-vault';
 import { AetheraDatabase } from './server/db';
 import { FfmpegRenderManager } from './server/ffmpeg-renderer';
+import { registerRemoteProxyRoutes } from './server/remote-proxy';
 import { SseHub } from './server/sse';
+import type { SsrfValidationOptions } from './server/ssrf-guard';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MONOREPO_ROOT = path.resolve(__dirname, '../..');
@@ -53,6 +65,7 @@ const DEFAULT_DB_PATH = process.env.AETHERA_DB_PATH
   ? path.resolve(MONOREPO_ROOT, process.env.AETHERA_DB_PATH)
   : path.resolve(__dirname, 'data/aethera-web.db');
 const DEFAULT_RENDERS_DIR = path.resolve(__dirname, 'data/renders');
+const DEFAULT_KEY_FILE = path.resolve(MONOREPO_ROOT, '.aethera-secrets/credential.key');
 
 function nowTimeLabel(): string {
   return new Date().toTimeString().slice(0, 8);
@@ -61,18 +74,56 @@ function nowTimeLabel(): string {
 export interface CreateAppOptions {
   dbPath?: string;
   rendersDir?: string;
+  credentialKey?: string;
+  credentialKeyFile?: string;
+  adminSetupToken?: string;
+  isProduction?: boolean;
+  enforceHttps?: boolean;
+  allowedOrigins?: string[];
+  ssrfOptions?: SsrfValidationOptions;
+  onPasswordResetIssued?: (payload: { email: string; userId: string; rawCode: string; expiresAt: string }) => void;
 }
 
 export function createAetheraApiApp(opts: CreateAppOptions = {}) {
   const dbPath = opts.dbPath ?? DEFAULT_DB_PATH;
   const rendersDir = opts.rendersDir ?? DEFAULT_RENDERS_DIR;
+  const isProduction = opts.isProduction ?? process.env.NODE_ENV === 'production';
+  const enforceHttps =
+    opts.enforceHttps ??
+    (process.env.AETHERA_ENFORCE_HTTPS === '1' ||
+      process.env.AETHERA_ENFORCE_HTTPS === 'true' ||
+      isProduction);
+  const allowedOrigins =
+    opts.allowedOrigins ??
+    String(process.env.AETHERA_ALLOWED_ORIGINS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
 
   const db = new AetheraDatabase(dbPath);
+  const vault = new CredentialVault({
+    rawKey: opts.credentialKey,
+    devSecretDir: path.dirname(opts.credentialKeyFile ?? DEFAULT_KEY_FILE),
+    isProduction,
+  });
+  const authStore = new AuthStore(db.raw(), vault);
   const sse = new SseHub();
   const renderManager = new FfmpegRenderManager(rendersDir);
   const app = express();
 
+  app.set('trust proxy', 1);
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
+  app.use(createHttpsEnforcementMiddleware(enforceHttps));
+  app.use('/api', createRestrictiveCorsMiddleware(allowedOrigins));
+  app.use('/api', createGeneralRateLimiter(600, 60_000));
   app.use(express.json({ limit: '4mb' }));
+
+  const requireAuth = createRequireAuthMiddleware(authStore);
+  const requireCsrf = createRequireCsrfMiddleware(allowedOrigins);
 
   const logEvent = (entry: Omit<ConsoleLogEntry, 'id' | 'timestamp'>): ConsoleLogEntry => {
     const full: ConsoleLogEntry = {
@@ -108,16 +159,31 @@ export function createAetheraApiApp(opts: CreateAppOptions = {}) {
     };
   };
 
-  // --- Health & Capabilities ---
+  // --- Public Minimal Health Endpoint ---
   app.get('/api/health', (_req, res) => {
     res.json({
       ok: true,
       app: 'aethera-web',
       sqlite: true,
-      sseClients: sse.clientCount(),
       timestamp: new Date().toISOString(),
     });
   });
+
+  // --- Authentication, Sessions, Password Recovery & Meus Computadores ---
+  registerAuthAndComputerRoutes(app, authStore, requireAuth, requireCsrf, {
+    adminSetupToken: opts.adminSetupToken,
+    isProduction,
+    ssrfOptions: opts.ssrfOptions,
+    onPasswordResetIssued: opts.onPasswordResetIssued,
+  });
+
+  // --- Closed-Allowlist Authenticated Remote Host Proxy (REST + SSE + Range Media) ---
+  registerRemoteProxyRoutes(app, authStore, requireAuth, requireCsrf, {
+    ssrfOptions: opts.ssrfOptions,
+  });
+
+  // --- Protect ALL remaining Studio API routes with HttpOnly session + CSRF ---
+  app.use('/api', requireAuth, requireCsrf);
 
   app.get('/api/system/capabilities', (_req, res) => {
     res.json(
@@ -1059,7 +1125,11 @@ export function createAetheraApiApp(opts: CreateAppOptions = {}) {
     res.json(buildBootstrap());
   });
 
-  return { app, db, sse, renderManager };
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Rota API não encontrada.' });
+  });
+
+  return { app, db, authStore, vault, sse, renderManager };
 }
 
 async function startServer() {

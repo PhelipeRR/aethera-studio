@@ -28,6 +28,11 @@ export class RemoteJobOrchestrator {
   private readonly cinema: CinemaBridgeHandle;
   private readonly artifactsDir: string;
   private readonly workspaceDir: string;
+  private readonly onArtifactRegistered?: (
+    job: RemoteJobRecord,
+    artifact: RemoteArtifactRecord,
+    filePath: string,
+  ) => void;
   private readonly activeExecutions = new Map<string, ActiveExecution>();
   private readonly jobSubscribers = new Map<string, Set<Response>>();
   private readonly globalSubscribers = new Set<Response>();
@@ -39,12 +44,18 @@ export class RemoteJobOrchestrator {
     cinema: CinemaBridgeHandle;
     artifactsDir: string;
     workspaceDir: string;
+    onArtifactRegistered?: (
+      job: RemoteJobRecord,
+      artifact: RemoteArtifactRecord,
+      filePath: string,
+    ) => void;
   }) {
     this.db = options.db;
     this.agents = options.agents;
     this.cinema = options.cinema;
     this.artifactsDir = path.resolve(options.artifactsDir);
     this.workspaceDir = path.resolve(options.workspaceDir);
+    this.onArtifactRegistered = options.onArtifactRegistered;
     fs.mkdirSync(this.artifactsDir, { recursive: true });
 
     this.heartbeatTimer = setInterval(() => {
@@ -393,6 +404,14 @@ export class RemoteJobOrchestrator {
 
   private registerArtifact(jobId: string, artifact: RemoteArtifactRecord, filePath: string): void {
     this.db.saveArtifact(artifact, filePath);
+    const job = this.db.getJob(jobId);
+    if (job && this.onArtifactRegistered) {
+      try {
+        this.onArtifactRegistered(job, artifact, filePath);
+      } catch {
+        // Sync attachment must never crash job completion
+      }
+    }
     this.emitEvent({
       jobId,
       type: 'artifact_ready',

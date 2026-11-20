@@ -14,11 +14,15 @@ import {
   type RemoteOperationType,
   type RemoteProjectsResponse,
   type RemoteProjectSummary,
+  type ResolveSyncConflictRequest,
+  type SyncMediaTicketResponse,
+  type UpsertSyncedProjectRequest,
 } from './contracts/v1';
 import { RemoteAgentManager, type AgentRunnerOverrides } from './agents';
 import { createCinemaBridge } from './cinema-bridge';
 import { RemoteHostDatabase } from './db';
 import { RemoteJobOrchestrator } from './job-orchestrator';
+import { ProjectSyncService, SyncConflictError } from './project-sync-service';
 import {
   assertSafeBindHost,
   createArtifactTicket,
@@ -58,12 +62,15 @@ export interface RemoteHostConfig {
   allowedRoots: string[];
   rateLimitWindowMs: number;
   rateLimitMaxRequests: number;
+  desktopUserDataDir?: string | null;
+  enableDesktopWatcher?: boolean;
   agentOverrides?: AgentRunnerOverrides;
 }
 
 export interface RemoteHostInstance {
   app: Express;
   db: RemoteHostDatabase;
+  syncService: ProjectSyncService;
   orchestrator: RemoteJobOrchestrator;
   agents: RemoteAgentManager;
   config: RemoteHostConfig;
@@ -143,6 +150,20 @@ export function createRemoteHostApp(config: RemoteHostConfig): RemoteHostInstanc
   const db = new RemoteHostDatabase(path.join(dataDir, 'remote-host.db'));
   db.recoverInterruptedJobs();
 
+  const resolvedDesktopUserDataDir =
+    config.desktopUserDataDir !== undefined
+      ? config.desktopUserDataDir
+      : process.env['AETHERA_DESKTOP_USER_DATA_DIR'] ||
+        (process.env['APPDATA'] ? path.join(process.env['APPDATA'], 'AetheraStudio') : null);
+
+  const syncService = new ProjectSyncService({
+    dbPath: path.join(dataDir, 'remote-host.db'),
+    backupsDir: path.join(dataDir, 'backups'),
+    desktopUserDataDir: resolvedDesktopUserDataDir,
+    allowedMediaRoots: allowedRoots,
+    enableDesktopWatcher: config.enableDesktopWatcher,
+  });
+
   const agents = new RemoteAgentManager(config.agentOverrides);
   const cinema = createCinemaBridge(config.monorepoRoot);
   const orchestrator = new RemoteJobOrchestrator({
@@ -151,6 +172,25 @@ export function createRemoteHostApp(config: RemoteHostConfig): RemoteHostInstanc
     cinema,
     artifactsDir,
     workspaceDir: config.monorepoRoot,
+    onArtifactRegistered: (job, artifact, filePath) => {
+      if (!job.projectId) return;
+      syncService.attachArtifactToProject({
+        projectId: job.projectId,
+        jobId: job.id,
+        filePath,
+        source: 'remote_artifact',
+        encoderUsed: artifact.encoderUsed,
+        probe: {
+          durationSec: artifact.durationSec,
+          width: artifact.width,
+          height: artifact.height,
+          videoCodec: artifact.videoCodec,
+          audioCodec: artifact.audioCodec,
+          loudnessLufs: artifact.loudnessLufs,
+          sizeBytes: artifact.sizeBytes,
+        },
+      });
+    },
   });
 
   const signingSecret = config.signingSecret || crypto.randomBytes(32).toString('hex');
@@ -398,6 +438,195 @@ export function createRemoteHostApp(config: RemoteHostConfig): RemoteHostInstanc
     fs.createReadStream(art.filePath, { start, end }).pipe(res);
   });
 
+  // ============================================================================
+  // Bidirectional Project Sync Endpoints (Single Write Authority)
+  // ============================================================================
+
+  app.get('/api/sync/snapshot', requireScope('sync:read'), (_req, res) => {
+    res.json(syncService.getSnapshot());
+  });
+
+  app.get('/api/sync/changes', requireScope('sync:read'), (req, res) => {
+    const rawSince = req.query['since'];
+    const sinceSeq = Number.isFinite(Number(rawSince)) ? Number(rawSince) : 0;
+    res.json(syncService.getChangesSince(sinceSeq));
+  });
+
+  app.get('/api/sync/events', requireScope('sync:read'), (req, res) => {
+    const rawLast = req.headers['last-event-id'] ?? req.query['since'] ?? req.query['lastEventId'];
+    const lastEventId = Number.isFinite(Number(rawLast)) ? Number(rawLast) : 0;
+    syncService.subscribeEvents(res, lastEventId);
+  });
+
+  app.post('/api/sync/projects', requireScope('sync:write'), (req, res) => {
+    const body = req.body as Partial<UpsertSyncedProjectRequest>;
+    if (!body?.data || typeof body.data.title !== 'string') {
+      res.status(400).json({ error: 'Payload inválido: data.title é obrigatório.' });
+      return;
+    }
+    const headerIdem = typeof req.headers['idempotency-key'] === 'string' ? req.headers['idempotency-key'] : undefined;
+    try {
+      const result = syncService.upsertProject({
+        id: body.id,
+        expectedVersion: body.expectedVersion,
+        actor: body.actor ?? 'web',
+        idempotencyKey: body.idempotencyKey ?? headerIdem,
+        data: body.data,
+      });
+      res.status(result.idempotentReplay ? 200 : 201).json({
+        schemaVersion: REMOTE_CONTRACT_VERSION,
+        ...result,
+      });
+    } catch (err) {
+      if (err instanceof SyncConflictError) {
+        res.status(409).json(err.payload);
+        return;
+      }
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.put('/api/sync/projects/:id', requireScope('sync:write'), (req, res) => {
+    const projectId = String(req.params.id);
+    const body = req.body as Partial<UpsertSyncedProjectRequest>;
+    if (!body?.data || typeof body.data.title !== 'string') {
+      res.status(400).json({ error: 'Payload inválido: data.title é obrigatório.' });
+      return;
+    }
+    const headerIdem = typeof req.headers['idempotency-key'] === 'string' ? req.headers['idempotency-key'] : undefined;
+    try {
+      const result = syncService.upsertProject({
+        id: projectId,
+        expectedVersion: body.expectedVersion,
+        actor: body.actor ?? 'web',
+        idempotencyKey: body.idempotencyKey ?? headerIdem,
+        data: body.data,
+      });
+      res.json({
+        schemaVersion: REMOTE_CONTRACT_VERSION,
+        ...result,
+      });
+    } catch (err) {
+      if (err instanceof SyncConflictError) {
+        res.status(409).json(err.payload);
+        return;
+      }
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post('/api/sync/projects/:id/resolve-conflict', requireScope('sync:write'), (req, res) => {
+    const projectId = String(req.params.id);
+    const body = req.body as Partial<ResolveSyncConflictRequest>;
+    if (!body?.strategy || !['keep_server', 'force_client', 'fork_copy'].includes(body.strategy)) {
+      res.status(400).json({ error: 'Estratégia inválida. Use keep_server, force_client ou fork_copy.' });
+      return;
+    }
+    const headerIdem = typeof req.headers['idempotency-key'] === 'string' ? req.headers['idempotency-key'] : undefined;
+    try {
+      const result = syncService.resolveConflict(projectId, {
+        strategy: body.strategy,
+        actor: body.actor ?? 'web',
+        idempotencyKey: body.idempotencyKey ?? headerIdem,
+        clientData: body.clientData,
+      });
+      res.json({
+        schemaVersion: REMOTE_CONTRACT_VERSION,
+        ...result,
+      });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post('/api/sync/desktop-ingest', requireScope('sync:write'), (_req, res) => {
+    const ingested = syncService.ingestAllDesktopProjects();
+    res.json({
+      schemaVersion: REMOTE_CONTRACT_VERSION,
+      ingestedCount: ingested.length,
+      ingested,
+      currentSeq: syncService.getCurrentSeq(),
+    });
+  });
+
+  // Mint short-lived (60s) HMAC ticket for synced mediaRefId without exposing Windows paths
+  app.post('/api/sync/media/:mediaRefId/ticket', requireScope('artifacts:read'), (req, res) => {
+    const mediaRefId = String(req.params.mediaRefId);
+    const media = syncService.getMediaRefWithPath(mediaRefId);
+    if (!media || !fs.existsSync(media.filePath)) {
+      res.status(404).json({ error: 'Mídia sincronizada não encontrada ou indisponível.' });
+      return;
+    }
+    const { token, expiresAt } = createArtifactTicket(`syncmedia:${mediaRefId}`, signingSecret, 60);
+    const payload: SyncMediaTicketResponse = {
+      schemaVersion: REMOTE_CONTRACT_VERSION,
+      mediaRefId,
+      expiresAt,
+      streamPath: `/api/sync/media/${encodeURIComponent(mediaRefId)}/stream?ticket=${encodeURIComponent(token)}`,
+      downloadPath: `/api/sync/media/${encodeURIComponent(mediaRefId)}/stream?ticket=${encodeURIComponent(token)}&download=1`,
+    };
+    res.json(payload);
+  });
+
+  app.get('/api/sync/media/:mediaRefId/stream', (req, res) => {
+    const mediaRefId = String(req.params.mediaRefId);
+    const ticket = typeof req.query['ticket'] === 'string' ? req.query['ticket'] : undefined;
+    const authHeader = req.headers.authorization;
+
+    let authorized = false;
+    if (ticket && verifyArtifactTicket(`syncmedia:${mediaRefId}`, ticket, signingSecret)) {
+      authorized = true;
+    } else if (authHeader && authHeader.startsWith('Bearer ')) {
+      const provided = authHeader.slice('Bearer '.length).trim();
+      if (provided && sha256Hex(provided) === authTokenHash) {
+        authorized = true;
+      }
+    }
+
+    if (!authorized) {
+      res.status(401).json({ error: 'Ticket efêmero ou token Bearer obrigatório para mídia sincronizada.' });
+      return;
+    }
+
+    const media = syncService.getMediaRefWithPath(mediaRefId);
+    if (!media || !fs.existsSync(media.filePath)) {
+      res.status(404).json({ error: 'Mídia sincronizada não encontrada.' });
+      return;
+    }
+
+    const stat = fs.statSync(media.filePath);
+    const fileSize = stat.size;
+    res.setHeader('Content-Type', media.meta.mimeType);
+    res.setHeader('Accept-Ranges', 'bytes');
+    if (req.query['download'] === '1') {
+      res.setHeader('Content-Disposition', `attachment; filename="${path.basename(media.meta.filename)}"`);
+    }
+
+    const rangeHeader = req.headers.range;
+    if (!rangeHeader) {
+      res.setHeader('Content-Length', String(fileSize));
+      fs.createReadStream(media.filePath).pipe(res);
+      return;
+    }
+
+    const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+    if (!match) {
+      res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+      return;
+    }
+    const start = match[1] ? Number.parseInt(match[1], 10) : 0;
+    const end = match[2] ? Math.min(Number.parseInt(match[2], 10), fileSize - 1) : fileSize - 1;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= fileSize || end < start) {
+      res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+      return;
+    }
+
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+    res.setHeader('Content-Length', String(end - start + 1));
+    fs.createReadStream(media.filePath, { start, end }).pipe(res);
+  });
+
   // Security audit log inspection
   app.get('/api/audit', requireScope('host:read'), (_req, res) => {
     res.json({
@@ -409,11 +638,13 @@ export function createRemoteHostApp(config: RemoteHostConfig): RemoteHostInstanc
   return {
     app,
     db,
+    syncService,
     orchestrator,
     agents,
     config,
     close() {
       orchestrator.close();
+      syncService.close();
       db.close();
     },
   };

@@ -22,6 +22,9 @@ import type {
   StudioPreferences,
   TrendIdea,
 } from '../domain/types';
+import { useAuth } from './auth-store';
+
+export type SettingsTabId = 'computers' | 'account' | 'studio';
 
 export interface CreateProductionInput {
   title?: string;
@@ -121,28 +124,18 @@ function fallbackInitialBootstrap(): StudioBootstrapState {
   };
 }
 
-async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
-  });
-  const data = (await res.json()) as T & { error?: string };
-  if (!res.ok) {
-    throw new Error(data.error || `Erro HTTP ${res.status}`);
-  }
-  return data;
-}
-
 interface StudioContextValue extends StudioBootstrapState {
   loading: boolean;
   sseConnected: boolean;
   activeSection: NavSectionId;
+  settingsTab: SettingsTabId;
   manualSubView: ManualProjectSubView;
   activeProjectId: string;
   activeProject: ProductionProject | undefined;
   canGoBack: boolean;
   canGoForward: boolean;
   navigate: (section: NavSectionId, projectId?: string, subView?: ManualProjectSubView) => void;
+  openSettingsTab: (tab: SettingsTabId) => void;
   setManualSubView: (subView: ManualProjectSubView) => void;
   goBack: () => void;
   goForward: () => void;
@@ -211,6 +204,7 @@ interface StudioContextValue extends StudioBootstrapState {
 const StudioContext = createContext<StudioContextValue | null>(null);
 
 export function StudioProvider({ children }: { children: React.ReactNode }) {
+  const { authState, authFetch, authJson } = useAuth();
   const [state, setState] = useState<StudioBootstrapState>(() => fallbackInitialBootstrap());
   const [loading, setLoading] = useState(true);
   const [sseConnected, setSseConnected] = useState(false);
@@ -218,6 +212,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   const initialLoc = useMemo(() => parseHashLocation(), []);
   const [history, setHistory] = useState<NavSectionId[]>([initialLoc.section]);
   const [historyIdx, setHistoryIdx] = useState(0);
+  const [settingsTab, setSettingsTab] = useState<SettingsTabId>('computers');
   const [manualSubView, setManualSubViewState] = useState<ManualProjectSubView>(
     initialLoc.subView ?? 'overview',
   );
@@ -228,8 +223,9 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   const activeSection = history[historyIdx] ?? 'home';
 
   const refreshBootstrap = useCallback(async () => {
+    if (authState !== 'authenticated') return;
     try {
-      const data = await apiJson<StudioBootstrapState>('/api/bootstrap');
+      const data = await authJson<StudioBootstrapState>('/api/bootstrap');
       setState(data);
       setActiveProjectId((curr) =>
         curr && data.projects.some((p) => p.id === curr) ? curr : data.projects[0]?.id ?? '',
@@ -237,11 +233,13 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [authJson, authState]);
 
   useEffect(() => {
-    void refreshBootstrap();
-  }, [refreshBootstrap]);
+    if (authState === 'authenticated') {
+      void refreshBootstrap();
+    }
+  }, [authState, refreshBootstrap]);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -260,9 +258,13 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('hashchange', onHashChange);
   }, [historyIdx]);
 
-  // Real-time Server-Sent Events subscription
+  // Real-time Server-Sent Events subscription (authenticated via HttpOnly session cookie)
   useEffect(() => {
-    const es = new EventSource('/api/events');
+    if (authState !== 'authenticated') {
+      setSseConnected(false);
+      return;
+    }
+    const es = new EventSource('/api/events', { withCredentials: true });
 
     es.addEventListener('connected', () => {
       setSseConnected(true);
@@ -338,7 +340,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     return () => {
       es.close();
     };
-  }, []);
+  }, [authState]);
 
   const navigate = useCallback(
     (section: NavSectionId, projectId?: string, subView?: ManualProjectSubView) => {
@@ -357,6 +359,14 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setHistoryIdx((idx) => (history[idx] === section ? idx : idx + 1));
     },
     [history, historyIdx, activeProjectId],
+  );
+
+  const openSettingsTab = useCallback(
+    (tab: SettingsTabId) => {
+      setSettingsTab(tab);
+      navigate('settings');
+    },
+    [navigate],
   );
 
   const setManualSubView = useCallback(
@@ -404,7 +414,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
 
   const createProduction = useCallback(
     async (input: CreateProductionInput): Promise<ProductionProject> => {
-      const created = await apiJson<ProductionProject>('/api/projects', {
+      const created = await authJson<ProductionProject>('/api/projects', {
         method: 'POST',
         body: JSON.stringify(input),
       });
@@ -412,49 +422,49 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setActiveProjectId(created.id);
       return created;
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const updateProject = useCallback(
     async (projectId: string, patch: Partial<ProductionProject>): Promise<ProductionProject> => {
-      const updated = await apiJson<ProductionProject>(`/api/projects/${projectId}`, {
+      const updated = await authJson<ProductionProject>(`/api/projects/${projectId}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
       });
       upsertLocalProject(updated);
       return updated;
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const advanceStage = useCallback(
     async (projectId: string) => {
-      const updated = await apiJson<ProductionProject>(`/api/projects/${projectId}/pipeline/advance`, {
+      const updated = await authJson<ProductionProject>(`/api/projects/${projectId}/pipeline/advance`, {
         method: 'POST',
       });
       upsertLocalProject(updated);
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const completePipeline = useCallback(
     async (projectId: string) => {
-      const updated = await apiJson<ProductionProject>(`/api/projects/${projectId}/pipeline/complete`, {
+      const updated = await authJson<ProductionProject>(`/api/projects/${projectId}/pipeline/complete`, {
         method: 'POST',
       });
       upsertLocalProject(updated);
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const pausePipeline = useCallback(
     async (projectId: string) => {
-      const updated = await apiJson<ProductionProject>(`/api/projects/${projectId}/pipeline/pause`, {
+      const updated = await authJson<ProductionProject>(`/api/projects/${projectId}/pipeline/pause`, {
         method: 'POST',
       });
       upsertLocalProject(updated);
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const updateScene = useCallback(
@@ -468,108 +478,108 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
             : p,
         ),
       }));
-      const updated = await apiJson<ProductionProject>(
+      const updated = await authJson<ProductionProject>(
         `/api/projects/${projectId}/scenes/${sceneId}`,
         { method: 'PATCH', body: JSON.stringify(patch) },
       );
       upsertLocalProject(updated);
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const addReviewComment = useCallback(
     async (projectId: string, timestampSec: number, text: string) => {
       if (!text.trim()) return;
-      const updated = await apiJson<ProductionProject>(`/api/projects/${projectId}/comments`, {
+      const updated = await authJson<ProductionProject>(`/api/projects/${projectId}/comments`, {
         method: 'POST',
         body: JSON.stringify({ timestampSec, text }),
       });
       upsertLocalProject(updated);
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const toggleChecklistItem = useCallback(
     async (projectId: string, itemId: string) => {
-      const updated = await apiJson<ProductionProject>(
+      const updated = await authJson<ProductionProject>(
         `/api/projects/${projectId}/checklist/${itemId}/toggle`,
         { method: 'POST' },
       );
       upsertLocalProject(updated);
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const requestRevision = useCallback(
     async (projectId: string, instruction: string) => {
       if (!instruction.trim()) return;
-      const updated = await apiJson<ProductionProject>(`/api/projects/${projectId}/revisions`, {
+      const updated = await authJson<ProductionProject>(`/api/projects/${projectId}/revisions`, {
         method: 'POST',
         body: JSON.stringify({ instruction }),
       });
       upsertLocalProject(updated);
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const approveProject = useCallback(
     async (projectId: string) => {
-      const updated = await apiJson<ProductionProject>(`/api/projects/${projectId}/approve`, {
+      const updated = await authJson<ProductionProject>(`/api/projects/${projectId}/approve`, {
         method: 'POST',
       });
       upsertLocalProject(updated);
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const scheduleProject = useCallback(
     async (projectId: string, dateIso: string | null) => {
-      const updated = await apiJson<ProductionProject>(`/api/projects/${projectId}/schedule`, {
+      const updated = await authJson<ProductionProject>(`/api/projects/${projectId}/schedule`, {
         method: 'POST',
         body: JSON.stringify({ dateIso }),
       });
       upsertLocalProject(updated);
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const savePublicationPackage = useCallback(
     async (projectId: string, patch: Partial<PublicationPackage>): Promise<ProductionProject> => {
-      const updated = await apiJson<ProductionProject>(`/api/projects/${projectId}/package`, {
+      const updated = await authJson<ProductionProject>(`/api/projects/${projectId}/package`, {
         method: 'PUT',
         body: JSON.stringify(patch),
       });
       upsertLocalProject(updated);
       return updated;
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const generateDerivative = useCallback(
     async (projectId: string, formatId: DerivativeVariant['formatId']) => {
-      const res = await apiJson<{ project: ProductionProject }>(`/api/projects/${projectId}/derivatives`, {
+      const res = await authJson<{ project: ProductionProject }>(`/api/projects/${projectId}/derivatives`, {
         method: 'POST',
         body: JSON.stringify({ formatId }),
       });
       upsertLocalProject(res.project);
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const decideDerivative = useCallback(
     async (projectId: string, variantId: string, decision: 'approved' | 'rejected') => {
-      const updated = await apiJson<ProductionProject>(
+      const updated = await authJson<ProductionProject>(
         `/api/projects/${projectId}/derivatives/${variantId}/decide`,
         { method: 'POST', body: JSON.stringify({ decision }) },
       );
       upsertLocalProject(updated);
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const promoteDerivative = useCallback(
     async (projectId: string, variantId: string): Promise<ProductionProject> => {
-      const res = await apiJson<{ parent: ProductionProject; child: ProductionProject }>(
+      const res = await authJson<{ parent: ProductionProject; child: ProductionProject }>(
         `/api/projects/${projectId}/derivatives/${variantId}/promote`,
         { method: 'POST' },
       );
@@ -577,12 +587,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       upsertLocalProject(res.child);
       return res.child;
     },
-    [upsertLocalProject],
+    [authJson, upsertLocalProject],
   );
 
   const createIdeaFromAnalytics = useCallback(
     async (projectId: string, title: string, angle: string): Promise<TrendIdea> => {
-      const idea = await apiJson<TrendIdea>(`/api/projects/${projectId}/analytics/idea`, {
+      const idea = await authJson<TrendIdea>(`/api/projects/${projectId}/analytics/idea`, {
         method: 'POST',
         body: JSON.stringify({ title, angle }),
       });
@@ -594,12 +604,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       }));
       return idea;
     },
-    [],
+    [authJson],
   );
 
   const startFfmpegRender = useCallback(
     async (projectId: string, preset?: ProductionProject['qualityPreset']): Promise<RenderJob> => {
-      const job = await apiJson<RenderJob>('/api/renders', {
+      const job = await authJson<RenderJob>('/api/renders', {
         method: 'POST',
         body: JSON.stringify({ projectId, preset }),
       });
@@ -611,20 +621,20 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       }));
       return job;
     },
-    [],
+    [authJson],
   );
 
   const cancelRenderJob = useCallback(async (jobId: string) => {
-    const updated = await apiJson<RenderJob>(`/api/renders/${jobId}/cancel`, { method: 'POST' });
+    const updated = await authJson<RenderJob>(`/api/renders/${jobId}/cancel`, { method: 'POST' });
     setState((prev) => ({
       ...prev,
       renderJobs: prev.renderJobs.map((j) => (j.id === updated.id ? updated : j)),
     }));
-  }, []);
+  }, [authJson]);
 
   const createChannel = useCallback(
     async (input: Omit<ChannelConfig, 'id' | 'oauthStatus' | 'createdAt' | 'updatedAt'>): Promise<ChannelConfig> => {
-      const ch = await apiJson<ChannelConfig>('/api/channels', {
+      const ch = await authJson<ChannelConfig>('/api/channels', {
         method: 'POST',
         body: JSON.stringify(input),
       });
@@ -634,19 +644,19 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       }));
       return ch;
     },
-    [],
+    [authJson],
   );
 
   const saveAgentProviders = useCallback(async (providers: AgentProviderConfig[]) => {
-    const updated = await apiJson<AgentProviderConfig[]>('/api/agents/providers', {
+    const updated = await authJson<AgentProviderConfig[]>('/api/agents/providers', {
       method: 'PATCH',
       body: JSON.stringify({ providers }),
     });
     setState((prev) => ({ ...prev, agentProviders: updated }));
-  }, []);
+  }, [authJson]);
 
   const testAgentProviderById = useCallback(async (providerId: string): Promise<AgentProviderConfig> => {
-    const res = await apiJson<{ provider: AgentProviderConfig; runs: AgentRunRecord[] }>(
+    const res = await authJson<{ provider: AgentProviderConfig; runs: AgentRunRecord[] }>(
       `/api/agents/providers/${providerId}/test`,
       { method: 'POST' },
     );
@@ -656,11 +666,11 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       agentRuns: res.runs,
     }));
     return res.provider;
-  }, []);
+  }, [authJson]);
 
   const runHumanize = useCallback(
     async (input: { text: string; tone: 'editorial' | 'conversacional' | 'documental'; projectId?: string | null }) => {
-      const res = await apiJson<{
+      const res = await authJson<{
         result: HumanizeResult;
         providerUsed: string;
         executionMode: 'real_cli' | 'deterministic_fallback';
@@ -673,11 +683,11 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setState((prev) => ({ ...prev, agentRuns: [res.run, ...prev.agentRuns].slice(0, 40) }));
       return res;
     },
-    [],
+    [authJson],
   );
 
   const runYouTubeAgent = useCallback(async (projectId: string) => {
-    const res = await apiJson<{
+    const res = await authJson<{
       analysis: YouTubeAgentAnalysis;
       providerUsed: string;
       executionMode: 'real_cli' | 'deterministic_fallback';
@@ -689,7 +699,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     });
     setState((prev) => ({ ...prev, agentRuns: [res.run, ...prev.agentRuns].slice(0, 40) }));
     return res;
-  }, []);
+  }, [authJson]);
 
   const createCreativeArt = useCallback(
     async (input: {
@@ -699,14 +709,14 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       fidelity: CreativeArtProject['fidelity'];
       brandKitId: string;
     }): Promise<CreativeArtProject> => {
-      const art = await apiJson<CreativeArtProject>('/api/creative/arts', {
+      const art = await authJson<CreativeArtProject>('/api/creative/arts', {
         method: 'POST',
         body: JSON.stringify(input),
       });
       setState((prev) => ({ ...prev, creativeProjects: [art, ...prev.creativeProjects] }));
       return art;
     },
-    [],
+    [authJson],
   );
 
   const runThumbnailLab = useCallback(
@@ -716,14 +726,14 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       fidelity: CreativeArtProject['fidelity'];
       brandKitId: string;
     }): Promise<CreativeArtProject[]> => {
-      const variants = await apiJson<CreativeArtProject[]>('/api/creative/thumbnail-lab', {
+      const variants = await authJson<CreativeArtProject[]>('/api/creative/thumbnail-lab', {
         method: 'POST',
         body: JSON.stringify(input),
       });
       setState((prev) => ({ ...prev, creativeProjects: [...variants, ...prev.creativeProjects] }));
       return variants;
     },
-    [],
+    [authJson],
   );
 
   const updateCreativeLayers = useCallback(async (artId: string, layers: CreativeLayer[]) => {
@@ -735,16 +745,16 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
           : a,
       ),
     }));
-    await apiJson<CreativeArtProject>(`/api/creative/arts/${artId}`, {
+    await authJson<CreativeArtProject>(`/api/creative/arts/${artId}`, {
       method: 'PATCH',
       body: JSON.stringify({ layers }),
     });
-  }, []);
+  }, [authJson]);
 
   const toggleApproveCreative = useCallback(async (artId: string) => {
     const current = state.creativeProjects.find((a) => a.id === artId);
     const nextApproved = !(current?.approved ?? false);
-    const updated = await apiJson<CreativeArtProject>(`/api/creative/arts/${artId}`, {
+    const updated = await authJson<CreativeArtProject>(`/api/creative/arts/${artId}`, {
       method: 'PATCH',
       body: JSON.stringify({ approved: nextApproved }),
     });
@@ -752,61 +762,63 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       ...prev,
       creativeProjects: prev.creativeProjects.map((a) => (a.id === artId ? updated : a)),
     }));
-  }, [state.creativeProjects]);
+  }, [authJson, state.creativeProjects]);
 
   const saveBrandKit = useCallback(async (kit: Omit<BrandKit, 'id'>): Promise<BrandKit> => {
-    const created = await apiJson<BrandKit>('/api/creative/brand-kits', {
+    const created = await authJson<BrandKit>('/api/creative/brand-kits', {
       method: 'POST',
       body: JSON.stringify(kit),
     });
     setState((prev) => ({ ...prev, brandKits: [...prev.brandKits, created] }));
     return created;
-  }, []);
+  }, [authJson]);
 
   const addMediaAsset = useCallback(async (asset: Omit<MediaAsset, 'id' | 'addedAt'>) => {
-    const created = await apiJson<MediaAsset>('/api/media', {
+    const created = await authJson<MediaAsset>('/api/media', {
       method: 'POST',
       body: JSON.stringify(asset),
     });
     setState((prev) => ({ ...prev, mediaAssets: [created, ...prev.mediaAssets] }));
-  }, []);
+  }, [authJson]);
 
-  const acquireViaYtDlp = useCallback(async (query: string) => {
-    const res = await fetch('/api/media/acquire-ytdlp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
-    });
-    const data = (await res.json()) as {
-      ok: boolean;
-      status: 'ok' | 'blocked';
-      message: string;
-      asset?: MediaAsset;
-    };
-    if (data.asset) {
-      setState((prev) => ({ ...prev, mediaAssets: [data.asset!, ...prev.mediaAssets] }));
-    }
-    return { ok: data.ok, status: data.status, message: data.message };
-  }, []);
+  const acquireViaYtDlp = useCallback(
+    async (query: string) => {
+      const res = await authFetch('/api/media/acquire-ytdlp', {
+        method: 'POST',
+        body: JSON.stringify({ query }),
+      });
+      const data = (await res.json()) as {
+        ok: boolean;
+        status: 'ok' | 'blocked';
+        message: string;
+        asset?: MediaAsset;
+      };
+      if (data.asset) {
+        setState((prev) => ({ ...prev, mediaAssets: [data.asset!, ...prev.mediaAssets] }));
+      }
+      return { ok: data.ok, status: data.status, message: data.message };
+    },
+    [authFetch],
+  );
 
   const updatePreferences = useCallback(async (patch: Partial<StudioPreferences>) => {
-    const updated = await apiJson<StudioPreferences>('/api/preferences', {
+    const updated = await authJson<StudioPreferences>('/api/preferences', {
       method: 'PATCH',
       body: JSON.stringify(patch),
     });
     setState((prev) => ({ ...prev, preferences: updated }));
-  }, []);
+  }, [authJson]);
 
   const resetWorkspace = useCallback(async () => {
-    const fresh = await apiJson<StudioBootstrapState>('/api/workspace/reset', { method: 'POST' });
+    const fresh = await authJson<StudioBootstrapState>('/api/workspace/reset', { method: 'POST' });
     setState(fresh);
     setActiveProjectId(fresh.projects[0]?.id ?? '');
-  }, []);
+  }, [authJson]);
 
   const clearLogs = useCallback(async () => {
-    await apiJson('/api/logs', { method: 'DELETE' });
+    await authJson('/api/logs', { method: 'DELETE' });
     setState((prev) => ({ ...prev, consoleLogs: [] }));
-  }, []);
+  }, [authJson]);
 
   const activeProject = useMemo(
     () => state.projects.find((p) => p.id === activeProjectId) ?? state.projects[0],
@@ -818,12 +830,14 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     loading,
     sseConnected,
     activeSection,
+    settingsTab,
     manualSubView,
     activeProjectId: activeProject?.id ?? '',
     activeProject,
     canGoBack: historyIdx > 0,
     canGoForward: historyIdx < history.length - 1,
     navigate,
+    openSettingsTab,
     setManualSubView,
     goBack,
     goForward,

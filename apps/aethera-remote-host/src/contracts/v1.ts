@@ -1,9 +1,12 @@
-export const REMOTE_CONTRACT_VERSION = '1.0.0' as const;
+export const REMOTE_CONTRACT_VERSION = '1.1.0' as const;
 
 export type RemoteScope =
   | 'host:read'
   | 'agents:read'
   | 'projects:read'
+  | 'projects:write'
+  | 'sync:read'
+  | 'sync:write'
   | 'jobs:read'
   | 'jobs:write'
   | 'jobs:control'
@@ -14,6 +17,9 @@ export const ALL_REMOTE_SCOPES: readonly RemoteScope[] = [
   'host:read',
   'agents:read',
   'projects:read',
+  'projects:write',
+  'sync:read',
+  'sync:write',
   'jobs:read',
   'jobs:write',
   'jobs:control',
@@ -313,3 +319,158 @@ export interface AuditLogEntry {
   statusCode: number;
   detail: string;
 }
+
+// ============================================================================
+// Bidirectional Sync Contracts (Web <-> Remote Host Authority <-> Desktop)
+// ============================================================================
+
+export type SyncActor = 'web' | 'desktop' | 'remote_host';
+
+export type ProjectSyncBadgeState = 'local_only' | 'synced' | 'pending' | 'conflict';
+
+export interface SyncedSceneItem {
+  id: string;
+  index: number;
+  title: string;
+  narration: string;
+  visualQuery: string;
+  durationSec: number;
+  transition: 'corte_seco' | 'dissolve' | 'whip_pan' | 'fade_black';
+  mediaMatched: boolean;
+  caption: string;
+  accentHex: string;
+  mediaRefId?: string | null;
+}
+
+export interface SyncedRevisionRecord {
+  id: string;
+  instruction: string;
+  summary: string;
+  affectedStages: string[];
+  createdAt: string;
+  author: SyncActor;
+}
+
+export interface SyncedMediaRef {
+  mediaRefId: string;
+  projectId: string;
+  kind: 'video_mp4' | 'audio' | 'image' | 'thumbnail' | 'subtitle' | 'other';
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string | null;
+  available: boolean;
+  source: 'desktop_render' | 'desktop_media' | 'remote_artifact';
+  updatedAt: string;
+}
+
+export interface SyncedProjectData {
+  title: string;
+  briefing: string;
+  creationMode: 'ai' | 'manual';
+  format: 'youtube_1080p' | 'youtube_4k' | 'shorts_9_16' | 'documentary_wide';
+  style: 'Video Essay' | 'Documentário' | 'Top 10' | 'Análise Técnica' | 'Comédia Narrada';
+  aspectRatio: '16:9' | '9:16';
+  language: string;
+  durationMin: number;
+  humorLevel: number;
+  ttsProvider: 'voicestudio' | 'elevenlabs' | 'webspeech';
+  ttsVoice: string;
+  qualityPreset: 'review_720p' | 'master_1080p' | 'cinema_4k';
+  status: 'briefing' | 'producing' | 'awaiting_review' | 'approved' | 'scheduled';
+  scheduledDate: string | null;
+  humanizedScript: string | null;
+  scenes: SyncedSceneItem[];
+  revisions: SyncedRevisionRecord[];
+  latestJobId: string | null;
+  latestRenderMediaRefId: string | null;
+  mediaRefs: SyncedMediaRef[];
+  settings?: Record<string, unknown>;
+}
+
+export interface SyncedProjectRecord {
+  id: string;
+  version: number;
+  contentHash: string;
+  origin: SyncActor;
+  updatedBy: SyncActor;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+  desktopProjectedAt: string | null;
+  data: SyncedProjectData;
+}
+
+export interface UpsertSyncedProjectRequest {
+  id?: string;
+  expectedVersion?: number | null;
+  actor: SyncActor;
+  idempotencyKey?: string;
+  data: SyncedProjectData;
+}
+
+export interface SyncConflictPayload {
+  code: 'SYNC_VERSION_CONFLICT';
+  error: string;
+  projectId: string;
+  expectedVersion: number | null;
+  serverVersion: number;
+  changedFields: string[];
+  serverProject: SyncedProjectRecord;
+  incomingData: SyncedProjectData;
+}
+
+export interface ResolveSyncConflictRequest {
+  strategy: 'keep_server' | 'force_client' | 'fork_copy';
+  actor: SyncActor;
+  idempotencyKey?: string;
+  clientData?: SyncedProjectData;
+}
+
+export interface SyncChangeEvent {
+  seq: number;
+  projectId: string;
+  eventType: 'project_created' | 'project_updated' | 'project_deleted' | 'desktop_ingested' | 'media_ready' | 'conflict_resolved';
+  version: number;
+  actor: SyncActor;
+  timestamp: string;
+  summary: string;
+  project?: SyncedProjectRecord;
+}
+
+export interface SyncBackupSummary {
+  id: string;
+  createdAt: string;
+  fileCount: number;
+  reason: string;
+  manifestSha256: string;
+}
+
+export interface SyncSnapshotResponse {
+  schemaVersion: typeof REMOTE_CONTRACT_VERSION;
+  authorityId: string;
+  currentSeq: number;
+  desktopBridgeStatus: {
+    desktopUserDataDetected: boolean;
+    cinemaProjectsCount: number;
+    watcherActive: boolean;
+    lastBackup: SyncBackupSummary | null;
+  };
+  projects: SyncedProjectRecord[];
+}
+
+export interface SyncChangesResponse {
+  schemaVersion: typeof REMOTE_CONTRACT_VERSION;
+  sinceSeq: number;
+  currentSeq: number;
+  changes: SyncChangeEvent[];
+}
+
+export interface SyncMediaTicketResponse {
+  schemaVersion: typeof REMOTE_CONTRACT_VERSION;
+  mediaRefId: string;
+  expiresAt: string;
+  streamPath: string;
+  downloadPath: string;
+}
+
