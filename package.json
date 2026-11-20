@@ -38,7 +38,11 @@
     "build:void": "npm --prefix apps/void-desktop run build",
     "build:all-apps": "npm run build:web && npm run build:desktop && npm run build:aethera && npm run build:orchestrator && npm run build:void",
     "typecheck:desktop": "npm --prefix apps/aethera-desktop run typecheck",
-    "dist:win:aethera": "npm run build:aethera && electron-builder --config apps/aethera-desktop/electron-builder.yml --win"
+    "dist:win:aethera": "npm run build:aethera && cd apps/aethera-desktop && electron-builder --config electron-builder.yml --win",
+    "dist:win:desktop": "npm run build:desktop && cd apps/desktop && electron-builder --config electron-builder.yml --win",
+    "dist:win:orchestrator": "npm run build:orchestrator && cd apps/orchestrator-desktop && electron-builder --config electron-builder.yml --win",
+    "dist:win:void": "npm run build:void && cd apps/void-desktop && electron-builder --config electron-builder.yml --win",
+    "dist:win:all": "npm run dist:win:aethera && npm run dist:win:desktop && npm run dist:win:orchestrator && npm run dist:win:void"
   },
   "dependencies": {
     "@types/express": "^5.0.6",
