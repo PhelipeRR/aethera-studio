@@ -281,12 +281,21 @@ Adicionar a skill YouTube Agent como recurso opcional de pesquisa contextual.
 
 ---
 
-## Fase 3 — MotionVelix 📋 Planejada
+## Fase 3 — Produção Audiovisual (Em andamento — código implementado em 2026-11-20)
 
-**Depende de:** Fase 2.2 + teste narrativo real com painéis sequenciais  
-**Gate obrigatório:** Sequência real de mangá/manhwa com personagens recorrentes e Gate G validado.
+**Nota de governança:** A infraestrutura determinística da Fase 3 foi implementada e validada com fixtures sintéticas explícitas; o E2E narrativo real da Fase 2.2.4 permanece pendente de quota dos agentes e **não** é substituído por fixtures técnicas.
 
-Transformar o RecapScript validado em motion graphics via MotionVelix skill.
+**Infraestrutura reutilizada de `@neuralbridge/cinema`:**
+- `audio/audio-first-timeline.ts` (`measureNarrationSegmentsWithPauses`, `buildAudioFirstDurationAudit`)
+- `captions/smart-captions.ts` (`compileSmartCaptions`)
+- `audio/sound-engine.ts` (`LOUDNESS_PROFILES`)
+
+**Módulos implementados (`packages/cinema/src/recap/phase3/`):**
+- `recap-audiovisual-types.ts`: contratos entre `RecapScript` e pipeline audiovisual (`RecapAudiovisualPlan`, `RecapPanelShot`, `RecapSfxCue`, `RecapVfxSpec`, `GateHReport`, `RecapPhase3Checkpoint`).
+- `recap-visual-planner.ts`: planejamento visual determinístico por cena/painel, movimento cinematográfico (Ken Burns, pan vertical, proteção de balões em painéis de diálogo), sincronização Audio-First, legendas ASS e ducking EBU R128.
+- `recap-gate-h-quality.ts`: auditoria Gate H (áudio sem cortes, zero lacunas visuais, sem repetição consecutiva de painéis, ordem narrativa preservada, legibilidade de balões, guarda contra aprovação automática de fixtures sintéticas).
+- `recap-mp4-renderer.ts`: renderização MP4 H.264/AAC via FFmpeg (`zoompan` + `sidechaincompress` + `loudnorm`), checkpoints atômicos por etapa, fallback determinístico de áudio e gate prévia-antes-do-master.
+- `scripts/e2e-recap-phase3-technical-preview.mts` & `packages/cinema/test/recap/phase3-audiovisual.test.ts`.
 
 ---
 

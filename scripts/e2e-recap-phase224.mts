@@ -382,7 +382,7 @@ async function main() {
 		log('DONE', `Relatorio salvo em ${reportPath}`, summary);
 	} catch (err) {
 		if (err instanceof AllVisionProvidersUnavailableError) {
-			const routingSummary = formatVisionRoutingSummary(visionAdapter.getLastTrace()?.attempts ?? []);
+			const routingSummary = formatVisionRoutingSummary(visionAdapter.getLastTrace()?.attempts ?? [], circuitBreaker);
 			log('BLOCKED', 'Todos os agentes multimodais falharam ou estao indisponiveis', {
 				code: err.code,
 				message: err.message,

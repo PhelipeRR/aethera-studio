@@ -645,19 +645,23 @@ export interface VisionRoutingStepSummary {
  */
 export function formatVisionRoutingSummary(
 	attempts: readonly { provider: string; outcome: string; detail?: string }[],
+	circuitBreaker?: AgentCircuitBreaker,
 ): VisionRoutingStepSummary[] {
 	return attempts.map((a, idx) => {
 		const next = attempts[idx + 1];
 		if (a.outcome === 'ok' || a.outcome === 'cached') {
 			return { provider: a.provider, outcome: a.outcome };
 		}
+		const cbState = circuitBreaker?.getState(a.provider);
 		const fallback = a.outcome === 'unavailable' ? 'PROVIDER_UNAVAILABLE' : 'UNKNOWN_PROVIDER_ERROR';
 		const c = classifyVisionError(a.detail ?? a.outcome, a.provider, fallback);
+		const unifiedCode = cbState?.state === 'open' && cbState.code ? cbState.code : c.code;
+		const unifiedReason = cbState?.state === 'open' && cbState.reason ? cbState.reason : c.message;
 		return {
 			provider: a.provider,
 			outcome: a.outcome,
-			code: c.code,
-			reason: c.message,
+			code: unifiedCode,
+			reason: unifiedReason,
 			...(next ? { fallbackTo: next.provider } : {}),
 		};
 	});

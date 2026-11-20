@@ -91,7 +91,8 @@ export class RecapVisionError extends Error {
 		exitCode?: number;
 		cause?: unknown;
 	}) {
-		const sanitized = sanitizeErrorMessage(input.message);
+		const stripped = input.message.replace(/^(?:\[[A-Z_]+\]\s*\([^)]+\)\s*)+/, '');
+		const sanitized = sanitizeErrorMessage(stripped);
 		super(`[${input.code}] (${input.providerId}) ${sanitized}`, input.cause !== undefined ? { cause: input.cause } : undefined);
 		this.name = 'RecapVisionError';
 		this.code = input.code;
@@ -123,6 +124,7 @@ export class AllVisionProvidersUnavailableError extends RecapVisionError {
 }
 
 const QUOTA_PATTERNS = [
+	/quota_cooldown/i,
 	/RESOURCE_EXHAUSTED/i,
 	/insufficient[_ ]?credits?/i,
 	/cr[ée]ditos?\s+insuficientes?/i,

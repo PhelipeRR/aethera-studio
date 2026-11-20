@@ -1,0 +1,28 @@
+{
+  "gate": "H_audiovisual_quality",
+  "verdict": "needs_review",
+  "checkedAtIso": "2026-11-20T22:18:40.921Z",
+  "reasons": [
+    "Roteiro sintético/técnico (não homologado para publicação final)."
+  ],
+  "metrics": {
+    "shotCount": 4,
+    "totalDurationMs": 22355,
+    "measuredNarrationDurationMs": 22355,
+    "audioClipped": false,
+    "visualCoverageGaps": 0,
+    "duplicateConsecutivePanels": 0,
+    "sceneOrderViolations": 0,
+    "balloonReadabilityRisks": 0,
+    "missingPanelFiles": 0,
+    "mp4ProbeMismatches": 0,
+    "isSyntheticFixture": true
+  },
+  "findings": [
+    {
+      "code": "synthetic_fixture_unapproved",
+      "severity": "warning",
+      "detail": "Vídeo produzido com roteiro sintético/técnico não homologado — não conta como aprovação editorial real da Fase 2.2.4."
+    }
+  ]
+}

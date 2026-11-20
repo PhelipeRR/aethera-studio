@@ -205,3 +205,6 @@ export {
 	AgentCircuitBreaker,
 	type AgentCircuitState,
 } from './vision-circuit-breaker.js';
+
+// ─── Phase 3 — Audiovisual Production Exports ────────────────────────────────
+export * from './phase3/index.js';
