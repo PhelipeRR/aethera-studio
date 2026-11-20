@@ -467,16 +467,66 @@ export function CreativeStudioPanel() {
 
   const selectedLayer: CreativeLayer | undefined = activeDoc?.layers.find((l) => l.id === selectedLayerId);
 
+  const bentoCard = {
+    background: 'var(--card, #ffffff)',
+    border: '1px solid rgba(17, 17, 17, 0.05)',
+    borderRadius: 28,
+    boxShadow: 'var(--elevation-1, 0 1px 2px rgba(17, 17, 17, 0.03), 0 8px 24px -14px rgba(17, 17, 17, 0.08))',
+  } as const;
+
+  const bentoInput = {
+    padding: '9px 12px',
+    background: 'var(--secondary, #f4f4f6)',
+    color: 'var(--foreground, #111111)',
+    border: '1px solid var(--border, #e2e2e7)',
+    borderRadius: 14,
+    fontSize: 13,
+  } as const;
+
+  const bentoCompactControl = {
+    padding: '5px 10px',
+    background: 'var(--secondary, #f4f4f6)',
+    color: 'var(--foreground, #111111)',
+    border: '1px solid var(--border, #e2e2e7)',
+    borderRadius: 12,
+    fontSize: 11,
+  } as const;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+      <div
+        style={{
+          ...bentoCard,
+          padding: '18px 24px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 12,
+        }}
+      >
         <div>
-          <h2 style={{ margin: 0, fontSize: 20 }}>Aethera Creative Studio</h2>
-          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted-foreground)' }}>
+          <span
+            style={{
+              display: 'inline-block',
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: '0.16em',
+              textTransform: 'uppercase',
+              color: '#6a46d8',
+              marginBottom: 4,
+            }}
+          >
+            AETHERA CREATIVE
+          </span>
+          <h2 style={{ margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: '-0.025em', color: '#111111' }}>
+            Aethera Creative Studio
+          </h2>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted-foreground, #72727d)' }}>
             Motores ativos: {engines.length > 0 ? engines.join(' • ') : 'Planejador Determinístico Local'}
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {(['thumbnail', 'banner', 'avatar', 'watermark'] as CreativeArtType[]).map((t) => (
             <button
               key={t}
@@ -486,11 +536,13 @@ export function CreativeStudioPanel() {
                 else if (t === 'thumbnail' && professionalPreset === 'banner_2560x1440') setProfessionalPreset('youtube_thumbnail_1280x720');
               }}
               style={{
-                padding: '6px 12px',
-                borderRadius: 6,
-                border: '1px solid var(--border)',
-                background: artType === t ? 'var(--primary)' : 'var(--card)',
-                color: artType === t ? 'var(--primary-foreground)' : 'var(--foreground)',
+                padding: '8px 15px',
+                borderRadius: 9999,
+                border: artType === t ? '1px solid #111111' : '1px solid var(--border, #e2e2e7)',
+                background: artType === t ? '#111111' : 'var(--secondary, #f4f4f6)',
+                color: artType === t ? '#ffffff' : 'var(--foreground, #111111)',
+                fontSize: 12,
+                fontWeight: artType === t ? 600 : 500,
                 cursor: 'pointer',
               }}
             >
@@ -500,14 +552,35 @@ export function CreativeStudioPanel() {
         </div>
       </div>
 
-      <div role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', padding: '10px 14px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, fontSize: 12 }}>
-        <div>
-          <strong>Engine de imagem</strong>{' '}
-          <span style={{ color: engineStatus?.comfyUi.state === 'ready' ? 'var(--success)' : 'var(--warning)' }}>
+      <div
+        role="status"
+        style={{
+          ...bentoCard,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          flexWrap: 'wrap',
+          padding: '14px 20px',
+          fontSize: 12,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <strong style={{ color: '#111111' }}>Engine de imagem</strong>
+          <span
+            style={{
+              padding: '3px 10px',
+              borderRadius: 9999,
+              fontSize: 11,
+              fontWeight: 600,
+              background: engineStatus?.comfyUi.state === 'ready' ? '#eaf7df' : '#fef3c7',
+              color: engineStatus?.comfyUi.state === 'ready' ? '#15803d' : '#b45309',
+            }}
+          >
             {engineStatus?.comfyUi.state ?? 'verificando'}
           </span>
-          <span style={{ color: 'var(--muted-foreground)', marginLeft: 8 }}>
-            ativo: {engineStatus?.activeProvider ?? '—'}
+          <span style={{ color: 'var(--muted-foreground, #72727d)' }}>
+            ativo: <strong style={{ color: '#111111' }}>{engineStatus?.activeProvider ?? '—'}</strong>
           </span>
         </div>
         {engineStatus?.comfyUi.reason && (
@@ -538,7 +611,7 @@ export function CreativeStudioPanel() {
                 aria-label="Checkpoint ComfyUI"
                 value={selectedCheckpoint}
                 onChange={(e) => void saveImageEngineSettings({ checkpoint: e.target.value })}
-                style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11 }}
+                style={bentoCompactControl}
               >
                 {(engineStatus.comfyUi.models?.checkpoints ?? []).map((checkpoint) => <option key={checkpoint} value={checkpoint}>{checkpoint}</option>)}
               </select>
@@ -547,16 +620,16 @@ export function CreativeStudioPanel() {
               aria-label="Modo de LoRA"
               value={loraMode}
               onChange={(e) => setLoraMode(e.target.value as 'off' | 'manual' | 'automatic')}
-              style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 190 }}
+              style={{ ...bentoCompactControl, maxWidth: 190 }}
             >
               <option value="off">LoRA: desligado</option>
               <option value="manual">LoRA: manual</option>
               <option value="automatic">LoRA: automático</option>
             </select>
             {loraMode !== 'off' && (
-              <div style={{ flexBasis: '100%', display: 'grid', gap: 6, padding: '6px 0 0' }}>
+              <div style={{ flexBasis: '100%', display: 'grid', gap: 6, padding: '8px 0 0' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                  <input aria-label="Buscar LoRA" value={loraSearch} onChange={(e) => setLoraSearch(e.target.value)} placeholder="buscar personagem, estilo, efeito..." style={{ flex: '1 1 220px', minWidth: 180, padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11 }} />
+                  <input aria-label="Buscar LoRA" value={loraSearch} onChange={(e) => setLoraSearch(e.target.value)} placeholder="buscar personagem, estilo, efeito..." style={{ ...bentoCompactControl, flex: '1 1 220px', minWidth: 180 }} />
                   <span style={{ color: 'var(--muted-foreground)', fontSize: 11 }}>até 3 LoRAs · catálogo baseado nos arquivos instalados</span>
                 </div>
                 {visibleLoraCatalog.length === 0 ? (
@@ -583,7 +656,7 @@ export function CreativeStudioPanel() {
                           <span style={{ color: 'var(--muted-foreground)' }}>{entry.category} · {entry.architecture}</span>
                           <span style={{ color: compatible ? 'var(--success)' : 'var(--warning)' }}>{entry.metadataVerified ? (compatible ? 'compatível' : entry.compatibility) : 'não verificado'}</span>
                           {selected && loraMode === 'manual' && selectedItem && (
-                            <input aria-label={`Força da LoRA ${entry.label}`} type="number" min={-1} max={2} step={0.05} value={selectedItem.strengthModel} onChange={(e) => setSelectedLoras((current) => current.map((lora) => lora.model === entry.model ? { ...lora, strengthModel: Number(e.target.value), strengthClip: Number(e.target.value) } : lora))} style={{ width: 52, padding: '3px 4px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11 }} />
+                            <input aria-label={`Força da LoRA ${entry.label}`} type="number" min={-1} max={2} step={0.05} value={selectedItem.strengthModel} onChange={(e) => setSelectedLoras((current) => current.map((lora) => lora.model === entry.model ? { ...lora, strengthModel: Number(e.target.value), strengthClip: Number(e.target.value) } : lora))} style={{ width: 54, padding: '3px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11 }} />
                           )}
                         </label>
                       );
@@ -597,7 +670,7 @@ export function CreativeStudioPanel() {
                 aria-label="Modelo ControlNet ComfyUI"
                 value={selectedControlNet}
                 onChange={(e) => setSelectedControlNet(e.target.value)}
-                style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
+                style={{ ...bentoCompactControl, maxWidth: 220 }}
               >
                 <option value="">Sem ControlNet</option>
                 {(engineStatus.comfyUi.models?.controlnet ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
@@ -609,7 +682,7 @@ export function CreativeStudioPanel() {
                   aria-label="Modelo IP-Adapter ComfyUI"
                   value={selectedIpAdapter}
                   onChange={(e) => setSelectedIpAdapter(e.target.value)}
-                  style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
+                  style={{ ...bentoCompactControl, maxWidth: 220 }}
                 >
                   <option value="">Sem IP-Adapter</option>
                   {(engineStatus.comfyUi.models?.ipadapter ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
@@ -618,14 +691,14 @@ export function CreativeStudioPanel() {
                   aria-label="Encoder CLIP Vision ComfyUI"
                   value={selectedClipVision}
                   onChange={(e) => setSelectedClipVision(e.target.value)}
-                  style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
+                  style={{ ...bentoCompactControl, maxWidth: 220 }}
                 >
                   <option value="">Sem encoder</option>
                   {(engineStatus.comfyUi.models?.clip_vision ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
                 </select>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }} title="Peso da identidade visual; exige imagem de referência">
                   peso IP
-                  <input aria-label="Peso do IP-Adapter" type="number" min={-1} max={5} step={0.05} value={ipAdapterWeight} onChange={(e) => setIpAdapterWeight(Number(e.target.value))} style={{ width: 52, padding: '3px 4px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11 }} />
+                  <input aria-label="Peso do IP-Adapter" type="number" min={-1} max={5} step={0.05} value={ipAdapterWeight} onChange={(e) => setIpAdapterWeight(Number(e.target.value))} style={{ width: 54, padding: '3px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11 }} />
                 </label>
               </>
             )}
@@ -634,7 +707,7 @@ export function CreativeStudioPanel() {
                 aria-label="Detector do FaceDetailer ComfyUI"
                 value={selectedFaceDetector}
                 onChange={(e) => setSelectedFaceDetector(e.target.value)}
-                style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
+                style={{ ...bentoCompactControl, maxWidth: 220 }}
               >
                 <option value="">Sem FaceDetailer</option>
                 {(engineStatus.comfyUi.models?.faceDetectors ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
@@ -645,12 +718,12 @@ export function CreativeStudioPanel() {
                 aria-label="Modelo de upscale ComfyUI"
                 value={selectedUpscaleModel}
                 onChange={(e) => setSelectedUpscaleModel(e.target.value)}
-                style={{ padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11, maxWidth: 220 }}
+                style={{ ...bentoCompactControl, maxWidth: 220 }}
               >
                 {(engineStatus.comfyUi.models?.upscale_models ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
             )}
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} title="Quando o ComfyUI estiver instalado, inicia o script local uma vez se o endpoint estiver offline.">
+            <label style={{ display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap', color: '#4c4c55' }} title="Quando o ComfyUI estiver instalado, inicia o script local uma vez se o endpoint estiver offline.">
               <input
                 type="checkbox"
                 checked={autoStartComfyUi}
@@ -658,7 +731,7 @@ export function CreativeStudioPanel() {
               />
               iniciar ComfyUI se offline
             </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap', color: '#4c4c55' }}>
               <input
                 type="checkbox"
                 checked={releaseMemoryAfterGeneration}
@@ -672,7 +745,17 @@ export function CreativeStudioPanel() {
                   const released = await getBridge()?.creativeReleaseImageMemory?.();
                   setStatusMsg(released ? 'Memória do ComfyUI liberada.' : 'O gateway ComfyUI não expõe liberação de memória.');
                 }}
-                style={{ padding: '4px 10px', background: 'var(--brand-lime, #d8fb4f)', color: 'var(--chip-violet-fg, #6a46d8)', border: '1px solid #b8dc35', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}
+                style={{
+                  padding: '6px 14px',
+                  background: 'var(--brand-lime, #d8fb4f)',
+                  color: '#111111',
+                  border: '1px solid #c4e83a',
+                  borderRadius: 9999,
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  fontWeight: 700,
+                  whiteSpace: 'nowrap',
+                }}
               >
                 Liberar VRAM
               </button>
@@ -681,35 +764,35 @@ export function CreativeStudioPanel() {
         )}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 330px', gap: 16 }}>
+        <div style={{ ...bentoCard, display: 'flex', flexDirection: 'column', gap: 12, padding: 22 }}>
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder="Descreva a arte desejada (ex.: Thumbnail Cyberpunk 2077 upgrades cibernéticos com alto contraste)..."
             rows={2}
-            style={{ width: '100%', padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+            style={{ ...bentoInput, width: '100%', resize: 'vertical', borderRadius: 16, padding: '12px 14px' }}
           />
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <input
               value={headline}
               onChange={(e) => setHeadline(e.target.value)}
               placeholder="Título / Monograma curto"
-              style={{ flex: 1, minWidth: 160, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+              style={{ ...bentoInput, flex: 1, minWidth: 160 }}
             />
             {artType === 'thumbnail' && (
               <input
                 value={videoPath}
                 onChange={(e) => setVideoPath(e.target.value)}
                 placeholder="Caminho opcional do vídeo (.mp4) para extrair frames"
-                style={{ flex: 1.4, minWidth: 200, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+                style={{ ...bentoInput, flex: 1.4, minWidth: 200 }}
               />
             )}
             {artType === 'avatar' && (
               <select
                 value={avatarBackdrop}
                 onChange={(e) => setAvatarBackdrop(e.target.value as 'dark' | 'light' | 'transparent')}
-                style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+                style={bentoInput}
               >
                 <option value="dark">Versão Escura</option>
                 <option value="light">Versão Clara</option>
@@ -721,7 +804,7 @@ export function CreativeStudioPanel() {
               onChange={(e) => setReferencePath(e.target.value)}
               placeholder="Referência local opcional (.png/.jpg)"
               aria-label="Caminho da imagem de referência"
-              style={{ flex: 1.2, minWidth: 220, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+              style={{ ...bentoInput, flex: 1.2, minWidth: 220 }}
             />
             {engineStatus?.comfyUi?.models?.controlnet?.length && selectedControlNet ? (
               <>
@@ -730,11 +813,11 @@ export function CreativeStudioPanel() {
                   value={controlNetImagePath}
                   onChange={(e) => setControlNetImagePath(e.target.value)}
                   placeholder="Imagem de controle (canny/pose/depth)"
-                  style={{ flex: 1.2, minWidth: 220, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+                  style={{ ...bentoInput, flex: 1.2, minWidth: 220 }}
                 />
                 <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }} title="Força da condição ControlNet">
                   força CN
-                  <input aria-label="Força do ControlNet" type="number" min={0} max={2} step={0.05} value={controlNetStrength} onChange={(e) => setControlNetStrength(Number(e.target.value))} style={{ width: 52, padding: '3px 4px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11 }} />
+                  <input aria-label="Força do ControlNet" type="number" min={0} max={2} step={0.05} value={controlNetStrength} onChange={(e) => setControlNetStrength(Number(e.target.value))} style={{ width: 54, padding: '4px 6px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 10, fontSize: 11 }} />
                 </label>
               </>
             ) : null}
@@ -744,7 +827,7 @@ export function CreativeStudioPanel() {
                 value={referenceStrength}
                 onChange={(e) => setReferenceStrength(Number(e.target.value))}
                 title="Denoise img2img: valores menores preservam mais a referência"
-                style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+                style={bentoInput}
               >
                 <option value={0.32}>Referência alta (mais fiel)</option>
                 <option value={0.55}>Referência equilibrada</option>
@@ -757,7 +840,7 @@ export function CreativeStudioPanel() {
               aria-label="Preset profissional"
               value={professionalPreset}
               onChange={(e) => void saveImageEngineSettings({ preferredPreset: e.target.value as ProfessionalPresetId })}
-              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+              style={bentoInput}
             >
               <option value="youtube_thumbnail_1280x720">YouTube Thumbnail 1280×720</option>
               <option value="anime_premium_cinematic">Anime Premium</option>
@@ -770,7 +853,7 @@ export function CreativeStudioPanel() {
               aria-label="Quantidade de personagens"
               value={characterCount}
               onChange={(e) => setCharacterCount(Number(e.target.value))}
-              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+              style={bentoInput}
             >
               {[1, 2, 3, 4, 5, 6, 7, 8].map((count) => <option key={count} value={count}>{count} personagem{count === 1 ? '' : 'ns'}</option>)}
             </select>
@@ -778,7 +861,7 @@ export function CreativeStudioPanel() {
               aria-label="Resolução da geração IA"
               value={maxSide}
               onChange={(e) => setMaxSide(Number(e.target.value))}
-              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+              style={bentoInput}
             >
               <option value={768}>IA 768 px (mais leve)</option>
               <option value={1024}>IA 1024 px (qualidade)</option>
@@ -787,7 +870,7 @@ export function CreativeStudioPanel() {
               aria-label="Intensidade de estilização"
               value={stylization}
               onChange={(e) => setStylization(Number(e.target.value))}
-              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+              style={bentoInput}
             >
               <option value={0.3}>Estilo contido</option>
               <option value={0.7}>Estilo equilibrado</option>
@@ -799,13 +882,13 @@ export function CreativeStudioPanel() {
               onChange={(e) => setGenerationSeed(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
               placeholder="Seed (opcional)"
               inputMode="numeric"
-              style={{ width: 120, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+              style={{ ...bentoInput, width: 130 }}
             />
             <select
               aria-label="Tamanho do lote de geração"
               value={batchSize}
               onChange={(e) => setBatchSize(Number(e.target.value))}
-              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+              style={bentoInput}
             >
               {[1, 2, 3, 4].map((count) => <option key={count} value={count}>Lote {count}</option>)}
             </select>
@@ -814,15 +897,40 @@ export function CreativeStudioPanel() {
               value={maxAttempts}
               onChange={(e) => setMaxAttempts(Number(e.target.value))}
               title="Limite de novas gerações quando a auditoria estrutural reprovar a saída"
-              style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+              style={bentoInput}
             >
               {[1, 2, 3].map((count) => <option key={count} value={count}>{count} tentativa{count === 1 ? '' : 's'} IA</option>)}
             </select>
-            <button disabled={generationBusy} onClick={handleCreate} style={{ padding: '8px 14px', background: generationBusy ? 'var(--muted)' : 'var(--brand-lime)', color: 'var(--brand-ink)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: generationBusy ? 'wait' : 'pointer' }}>
+            <button
+              disabled={generationBusy}
+              onClick={handleCreate}
+              style={{
+                padding: '9px 18px',
+                background: generationBusy ? 'var(--muted)' : 'var(--brand-lime, #d8fb4f)',
+                color: '#111111',
+                fontWeight: 700,
+                fontSize: 13,
+                border: 'none',
+                borderRadius: 9999,
+                cursor: generationBusy ? 'wait' : 'pointer',
+              }}
+            >
               {generationBusy ? 'Gerando…' : 'Gerar Arte Editável'}
             </button>
             {generationBusy && (
-              <button onClick={() => void handleCancelGeneration()} style={{ padding: '8px 12px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
+              <button
+                onClick={() => void handleCancelGeneration()}
+                style={{
+                  padding: '9px 16px',
+                  background: '#fde7f3',
+                  color: '#b42840',
+                  border: '1px solid rgba(180, 40, 64, 0.16)',
+                  borderRadius: 9999,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
                 Cancelar geração
               </button>
             )}
@@ -830,7 +938,17 @@ export function CreativeStudioPanel() {
               disabled={generationBusy || !activeDoc || !selectedUpscaleModel || !engineStatus?.comfyUi.capabilities.upscale}
               onClick={() => void handleUpscale()}
               title={!selectedUpscaleModel ? 'Instale um modelo em ComfyUI/models/upscale_models' : 'Executar upscale no fundo do projeto ativo'}
-              style={{ padding: '8px 12px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6, cursor: generationBusy ? 'wait' : 'pointer', opacity: !activeDoc || !selectedUpscaleModel || !engineStatus?.comfyUi.capabilities.upscale ? 0.55 : 1 }}
+              style={{
+                padding: '9px 16px',
+                background: 'var(--secondary, #f4f4f6)',
+                color: '#111111',
+                border: '1px solid var(--border, #e2e2e7)',
+                borderRadius: 9999,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: generationBusy ? 'wait' : 'pointer',
+                opacity: !activeDoc || !selectedUpscaleModel || !engineStatus?.comfyUi.capabilities.upscale ? 0.5 : 1,
+              }}
             >
               Upscale do fundo
             </button>
@@ -841,7 +959,7 @@ export function CreativeStudioPanel() {
                   onChange={(e) =>
                     setFidelityMode(e.target.value as 'conceptual_art' | 'content_faithful' | 'authentic_gameplay')
                   }
-                  style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+                  style={bentoInput}
                   title="Modo de fidelidade da direção criativa"
                 >
                   <option value="conceptual_art">Fidelidade: Arte Conceitual (Liberdade IA)</option>
@@ -854,7 +972,7 @@ export function CreativeStudioPanel() {
                     onChange={(e) =>
                       setVideoSourceType(e.target.value as 'authentic_gameplay' | 'synthetic_ai_clip' | 'unknown')
                     }
-                    style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+                    style={bentoInput}
                     title="Proveniência do arquivo de vídeo"
                   >
                     <option value="authentic_gameplay">Vídeo: Gameplay Autêntico</option>
@@ -862,26 +980,42 @@ export function CreativeStudioPanel() {
                     <option value="unknown">Vídeo: Origem Desconhecida</option>
                   </select>
                 )}
-                <button onClick={handleThumbnailLab} style={{ padding: '8px 14px', background: 'var(--brand-lavender)', color: 'var(--brand-ink)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                <button
+                  onClick={handleThumbnailLab}
+                  style={{
+                    padding: '9px 18px',
+                    background: 'var(--brand-lavender, #b8a4f4)',
+                    color: '#111111',
+                    fontWeight: 700,
+                    fontSize: 13,
+                    border: 'none',
+                    borderRadius: 9999,
+                    cursor: 'pointer',
+                  }}
+                >
                   Thumbnail Lab (3 Variações)
                 </button>
               </>
             )}
-            <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, color: aiAvailable ? 'var(--success)' : 'var(--muted-foreground)' }}>
+            <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, color: aiAvailable ? '#15803d' : 'var(--muted-foreground)', fontWeight: 500 }}>
               <input type="checkbox" checked={useAiGeneration} onChange={(e) => setUseAiGeneration(e.target.checked)} />
               IA Local (SDXL-Turbo / rembg {aiAvailable ? 'Pronta' : 'Indisponível'})
             </label>
           </div>
-          {statusMsg && <div style={{ fontSize: 12, color: 'var(--success)' }}>{statusMsg}</div>}
+          {statusMsg && (
+            <div style={{ fontSize: 12, color: '#15803d', background: '#eaf7df', padding: '8px 14px', borderRadius: 14, fontWeight: 500 }}>
+              {statusMsg}
+            </div>
+          )}
           {generationWarning && (
-            <div role="alert" style={{ fontSize: 12, color: 'var(--warning)' }}>
+            <div role="alert" style={{ fontSize: 12, color: '#b45309', background: '#fef3c7', padding: '8px 14px', borderRadius: 14, fontWeight: 500 }}>
               Atenção: {generationWarning}
             </div>
           )}
           {generationReport && (
-            <div style={{ fontSize: 12, padding: 10, background: 'var(--secondary)', border: '1px solid var(--border)', borderRadius: 8 }}>
-              <strong>Relatório de geração</strong>
-              <div style={{ marginTop: 4 }}>
+            <div style={{ fontSize: 12, padding: 14, background: 'var(--secondary, #f4f4f6)', border: '1px solid var(--border, #e2e2e7)', borderRadius: 18 }}>
+              <strong style={{ color: '#111111' }}>Relatório de geração</strong>
+              <div style={{ marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
                 {generationReport.status} · {generationReport.engineId}
                 {generationReport.durationMs !== undefined ? ` · ${generationReport.durationMs} ms` : ''}
               </div>
@@ -905,7 +1039,7 @@ export function CreativeStudioPanel() {
                 </div>
               )}
               {generationReport.qualityAudit && (
-                <div style={{ color: generationReport.qualityAudit.passed ? 'var(--success)' : 'var(--destructive)', marginTop: 4 }}>
+                <div style={{ color: generationReport.qualityAudit.passed ? '#15803d' : '#b42840', marginTop: 4, fontWeight: 600 }}>
                   Auditoria estrutural: {generationReport.qualityAudit.passed ? 'aprovada' : 'rejeitada'} · σ luminância {generationReport.qualityAudit.metrics.lumaStdDev.toFixed(2)}
                   {generationReport.qualityAudit.findings?.length ? ` · ${generationReport.qualityAudit.findings.map((finding) => finding.message).join(' ')}` : ''}
                 </div>
@@ -913,18 +1047,27 @@ export function CreativeStudioPanel() {
             </div>
           )}
           {batchPreviews.length > 1 && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6 }}>
-              {batchPreviews.map((preview, index) => <button key={preview.id} onClick={() => setPreviewUrl(preview.previewDataUrl)} title={`Abrir variação ${index + 1}`} style={{ padding: 2, border: '1px solid var(--border)', background: 'var(--secondary)', cursor: 'pointer' }}><img src={preview.previewDataUrl} alt={`Variação ${index + 1}`} style={{ width: '100%', display: 'block' }} /></button>)}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8 }}>
+              {batchPreviews.map((preview, index) => (
+                <button
+                  key={preview.id}
+                  onClick={() => setPreviewUrl(preview.previewDataUrl)}
+                  title={`Abrir variação ${index + 1}`}
+                  style={{ padding: 3, border: '1px solid var(--border, #e2e2e7)', borderRadius: 14, overflow: 'hidden', background: 'var(--secondary, #f4f4f6)', cursor: 'pointer' }}
+                >
+                  <img src={preview.previewDataUrl} alt={`Variação ${index + 1}`} style={{ width: '100%', display: 'block', borderRadius: 10 }} />
+                </button>
+              ))}
             </div>
           )}
         </div>
 
-        <div style={{ padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <strong style={{ fontSize: 13 }}>Brand Kit do Canal</strong>
+        <div style={{ ...bentoCard, padding: 22, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <strong style={{ fontSize: 13, color: '#111111' }}>Brand Kit do Canal</strong>
           <select
             value={selectedBrandKitId}
             onChange={(e) => setSelectedBrandKitId(e.target.value)}
-            style={{ padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+            style={bentoInput}
           >
             <option value="">Padrão Aethera</option>
             {brandKits.map((k) => (
@@ -936,14 +1079,26 @@ export function CreativeStudioPanel() {
               value={newKitName}
               onChange={(e) => setNewKitName(e.target.value)}
               placeholder="Novo Brand Kit..."
-              style={{ flex: 1, padding: 6, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+              style={{ ...bentoInput, flex: 1, padding: '8px 12px', fontSize: 12 }}
             />
-            <button onClick={handleCreateBrandKit} style={{ padding: '6px 10px', background: 'var(--primary)', color: 'var(--primary-foreground)', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+            <button
+              onClick={handleCreateBrandKit}
+              style={{
+                padding: '8px 14px',
+                background: '#111111',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: 9999,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
               Salvar
             </button>
           </div>
-          <strong style={{ fontSize: 13, marginTop: 6 }}>Projetos Salvos ({projects.length})</strong>
-          <div style={{ maxHeight: 110, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <strong style={{ fontSize: 13, marginTop: 6, color: '#111111' }}>Projetos Salvos ({projects.length})</strong>
+          <div style={{ maxHeight: 120, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
             {projects.slice(0, 8).map((p) => (
               <button
                 key={p.id}
@@ -956,20 +1111,39 @@ export function CreativeStudioPanel() {
                     setSelectedLayerId(loaded.document.layers[0]?.id ?? '');
                   }
                 }}
-                style={{ textAlign: 'left', padding: '4px 8px', background: activeDoc?.id === p.id ? 'var(--brand-lavender)' : 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 12, cursor: 'pointer' }}
+                style={{
+                  textAlign: 'left',
+                  padding: '7px 12px',
+                  background: activeDoc?.id === p.id ? 'var(--brand-lavender, #b8a4f4)' : 'var(--secondary, #f4f4f6)',
+                  color: '#111111',
+                  fontWeight: activeDoc?.id === p.id ? 600 : 500,
+                  border: '1px solid transparent',
+                  borderRadius: 12,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                }}
               >
                 [{p.artType}] {p.title}
               </button>
             ))}
           </div>
-          <strong style={{ fontSize: 13, marginTop: 6 }}>Histórico de Gerações ({generationHistory.length})</strong>
-          <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <strong style={{ fontSize: 13, marginTop: 6, color: '#111111' }}>Histórico de Gerações ({generationHistory.length})</strong>
+          <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
             {generationHistory.slice(0, 8).map((run) => (
               <button
                 key={run.id}
                 onClick={() => void handleRegenerate(run.id)}
                 title={`Regenerar: ${run.prompt}`}
-                style={{ textAlign: 'left', padding: '5px 8px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11, cursor: 'pointer' }}
+                style={{
+                  textAlign: 'left',
+                  padding: '7px 12px',
+                  background: 'var(--secondary, #f4f4f6)',
+                  color: '#111111',
+                  border: '1px solid var(--border, #e2e2e7)',
+                  borderRadius: 12,
+                  fontSize: 11,
+                  cursor: 'pointer',
+                }}
               >
                 ↻ {run.artType} · {run.report.recipe?.preset ?? 'sem preset'} · {run.status}
               </button>
@@ -980,15 +1154,28 @@ export function CreativeStudioPanel() {
       </div>
 
       {labVariants.length > 0 && (
-        <div style={{ padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24 }}>
-          <strong style={{ fontSize: 14 }}>Thumbnail Lab — Conceitos Narrativos Independentes (CS-8)</strong>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 10 }}>
+        <div style={{ ...bentoCard, padding: 22 }}>
+          <strong style={{ fontSize: 15, color: '#111111' }}>Thumbnail Lab — Conceitos Narrativos Independentes (CS-8)</strong>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginTop: 12 }}>
             {labVariants.map((v) => (
-              <div key={v.document.id} style={{ background: 'var(--secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <img src={v.previewDataUrl} alt={v.styleTitle} style={{ width: '100%', borderRadius: 4 }} />
-                <div style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between' }}>
-                  <strong>{v.styleTitle}</strong>
-                  <span>Score: {v.audit.scorecard.overall}/100</span>
+              <div
+                key={v.document.id}
+                style={{
+                  background: 'var(--secondary, #f4f4f6)',
+                  border: '1px solid var(--border, #e2e2e7)',
+                  borderRadius: 20,
+                  padding: 12,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                }}
+              >
+                <img src={v.previewDataUrl} alt={v.styleTitle} style={{ width: '100%', borderRadius: 12 }} />
+                <div style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <strong style={{ color: '#111111' }}>{v.styleTitle}</strong>
+                  <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: '#6a46d8' }}>
+                    Score: {v.audit.scorecard.overall}/100
+                  </span>
                 </div>
                 {v.concept && (
                   <div style={{ fontSize: 11, color: 'var(--muted-foreground)' }}>
@@ -1005,14 +1192,24 @@ export function CreativeStudioPanel() {
                 {v.editorialRationale && (
                   <div style={{ fontSize: 11, color: 'var(--muted-foreground)' }}>{v.editorialRationale}</div>
                 )}
-                <div style={{ display: 'flex', gap: 6 }}>
+                <div style={{ display: 'flex', gap: 6, marginTop: 'auto' }}>
                   <button
                     onClick={() => {
                       setActiveDoc(v.document);
                       setPreviewUrl(v.previewDataUrl);
                       setAudit(v.audit);
                     }}
-                    style={{ flex: 1, padding: '6px 8px', background: 'var(--primary)', color: 'var(--primary-foreground)', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}
+                    style={{
+                      flex: 1,
+                      padding: '8px 12px',
+                      background: '#111111',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: 9999,
+                      cursor: 'pointer',
+                      fontSize: 12,
+                      fontWeight: 600,
+                    }}
                   >
                     Editar no Canvas
                   </button>
@@ -1031,7 +1228,16 @@ export function CreativeStudioPanel() {
                           setStatusMsg(`Elementos de ${v.label} combinados no projeto ativo.`);
                         }
                       }}
-                      style={{ padding: '6px 8px', background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
+                      style={{
+                        padding: '8px 12px',
+                        background: '#ffffff',
+                        color: '#111111',
+                        border: '1px solid var(--border, #e2e2e7)',
+                        borderRadius: 9999,
+                        cursor: 'pointer',
+                        fontSize: 11,
+                        fontWeight: 600,
+                      }}
                     >
                       + Combinar
                     </button>
@@ -1044,23 +1250,35 @@ export function CreativeStudioPanel() {
       )}
 
       {activeDoc && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16 }}>
-          <div style={{ padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <strong>{activeDoc.title} ({activeDoc.width}×{activeDoc.height})</strong>
-              <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 350px', gap: 16 }}>
+          <div style={{ ...bentoCard, padding: 22 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 8, flexWrap: 'wrap' }}>
+              <strong style={{ fontSize: 15, color: '#111111' }}>{activeDoc.title} ({activeDoc.width}×{activeDoc.height})</strong>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 {activeDoc.artType === 'banner' && (
-                  <select value={bannerPreviewMode} onChange={(e) => setBannerPreviewMode(e.target.value as 'desktop' | 'mobile' | 'tv')} style={{ background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 12 }}>
+                  <select value={bannerPreviewMode} onChange={(e) => setBannerPreviewMode(e.target.value as 'desktop' | 'mobile' | 'tv')} style={bentoCompactControl}>
                     <option value="desktop">Prévia Desktop</option>
                     <option value="mobile">Prévia Mobile (Área Segura)</option>
                     <option value="tv">Prévia TV (Full)</option>
                   </select>
                 )}
-                <button disabled={!canUndo} onClick={() => void handleEditAction({ kind: 'undo' })} style={{ padding: '4px 8px', fontSize: 12 }}>Desfazer</button>
-                <button disabled={!canRedo} onClick={() => void handleEditAction({ kind: 'redo' })} style={{ padding: '4px 8px', fontSize: 12 }}>Refazer</button>
+                <button
+                  disabled={!canUndo}
+                  onClick={() => void handleEditAction({ kind: 'undo' })}
+                  style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, borderRadius: 9999, background: 'var(--secondary, #f4f4f6)', color: '#111111', border: '1px solid var(--border, #e2e2e7)', cursor: canUndo ? 'pointer' : 'not-allowed', opacity: canUndo ? 1 : 0.45 }}
+                >
+                  Desfazer
+                </button>
+                <button
+                  disabled={!canRedo}
+                  onClick={() => void handleEditAction({ kind: 'redo' })}
+                  style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, borderRadius: 9999, background: 'var(--secondary, #f4f4f6)', color: '#111111', border: '1px solid var(--border, #e2e2e7)', cursor: canRedo ? 'pointer' : 'not-allowed', opacity: canRedo ? 1 : 0.45 }}
+                >
+                  Refazer
+                </button>
               </div>
             </div>
-            <div style={{ position: 'relative', background: 'repeating-conic-gradient(#e4e4e8 0% 25%, #f4f4f6 0% 50%) 50% / 20px 20px', borderRadius: 6, overflow: 'hidden', display: 'flex', justifyContent: 'center' }}>
+            <div style={{ position: 'relative', background: 'repeating-conic-gradient(#e4e4e8 0% 25%, #f4f4f6 0% 50%) 50% / 20px 20px', borderRadius: 18, overflow: 'hidden', display: 'flex', justifyContent: 'center' }}>
               {previewUrl && (
                 <img
                   src={previewUrl}
@@ -1075,79 +1293,114 @@ export function CreativeStudioPanel() {
               )}
             </div>
             {previewUrl && activeDoc.artType === 'thumbnail' && (
-              <div style={{ marginTop: 8, padding: 8, background: 'var(--secondary)', border: '1px solid var(--border)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ marginTop: 12, padding: 12, background: 'var(--secondary, #f4f4f6)', border: '1px solid var(--border, #e2e2e7)', borderRadius: 18, display: 'flex', alignItems: 'center', gap: 14 }}>
                 <img
                   src={previewUrl}
                   alt="Prévia Feed Mobile"
-                  style={{ width: 224, height: 126, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)' }}
+                  style={{ width: 224, height: 126, objectFit: 'cover', borderRadius: 12, border: '1px solid var(--border)' }}
                 />
                 <div style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>
-                  <strong>Prévia em Tamanho de Celular (224×126)</strong>
-                  <p style={{ margin: '4px 0 0', opacity: 0.85 }}>
+                  <strong style={{ color: '#111111' }}>Prévia em Tamanho de Celular (224×126)</strong>
+                  <p style={{ margin: '4px 0 0', opacity: 0.9 }}>
                     Validação rápida de legibilidade do título, contraste do sujeito e ausência de cortes em feeds mobile.
                   </p>
                 </div>
               </div>
             )}
-            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
               <input
                 value={promptEditInput}
                 onChange={(e) => setPromptEditInput(e.target.value)}
                 placeholder='Edição localizada por prompt (ex.: Mude o título para "CYBERPUNK" na cor #00F0FF)'
-                style={{ flex: 1, padding: 8, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 6 }}
+                style={{ ...bentoInput, flex: 1 }}
               />
               <button
                 onClick={() => {
                   void handleEditAction({ kind: 'promptEdit', instruction: promptEditInput });
                   setPromptEditInput('');
                 }}
-                style={{ padding: '8px 12px', background: 'var(--primary)', color: 'var(--primary-foreground)', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+                style={{
+                  padding: '9px 18px',
+                  background: '#111111',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: 9999,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
               >
                 Aplicar Edição
               </button>
             </div>
           </div>
 
-          <div style={{ padding: 20, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 24, display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <strong style={{ fontSize: 13 }}>Camadas ({activeDoc.layers.length})</strong>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ ...bentoCard, padding: 22, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <strong style={{ fontSize: 13, color: '#111111' }}>Camadas ({activeDoc.layers.length})</strong>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {[...activeDoc.layers].sort((a, b) => b.zIndex - a.zIndex).map((layer) => (
                 <div
                   key={layer.id}
                   onClick={() => setSelectedLayerId(layer.id)}
                   style={{
-                    padding: '6px 8px',
-                    borderRadius: 4,
-                    background: selectedLayerId === layer.id ? 'var(--brand-lavender)' : 'var(--secondary)',
-                    border: '1px solid var(--border)',
+                    padding: '8px 12px',
+                    borderRadius: 14,
+                    background: selectedLayerId === layer.id ? 'var(--brand-lavender, #b8a4f4)' : 'var(--secondary, #f4f4f6)',
+                    border: '1px solid transparent',
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
                     cursor: 'pointer',
                     fontSize: 12,
+                    color: '#111111',
                   }}
                 >
-                  <span>{layer.visible ? '👁' : '🚫'} {layer.name}</span>
+                  <span style={{ fontWeight: selectedLayerId === layer.id ? 600 : 500 }}>{layer.visible ? '👁' : '🚫'} {layer.name}</span>
                   <div style={{ display: 'flex', gap: 4 }}>
-                    <button onClick={(e) => { e.stopPropagation(); void handleEditAction({ kind: 'updateLayer', layerId: layer.id, patch: { visible: !layer.visible } }); }}>Ocultar</button>
-                    <button onClick={(e) => { e.stopPropagation(); void handleEditAction({ kind: 'reorder', layerId: layer.id, direction: 'up' }); }}>↑</button>
-                    <button onClick={(e) => { e.stopPropagation(); void handleEditAction({ kind: 'reorder', layerId: layer.id, direction: 'down' }); }}>↓</button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void handleEditAction({ kind: 'updateLayer', layerId: layer.id, patch: { visible: !layer.visible } }); }}
+                      style={{ padding: '3px 8px', borderRadius: 9999, border: '1px solid var(--border)', background: '#ffffff', color: '#111111', fontSize: 11, cursor: 'pointer' }}
+                    >
+                      Ocultar
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void handleEditAction({ kind: 'reorder', layerId: layer.id, direction: 'up' }); }}
+                      style={{ padding: '3px 7px', borderRadius: 9999, border: '1px solid var(--border)', background: '#ffffff', color: '#111111', fontSize: 11, cursor: 'pointer' }}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void handleEditAction({ kind: 'reorder', layerId: layer.id, direction: 'down' }); }}
+                      style={{ padding: '3px 7px', borderRadius: 9999, border: '1px solid var(--border)', background: '#ffffff', color: '#111111', fontSize: 11, cursor: 'pointer' }}
+                    >
+                      ↓
+                    </button>
                   </div>
                 </div>
               ))}
             </div>
 
             {selectedLayer && selectedLayer.type === 'text' && (
-              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <strong style={{ fontSize: 12 }}>Texto Editável</strong>
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <strong style={{ fontSize: 12, color: '#111111' }}>Texto Editável</strong>
                 <input
                   value={selectedLayer.text}
                   onChange={(e) => void handleEditAction({ kind: 'updateLayer', layerId: selectedLayer.id, patch: { text: e.target.value } })}
-                  style={{ padding: 6, background: 'var(--secondary)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 4 }}
+                  style={bentoInput}
                 />
                 <button
                   onClick={() => void handleEditAction({ kind: 'align', layerId: selectedLayer.id, align: 'safe-center' })}
-                  style={{ padding: 6, background: 'var(--primary)', color: 'var(--primary-foreground)', border: 'none', borderRadius: 4, fontSize: 12, cursor: 'pointer' }}
+                  style={{
+                    padding: '8px 14px',
+                    background: '#111111',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: 9999,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
                 >
                   Centralizar na Área Segura
                 </button>
@@ -1155,16 +1408,31 @@ export function CreativeStudioPanel() {
             )}
 
             {audit && (
-              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, fontSize: 12 }}>
-                <strong>Quality Gate: {audit.passed ? 'APROVÁVEL' : 'BLOQUEADO'} ({audit.scorecard.overall}/100)</strong>
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10, fontSize: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <strong style={{ color: '#111111' }}>Quality Gate: {audit.passed ? 'APROVÁVEL' : 'BLOQUEADO'}</strong>
+                  <span
+                    style={{
+                      padding: '2px 10px',
+                      borderRadius: 9999,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      fontVariantNumeric: 'tabular-nums',
+                      background: audit.passed ? '#eaf7df' : '#fde7f3',
+                      color: audit.passed ? '#15803d' : '#b42840',
+                    }}
+                  >
+                    {audit.scorecard.overall}/100
+                  </span>
+                </div>
                 <div style={{ color: 'var(--muted-foreground)', marginTop: 4 }}>{audit.scorecard.disclaimer}</div>
                 {audit.findings.map((f, i) => (
-                  <div key={i} style={{ color: f.severity === 'critical' ? 'var(--destructive)' : 'var(--warning)', marginTop: 2 }}>
+                  <div key={i} style={{ color: f.severity === 'critical' ? '#b42840' : '#b45309', marginTop: 4 }}>
                     [{f.severity}] {f.message}
                   </div>
                 ))}
                 <ApprovalStatesView doc={activeDoc} />
-                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                   {(['approved', 'rejected'] as const).map((decision) => (
                     <button
                       key={decision}
@@ -1183,7 +1451,17 @@ export function CreativeStudioPanel() {
                           );
                         }
                       }}
-                      style={{ flex: 1, padding: '8px 10px', background: decision === 'approved' ? 'var(--brand-lime)' : 'var(--destructive)', color: decision === 'approved' ? 'var(--brand-ink)' : 'var(--destructive-foreground)', fontWeight: 700, border: 'none', borderRadius: 6, cursor: 'pointer' }}
+                      style={{
+                        flex: 1,
+                        padding: '9px 12px',
+                        background: decision === 'approved' ? 'var(--brand-lime, #d8fb4f)' : '#fde7f3',
+                        color: decision === 'approved' ? '#111111' : '#b42840',
+                        fontWeight: 700,
+                        fontSize: 12,
+                        border: decision === 'approved' ? 'none' : '1px solid rgba(180, 40, 64, 0.18)',
+                        borderRadius: 9999,
+                        cursor: 'pointer',
+                      }}
                     >
                       {decision === 'approved' ? 'Aprovar estética (humano)' : 'Rejeitar estética'}
                     </button>
@@ -1226,11 +1504,11 @@ function ApprovalStatesView({ doc }: { doc: CreativeProjectDocument }) {
     ['Estética (humana)', states?.humanAesthetic.status ?? 'pending', states?.humanAesthetic.reviewer],
   ];
   return (
-    <dl aria-label="Estados de aprovação" style={{ margin: '8px 0 0', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 8px' }}>
+    <dl aria-label="Estados de aprovação" style={{ margin: '10px 0 0', padding: '10px 12px', borderRadius: 14, background: 'var(--secondary, #f4f4f6)', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 10px' }}>
       {rows.map(([label, status, detail]) => (
         <div key={label} style={{ display: 'contents' }}>
           <dt style={{ color: 'var(--muted-foreground)' }}>{label}</dt>
-          <dd style={{ margin: 0 }}>
+          <dd style={{ margin: 0, color: '#111111', fontWeight: 500 }}>
             {APPROVAL_LABELS[status] ?? status}
             {detail ? ` — ${detail}` : ''}
           </dd>

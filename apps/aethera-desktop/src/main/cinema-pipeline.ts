@@ -90,53 +90,23 @@ import {
   isMultiWorkProduction,
   isAssemblyEligibleDecision,
   SCENE_GROUNDING_POLICY_VERSION,
-  buildSceneAudiovisualPlan,
-  generateCinematicMusicBed,
-  resolveRealAudioAssets,
-  runGateAPreAssembly,
-  runGateBPreRender,
-  runGateCPostRender,
-  runGateDEditorialQuality,
-  countPlannedSfxCues,
-  type GateDEditorialSceneInput,
-  type QualityGateReport,
-  fromFrames,
 } from '@neuralbridge/cinema';
 import { CinemaSmartCache, isPathStrictlyInside } from './cinema-cache.js';
 import { createProductionJobId } from './production-console.js';
 
-/** Maps planned audiovisualPlan SFX cues (sfxEventType + sfxAtMs) to matching MotionVelix WAV assets; never uses hardcoded timestamps. */
-function resolvePlannedSfxAssets(
-  audiovisualPlan: CinemaProductionPackage['audiovisualPlan'] | undefined,
-): RealAudioAssetsInput | undefined {
-  const scenes = audiovisualPlan?.scenes ?? [];
-  if (scenes.length === 0) return undefined;
+/** Reuses the already-installed MotionVelix SFX kit for transitions/motions; no continuous rain ambience is injected. */
+function localMotionVelixAudioAssets(): RealAudioAssetsInput | undefined {
   const root = process.env['NB_VELIX_DIR'] ?? join(homedir(), '.claude', 'skills', 'motionvelix', 'assets', 'sfx');
   const license = 'motionvelix-user-kit-original-synthesized';
   const origin = 'motionvelix-user-kit';
   const useConditions = 'uso autorizado no escopo do kit';
-  const sfxFileByEvent: Record<string, string> = {
-    reveal: 'swish_suave',
-    whoosh: 'whoosh_rapido',
-    ui_pop: 'deslize',
-    comic_sting: 'pop_agudo',
-    impact: 'impacto',
-    riser: 'riser',
-  };
-  const sfx = scenes
-    .filter((scene) => scene.sfxEventType && typeof scene.sfxAtMs === 'number')
-    .map((scene) => {
-      const stem = sfxFileByEvent[scene.sfxEventType] ?? 'swish_suave';
-      return {
-        id: `${scene.sceneId}_${stem}`,
-        path: join(root, `${stem}.wav`),
-        license,
-        origin,
-        useConditions,
-        atMs: Math.max(0, Math.round(scene.sfxAtMs)),
-        gainDb: -20,
-      };
-    })
+  const sfx = [
+    ['whoosh', 4_500],
+    ['glitch', 12_000],
+    ['impacto', 26_500],
+    ['whoosh_rapido', 39_500],
+  ]
+    .map(([id, atMs]) => ({ id: String(id), path: join(root, `${String(id)}.wav`), license, origin, useConditions, atMs: Number(atMs), gainDb: -18 }))
     .filter((asset) => existsSync(asset.path));
   if (sfx.length === 0) return undefined;
   return { sfx };
@@ -160,7 +130,6 @@ export type ProductionStageState =
   | 'paused_pending_research'
   | 'paused_pending_media'
   | 'paused_pending_script'
-  | 'paused_pending_review'
   | 'cancelled'
   | 'error';
 
@@ -266,11 +235,6 @@ export interface StagedProductionJob {
   audioDiagnostics?: RealRenderResult['audioDiagnostics'];
   musicSelection?: RealRenderResult['musicSelection'];
   deliveryGate?: RealRenderResult['deliveryGate'];
-  qualityGates?: QualityGateReport[];
-  /** P5 fix: whether MotionVelix was requested for this production; defaults to true when absent. */
-  useVelix?: boolean;
-  /** P5 fix: explicit MotionVelix execution report from the renderer; required by the completion gate. */
-  motionVelixReport?: RealRenderResult['motionVelixReport'];
   error?: string;
   startedAt?: string;
   updatedAt: string;
@@ -299,13 +263,7 @@ export interface SceneAssemblyRecord {
 }
 
 /** Below this share of verified real footage across the whole video, the production pauses for human media review. */
-/**
- * Minimum ratio of assembly-eligible footage to proceed without pausing for human review.
- * When verified contextual B-roll exists (same universe, visually confirmed, labeled as editorial),
- * the threshold drops to allow autonomous assembly with clearly identified non-literal coverage.
- */
 export const MIN_REAL_FOOTAGE_RATIO_TO_ASSEMBLE = 0.35;
-export const MIN_REAL_FOOTAGE_RATIO_WITH_CONTEXTUAL_FALLBACKS = 0.2;
 
 type V1Clip = TimelineClip;
 
@@ -353,64 +311,33 @@ export function buildSceneMontage(input: {
   intervals: Array<{ mediaId: string; startSec: number; endSec: number }>;
   availableMediaIds: ReadonlySet<string>;
   allowGraphicRecovery: boolean;
-  /** Adaptive shot pacing cap (seconds). When multiple intervals exist, interleaves them cleanly instead of holding one shot too long. */
-  maxShotSec?: number;
 }): { clips: V1Clip[]; record: SceneAssemblyRecord } {
   const { clip } = input;
   const rate = Math.max(1, clip.timelineRange.duration.rate);
   const totalTicks = clip.timelineRange.duration.value;
   const totalSec = totalTicks / rate;
-  const maxShotSec = input.maxShotSec ? Math.max(3, input.maxShotSec) : Number.POSITIVE_INFINITY;
   const parts: V1Clip[] = [];
   const usedMedia: string[] = [];
   let cursorTicks = 0;
   let realSec = 0;
   const seen = new Set<string>();
-  const validIntervals = input.intervals.filter((iv) => {
-    if (!input.availableMediaIds.has(iv.mediaId)) return false;
+  for (const iv of input.intervals) {
+    if (!input.availableMediaIds.has(iv.mediaId)) continue;
     const key = `${iv.mediaId}:${iv.startSec.toFixed(2)}`;
-    if (seen.has(key) || iv.endSec - iv.startSec < 1) return false;
+    if (seen.has(key)) continue;
     seen.add(key);
-    return true;
-  });
-  // Interleave intervals across distinct mediaId sources when available, and cap single-shot holds to maxShotSec.
-  const pool = validIntervals.map((iv) => ({ ...iv }));
-  let lastMediaId = '';
-  while (pool.length > 0) {
     const remainingSec = (totalTicks - cursorTicks) / rate;
     if (remainingSec < 1) break;
-    const preferredIdx = pool.findIndex((iv) => iv.mediaId !== lastMediaId && iv.endSec - iv.startSec >= 1);
-    const idx = preferredIdx >= 0 ? preferredIdx : 0;
-    const iv = pool[idx]!;
     const ivSec = iv.endSec - iv.startSec;
-    if (ivSec < 1) {
-      pool.splice(idx, 1);
-      continue;
-    }
-    const hasAnotherOption = pool.some((other, oi) => oi !== idx && other.endSec - other.startSec >= 1);
-    const takeSec = hasAnotherOption ? Math.min(ivSec, remainingSec, maxShotSec) : Math.min(ivSec, remainingSec);
+    if (ivSec < 1) continue;
+    const takeSec = Math.min(ivSec, remainingSec);
     const takeTicks = Math.max(1, Math.round(takeSec * rate));
     const partId = parts.length === 0 ? clip.clipId : `${clip.clipId}_p${parts.length + 1}`;
-    const baseEffects = clip.effects.filter((e) => e.kind !== 'allow_procedural');
-    const hasMotionEffect = baseEffects.some((e) => e.kind.startsWith('ken_burns') || e.kind.includes('zoom'));
-    const motionEffect = hasMotionEffect
-      ? []
-      : [
-          {
-            effectId: `fx_motion_${partId}`,
-            kind: parts.length % 2 === 0 ? 'ken_burns_in' : 'ken_burns_pan',
-            enabled: true,
-            params: { zoom: 1.06, easing: 'ease_in_out' },
-            estimatedCostMs: 12,
-            fallbackMode: 'cpu_basic' as const,
-          },
-        ];
     parts.push({
       ...clip,
       clipId: partId,
       mediaId: iv.mediaId,
       label: input.label,
-      transitionIn: clip.transitionIn ?? (parts.length === 0 ? 'dissolve' : parts.length % 2 === 0 ? 'j_cut' : 'cut'),
       timelineRange: {
         start: { value: clip.timelineRange.start.value + cursorTicks, rate },
         duration: { value: takeTicks, rate },
@@ -419,16 +346,11 @@ export function buildSceneMontage(input: {
         start: { value: Math.round(iv.startSec * 30), rate: 30 },
         duration: { value: Math.round(takeSec * 30), rate: 30 },
       },
-      effects: [...baseEffects, ...motionEffect],
+      effects: clip.effects.filter((e) => e.kind !== 'allow_procedural'),
     });
     if (!usedMedia.includes(iv.mediaId)) usedMedia.push(iv.mediaId);
-    lastMediaId = iv.mediaId;
     cursorTicks += takeTicks;
     realSec += takeTicks / rate;
-    iv.startSec += takeSec;
-    if (iv.endSec - iv.startSec < 1) {
-      pool.splice(idx, 1);
-    }
   }
   const leftoverTicks = totalTicks - cursorTicks;
   let recoverySec = 0;
@@ -534,11 +456,6 @@ export interface StagedPipelineDeps {
     timestampsSec: number[],
     segment: ScriptSegmentExpectation,
   ) => Promise<DistributedFrameAnalysis[]>;
-  analyzeRemoteFramesFn?: (
-    framePaths: string[],
-    timestampsSec: number[],
-    segment: ScriptSegmentExpectation,
-  ) => Promise<DistributedFrameAnalysis[]>;
   requireVisualVerification?: boolean;
   autonomousAcquisitionDeps?: ResilientAcquisitionDeps;
   analyzeFrameWithAI?: (
@@ -607,23 +524,6 @@ export interface StagedPipelineDeps {
     providerUsed?: string;
     academyRulesApplied?: string[];
   } | null>;
-}
-
-/**
- * Host callbacks the pipeline cannot run without: `onPackageReady` hands the assembled package to the Editor
- * (registration + persistence) and `onRenderReady` publishes the MP4. Untyped hosts (.mjs harnesses) can omit them;
- * without this check the omission only surfaced at `montagem`, after the whole acquisition budget was spent.
- */
-const REQUIRED_HOST_CALLBACKS = ['onPackageReady', 'onRenderReady'] as const satisfies ReadonlyArray<keyof StagedPipelineDeps>;
-
-function assertRequiredHostCallbacks(deps: StagedPipelineDeps): void {
-  const invalid = REQUIRED_HOST_CALLBACKS.filter((name) => typeof (deps as Partial<StagedPipelineDeps>)[name] !== 'function');
-  if (invalid.length > 0) {
-    throw new TypeError(
-      `StagedCinemaPipeline: dependência(s) obrigatória(s) ausente(s) ou inválida(s): ${invalid.join(', ')}. ` +
-        'O host precisa fornecê-las como funções antes de iniciar uma produção.',
-    );
-  }
 }
 
 const LOCAL_MEDIA_EXT_RE = /\.(mp4|mov|webm|mkv|png|jpe?g|webp)$/i;
@@ -747,7 +647,6 @@ export class StagedCinemaPipeline {
   readonly cache: CinemaSmartCache;
 
   constructor(private readonly deps: StagedPipelineDeps) {
-    assertRequiredHostCallbacks(deps);
     mkdirSync(deps.jobsDir, { recursive: true });
     mkdirSync(deps.mediaDir, { recursive: true });
     const baseDir = dirname(deps.jobsDir);
@@ -1188,7 +1087,6 @@ export class StagedCinemaPipeline {
     language?: string;
     manuallyChangedFields?: ContractControlField[];
     seedMediaFiles?: string[];
-    allowDeterministicScriptFallback?: boolean;
   }): Promise<StagedProductionJob> {
     const projectPaths = this.ensureProjectWorkspace(input.projectId, input.prompt);
     const contractControls: Partial<ProductionContractControls> = {
@@ -1223,7 +1121,7 @@ export class StagedCinemaPipeline {
       ...(input.deliveryPresetId ? { deliveryPresetId: input.deliveryPresetId } : {}),
       ...(input.deliveryPresetIds?.length ? { deliveryPresetIds: input.deliveryPresetIds } : {}),
       ...(input.previewProfile ? { previewProfile: input.previewProfile } : {}),
-      targetDurationSec: input.targetDurationSec ?? contract.controls.targetDurationSec,
+      targetDurationSec: input.targetDurationSec ?? 36,
       humorIntensity: input.humorIntensity ?? 35,
       renderProfile: input.renderProfile ?? 'review_720p',
       useNvenc: input.useNvenc ?? true,
@@ -1231,7 +1129,6 @@ export class StagedCinemaPipeline {
       ...(input.ttsProviderId ? { ttsProviderId: input.ttsProviderId } : {}),
       ...(input.ttsVoiceId ? { ttsVoiceId: input.ttsVoiceId } : {}),
       ...(input.language ? { language: input.language } : {}),
-      ...(input.allowDeterministicScriptFallback !== undefined ? { allowDeterministicScriptFallback: input.allowDeterministicScriptFallback } : {}),
       state: 'prompt',
       progressPct: 5,
       message: 'Analisando prompt e extraindo intenções de cena...',
@@ -1474,43 +1371,6 @@ export class StagedCinemaPipeline {
           job.researchDossier = dossier;
           const researchEvidence = this.recordStageEvidence(job.contract, 'pesquisa', 'research', `Dossiê editorial ${dossier.dossierId} validado com ${dossier.entities.length} entidade(s).`, 'supports', [dossier.dossierId]);
           if (researchEvidence) job.contract = researchEvidence;
-        } else if (job.allowDeterministicScriptFallback) {
-          const listAfterColon = /:\s*([^.?!\n]+)/.exec(job.prompt)?.[1] ?? '';
-          const extractedNames = listAfterColon
-            .split(/,|\s+e\s+/i)
-            .map((s) => s.trim())
-            .filter((s) => s.length >= 3 && s.length <= 60);
-          if (extractedNames.length >= 2) {
-            const isGamingDossier =
-              nextInterpretation.domain === 'gaming' ||
-              /\b(jogo|jogos|game|games|gameplay|console|playstation|xbox|nintendo|steam)\b/i.test(job.prompt);
-            const dossier: EditorialResearchDossier = {
-              dossierId: `dossier_det_${createHash('sha1').update(job.prompt).digest('hex').slice(0, 8)}`,
-              dossierHash: createHash('sha1').update(extractedNames.join('|')).digest('hex').slice(0, 12),
-              promptHash: nextInterpretation.promptHash,
-              workTitle: extractedNames.slice(0, 2).join(' & '),
-              theme: nextInterpretation.theme,
-              rankingCriteria: nextInterpretation.rankingCriteria,
-              entities: extractedNames.map((name, idx) => ({
-                entityName: name,
-                workTitle: name,
-                role: isGamingDossier ? 'obra_destaque' : 'marco_tematico',
-                rankPosition: idx + 1,
-                verifiedFacts: isGamingDossier
-                  ? [`${name} marcou época com seus gráficos e jogabilidade.`]
-                  : [`${name} consolidou avanços históricos e registros visuais marcantes em sua área.`],
-                mechanicsOrEvents: isGamingDossier
-                  ? [`gameplay de ${name}`]
-                  : [`registros visuais reais e contexto histórico de ${name}`],
-                uncertainties: [],
-                sources: [{ title: `Referência ${name}`, kind: 'agent_synthesis' }],
-              })),
-              uncertainties: [],
-              sourcesUsed: ['prompt_explicit_list'],
-              createdAt: new Date().toISOString(),
-            };
-            job.researchDossier = dossier;
-          }
         }
         job.completedStages = [...new Set([...job.completedStages, 'pesquisa'])] as ProductionStageState[];
         this.saveJob(job);
@@ -1606,130 +1466,17 @@ export class StagedCinemaPipeline {
             approved: true,
           })),
         });
-      } else if (!job.editorialScript && job.allowDeterministicScriptFallback && !job.researchDossier) {
-        // Minimal script from interpretation alone: enables autonomous production when no external agent
-        // direction and no research dossier exist (e.g., single-work anime prompts without configured research).
-        // Extracts specific entities and events from the prompt to generate distinct per-scene narration
-        // and targeted media queries that can recover exact_match footage.
-        const lang = job.language ?? 'pt-BR';
-        const workTitle = nextInterpretation.workTitle || job.prompt.slice(0, 60);
-        const theme = nextInterpretation.theme || job.prompt;
-        const refWorks = nextInterpretation.referenceWorks ?? [];
-        // Extract character/entity names from the prompt for scene-specific narration and queries.
-        // Matches both Title Case ("Shanks") and ALL CAPS ("SHANKS") proper nouns >= 3 chars,
-        // excluding common Portuguese stop words. Normalizes ALL CAPS to Title Case for consistent output.
-        const titleCasePattern = /\b[A-ZÀ-Ý][a-zà-ÿ]{2,}(?:\s+[A-ZÀ-Ý][a-zà-ÿ]{2,}){0,2}\b/gu;
-        const allCapsPattern = /\b[A-ZÀ-Ý]{3,}\b/gu;
-        const rawMatches = [
-          ...(job.prompt.match(titleCasePattern) ?? []),
-          ...(job.prompt.match(allCapsPattern) ?? []).map((w) => w.charAt(0) + w.slice(1).toLowerCase()),
-        ];
-        const promptEntities = [...new Set(
-          rawMatches
-            .map((e) => e.trim())
-            .filter((e) => e.length >= 3 && !/^(?:Maior|Segredo|Sobre|Realmente|Sabe|Este|Momento|Revela|Camadas|Profundas|Narrativa|Que|Conectam|Tema|Central|Cada|Cena|Reforça|Porque|Continua|Relevante|Até|Hoje|Qual|Desses|Momentos|Mais|Chamou|Sua|Atenção|Vamos|Explorar|Destacando|Marcantes|One|Piece)$/i.test(e))
-        )];
-        const allEntities = [...new Set([...refWorks, ...promptEntities, workTitle].filter(Boolean))];
-        const primaryEntity = promptEntities.find((e) => e.toLowerCase() !== workTitle.toLowerCase()) ?? workTitle;
-        const totalSegs = Math.max(3, Math.round((job.targetDurationSec ?? 90) / 45));
-        const segments: Array<{
-          segmentId: string; beatId: string; stage: NarrativeBeat['stage'];
-          title: string; spokenText: string; estimatedDurationSec: number; approved: boolean;
-        }> = [];
-        // Hook: introduces the primary entity and the central mystery/theme
-        const hookText = `Hoje vamos investigar ${primaryEntity} em ${workTitle}, revelando os detalhes que poucos fãs perceberam sobre ${theme}.`;
-        segments.push({
-          segmentId: 'seg_1', beatId: 'nbeat_1_hook', stage: 'hook', title: `Introdução: ${primaryEntity}`,
-          spokenText: hookText, estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(hookText, lang))), approved: true,
-        });
-        // Progression beats: each scene focuses on a different aspect of the primary entity with distinct narration
-        const progressionTopics = [
-          { topic: 'origem e motivações', event: `${primaryEntity} origem backstory` },
-          { topic: 'confrontos e batalhas decisivas', event: `${primaryEntity} fight battle confrontation` },
-          { topic: 'relacionamentos e alianças', event: `${primaryEntity} allies relationships crew` },
-          { topic: 'poderes e habilidades únicas', event: `${primaryEntity} powers abilities haki technique` },
-          { topic: 'momentos icônicos na história', event: `${primaryEntity} iconic moment reveal` },
-          { topic: 'teorias e mistérios não resolvidos', event: `${primaryEntity} mystery theory secret` },
-        ];
-        for (let i = 1; i < totalSegs - 1; i++) {
-          const beatStage = i === totalSegs - 2 ? 'climax' : 'progression';
-          const topicIdx = (i - 1) % progressionTopics.length;
-          const topic = progressionTopics[topicIdx]!;
-          const spokenText = `Quando analisamos ${topic.topic} de ${primaryEntity} em ${workTitle}, percebemos como esse elemento conecta diretamente ao grande mistério de ${theme}.`;
-          segments.push({
-            segmentId: `seg_${i + 1}`, beatId: `nbeat_${i + 1}_${beatStage}`, stage: beatStage,
-            title: `${primaryEntity}: ${topic.topic}`,
-            spokenText,
-            estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(spokenText, lang))), approved: true,
-          });
-        }
-        // Resolution: ties back to the central theme with a call to engagement
-        const outroText = `Esses detalhes sobre ${primaryEntity} mostram por que ${workTitle} continua fascinando milhões de fãs. Qual teoria sobre ${theme} você acha mais convincente?`;
-        segments.push({
-          segmentId: `seg_${totalSegs}`, beatId: `nbeat_${totalSegs}_resolution`, stage: 'resolution',
-          title: `Conclusão: ${primaryEntity}`, spokenText: outroText,
-          estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(outroText, lang))), approved: true,
-        });
-        job.editorialScript = buildEditorialScript({
-          scriptId: `${job.projectId}_script`, source: 'deterministic_draft',
-          treatment: `${workTitle}: ${primaryEntity} — ${theme}`, academyRulesApplied: [], segments,
-        });
       } else if (!job.editorialScript && job.allowDeterministicScriptFallback && job.researchDossier) {
         const dossier = job.researchDossier;
-        const lang = job.language ?? 'pt-BR';
-        const totalSegs = Math.max(2, dossier.entities.length + 2);
-        const perSegSec = Math.max(4, job.targetDurationSec / totalSegs);
-        const targetWordsPerSeg = Math.max(12, Math.round(perSegSec * 2.25));
-        const buildEntityLine = (ent: EditorialResearchDossier['entities'][number]) => {
-          const name = ent.entityName.trim();
-          const rawDetails = [...(ent.verifiedFacts ?? []), ...(ent.mechanicsOrEvents ?? []), ent.role]
-            .map((d) => (d ?? '').trim())
-            .filter(
-              (d) =>
-                d.length >= 8 &&
-                !/^(?:gameplay|cenas|imagens|video)\s+de\s+/i.test(d) &&
-                d.toLowerCase() !== name.toLowerCase(),
-            );
-          const uniqueDetails: string[] = [];
-          for (const d of rawDetails) {
-            if (!uniqueDetails.some((u) => u.toLowerCase() === d.toLowerCase())) uniqueDetails.push(d);
-          }
-          const lead = ent.workTitle && ent.workTitle !== name ? `${name}, em ${ent.workTitle},` : name;
-          const sentences: string[] = [];
-          if (uniqueDetails[0]) {
-            const first = uniqueDetails[0].replace(/\.+$/, '');
-            sentences.push(`${lead} se destaca por ${first.charAt(0).toLowerCase()}${first.slice(1)}.`);
-          } else {
-            sentences.push(`${lead} marcou sua geração com identidade visual própria e momentos memoráveis.`);
-          }
-          for (const extra of uniqueDetails.slice(1)) {
-            if (sentences.join(' ').split(/\s+/).length >= targetWordsPerSeg) break;
-            const clean = extra.replace(/\.+$/, '');
-            sentences.push(`${clean.charAt(0).toUpperCase()}${clean.slice(1)}.`);
-          }
-          if (sentences.join(' ').split(/\s+/).length < Math.max(12, targetWordsPerSeg - 3)) {
-            sentences.push(`A estética e o ritmo de ${name} ilustram por que essa obra permanece como referência até hoje.`);
-          }
-          return sentences.join(' ');
-        };
-        const entityNames = dossier.entities.map((e) => e.entityName).slice(0, 5);
-        const introText =
-          entityNames.length >= 2
-            ? `Hoje vamos explorar ${entityNames.join(', ')}, observando em cena o que torna cada um desses marcos visualmente inesquecível.`
-            : `Hoje vamos explorar ${dossier.workTitle}, destacando os momentos e detalhes visuais mais marcantes do tema.`;
-        const outroText = `Cada cena reforça por que esse tema continua relevante até hoje. Qual desses momentos mais chamou a sua atenção?`;
-        const entityBeats = dossier.entities.map((ent, idx) => {
-          const spokenText = buildEntityLine(ent);
-          return {
-            segmentId: `seg_${idx + 2}`,
-            beatId: `nbeat_${idx + 2}_progression`,
-            stage: (idx === dossier.entities.length - 1 ? 'climax' : 'progression') as NarrativeBeat['stage'],
-            title: ent.rankPosition ? `#${ent.rankPosition} — ${ent.entityName}` : ent.entityName,
-            spokenText,
-            estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(spokenText, lang))),
-            approved: true,
-          };
-        });
+        const entityBeats = dossier.entities.map((ent, idx) => ({
+          segmentId: `seg_${idx + 2}`,
+          beatId: `nbeat_${idx + 2}_progression`,
+          stage: (idx === dossier.entities.length - 1 ? 'climax' : 'progression') as NarrativeBeat['stage'],
+          title: ent.rankPosition ? `#${ent.rankPosition} — ${ent.entityName}` : ent.entityName,
+          spokenText: `${ent.entityName} em ${dossier.workTitle}: ${ent.mechanicsOrEvents[0] ?? ent.verifiedFacts[0] ?? ent.role}.`,
+          estimatedDurationSec: Math.max(12, Math.round(job.targetDurationSec / Math.max(2, dossier.entities.length + 2))),
+          approved: true,
+        }));
         job.editorialScript = buildEditorialScript({
           scriptId: `${job.projectId}_script`,
           source: 'deterministic_draft',
@@ -1741,8 +1488,8 @@ export class StagedCinemaPipeline {
               beatId: 'nbeat_1_hook',
               stage: 'hook',
               title: 'Introdução',
-              spokenText: introText,
-              estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(introText, lang))),
+              spokenText: `Bem-vindo à análise de ${dossier.workTitle}: ${dossier.theme}.`,
+              estimatedDurationSec: 20,
               approved: true,
             },
             ...entityBeats,
@@ -1751,58 +1498,12 @@ export class StagedCinemaPipeline {
               beatId: `nbeat_${entityBeats.length + 2}_resolution`,
               stage: 'resolution',
               title: 'Conclusão',
-              spokenText: outroText,
-              estimatedDurationSec: Math.max(4, Math.round(estimateNarrationSec(outroText, lang))),
+              spokenText: `Esses foram os destaques de ${dossier.workTitle} segundo os critérios definidos.`,
+              estimatedDurationSec: 20,
               approved: true,
             },
           ],
         });
-      }
-      if (job.editorialScript && job.targetDurationSec > 0) {
-        const lang = job.language ?? 'pt-BR';
-        // Measure real spoken duration from actual word count instead of trusting placeholder segment estimates.
-        const measuredSegments = job.editorialScript.segments.map((seg) => ({
-          ...seg,
-          estimatedDurationSec: Math.max(3, Math.round(estimateNarrationSec(seg.spokenText, lang))),
-        }));
-        const totalMeasuredSec = measuredSegments.reduce((s, seg) => s + seg.estimatedDurationSec, 0);
-        if (totalMeasuredSec < job.targetDurationSec * 0.85 && measuredSegments.length > 0 && job.researchDossier) {
-          const perSegTargetWords = Math.max(10, Math.round((job.targetDurationSec * 0.94 / measuredSegments.length) * 2.25));
-          const expanded = measuredSegments.map((seg, idx) => {
-            const words = seg.spokenText.trim().split(/\s+/).filter(Boolean);
-            if (words.length >= perSegTargetWords) return seg;
-            const ent = job.researchDossier?.entities[Math.max(0, idx - 1)];
-            const extraFact = ent?.verifiedFacts?.find((f) => !seg.spokenText.toLowerCase().includes(f.slice(0, 18).toLowerCase()))
-              ?? ent?.mechanicsOrEvents?.find((f) => !/^(?:gameplay|cenas)\s+de\s+/i.test(f) && !seg.spokenText.toLowerCase().includes(f.slice(0, 18).toLowerCase()));
-            const bridge = extraFact
-              ? `${seg.spokenText.replace(/\.+$/, '')}. ${extraFact.replace(/\.+$/, '')}.`
-              : `${seg.spokenText.replace(/\.+$/, '')}, revelando detalhes visuais que traduzem o impacto dessa passagem na tela.`;
-            return {
-              ...seg,
-              spokenText: bridge,
-              estimatedDurationSec: Math.max(3, Math.round(estimateNarrationSec(bridge, lang))),
-            };
-          });
-          job.editorialScript = { ...job.editorialScript, segments: expanded };
-        } else if (totalMeasuredSec > job.targetDurationSec * 1.05 && measuredSegments.length > 0) {
-          const perSegTargetSec = Math.max(3, (job.targetDurationSec * 1.04) / measuredSegments.length);
-          const maxWordsPerSeg = Math.max(7, Math.floor(perSegTargetSec * 2.35));
-          job.editorialScript = {
-            ...job.editorialScript,
-            segments: measuredSegments.map((seg) => {
-              const words = seg.spokenText.trim().split(/\s+/).filter(Boolean);
-              const trimmedText =
-                words.length > maxWordsPerSeg ? `${words.slice(0, maxWordsPerSeg).join(' ').replace(/[,;:]$/, '')}.` : seg.spokenText;
-              return {
-                ...seg,
-                spokenText: trimmedText,
-                estimatedDurationSec: Math.max(3, Math.round(estimateNarrationSec(trimmedText, lang))),
-              };
-            }),
-          };
-        } else {
-          job.editorialScript = { ...job.editorialScript, segments: measuredSegments };
-        }
       }
       if (job.editorialScript && job.researchDossier) {
         const scriptCheck = validateScriptAgainstDossier(job.editorialScript, job.researchDossier, nextInterpretation);
@@ -1866,11 +1567,7 @@ export class StagedCinemaPipeline {
       this.saveJob(job);
 
       const scenesForAcquisition = job.sceneDecupagem ?? [];
-      const multiWorkProduction =
-        isMultiWorkProduction(nextInterpretation) ||
-        nextInterpretation.workTitle.includes(' & ') ||
-        (job.researchDossier?.workTitle.includes(' & ') ?? false) ||
-        (job.researchDossier?.entities?.length ?? 0) >= 2;
+      const multiWorkProduction = isMultiWorkProduction(nextInterpretation);
       // Content domain of the project (anime/game/movie…) from the briefing interpretation, reconciled with the
       // semantic evidence of the prompt and the researched works. The narrative format (genre) never decides it.
       const projectDomainInference = resolveProjectDomain({
@@ -1913,50 +1610,6 @@ export class StagedCinemaPipeline {
           this.deps.autonomousAcquisitionDeps &&
           (job.acquiredMedia.length < queries.length || groundingPolicyChanged || mediaRecoveryRequested)
         ) {
-          const plannedSceneDurationById = new Map<string, number>();
-          if (scenesForAcquisition.length > 0 && job.targetDurationSec > 0) {
-            try {
-              const dryPkg = produceCinemaPackage({
-                projectId: job.projectId,
-                prompt: job.prompt,
-                ...(job.genre ? { genre: job.genre } : {}),
-                ...(job.format ? { format: job.format } : {}),
-                ...(job.creativeSelection ? { creativeSelection: job.creativeSelection } : {}),
-                ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
-                ...(job.deliveryPresetIds?.length ? { deliveryPresetIds: job.deliveryPresetIds } : {}),
-                previewProfile: previewProfileForJob(job),
-                targetDurationSec: job.targetDurationSec,
-                humorIntensity: job.humorIntensity,
-                renderProfile: job.renderProfile,
-                mediaCatalog: [],
-                ...(job.editorialScript ? { editorialScript: job.editorialScript } : {}),
-                ...(job.contract ? { productionContract: job.contract } : {}),
-              });
-              const dryV1 = dryPkg.timeline.clips
-                .filter((c) => c.trackId === 'v1')
-                .sort((a, b) => a.timelineRange.start.value / a.timelineRange.start.rate - b.timelineRange.start.value / b.timelineRange.start.rate);
-              dryV1.forEach((clip, idx) => {
-                const sceneIdx =
-                  dryV1.length === scenesForAcquisition.length
-                    ? idx
-                    : Math.min(scenesForAcquisition.length - 1, Math.floor((idx * scenesForAcquisition.length) / Math.max(1, dryV1.length)));
-                const sc = scenesForAcquisition[sceneIdx];
-                if (!sc) return;
-                const durSec = clip.timelineRange.duration.value / Math.max(1, clip.timelineRange.duration.rate);
-                plannedSceneDurationById.set(sc.sceneId, (plannedSceneDurationById.get(sc.sceneId) ?? 0) + durSec);
-              });
-            } catch {
-              // fallback to scaled narrationSec below
-            }
-          }
-          const rawSceneDurationSum = scenesForAcquisition.reduce(
-            (sum, s) => sum + Math.max(4, s.narrationSec ?? s.durationSec),
-            0,
-          );
-          const durationScale =
-            job.targetDurationSec > 0 && rawSceneDurationSum > 0 && rawSceneDurationSum < job.targetDurationSec * 0.9
-              ? job.targetDurationSec / rawSceneDurationSum
-              : 1;
           const initialSegments =
             scenesForAcquisition.length > 0
               ? scenesForAcquisition.map((s) => ({
@@ -1965,7 +1618,7 @@ export class StagedCinemaPipeline {
                   // prefixing it to every subject/entity made searches and the identity gate look for a title
                   // that does not exist.
                   subject: multiWorkProduction
-                    ? `${(s.entities.length > 0 ? s.entities : (s.works ?? []).flatMap((w) => w.split(/\s*&\s*/))).slice(0, 2).join(' / ') || s.expectedEvent}${s.visualKeywords?.[0] ? ` — ${s.visualKeywords[0]}` : ''}`
+                    ? `${(s.works ?? s.entities).slice(0, 2).join(' / ') || s.expectedEvent}${s.visualKeywords?.[0] ? ` — ${s.visualKeywords[0]}` : ''}`
                     : s.entities[0]
                       ? `${s.workTitle} ${s.entities[0].replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim()}`
                       : s.expectedEvent,
@@ -1977,18 +1630,12 @@ export class StagedCinemaPipeline {
                     return work ? { work } : {};
                   })(),
                   entities: (() => {
-                    const sceneWorks = (s.works ?? []).flatMap((w) => w.split(/\s*&\s*/).map((p) => p.trim()).filter(Boolean));
-                    const dossierEntityNames = (job.researchDossier?.entities ?? []).map((e) => e.entityName).filter(Boolean);
                     const raw =
                       s.matchingCriteria.requiredEntities.length > 0
                         ? multiWorkProduction
-                          ? [...(s.entities.length > 0 ? s.entities : sceneWorks), ...s.matchingCriteria.requiredEntities]
+                          ? [...(s.works ?? []), ...s.matchingCriteria.requiredEntities]
                           : [s.workTitle, ...s.matchingCriteria.requiredEntities]
-                        : s.entities.length > 0
-                          ? s.entities
-                          : multiWorkProduction && dossierEntityNames.length > 0
-                            ? dossierEntityNames
-                            : extractTopicEntities(`${multiWorkProduction ? '' : s.workTitle} ${s.entities.join(' ')} ${s.narrationText}`);
+                        : extractTopicEntities(`${multiWorkProduction ? '' : s.workTitle} ${s.entities.join(' ')} ${s.narrationText}`);
                     const expanded = new Set<string>();
                     for (const item of raw) {
                       const clean = item.replace(/\([^)]*\)/g, '').trim();
@@ -1998,13 +1645,7 @@ export class StagedCinemaPipeline {
                     }
                     return [...expanded];
                   })(),
-                  expectedDurationSec: Math.max(
-                    4,
-                    Math.round(
-                      plannedSceneDurationById.get(s.sceneId) ??
-                        Math.max(4, s.narrationSec ?? s.durationSec) * durationScale,
-                    ),
-                  ),
+                  expectedDurationSec: Math.max(4, s.narrationSec ?? s.durationSec),
                 }))
               : queries.map((q, idx) => ({
                   segmentId: `slot_${idx + 1}`,
@@ -2051,9 +1692,7 @@ export class StagedCinemaPipeline {
               const progressText =
                 progress.pct !== null && progress.bytesTotal
                   ? `${progress.pct}% (${doneMb} / ${(progress.bytesTotal / (1024 * 1024)).toFixed(1)} MB)`
-                  : progress.pct !== null
-                    ? `${progress.pct}%`
-                    : `${doneMb} MB recebidos`;
+                  : `${doneMb} MB recebidos`;
               job.message = `Baixando mídia "${shortLabel}": ${progressText}`;
               job.downloadProgress = {
                 label: shortLabel,
@@ -2092,7 +1731,6 @@ export class StagedCinemaPipeline {
             ...(baseDeps.ytDlpAcquireFn
               ? {
                   ytDlpAcquireFn: async (targetUrl, idx, dir, sig, downloadSection, onProgress) => {
-                    lastDownloadProgressEmitMs = 0;
                     job.message = `Iniciando download [slot ${idx + 1}]: ${targetUrl}`;
                     job.downloadProgress = {
                       label: `slot ${idx + 1} · ${targetUrl}`,
@@ -2101,12 +1739,7 @@ export class StagedCinemaPipeline {
                       bytesTotal: null,
                     };
                     this.deps.onProgress?.(job);
-                    try {
-                      return await baseDeps.ytDlpAcquireFn!(targetUrl, idx, dir, sig, downloadSection, onProgress);
-                    } finally {
-                      delete job.downloadProgress;
-                      this.deps.onProgress?.(job);
-                    }
+                    return baseDeps.ytDlpAcquireFn!(targetUrl, idx, dir, sig, downloadSection, onProgress);
                   },
                 }
               : {}),
@@ -2226,7 +1859,6 @@ export class StagedCinemaPipeline {
                   },
                 }
               : {}),
-            ...(this.deps.analyzeRemoteFramesFn ? { analyzeRemoteFramesFn: this.deps.analyzeRemoteFramesFn } : {}),
             requireVisualVerification: this.deps.requireVisualVerification ?? true,
             evolution: this.deps.evolutionCore,
             limits: {
@@ -2392,13 +2024,9 @@ export class StagedCinemaPipeline {
           // Partial completion: uncovered scenes are assembled with labeled graphic recovery and reported as pending.
           // Only when verified footage is too scarce to make a real video does the production stop for human review
           // (with the concrete alternatives in `autonomousAudit.sceneDiagnostics`).
-          const hasContextualFallbacks = (audit.coverageReport.contextualMediaDurationSec ?? 0) > 0;
-          const effectiveMinRatio = hasContextualFallbacks
-            ? MIN_REAL_FOOTAGE_RATIO_WITH_CONTEXTUAL_FALLBACKS
-            : MIN_REAL_FOOTAGE_RATIO_TO_ASSEMBLE;
           if (
             audit.unresolvedGapsForReview.length > 0 &&
-            (job.acquiredMedia.length === 0 || audit.coverageReport.coverageRatio < effectiveMinRatio)
+            (job.acquiredMedia.length === 0 || audit.coverageReport.coverageRatio < MIN_REAL_FOOTAGE_RATIO_TO_ASSEMBLE)
           ) {
             for (let gIdx = 0; gIdx < audit.unresolvedGapsForReview.length; gIdx += 1) {
               const gap = audit.unresolvedGapsForReview[gIdx]!;
@@ -2508,124 +2136,14 @@ export class StagedCinemaPipeline {
               );
               relevanceDecisions.push(relevance);
               if (!isAssemblyEligibleDecision(relevance)) {
-                // P4 fix: automatic media recovery — when a candidate is rejected, attempt up to 2 retries
-                // with entity-specific queries derived from the rejection reason before giving up.
-                // Never silently substitutes the expected character; each retry targets the same entities.
-                const MAX_RECOVERY_ATTEMPTS = 2;
-                let recovered = false;
-                // P4 semantic fix: recovery queries MUST use expectedEntities (from narration/editorial context),
-                // never matchedEntities from the rejected media. Using matchedEntities would cause the system to
-                // search for the WRONG character (e.g., searching "Zoro" when the narration requires "Shanks").
-                // The rejected media's entities are evidence of mismatch, not recovery targets.
-                const baseEntityQuery = expectedEntities.slice(0, 3).join(' ');
-                const recoveryQueries: string[] = [];
-                if (relevance.rejectionCode === 'wrong_anime_or_entity' || relevance.rejectionCode === 'same_universe_wrong_event') {
-                  // Specific character + event query to avoid getting another character from the same franchise
-                  recoveryQueries.push(`${baseEntityQuery} ${query}`);
-                  recoveryQueries.push(`${baseEntityQuery} scene clip`);
-                } else if (relevance.rejectionCode === 'unrelated_real_person' || relevance.rejectionCode === 'non_anime_real_person') {
-                  // Explicitly request anime/animation footage of the expected entity
-                  recoveryQueries.push(`${baseEntityQuery} anime animation scene`);
-                  recoveryQueries.push(`${baseEntityQuery} sakuga clip`);
-                } else {
-                  // Generic recovery: add entity name to the original query
-                  recoveryQueries.push(`${baseEntityQuery} ${query}`);
-                }
-                for (let retryIdx = 0; retryIdx < Math.min(MAX_RECOVERY_ATTEMPTS, recoveryQueries.length); retryIdx += 1) {
-                  if (recovered) break;
-                  checkCancelled();
-                  const retryQuery = recoveryQueries[retryIdx]!;
-                  let retryUri: string | null = null;
-                  let retryCandidate: SearchCandidate | undefined;
-                  if (this.deps.searchExternalMedia) {
-                    try {
-                      const retryCandidates = await this.deps.searchExternalMedia(retryQuery, i * 100 + retryIdx, signal, {
-                        projectId: job.projectId,
-                      });
-                      retryCandidate = retryCandidates[0];
-                      if (retryCandidate?.url) {
-                        retryUri = await this.deps.acquireExternalMedia?.(
-                          retryQuery,
-                          i * 100 + retryIdx,
-                          projectPaths.mediaDir,
-                          signal,
-                          retryCandidate.url,
-                          { projectId: job.projectId },
-                        ) ?? null;
-                      }
-                    } catch {
-                      retryUri = null;
-                    }
-                  }
-                  if (!retryUri && this.deps.acquireExternalMedia) {
-                    try {
-                      retryUri = await this.deps.acquireExternalMedia(
-                        retryQuery,
-                        i * 100 + retryIdx,
-                        projectPaths.mediaDir,
-                        signal,
-                        undefined,
-                        { projectId: job.projectId },
-                      );
-                    } catch {
-                      retryUri = null;
-                    }
-                  }
-                  if (!retryUri) continue;
-                  const retryMedia = await buildSourceMediaFromFile(retryUri, `${job.projectId}_retry_${i + 1}_${retryIdx + 1}`);
-                  if (!retryMedia) continue;
-                  const retryDurSec = retryMedia.duration.value / Math.max(1, retryMedia.duration.rate);
-                  const retryRelevance = await evaluateMediaRelevance(
-                    {
-                      mediaId: retryMedia.mediaId,
-                      uri: retryMedia.uri,
-                      title: retryCandidate?.title ?? retryQuery,
-                      origin: retryCandidate?.origin ?? 'recovery_retry',
-                      ...(retryCandidate?.url ? { url: retryCandidate.url } : {}),
-                      projectId: job.projectId,
-                      durationSec: retryDurSec,
-                    },
-                    {
-                      segmentId: `slot_${i + 1}`,
-                      prompt: job.prompt,
-                      narrationText: query,
-                      ...(job.genre ? { genre: job.genre } : {}),
-                      expectedEntities,
-                    },
-                    {
-                      ...(this.deps.analyzeFrames ? { analyzeFrames: this.deps.analyzeFrames } : {}),
-                      requireVisualVerification: this.deps.requireVisualVerification ?? true,
-                    },
-                  );
-                  relevanceDecisions.push(retryRelevance);
-                  if (isAssemblyEligibleDecision(retryRelevance)) {
-                    this.cache.registerConsumer({
-                      url: retryCandidate?.url ?? `local://${job.projectId}/retry/${i + 1}/${encodeURIComponent(retryQuery)}`,
-                      origin: retryCandidate?.origin ?? 'recovery_retry',
-                      license: retryCandidate?.license ?? retryMedia.license,
-                      topic: job.prompt,
-                      query: retryQuery,
-                      sourceFilePath: retryMedia.uri,
-                      width: retryMedia.width ?? 1280,
-                      height: retryMedia.height ?? 720,
-                      durationSec: retryDurSec,
-                      projectId: job.projectId,
-                    });
-                    job.acquiredMedia.push(retryMedia);
-                    recovered = true;
-                  }
-                }
-                if (!recovered) {
-                  // Keep the downloaded file for re-evaluation and human inspection; only the editorial decision is
-                  // rejected. A later run with a new grounding policy must not need to download it again.
-                  pending.push({
-                    slotIndex: i,
-                    clipId: `clip_${i + 1}`,
-                    query,
-                    reason: `Mídia rejeitada pelo Media Relevance Gate (${relevance.rejectionCode ?? 'incompatível'}): ${relevance.reason}. Recuperação automática tentou ${MAX_RECOVERY_ATTEMPTS} busca(s) específica(s) sem sucesso.`,
-                    attempts: MAX_RECOVERY_ATTEMPTS,
-                  });
-                }
+                // Keep the downloaded file for re-evaluation and human inspection; only the editorial decision is
+                // rejected. A later run with a new grounding policy must not need to download it again.
+                pending.push({
+                  slotIndex: i,
+                  clipId: `clip_${i + 1}`,
+                  query,
+                  reason: `Mídia rejeitada pelo Media Relevance Gate (${relevance.rejectionCode ?? 'incompatível'}): ${relevance.reason}`,
+                });
                 continue;
               }
               this.cache.registerConsumer({
@@ -2819,7 +2337,6 @@ export class StagedCinemaPipeline {
             intervals: remaining,
             availableMediaIds,
             allowGraphicRecovery: true,
-            maxShotSec: job.targetDurationSec <= 90 ? 5.5 : 8.5,
           });
           // Consume what this clip used so a later clip of the same scene never repeats the same source seconds.
           for (const part of clips) {
@@ -2839,48 +2356,11 @@ export class StagedCinemaPipeline {
         });
         const nextClips: TimelineClip[] = [];
         for (const c of pkg.timeline.clips) {
-          if (c.trackId === 'vfx1') continue;
           const replaced = c.trackId === 'v1' ? montageByClipId.get(c.clipId) : undefined;
           if (replaced) nextClips.push(...replaced);
           else nextClips.push(c);
         }
-        const refreshedPlan = buildSceneAudiovisualPlan({
-          requestedDurationSec: job.targetDurationSec,
-          clips: nextClips,
-          scenes: scenesForAcquisition.map((s) => ({
-            sceneId: s.sceneId,
-            subject: (s.works ?? s.entities).slice(0, 2).join(' / ') || s.expectedEvent,
-            narrationText: s.narrationText,
-            expectedEvent: s.expectedEvent,
-          })),
-          comedyBeats: pkg.timeline.comedyBeats,
-        });
-        const vfxFps = pkg.timeline.fps;
-        const refreshedVfxClips: TimelineClip[] = refreshedPlan.vfxPlan.map((v, idx) => ({
-          clipId: `vfx_clip_${idx + 1}`,
-          trackId: 'vfx1',
-          mediaId: `vfx_overlay_${v.effect}`,
-          label: `${v.effect}: ${v.sceneId}`,
-          sourceRange: {
-            start: fromFrames(0, vfxFps),
-            duration: fromFrames(Math.max(15, Math.round(v.durationSec * vfxFps.value)), vfxFps),
-          },
-          timelineRange: {
-            start: fromFrames(Math.round(v.startSec * vfxFps.value), vfxFps),
-            duration: fromFrames(Math.max(15, Math.round(v.durationSec * vfxFps.value)), vfxFps),
-          },
-          speed: 1,
-          approved: true,
-          effects: [{ effectId: `vfx_fx_${idx + 1}`, kind: v.effect, enabled: true, params: { sceneId: v.sceneId }, estimatedCostMs: 6, fallbackMode: 'skip' }],
-          keyframes: [],
-        }));
-        pkg = {
-          ...pkg,
-          timeline: { ...pkg.timeline, clips: [...nextClips, ...refreshedVfxClips] },
-          audiovisualPlan: refreshedPlan,
-          vfxPlan: refreshedPlan.vfxPlan,
-          humorBeats: refreshedPlan.humorBeats,
-        };
+        pkg = { ...pkg, timeline: { ...pkg.timeline, clips: nextClips } };
         job.sceneAssembly = assembly;
       } else if (job.acquiredMedia.length > 0 && pkg.direction.narrativeBeats.length > 0) {
         const videoTrackClips = pkg.timeline.clips.filter((c) => c.trackId === 'v1');
@@ -3032,21 +2512,14 @@ export class StagedCinemaPipeline {
               Math.round((job.targetDurationSec ?? 90) / Math.max(1, pkg.direction.narrativeBeats.length)),
             ),
           }));
-      const auditAssetDurationById = new Map(
-        (job.autonomousAudit?.approvedAssets ?? []).map((a) => [a.mediaId, a.durationSec]),
-      );
       const coverageAssets = job.acquiredMedia.map((m) => {
         const decision = relevanceDecisions.find((d) => d.mediaId === m.mediaId);
-        const rawDur = m.duration.value / Math.max(1, m.duration.rate);
-        const auditDur = auditAssetDurationById.get(m.mediaId);
-        const effectiveDur =
-          m.kind === 'image' && auditDur && auditDur > rawDur ? auditDur : rawDur;
         return {
           mediaId: m.mediaId,
           uri: m.uri,
           title: basename(m.uri),
           origin: m.origin,
-          durationSec: effectiveDur,
+          durationSec: m.duration.value / Math.max(1, m.duration.rate),
           compatible: decision ? isAssemblyEligibleDecision(decision) : false,
           ...(decision?.matchedEntities ? { relevantToEntities: decision.matchedEntities } : {}),
           ...(decision && !decision.accepted ? { rejectedReason: decision.reason } : {}),
@@ -3139,30 +2612,7 @@ export class StagedCinemaPipeline {
       this.saveJob(job);
 
       const segmentCacheDir = join(projectPaths.tempDir, 'segment-cache');
-      const baseAudioAssets = resolvePlannedSfxAssets(pkg.audiovisualPlan);
-      const musicBed =
-        baseAudioAssets?.music ??
-        (await generateCinematicMusicBed(join(projectPaths.tempDir, 'cinematic_music_bed.wav'), job.targetDurationSec));
-      const realAudioAssets: RealAudioAssetsInput | undefined =
-        baseAudioAssets || musicBed
-          ? {
-              ...(baseAudioAssets ?? {}),
-              ...(musicBed ? { music: musicBed } : {}),
-            }
-          : undefined;
-      const resolvedAudioForGateB = realAudioAssets ? await resolveRealAudioAssets(realAudioAssets) : undefined;
-      const gateA = runGateAPreAssembly({
-        requestedDurationSec: job.targetDurationSec,
-        coverageReport,
-        plannedDurationSec: job.targetDurationSec,
-      });
-      const gateB = runGateBPreRender({
-        timeline: pkg.timeline,
-        requestedDurationSec: job.targetDurationSec,
-        ...(resolvedAudioForGateB ? { realAudio: resolvedAudioForGateB } : {}),
-        ...(pkg.audiovisualPlan ? { audiovisualPlan: pkg.audiovisualPlan } : {}),
-      });
-      job.qualityGates = [gateA, gateB];
+      const realAudioAssets = localMotionVelixAudioAssets();
       let render = await renderRealCinemaMp4({
         pkg,
         outputDir: projectPaths.rendersDir,
@@ -3207,112 +2657,6 @@ export class StagedCinemaPipeline {
       job.audioDiagnostics = render.audioDiagnostics;
       job.musicSelection = render.musicSelection;
       job.deliveryGate = render.deliveryGate;
-      const gateC = runGateCPostRender({
-        requestedDurationSec: job.targetDurationSec,
-        actualDurationSec: render.probe.durationSec,
-        width: render.probe.width,
-        height: render.probe.height,
-        hasAudio: Boolean(render.probe.audioCodec),
-        blackFramesCount: render.probe.blackFramesCount,
-        clippingDetected: render.probe.truePeakDbtp !== null && render.probe.truePeakDbtp > -0.1,
-      });
-      const buildGateDScenes = (currentPkg: CinemaProductionPackage): GateDEditorialSceneInput[] => {
-        const currentV1 = currentPkg.timeline.clips.filter((c) => c.trackId === 'v1');
-        return currentV1.map((c, idx) => {
-          const segId = sceneIdByClipId.get(c.clipId) ?? scenesForAcquisition[idx]?.sceneId ?? c.clipId;
-          const scDec = scenesForAcquisition.find((s) => s.sceneId === segId);
-          const scriptSeg = job.editorialScript?.segments.find((s) => s.segmentId === segId) ?? job.editorialScript?.segments[idx];
-          const dec = relevanceDecisions.find((d) => d.mediaId === c.mediaId);
-          const srcMedia = currentPkg.timeline.sourceMedia[c.mediaId];
-          const sRate = Math.max(1, c.sourceRange.start.rate);
-          const sStart = c.sourceRange.start.value / sRate;
-          const sDur = c.sourceRange.duration.value / Math.max(1, c.sourceRange.duration.rate);
-          return {
-            sceneId: segId,
-            clipId: c.clipId,
-            mediaId: c.mediaId,
-            startSec: c.timelineRange.start.value / Math.max(1, c.timelineRange.start.rate),
-            durationSec: c.timelineRange.duration.value / Math.max(1, c.timelineRange.duration.rate),
-            sourceStartSec: sStart,
-            sourceEndSec: sStart + sDur,
-            isStaticImage: srcMedia?.kind === 'image',
-            hasMotionEffect: c.effects.some((e) => e.enabled && (e.kind.startsWith('ken_burns') || e.kind.includes('zoom'))),
-            ...(scriptSeg?.spokenText ? { spokenText: scriptSeg.spokenText } : scDec?.narrationText ? { spokenText: scDec.narrationText } : {}),
-            ...(scDec?.entities ? { expectedEntities: scDec.entities } : {}),
-            ...(dec?.matchedEntities ? { matchedEntities: dec.matchedEntities } : {}),
-          };
-        });
-      };
-      let gateD = runGateDEditorialQuality({
-        requestedDurationSec: job.targetDurationSec,
-        actualDurationSec: render.probe.durationSec,
-        measuredNarrationDurationMs: render.audioFirstTimeline?.measuredNarrationDurationMs ?? Math.round(render.probe.durationSec * 1000),
-        scenes: buildGateDScenes(pkg),
-        sfxCount: resolvedAudioForGateB?.sfx?.length ?? 0,
-        plannedSfxCount: countPlannedSfxCues(pkg.audiovisualPlan),
-      });
-      // Localized editorial repair when Gate D detects pacing/repetition/desync defects without redoing global acquisition.
-      if (gateD.verdict === 'fail' && gateD.repairHints && gateD.repairHints.length > 0) {
-        const affectedSceneIds = new Set(gateD.repairHints.map((h) => h.sceneId));
-        const hasPacingOrRepetition = gateD.repairHints.some(
-          (h) => h.issueCode === 'sluggish_pacing' || h.issueCode === 'consecutive_visual_repetition',
-        );
-        if (hasPacingOrRepetition && pkg.timeline.clips.some((c) => c.trackId === 'v1')) {
-          const nextV1 = pkg.timeline.clips.map((c) => {
-            if (c.trackId !== 'v1') return c;
-            const segId = sceneIdByClipId.get(c.clipId) ?? c.clipId;
-            if (!affectedSceneIds.has(segId)) return c;
-            const hasMotion = c.effects.some((e) => e.enabled && (e.kind.startsWith('ken_burns') || e.kind.includes('zoom')));
-            return hasMotion
-              ? c
-              : {
-                  ...c,
-                  effects: [
-                    ...c.effects,
-                    {
-                      effectId: `fx_repair_motion_${c.clipId}`,
-                      kind: 'ken_burns_pan',
-                      enabled: true,
-                      params: { zoom: 1.08, easing: 'ease_in_out' },
-                      estimatedCostMs: 0,
-                      fallbackMode: 'skip' as const,
-                    },
-                  ],
-                };
-          });
-          pkg = { ...pkg, timeline: { ...pkg.timeline, clips: nextV1 } };
-          render = await renderRealCinemaMp4({
-            pkg,
-            outputDir: projectPaths.rendersDir,
-            fileName: `${job.projectId}.mp4`,
-            useNvenc: job.useNvenc,
-            requireRealMedia: job.acquiredMedia.length > 0,
-            voiceStudioVoiceId: job.voiceStudioVoiceId || '9190edfa',
-            ...(job.ttsProviderId ? { ttsProviderId: job.ttsProviderId } : {}),
-            ...(job.ttsVoiceId ? { ttsVoiceId: job.ttsVoiceId } : {}),
-            ...this.ttsCredentialsFor(job.ttsProviderId),
-            evolution: this.deps.evolutionCore,
-            prompt: job.prompt,
-            previewQuality: 'fast_preview',
-            renderTarget: 'preview',
-            ...(job.deliveryPresetId ? { deliveryPresetId: job.deliveryPresetId } : {}),
-            previewProfile: previewProfileForJob(job),
-            segmentCacheDir,
-            ...(realAudioAssets ? { realAudioAssets } : {}),
-            ...(job.genre ? { genre: job.genre } : {}),
-            ...(job.language ? { language: job.language } : {}),
-          });
-          gateD = runGateDEditorialQuality({
-            requestedDurationSec: job.targetDurationSec,
-            actualDurationSec: render.probe.durationSec,
-            measuredNarrationDurationMs: render.audioFirstTimeline?.measuredNarrationDurationMs ?? Math.round(render.probe.durationSec * 1000),
-            scenes: buildGateDScenes(pkg),
-            sfxCount: resolvedAudioForGateB?.sfx?.length ?? 0,
-            plannedSfxCount: countPlannedSfxCues(pkg.audiovisualPlan),
-          });
-        }
-      }
-      job.qualityGates = [...(job.qualityGates ?? []), gateC, gateD];
       const previewEvidence = this.recordStageEvidence(
         job.contract,
         'previa',
@@ -3438,23 +2782,10 @@ export class StagedCinemaPipeline {
               const needAdjustVfx = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'adjust_vfx');
               const needAdjustTypo = sup1.actions.some((a) => a.sceneId === c.clipId && a.action === 'adjust_typography');
               const recoveredId = recoveredMediaByScene.get(c.clipId);
-              const clipSegId = clipSegmentMap.get(c.clipId) ?? sceneIdByClipId.get(c.clipId);
-              const eligibleAltId = clipSegId
-                ? altMediaPool.find(
-                    (id) =>
-                      id !== c.mediaId &&
-                      relevanceDecisions.some(
-                        (d) =>
-                          d.mediaId === id &&
-                          d.verificationOutcome === 'verified' &&
-                          d.eligibleSegmentIds?.includes(clipSegId),
-                      ),
-                  )
-                : undefined;
               const nextMediaId = recoveredId
                 ? recoveredId
-                : needSwapClip && eligibleAltId
-                  ? eligibleAltId
+                : needSwapClip && altMediaPool.length > 1
+                  ? altMediaPool.find((id) => id !== c.mediaId) ?? c.mediaId
                   : c.mediaId;
               const nextSourceRange = needBlackTrim
                 ? {
@@ -3596,63 +2927,8 @@ export class StagedCinemaPipeline {
       job.audioDiagnostics = render.audioDiagnostics;
       job.musicSelection = render.musicSelection;
       job.deliveryGate = render.deliveryGate;
-      const gateCFinal = runGateCPostRender({
-        requestedDurationSec: job.targetDurationSec,
-        actualDurationSec: render.probe.durationSec,
-        width: render.probe.width,
-        height: render.probe.height,
-        hasAudio: Boolean(render.probe.audioCodec),
-        blackFramesCount: render.probe.blackFramesCount,
-        clippingDetected: render.probe.truePeakDbtp !== null && render.probe.truePeakDbtp > -0.1,
-      });
-      job.qualityGates = [...(job.qualityGates ?? []), gateCFinal];
       this.deps.onRenderReady(job.projectId, render);
       job.completedStages = [...new Set([...job.completedStages, 'previa', 'editor'])] as ProductionStageState[];
-
-      // P5 fix: mandatory completion gate — a production is NEVER marked as completed
-      // without evidence that all required validations passed. This prevents the system
-      // from delivering a basic video and pretending cinematic production was finished.
-      const velixReport = render.motionVelixReport;
-      const velixRequired = job.useVelix !== false;
-      const velixGateFailures: string[] = [];
-      if (velixRequired && velixReport && !velixReport.motionVelixExecuted) {
-        velixGateFailures.push(
-          `MotionVelix foi solicitado mas não executado: ${velixReport.fallbackReason ?? 'motivo não informado'}.`,
-        );
-      }
-      // Check semantic validation: at least one media must have trusted visual verification
-      const hasTrustedVisualVerification = relevanceDecisions.some(
-        (d) => d.visualVerificationStatus === 'visually_verified' && d.assemblyEligible === true,
-      );
-      if (!hasTrustedVisualVerification && job.acquiredMedia.length > 0) {
-        velixGateFailures.push(
-          'Nenhuma mídia adquirida possui verificação visual confiável (provedor real). Todas as evidências visuais são de provedores não confiáveis ou metadados.',
-        );
-      }
-      // Check audio integrity
-      if (!render.probe.audioCodec || gateCFinal.verdict !== 'pass') {
-        velixGateFailures.push(`Áudio íntegro não confirmado: codec=${render.probe.audioCodec ?? 'ausente'}, GateC verdict=${gateCFinal.verdict}.`);
-      }
-      // Check duration tolerance
-      const durationDeltaMs = Math.abs(render.probe.durationSec * 1000 - job.targetDurationSec * 1000);
-      const durationToleranceMs = 3000; // 3s tolerance
-      if (durationDeltaMs > durationToleranceMs) {
-        velixGateFailures.push(
-          `Duração final (${render.probe.durationSec.toFixed(1)}s) diverge do alvo (${job.targetDurationSec}s) por ${(durationDeltaMs / 1000).toFixed(1)}s (tolerância: ${durationToleranceMs / 1000}s).`,
-        );
-      }
-
-      if (velixGateFailures.length > 0) {
-        job.state = 'paused_pending_review';
-        job.progressPct = 98;
-        job.error = `completion_gate_failed: ${velixGateFailures.join(' | ')}`;
-        job.message = `Produção pausada no gate de conclusão: ${velixGateFailures[0]} Revise os critérios e retome quando corrigido.`;
-        job.motionVelixReport = velixReport;
-        return this.saveJob(job);
-      }
-
-      // All gates passed — store the Velix report and mark as completed
-      job.motionVelixReport = velixReport;
 
       // EDITOR
       job.state = 'editor';

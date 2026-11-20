@@ -1,13 +1,19 @@
 /*
- * Aethera Studio — Light Bento theme (docs/aethera/home-light-bento-plan.md).
- * Soft gray canvas, white rounded blocks, near-black ink and primary action,
- * three highlight blocks: lavender, lime and pink. Highlights are surfaces, never
- * text colours on white (contrast < 3:1); text on them is always the ink colour.
+ * Aethera Studio Desktop — Light Bento Theme (100% alinhado à identidade do Aethera Web).
+ * Soft gray canvas (#ececee), pure white rounded-[28px] Bento blocks (#ffffff),
+ * near-black ink and primary CTA (#111111), and three surface highlights:
+ * lavender (#b8a4f4), lime (#d8fb4f) and pink (#f9a8d4).
+ * Highlights are surfaces only; text on them is always #111111 for high contrast.
  */
+:root,
 :root[data-studio-theme='aethera'],
 [data-studio-theme='aethera'] {
   color-scheme: light;
-  --radius: 0.875rem;
+  --radius: 1rem;
+  --bento-radius: 28px;
+  --bento-inner-radius: 16px;
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
 
   --background: #ececee;
   --sidebar: #ececee;
@@ -36,7 +42,7 @@
   --border: #e3e3e8;
   --input: #cfcfd6;
 
-  /* Highlight blocks from the reference. */
+  /* Identidade Light Bento (idêntica ao apps/aethera-web/src/index.css) */
   --brand-lavender: #b8a4f4;
   --brand-lavender-soft: #efe9fd;
   --brand-lime: #d8fb4f;
@@ -49,47 +55,123 @@
   --chip-violet-bg: #efe8ff;
   --chip-violet-fg: #6a46d8;
 
-  --glass-bg: color-mix(in srgb, #ffffff 86%, transparent);
+  --glass-bg: color-mix(in srgb, #ffffff 92%, transparent);
   --glass-bg-strong: #ffffff;
   --glass-border: #e3e3e8;
   --glass-border-strong: #cfcfd6;
-  --glass-highlight: inset 0 1px 0 rgb(255 255 255 / 60%);
+  --glass-highlight: inset 0 1px 0 rgb(255 255 255 / 70%);
 
-  --glow-soft: 0 1px 2px rgb(17 17 17 / 4%), 0 4px 14px rgb(17 17 17 / 5%);
-  --glow-medium: 0 2px 6px rgb(17 17 17 / 6%), 0 10px 24px rgb(17 17 17 / 7%);
-  --glow-strong: 0 0 0 3px color-mix(in srgb, #8b6cf0 35%, transparent);
+  --glow-soft: 0 1px 2px rgb(17 17 17 / 4%), 0 4px 14px rgb(17 17 17 / 4%);
+  --glow-medium: 0 2px 6px rgb(17 17 17 / 5%), 0 10px 24px rgb(17 17 17 / 6%);
+  --glow-strong: 0 0 0 3px color-mix(in srgb, #8b6cf0 32%, transparent);
 
-  --elevation-1: 0 1px 2px rgb(17 17 17 / 4%), 0 4px 12px rgb(17 17 17 / 5%);
-  --elevation-2: 0 2px 4px rgb(17 17 17 / 6%), 0 12px 28px rgb(17 17 17 / 8%);
-  --elevation-3: 0 4px 8px rgb(17 17 17 / 8%), 0 24px 56px rgb(17 17 17 / 12%);
+  --elevation-1: 0 1px 2px rgb(17 17 17 / 4%);
+  --elevation-2: 0 2px 6px rgb(17 17 17 / 6%), 0 12px 28px rgb(17 17 17 / 7%);
+  --elevation-3: 0 4px 10px rgb(17 17 17 / 8%), 0 24px 56px rgb(17 17 17 / 12%);
 
   --atmosphere: none;
 }
 
+html,
+body,
 [data-studio-theme='aethera'] body,
 body:has([data-studio-theme='aethera']) {
+  margin: 0;
+  padding: 0;
   background-color: var(--background);
   color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Interações, acessibilidade e numerais tabulares no padrão Web */
+[data-studio-theme='aethera'] button:not(:disabled),
+[data-studio-theme='aethera'] select:not(:disabled),
+[data-studio-theme='aethera'] [role='tab'] {
+  cursor: pointer;
+}
+
+[data-studio-theme='aethera'] :focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+[data-studio-theme='aethera'] code,
+[data-studio-theme='aethera'] pre,
+[data-studio-theme='aethera'] kbd,
+[data-studio-theme='aethera'] .font-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scrollbars suaves e discretas alinhadas ao canvas #ececee */
+[data-studio-theme='aethera'] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+[data-studio-theme='aethera'] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+[data-studio-theme='aethera'] ::-webkit-scrollbar-thumb {
+  background: #d2d2da;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+[data-studio-theme='aethera'] ::-webkit-scrollbar-thumb:hover {
+  background: #a8a8b5;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/*
+ * Harmonização das superfícies Bento nas telas compartilhadas do Desktop
+ * (packages/desktop-shared), garantindo paridade visual com apps/aethera-web.
+ */
+[data-studio-theme='aethera'] header {
+  background-color: color-mix(in srgb, var(--background) 95%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+[data-studio-theme='aethera'] aside {
+  background-color: var(--sidebar);
+}
+
+/* Abas selecionadas no padrão Web: cápsula preta (#111111) com texto branco */
+[data-studio-theme='aethera'] [role='tablist'] [role='tab'][aria-selected='true'] {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+  border-color: var(--primary);
+  border-radius: 9999px;
+}
+
+[data-studio-theme='aethera'] [role='tablist'] [role='tab'][aria-selected='false'] {
+  border-radius: 9999px;
 }
 
 /*
  * Legacy dark literals left in older Aethera screens. Remapped here so every
- * screen follows the light palette until each one is migrated to tokens.
+ * screen follows the Light Bento palette until each shared component migrates to tokens.
  */
 [data-studio-theme='aethera'] :is(
   .bg-\[\#0d0d17\], .bg-\[\#090910\], .bg-\[\#090912\], .bg-\[\#0b0b14\], .bg-\[\#0b0b14\]\/95,
   .bg-\[\#0c0c16\], .bg-\[\#0d0d1a\], .bg-\[\#080810\], .bg-\[\#10101d\], .bg-\[\#11111e\],
   .bg-\[\#121220\], .bg-\[\#12121e\], .bg-\[\#121222\], .bg-\[\#121224\], .bg-\[\#131324\],
-  .bg-\[\#141422\], .bg-\[\#141423\], .bg-\[\#151526\], .bg-\[\#161325\]
+  .bg-\[\#141422\], .bg-\[\#141423\], .bg-\[\#151526\], .bg-\[\#161325\],
+  .bg-\[\#071110\], .bg-\[\#091917\], .bg-\[\#042f2e\]
 ) {
   background-color: var(--secondary);
 }
 [data-studio-theme='aethera'] :is(.bg-\[\#131024\]\/95) { background-color: var(--brand-lavender-soft); }
 [data-studio-theme='aethera'] :is(.bg-\[\#1c160c\]\/95) { background-color: #fff4dc; }
-[data-studio-theme='aethera'] :is(.bg-\[\#1f0e13\]\/95) { background-color: #fde8ea; }
+[data-studio-theme='aethera'] :is(.bg-\[\#1f0e13\]\/95) { background-color: var(--brand-pink-soft); }
 [data-studio-theme='aethera'] :is(.bg-\[\#0c1a16\]\/95) { background-color: var(--brand-lime-soft); }
 
-/* Dark gradients (from/via/to dark literals) collapse to a soft lavender wash. */
+/* Gradientes escuros ou roxo-âmbar legados harmonizados para o Light Bento */
 [data-studio-theme='aethera'] :is(
   .from-\[\#231442\], .from-\[\#1f1435\], .from-\[\#1b1130\], .from-\[\#1a102d\],
   .from-\[\#19102c\], .from-\[\#18102b\], .from-\[\#171128\]
@@ -106,6 +188,28 @@ body:has([data-studio-theme='aethera']) {
   .to-\[\#1a130b\], .to-\[\#0c0c15\], .to-\[\#0d0d16\], .to-\[\#0a0a12\]
 ) {
   --tw-gradient-to: #ffffff;
+}
+
+/* Botões com gradiente roxo→âmbar legado viram CTA preto sólido (#111111) como no modelo Web */
+[data-studio-theme='aethera'] button:is(
+  [class*='from-purple-'][class*='to-amber-'],
+  [class*='from-violet-'][class*='to-amber-'],
+  [class*='from-purple-'][class*='to-yellow-'],
+  [class*='from-violet-'][class*='to-orange-']
+) {
+  background-image: none;
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+  border-radius: 9999px;
+}
+
+[data-studio-theme='aethera'] button:is(
+  [class*='from-purple-'][class*='to-amber-'],
+  [class*='from-violet-'][class*='to-amber-'],
+  [class*='from-purple-'][class*='to-yellow-'],
+  [class*='from-violet-'][class*='to-orange-']
+):hover {
+  background-color: #23232b;
 }
 
 /*
@@ -157,6 +261,7 @@ body:has([data-studio-theme='aethera']) {
 [data-studio-theme='aethera'] [class*='text-gray-300']:not([class*='bg-black']) { color: #3a3a44; }
 
 /* Production console: light tones for the dark-canvas literals (dark fallbacks stay in the components). */
+:root,
 [data-studio-theme='aethera'] {
   --console-teal: #0f766e;
   --console-violet: #6a46d8;

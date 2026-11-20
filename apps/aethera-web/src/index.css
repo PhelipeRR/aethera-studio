@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+:root,
+:root[data-studio-theme="aethera"] {
+  color-scheme: light;
+  --background: #ececee;
+  --sidebar: #ececee;
+  --card: #ffffff;
+  --popover: #ffffff;
+  --secondary: #f4f4f6;
+  --muted: #f4f4f6;
+  --accent: #efe9fd;
+
+  --foreground: #111111;
+  --muted-foreground: #62626c;
+  --accent-foreground: #2a1d5c;
+
+  --primary: #111111;
+  --primary-foreground: #ffffff;
+  --ring: #8b6cf0;
+  --destructive: #d23c4f;
+  --warning: #9a6200;
+  --success: #2f7d32;
+  --info: #2f5fd0;
+
+  --border: #e3e3e8;
+  --input: #cfcfd6;
+
+  --brand-lavender: #b8a4f4;
+  --brand-lavender-soft: #efe9fd;
+  --brand-lime: #d8fb4f;
+  --brand-lime-soft: #f3fdd0;
+  --brand-pink: #f9a8d4;
+  --brand-pink-soft: #fde7f3;
+  --brand-ink: #111111;
+
+  --chip-blue-bg: #e2ecff;
+  --chip-blue-fg: #2f5fd0;
+  --chip-violet-bg: #efe8ff;
+  --chip-violet-fg: #6a46d8;
+}
+
+@theme inline {
+  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-secondary: var(--secondary);
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-border: var(--border);
+  --color-lavender: var(--brand-lavender);
+  --color-lavender-soft: var(--brand-lavender-soft);
+  --color-lime-accent: var(--brand-lime);
+  --color-lime-soft: var(--brand-lime-soft);
+  --color-pink-accent: var(--brand-pink);
+  --color-pink-soft: var(--brand-pink-soft);
+}
+
+@layer base {
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button:not(:disabled),
+  select:not(:disabled),
+  [role="tab"] {
+    cursor: pointer;
+  }
+}

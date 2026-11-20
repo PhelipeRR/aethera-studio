@@ -8,14 +8,16 @@ import { join } from 'node:path';
 const require = createRequire(join(process.cwd(), 'apps/aethera-desktop/package.json'));
 const sharp = require('sharp');
 
-// Same path and gradient as the header mark.
-const svg = (size) => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="3 1.5 30 30">
+// Same prism path, gradient (#6a46d8 -> #9c7df2 -> #d8fb4f), and ink dot as AetheraMark (Web & Desktop).
+const svg = (size) => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 32 32">
   <defs>
-    <linearGradient id="p" x1="4" y1="4" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#c084fc"/><stop offset="55%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#f59e0b"/>
+    <linearGradient id="p" x1="4" y1="28" x2="28" y2="4" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6a46d8"/><stop offset="55%" stop-color="#9c7df2"/><stop offset="100%" stop-color="#d8fb4f"/>
     </linearGradient>
   </defs>
-  <path d="M18 3L32 30H24.5L18 17.5L11.5 30H4L18 3Z" fill="url(#p)"/>
+  <rect width="32" height="32" rx="8" fill="#ececee"/>
+  <path d="M16 4L27.5 26H21.8L16 14.2L10.2 26H4.5L16 4Z" fill="url(#p)"/>
+  <circle cx="16" cy="22.5" r="2.5" fill="#111111"/>
 </svg>`);
 
 const sizes = [16, 24, 32, 48, 64, 128, 256];

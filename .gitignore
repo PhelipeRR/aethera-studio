@@ -23,3 +23,5 @@ docs/aethera/cinema/**/_work*/
 docs/aethera/cinema/**/stems*/
 
 artifacts/
+apps/aethera-web/data/
+apps/aethera-remote-host/data/

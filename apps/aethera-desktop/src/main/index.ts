@@ -51,6 +51,7 @@ function createWindow() {
     width: 1280,
     height: 840,
     title: 'Aethera Studio',
+    backgroundColor: '#ececee',
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

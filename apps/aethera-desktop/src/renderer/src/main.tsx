@@ -83,14 +83,32 @@ function LazyRoute({ children }: { children: React.ReactNode }) {
 function ContentProjectRoute() {
   const { id = '' } = useParams();
   return (
-    <>
-      <nav aria-label="Ações do projeto" className="flex flex-wrap gap-2 border-b border-border px-6 py-3 text-xs xl:px-8">
-        <Link to={`/aethera/projects/${id}/package`} className="rounded-lg border border-border px-3 py-1.5 hover:border-primary hover:text-primary">Pacote de publicação</Link>
-        <Link to={`/aethera/projects/${id}/variants`} className="rounded-lg border border-border px-3 py-1.5 hover:border-primary hover:text-primary">Versões e Shorts</Link>
-        <Link to={`/aethera/projects/${id}/analytics/idea`} className="rounded-lg border border-border px-3 py-1.5 hover:border-primary hover:text-primary">Criar ideia a partir de analytics</Link>
+    <div className="space-y-4">
+      <nav
+        aria-label="Ações do projeto"
+        className="mx-4 mt-4 flex flex-wrap items-center gap-2 rounded-[28px] bg-white px-5 py-3.5 text-xs shadow-2xs xl:mx-6"
+      >
+        <Link
+          to={`/aethera/projects/${id}/package`}
+          className="rounded-full bg-[#f4f4f6] px-4 py-2 font-semibold text-[#111111] transition-colors hover:bg-[#111111] hover:text-white"
+        >
+          Pacote de publicação
+        </Link>
+        <Link
+          to={`/aethera/projects/${id}/variants`}
+          className="rounded-full bg-[#f4f4f6] px-4 py-2 font-semibold text-[#111111] transition-colors hover:bg-[#111111] hover:text-white"
+        >
+          Versões e Shorts
+        </Link>
+        <Link
+          to={`/aethera/projects/${id}/analytics/idea`}
+          className="rounded-full bg-[#efe9fd] px-4 py-2 font-semibold text-[#2a1d5c] transition-colors hover:bg-[#b8a4f4] hover:text-[#111111]"
+        >
+          Criar ideia a partir de analytics
+        </Link>
       </nav>
       <ContentProjectPage />
-    </>
+    </div>
   );
 }
 
@@ -107,7 +125,7 @@ const router = createHashRouter([
           { path: 'projects', element: <AetheraProjectsPage /> },
           { path: 'cinema', element: <CinemaDirectorPanel /> },
           { path: 'console', element: <GeneralConsolePage /> },
-          { path: 'creative', element: <div className="p-6"><CreativeStudioPanel /></div> },
+          { path: 'creative', element: <div className="mx-auto max-w-[1600px] p-4 lg:p-6"><CreativeStudioPanel /></div> },
           { path: 'editor', element: <AetheraStudioEditor /> },
           { path: 'review', element: <AetheraReviewRoomPage /> },
           { path: 'queue', element: <ContentQueuePage /> },
@@ -129,6 +147,10 @@ const router = createHashRouter([
     ],
   },
 ]);
+
+if (typeof document !== 'undefined') {
+  document.documentElement.dataset.studioTheme = 'aethera';
+}
 
 const rootElement = document.getElementById('root');
 if (rootElement) {

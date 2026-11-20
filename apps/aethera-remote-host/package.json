@@ -1,0 +1,13 @@
+{
+  "name": "@neuralbridge/aethera-remote-host",
+  "private": true,
+  "version": "0.1.73",
+  "description": "Aethera Remote Host — authenticated local Windows execution bridge for Aethera Web",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "start": "NODE_ENV=production tsx src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/remote-host.test.ts"
+  }
+}
