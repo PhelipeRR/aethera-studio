@@ -49,6 +49,26 @@ interface EditableSceneRow {
 interface RecapBridge {
   recapGetReadiness?: (input?: { chapterId?: string }) => Promise<RecapReadinessView>;
   recapPlanRevision?: (input: { prompt: string; script: unknown; availablePanelIds?: string[] }) => Promise<RecapRevisionPlanView>;
+  recapImportAnalyze?: (input: { url: string }) => Promise<{
+    sourceUrl: string;
+    adapterName: string;
+    meta: { workTitle: string; chapterNumber: string };
+    pages: Array<{ pageNumber: number; imageUrl: string }>;
+    availableChapters: Array<{ chapterNumber: string; title: string; url: string }>;
+    alreadyImported: { cbzPath: string } | null;
+  }>;
+  recapImportCreateJob?: (input: { urls: string[]; forceReimport?: boolean }) => Promise<{
+    id: string;
+    status: string;
+    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string }>;
+  }>;
+  recapImportGetJob?: (id: string) => Promise<{
+    id: string;
+    status: string;
+    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string }>;
+  } | null>;
+  recapImportCancelJob?: (id: string) => Promise<unknown>;
+  recapImportRetryJob?: (id: string) => Promise<unknown>;
   recapStartProduction?: (input: {
     archivePath: string;
     workTitle: string;
@@ -120,7 +140,24 @@ const DEFAULT_READINESS: RecapReadinessView = {
 
 export function RecapProductionPanel() {
   // Fase 4.1 — Criação de projeto
+  const [importMode, setImportMode] = useState<'local' | 'url'>('local');
   const [archivePath, setArchivePath] = useState('tests/fixtures/real-manga/Nano-Machine-Capitulo-01.cbz');
+  const [chapterUrl, setChapterUrl] = useState('https://asurascans.com/comics/nano-machine-7ba78ec7/chapter/1');
+  const [analyzedLink, setAnalyzedLink] = useState<{
+    sourceUrl: string;
+    adapterName: string;
+    meta: { workTitle: string; chapterNumber: string };
+    pages: Array<{ pageNumber: number; imageUrl: string }>;
+    availableChapters: Array<{ chapterNumber: string; title: string; url: string }>;
+    alreadyImported: { cbzPath: string } | null;
+  } | null>(null);
+  const [selectedBatchUrls, setSelectedBatchUrls] = useState<string[]>([]);
+  const [importJob, setImportJob] = useState<{
+    id: string;
+    status: string;
+    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string }>;
+  } | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
   const [workTitle, setWorkTitle] = useState('Nano Machine');
   const [language, setLanguage] = useState('pt-BR');
   const [scriptStyle, setScriptStyle] = useState('cinematic_recap');
@@ -203,6 +240,47 @@ export function RecapProductionPanel() {
     void refreshReadiness();
   }, [refreshReadiness]);
 
+
+  const handleAnalyzeLink = async () => {
+    setImportError(null);
+    const bridge = getRecapBridge();
+    if (!bridge?.recapImportAnalyze) {
+      setImportError('Bridge IPC de importação por link disponível apenas no Aethera Desktop / Remote Host.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await bridge.recapImportAnalyze({ url: chapterUrl });
+      setAnalyzedLink(res);
+      setWorkTitle(res.meta.workTitle);
+      setSelectedBatchUrls([res.sourceUrl]);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleImportByUrl = async () => {
+    setImportError(null);
+    const bridge = getRecapBridge();
+    if (!bridge?.recapImportCreateJob || !bridge.recapImportGetJob) return;
+    const urls = selectedBatchUrls.length > 0 ? selectedBatchUrls : [chapterUrl];
+    const job = await bridge.recapImportCreateJob({ urls });
+    setImportJob(job);
+    const poll = setInterval(async () => {
+      const snap = await bridge.recapImportGetJob?.(job.id);
+      if (snap) {
+        setImportJob(snap);
+        if (snap.status === 'completed' || snap.status === 'failed' || snap.status === 'cancelled') {
+          clearInterval(poll);
+          const firstCbz = snap.items.find((i) => i.libraryEntry?.cbzPath)?.libraryEntry?.cbzPath;
+          if (firstCbz) setArchivePath(firstCbz);
+        }
+      }
+    }, 600);
+  };
+
   const handleStart = async (resumeCheckpoint: boolean) => {
     const bridge = getRecapBridge();
     if (!bridge?.recapStartProduction) {
@@ -260,6 +338,142 @@ export function RecapProductionPanel() {
             {loading ? 'Verificando…' : 'Verificar Prontidão'}
           </button>
         </div>
+
+        {/* Seletor: CBZ Local vs Importar por link */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+          <button
+            type="button"
+            onClick={() => setImportMode('local')}
+            style={{
+              padding: '7px 14px',
+              borderRadius: 9999,
+              border: '1px solid #d4d4dc',
+              background: importMode === 'local' ? '#111111' : '#ffffff',
+              color: importMode === 'local' ? '#ffffff' : '#111111',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            CBZ / PDF Local
+          </button>
+          <button
+            type="button"
+            onClick={() => setImportMode('url')}
+            style={{
+              padding: '7px 14px',
+              borderRadius: 9999,
+              border: '1px solid #d4d4dc',
+              background: importMode === 'url' ? '#111111' : '#ffffff',
+              color: importMode === 'url' ? '#ffffff' : '#111111',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Importar por link
+          </button>
+        </div>
+
+        {importMode === 'url' && (
+          <div style={{ padding: 14, borderRadius: 16, background: '#f8f8fb', border: '1px solid #e4e4ec', marginBottom: 14 }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+              <input
+                value={chapterUrl}
+                onChange={(e) => setChapterUrl(e.target.value)}
+                placeholder="https://asurascans.com/comics/nano-machine-7ba78ec7/chapter/1"
+                style={INPUT_STYLE}
+              />
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void handleAnalyzeLink()}
+                style={{
+                  padding: '10px 16px',
+                  borderRadius: 9999,
+                  border: 0,
+                  background: '#111111',
+                  color: '#ffffff',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                Analisar link
+              </button>
+            </div>
+
+            {importError && (
+              <p style={{ margin: '6px 0', fontSize: 12, color: '#b42840', fontWeight: 500 }}>{importError}</p>
+            )}
+
+            {analyzedLink && (
+              <div style={{ marginTop: 10, fontSize: 12, color: '#111111' }}>
+                <div>
+                  <strong>{analyzedLink.meta.workTitle}</strong> — Capítulo {analyzedLink.meta.chapterNumber} ({analyzedLink.adapterName}) ·{' '}
+                  <strong>{analyzedLink.pages.length}</strong> páginas detectadas
+                </div>
+                <div style={{ display: 'flex', gap: 6, overflowX: 'auto', padding: '8px 0' }}>
+                  {analyzedLink.pages.slice(0, 8).map((pg) => (
+                    <span
+                      key={pg.pageNumber}
+                      style={{ fontSize: 11, padding: '4px 8px', borderRadius: 10, background: '#ffffff', border: '1px solid #e2e2ea', whiteSpace: 'nowrap' }}
+                    >
+                      Pág. {pg.pageNumber}
+                    </span>
+                  ))}
+                  {analyzedLink.pages.length > 8 && <span style={{ fontSize: 11, color: '#636370' }}>+{analyzedLink.pages.length - 8} páginas</span>}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => void handleImportByUrl()}
+                    style={{
+                      padding: '8px 16px',
+                      borderRadius: 9999,
+                      border: 0,
+                      background: '#d8fb4f',
+                      color: '#111111',
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Importar ({selectedBatchUrls.length || 1} cap.)
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {importJob && (
+              <div style={{ marginTop: 10, padding: 10, borderRadius: 12, background: '#ffffff', border: '1px solid #e4e4ec', fontSize: 12 }}>
+                <strong>Status da Importação:</strong> {importJob.status}
+                {importJob.items.map((it) => (
+                  <div key={it.url} style={{ marginTop: 4 }}>
+                    {it.status} — {it.pagesDone}/{it.pagesTotal} páginas {it.error ? `(${it.error})` : ''}
+                  </div>
+                ))}
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  {importJob.status === 'failed' && (
+                    <button type="button" onClick={() => void getRecapBridge()?.recapImportRetryJob?.(importJob.id)} style={{ fontSize: 11, padding: '5px 10px', borderRadius: 9999, border: '1px solid #d4d4dc', cursor: 'pointer' }}>
+                      Tentar novamente
+                    </button>
+                  )}
+                  {importJob.status === 'completed' && (
+                    <button
+                      type="button"
+                      onClick={() => void handleStart(false)}
+                      style={{ fontSize: 11, padding: '6px 12px', borderRadius: 9999, border: 0, background: '#111111', color: '#ffffff', fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      Criar Recap
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
           <label style={{ fontSize: 12, color: '#555562' }}>

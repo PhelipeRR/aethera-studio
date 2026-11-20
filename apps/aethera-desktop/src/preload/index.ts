@@ -235,4 +235,10 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   recapGetReadiness: (input?: { chapterId?: string }) => ipcRenderer.invoke('recap:get-readiness', input),
   recapPlanRevision: (input: { prompt: string; script: unknown; availablePanelIds?: string[] }) => ipcRenderer.invoke('recap:plan-revision', input),
   recapStartProduction: (input: Record<string, unknown>) => ipcRenderer.invoke('recap:start-production', input),
+  recapImportAnalyze: (input: { url: string }) => ipcRenderer.invoke('recap:import-analyze', input),
+  recapImportCreateJob: (input: { urls: string[]; forceReimport?: boolean }) => ipcRenderer.invoke('recap:import-create-job', input),
+  recapImportGetJob: (id: string) => ipcRenderer.invoke('recap:import-get-job', id),
+  recapImportCancelJob: (id: string) => ipcRenderer.invoke('recap:import-cancel-job', id),
+  recapImportRetryJob: (id: string) => ipcRenderer.invoke('recap:import-retry-job', id),
+  recapLibraryList: () => ipcRenderer.invoke('recap:library-list'),
 });

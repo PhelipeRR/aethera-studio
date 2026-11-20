@@ -1,3 +1,4 @@
+import { registerRecapUrlImportRoutes } from './recap-url-import-routes.js';
 import { existsSync as recapExistsSync, readdirSync as recapReaddirSync, readFileSync as recapReadFileSync, writeFileSync as recapWriteFileSync } from 'node:fs';
 import { join as recapJoin } from 'node:path';
 import crypto from 'node:crypto';
@@ -306,6 +307,14 @@ export function createRemoteHostApp(config: RemoteHostConfig): RemoteHostInstanc
       };
     });
   };
+
+  registerRecapUrlImportRoutes({
+    app,
+    libraryRootDir: resolveRecapDataRoot(),
+    requireRead: requireScope('jobs:read'),
+    requireWrite: requireScope('jobs:write'),
+    requireControl: requireScope('jobs:control'),
+  });
 
   app.get('/api/recap/projects', requireScope('projects:read'), (_req, res) => {
     res.json({ projects: readRecapProjects() });

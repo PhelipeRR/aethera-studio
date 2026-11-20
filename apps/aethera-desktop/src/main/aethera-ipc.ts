@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AgentCircuitBreaker, checkRecapProductionReadiness, createTesseractOcrAdapter, extractPanels, importChapter, planRecapRevisionImpact, runRecapProductionOrchestrator, type RecapScript } from '@neuralbridge/cinema';
+import { AgentCircuitBreaker, analyzeChapterUrl, checkRecapProductionReadiness, createTesseractOcrAdapter, extractPanels, importChapter, listRecapLibrary, planRecapRevisionImpact, RecapImportJobManager, runRecapProductionOrchestrator, type RecapScript } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -5076,6 +5076,41 @@ productionConsole,
       };
     },
   );
+
+
+  // ─── Aethera Recap URL Chapter Importer IPC (Etapas 2–6) ──────────────────
+  const recapLibraryDir = join(userDataDir, 'recap-library');
+  const recapImportJobs = new RecapImportJobManager({ libraryDir: recapLibraryDir });
+
+  ipcMain.handle('recap:import-analyze', async (event, input: { url: string }) => {
+    ensureTrusted(event.senderFrame);
+    return analyzeChapterUrl({ url: input.url, libraryDir: recapLibraryDir });
+  });
+
+  ipcMain.handle('recap:import-create-job', async (event, input: { urls: string[]; forceReimport?: boolean }) => {
+    ensureTrusted(event.senderFrame);
+    return recapImportJobs.createJob(input);
+  });
+
+  ipcMain.handle('recap:import-get-job', async (event, id: string) => {
+    ensureTrusted(event.senderFrame);
+    return recapImportJobs.getJob(id);
+  });
+
+  ipcMain.handle('recap:import-cancel-job', async (event, id: string) => {
+    ensureTrusted(event.senderFrame);
+    return recapImportJobs.cancelJob(id);
+  });
+
+  ipcMain.handle('recap:import-retry-job', async (event, id: string) => {
+    ensureTrusted(event.senderFrame);
+    return recapImportJobs.retryJob(id);
+  });
+
+  ipcMain.handle('recap:library-list', async (event) => {
+    ensureTrusted(event.senderFrame);
+    return listRecapLibrary(recapLibraryDir);
+  });
 
   // Keep unused imports referenced for proxy/agent orchestration readiness
   void AetheraMediaProxyRepository;
