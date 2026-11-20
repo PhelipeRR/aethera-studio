@@ -709,7 +709,10 @@ export function planMediaCoverage(input: {
             (d.eligibleSegmentIds ?? []).includes(seg.segmentId),
         );
         if (hasExactForSegment) return false;
-        return decision.visualVerificationStatus === 'visually_verified' && decision.score >= 0.35;
+        // Aligned with media-relevance-gate contextualAssemblyEligible threshold (0.45).
+        // Using a lower value here would count media as coverage that the gate never makes
+        // assembly-eligible, creating phantom coverage and false gaps.
+        return decision.visualVerificationStatus === 'visually_verified' && decision.score >= 0.45;
       }
       if (decision?.eligibleSegmentIds && decision.eligibleSegmentIds.length > 0) {
         if (decision.eligibleSegmentIds.includes(seg.segmentId)) {

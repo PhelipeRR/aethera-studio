@@ -1234,17 +1234,11 @@ export async function evaluateMediaRelevance(
       ? 'exact_match'
       : 'contextual_support';
 
-  // Contextual B-roll from the correct universe is assembly-eligible when visually verified with
-  // sufficient entity match (score >= 0.45). It is labeled as editorial B-roll, not factual proof,
-  // and the coverage planner counts it at reduced weight. This prevents autonomous production from
-  // blocking on segments where exact event footage is unavailable but correct-universe B-roll exists.
-  const contextualAssemblyEligible =
-    correspondenceLevel === 'contextual_support' &&
-    visualVerificationStatus === 'visually_verified' &&
-    score >= 0.45 &&
-    matchedEntities.length > 0 &&
-    !isSameUniverseOnly;
-  const assemblyEligible = correspondenceLevel === 'exact_match' || contextualAssemblyEligible;
+  // Only exact_match is assembly-eligible. Contextual B-roll remains visually_verified but NOT
+  // assembly-eligible — it is retained for editorial discovery and graphic recovery composition,
+  // never presented as factual proof of a specific narrated event. The coverage planner counts
+  // contextual_support at reduced weight for gap diagnostics only, not for autonomous assembly.
+  const assemblyEligible = correspondenceLevel === 'exact_match';
   const editorialStatus: MediaEditorialStatus = assemblyEligible
     ? 'approved_for_scene'
     : visualVerificationStatus === 'visually_verified'
@@ -1253,9 +1247,7 @@ export async function evaluateMediaRelevance(
   const reasonText =
     correspondenceLevel === 'exact_match'
       ? `Correspondência exata (${effectiveMatched.slice(0, 4).join(', ')}) em ${sampledTimestampsSec.length} frames distribuídos (${visualVerificationStatus}).`
-      : contextualAssemblyEligible
-        ? `B-roll editorial do mesmo universo (${effectiveMatched.slice(0, 4).join(', ')}); verificado visualmente, não comprova o evento específico.`
-        : `Apoio contextual do mesmo universo (${effectiveMatched.slice(0, 4).join(', ')}); verificação visual: ${visualVerificationStatus}.`;
+      : `Apoio contextual do mesmo universo (${effectiveMatched.slice(0, 4).join(', ')}); verificação visual: ${visualVerificationStatus}. Não comprova o evento específico narrado.`;
   return withDecisionStatus({
     mediaId: candidate.mediaId,
     accepted: visualVerificationStatus === 'visually_verified',
