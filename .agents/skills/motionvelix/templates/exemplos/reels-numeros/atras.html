@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../../engine/mv.css">
+<script src="../../../engine/mv.js"></script>
+<style>
+  html,body{background:transparent}
+  #stage{position:absolute;inset:0;overflow:hidden}
+  .g{position:absolute;left:-40px;right:-40px;text-align:center;font-family:Anton;line-height:.86;text-transform:uppercase;white-space:nowrap}
+</style></head>
+<body class="alpha"><div id="stage"></div>
+<script>
+const S = document.getElementById('stage');
+const mk = (h, st) => { const d = document.createElement('div'); d.className = 'g'; d.innerHTML = h; d.style.cssText += st; S.appendChild(d); return d; };
+// "PROBLEMA" atrás dele (10.9 → 14.9)
+const p1 = mk('PROBLEMA', 'top:150px;font-size:330px;color:#FF2D2D;letter-spacing:-.01em');
+const p2 = mk('PRA RESOLVER', 'top:440px;font-size:150px;color:#fff;letter-spacing:.01em;opacity:.95');
+MV.to(p1, { from: { y: 260, opacity: 0, sy: 1.6 }, to: { y: 0, opacity: 1, sy: 1 }, at: 10.95, dur: .45, ease: 'outExpo' });
+MV.to(p2, { from: { y: 120, opacity: 0 }, to: { y: 0, opacity: .95 }, at: 11.45, dur: .4, ease: 'outExpo' });
+MV.fn(10.9, 15, (lt) => { p1.style.translate = `${-lt * 18}px 0`; p2.style.translate = `${lt * 14}px 0`; });
+MV.to([p1, p2], { from: {}, to: { opacity: 0, y: -80 }, at: 14.75, dur: .25, ease: 'inCubic' });
+// "VOCÊ NEM PERCEBE" atrás dele (41.0 → 43.15)
+const q1 = mk('VOCÊ NEM', 'top:170px;font-size:240px;color:#fff');
+const q2 = mk('PERCEBE', 'top:370px;font-size:330px;color:#FF2D2D');
+MV.to(q1, { from: { y: 200, opacity: 0 }, to: { y: 0, opacity: 1 }, at: 42.3, dur: .35, ease: 'outExpo' });
+MV.to(q2, { from: { y: 260, opacity: 0, sy: 1.5 }, to: { y: 0, opacity: 1, sy: 1 }, at: 42.72, dur: .4, ease: 'outExpo' });
+MV.to([q1, q2], { from: {}, to: { opacity: 0 }, at: 43.12, dur: .06 });
+MV.setup({ w: 1080, h: 1920, fps: 30, dur: 46.9 });
+</script></body></html>

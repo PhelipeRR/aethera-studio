@@ -354,6 +354,15 @@ export function directNarrativeAndShots(input: {
     treatment?: string;
     beats?: Array<{ stage?: NarrativeBeat['stage']; summary: string }>;
   };
+  editorialScript?: {
+    segments: ReadonlyArray<{
+      segmentId: string;
+      stage: NarrativeBeat['stage'];
+      title: string;
+      spokenText: string;
+      estimatedDurationSec: number;
+    }>;
+  };
 }): CreativeDirectionPackage {
   const fps = input.fps ?? rationalTime(30, 1);
   const totalFrames = Math.round(input.brief.targetDurationSec * (fps.value / fps.rate));
@@ -373,7 +382,21 @@ export function directNarrativeAndShots(input: {
     itemTotal?: number;
   }>;
 
-  if (input.externalDirection?.beats && input.externalDirection.beats.length >= 6) {
+  if (input.editorialScript?.segments && input.editorialScript.segments.length >= 2 && !input.externalDirection?.beats?.length) {
+    const segs = input.editorialScript.segments;
+    const weights = segs.map((seg) => {
+      const words = seg.spokenText.split(/\s+/).filter(Boolean).length;
+      return Math.max(2, seg.estimatedDurationSec || Math.round(words / 2.3));
+    });
+    const totalW = weights.reduce((a, w) => a + w, 0);
+    stages = segs.map((seg, idx) => ({
+      stage: seg.stage ?? (idx === 0 ? 'hook' : idx === segs.length - 1 ? 'resolution' : 'progression'),
+      pct: (weights[idx] ?? 1) / Math.max(1, totalW),
+      intensity: seg.stage === 'climax' ? 0.95 : seg.stage === 'hook' ? 0.85 : seg.stage === 'resolution' ? 0.58 : 0.74,
+      sensitive: /luto|tragédia|sensível/i.test(input.brief.prompt),
+      summary: seg.spokenText,
+    }));
+  } else if (input.externalDirection?.beats && input.externalDirection.beats.length >= 6) {
     const extBeats = input.externalDirection.beats;
     // Each beat's slot follows its spoken text (the voice-over it must carry), not an equal share of the target:
     // equal slots left short narrations under long silent shots and starved long ones.

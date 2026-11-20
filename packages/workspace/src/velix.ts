@@ -173,13 +173,13 @@ export function buildVelixImportArgs(request: VelixImportRequest): string[] {
 
 export { run as runVelixCommand };
 
-type RunOptions = { cwd: string; signal?: AbortSignal; onOutput?: (text: string) => void; env?: Record<string, string> };
+type RunOptions = { cwd: string; signal?: AbortSignal; onOutput?: (text: string) => void; onStderr?: (text: string) => void; env?: Record<string, string> };
 
 /** The renderer spawns Chromium and FFmpeg, so cancelling has to take the whole process tree. */
-function run(command: string, args: string[], { cwd, signal, onOutput, env }: RunOptions): Promise<void> {
+function run(command: string, args: string[], { cwd, signal, onOutput, onStderr, env }: RunOptions): Promise<void> {
   return new Promise((resolvePromise, reject) => {
     if (signal?.aborted) return reject(new Error('cancelled: renderização cancelada.'));
-    const child = spawn(command, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONUTF8: '1', ...env } });
+    const child = spawn(command, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', ...env } });
     let cancelled = false;
     let stderr = '';
     const cancel = () => {
@@ -190,7 +190,11 @@ function run(command: string, args: string[], { cwd, signal, onOutput, env }: Ru
     };
     signal?.addEventListener('abort', cancel, { once: true });
     child.stdout.on('data', (chunk: Buffer) => onOutput?.(chunk.toString()));
-    child.stderr.on('data', (chunk: Buffer) => { stderr = `${stderr}${chunk.toString()}`.slice(-4_096); });
+    child.stderr.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      stderr = `${stderr}${text}`.slice(-4_096);
+      onStderr?.(text);
+    });
     child.once('error', reject);
     child.once('close', (code) => {
       signal?.removeEventListener('abort', cancel);

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Aethera Audiovisual QA"
+  short_description: "Three-stage audiovisual Quality Gates (Pre-assembly, Pre-render, Post-render)"

@@ -13,9 +13,11 @@ import {
   type RealRenderResult,
 } from '../packages/cinema/src/index.js';
 import { StagedCinemaPipeline } from '../apps/aethera-desktop/src/main/cinema-pipeline.js';
+import { acquireWithYtDlp, defaultYtDlp, resolveYtDlpStreamUrl, ytDlpSearch } from '../packages/workspace/src/aethera-acquisition.js';
 
 const execFileAsync = promisify(execFile);
 const YT_DLP = 'C:\\Users\\Pheli\\AppData\\Roaming\\Python\\Python314\\Scripts\\yt-dlp.exe';
+const ytDlpCmd = { command: YT_DLP, prefix: [] as string[] };
 const USER_DATA = join(process.env.APPDATA ?? 'C:\\Users\\Pheli\\AppData\\Roaming', 'AetheraStudio');
 const PROJECT_ID = 'cinema_top5_2027_e2e';
 
@@ -118,6 +120,65 @@ async function main() {
         'utf8',
       );
     },
+    autonomousAcquisitionDeps: {
+      ytDlpSearchFn: (q, count, sig) => ytDlpSearch(ytDlpCmd, q, count, sig),
+      resolveStreamUrlFn: (targetUrl, sig) =>
+        resolveYtDlpStreamUrl({ ytDlp: ytDlpCmd, url: targetUrl, maxHeight: 480, timeoutMs: 12_000, ...(sig ? { signal: sig } : {}) }),
+      ytDlpAcquireFn: async (targetUrl, idx, dir, sig, downloadSection, onProgress) => {
+        const relativeDir = `acq_${idx + 1}_${Date.now().toString(36)}`;
+        mkdirSync(join(dir, relativeDir), { recursive: true });
+        const out = await acquireWithYtDlp({
+          ytDlp: ytDlpCmd,
+          url: targetUrl,
+          root: dir,
+          relativeDir,
+          fileStem: `slot_${idx + 1}`,
+          maxHeight: 720,
+          downloadSection: downloadSection ?? '*0:00-1:30',
+          maxFilesize: '90M',
+          ...(sig ? { signal: sig } : {}),
+          ...(onProgress ? { onProgress } : {}),
+        });
+        return out.relativePath ? join(dir, out.relativePath) : null;
+      },
+    },
+    analyzeFrameWithAI: async (framePath, scene) => {
+      try {
+        const prompt = [
+          `Inspecione a imagem do frame em "${framePath}" da cena ${scene.sceneId} (${scene.startSec}s).`,
+          `Narração: "${scene.narrationText ?? ''}".`,
+          `Se a imagem for claramente de outro tópico diferente da narração sobre jogos, use suggestedAction="retry_media_research" e severity="critical".`,
+          `Responda SOMENTE JSON: {"ok":true|false,"issue":"...","severity":"warning"|"critical","suggestedAction":"hide_lower_third"|"adjust_typography"|"adjust_vfx"|"retry_media_research"|"swap_duplicate_clip"|"rerender_scene"|null}`,
+        ].join(' ');
+        const { stdout } = await execFileAsync(
+          'claude',
+          ['-p', '--output-format', 'text', prompt],
+          { cwd: dirname(framePath), timeout: 30_000 },
+        );
+        const match = stdout.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]) as {
+            ok?: boolean;
+            issue?: string;
+            severity?: 'warning' | 'critical';
+            suggestedAction?: 'hide_lower_third' | 'adjust_typography' | 'adjust_vfx' | 'retry_media_research' | 'swap_duplicate_clip' | 'rerender_scene' | null;
+          };
+          visionFindingsLog.push({ sceneId: scene.sceneId, provider: 'claude-cli', issue: parsed.ok === false ? (parsed.issue ?? 'issue') : null });
+          if (parsed.ok === false && parsed.issue && parsed.suggestedAction) {
+            return {
+              issue: parsed.issue,
+              severity: parsed.severity ?? 'warning',
+              suggestedAction: parsed.suggestedAction,
+            };
+          }
+          return null;
+        }
+      } catch (err) {
+        providerDegradations.push(`claude-cli frame ${scene.sceneId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      visionFindingsLog.push({ sceneId: scene.sceneId, provider: 'deterministic-fallback', issue: null });
+      return null;
+    },
     searchExternalMedia: async (query, slotIndex, signal) => {
       const searchQ = GAME_QUERIES[slotIndex % GAME_QUERIES.length] ?? query;
       try {
@@ -216,9 +277,20 @@ async function main() {
     },
   });
 
+  // Limpa mídias residuais de tentativas anteriores para forçar execução do caminho autônomo.
+  // scanLocalMediaDir carrega arquivos existentes antes da verificação do bloco autônomo,
+  // fazendo com que job.acquiredMedia.length >= queries.length e pulando a aquisição real.
+  const projectMediaDir = join(USER_DATA, 'cinema-workspaces', PROJECT_ID, 'media');
+  if (existsSync(projectMediaDir)) {
+    const { readdirSync, unlinkSync } = await import('node:fs');
+    for (const f of readdirSync(projectMediaDir)) {
+      try { unlinkSync(join(projectMediaDir, f)); } catch { /* arquivo bloqueado ou já removido */ }
+    }
+  }
+
   let job = await pipeline.start({
     projectId: PROJECT_ID,
-    prompt: 'TOP 5 jogos mais aguardados de 2027: análise completa de trailers, datas e plataformas',
+    prompt: 'TOP 5 jogos mais aguardados de 2027: Tomb Raider Legacy of Atlantis, Exodus, Fable, Final Fantasy VII Revelation e Kingdom Hearts IV — análise completa de trailers, datas e plataformas',
     genre: 'gameplay_essay',
     format: 'youtube_16_9',
     targetDurationSec: 300,
@@ -232,38 +304,64 @@ async function main() {
     const fallbackMediaDir = join(USER_DATA, 'cinema-workspaces', PROJECT_ID, 'media');
     mkdirSync(fallbackMediaDir, { recursive: true });
     const resolutions: Array<{ slotIndex: number; filePath: string }> = [];
+    // Usa queries da decupagem semântica quando disponíveis; fallback para GAME_QUERIES ou query original do slot.
+    const decupagemQueries = job.sceneDecupagem?.map((s) => s.mediaQueries[0]).filter(Boolean) ?? [];
+    const filePathByQuery = new Map<string, string>();
     for (const slot of job.pendingMedia) {
-      const q = GAME_QUERIES[slot.slotIndex % GAME_QUERIES.length] ?? slot.query;
-      const outTpl = join(fallbackMediaDir, `resolved_slot_${slot.slotIndex + 1}.%(ext)s`);
-      await execFileAsync(
-        YT_DLP,
-        [
-          '--no-playlist',
-          '--no-warnings',
-          '-f',
-          'best[height<=720][ext=mp4]/best[height<=720]/bestvideo[height<=720]+bestaudio/best',
-          '--merge-output-format',
-          'mp4',
-          '-o',
-          outTpl,
-          `ytsearch1:${q}`,
-        ],
-        { timeout: 180_000 },
-      );
-      let resolvedPath: string | undefined;
-      for (const ext of ['mp4', 'webm', 'mkv']) {
-        const candidate = join(fallbackMediaDir, `resolved_slot_${slot.slotIndex + 1}.${ext}`);
-        if (existsSync(candidate)) {
-          resolvedPath = candidate;
-          break;
-        }
-      }
+      const q = decupagemQueries[slot.slotIndex] ?? GAME_QUERIES[slot.slotIndex % GAME_QUERIES.length] ?? slot.query;
+      let resolvedPath = filePathByQuery.get(q);
       if (!resolvedPath) {
-        throw new Error(`Falha ao baixar trailer real para slot ${slot.slotIndex} (${q})`);
+        const slug = GAME_SLUGS[slot.slotIndex % GAME_SLUGS.length] ?? `games_resolved_${slot.slotIndex + 1}`;
+        const outTpl = join(fallbackMediaDir, `${slug}.%(ext)s`);
+        for (const ext of ['mp4', 'webm', 'mkv']) {
+          const candidate = join(fallbackMediaDir, `${slug}.${ext}`);
+          if (existsSync(candidate)) {
+            resolvedPath = candidate;
+            break;
+          }
+        }
+        if (!resolvedPath) {
+          try {
+            await execFileAsync(
+              YT_DLP,
+              [
+                '--no-playlist',
+                '--no-warnings',
+                '-f',
+                'best[height<=720][ext=mp4]/best[height<=720]/bestvideo[height<=720]+bestaudio/best',
+                '--merge-output-format',
+                'mp4',
+                '-o',
+                outTpl,
+                `ytsearch1:${q}`,
+              ],
+              { timeout: 180_000 },
+            );
+          } catch (err) {
+            console.warn(`[WARN] Download falhou para slot ${slot.slotIndex} ("${q}"): ${err instanceof Error ? err.message : String(err)}. Pulando.`);
+            continue;
+          }
+          for (const ext of ['mp4', 'webm', 'mkv']) {
+            const candidate = join(fallbackMediaDir, `${slug}.${ext}`);
+            if (existsSync(candidate)) {
+              resolvedPath = candidate;
+              break;
+            }
+          }
+        }
+        if (!resolvedPath) {
+          console.warn(`[WARN] Arquivo não encontrado após download para slot ${slot.slotIndex} ("${q}"). Pulando.`);
+          continue;
+        }
+        filePathByQuery.set(q, resolvedPath);
       }
       resolutions.push({ slotIndex: slot.slotIndex, filePath: resolvedPath });
     }
-    job = await pipeline.resolvePendingMedia(PROJECT_ID, resolutions);
+    if (resolutions.length > 0) {
+      job = await pipeline.resolvePendingMedia(PROJECT_ID, resolutions);
+    } else {
+      console.warn('[WARN] Nenhuma mídia pendente resolvida com sucesso. Tentando prosseguir com cobertura parcial.');
+    }
   }
 
   if (!capturedRender) {

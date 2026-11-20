@@ -1,0 +1,32 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- TEMPLATE: TEXTO GIGANTE (para "texto atrás da pessoa" — V02 "MÁQUINA DE EDIÇÃO", V11 "MOTION")
+     Renderize com --alpha e use: python3 scripts/mv_visao.py atras video.mp4 texto.mov final.mp4
+     Dados: {dur, y:0.30, palavras:[{t:"MOTION", at:0.2, dur:2.5, cor:"#ff5a1f", fonte:"cond|wide|serif"}], theme} -->
+<link rel="stylesheet" href="../engine/mv.css">
+<script src="../engine/mv.js"></script>
+<style>
+  .gw{position:absolute;left:-200px;right:-200px;text-align:center;white-space:nowrap;line-height:.82}
+  .gw.cond{font-family:Anton;font-size:520px;text-transform:uppercase}
+  .gw.wide{font-family:Archivo Black;font-size:330px;text-transform:uppercase;letter-spacing:-.04em}
+  .gw.serif{font-family:Serif;font-style:italic;font-size:440px;letter-spacing:-.04em}
+</style></head>
+<body class="t-dark-laranja alpha"><div id="stage"></div>
+<script>
+const D = Object.assign({ dur: 5, y: .30, theme: 't-dark-laranja', palavras: [{ t: 'MOTION', at: -.1, dur: 4.4, fonte: 'cond' }] }, window.MV_DATA || {});
+document.body.className = D.theme + ' alpha';
+D.palavras.forEach(p => {
+  const el = document.createElement('div'); el.className = 'gw ' + (p.fonte || 'cond');
+  const k = { cond: .47, wide: .82, serif: .42 }[p.fonte || 'cond'];
+  const fs = p.tam || Math.min(560, 1150 / (p.t.length * k));          // auto-ajuste: cabe em ~1 largura de tela
+  el.style.fontSize = fs + 'px';
+  el.style.top = (1920 * (p.y ?? D.y) - fs * .45) + 'px'; el.style.color = p.cor || 'var(--ac)'; el.textContent = p.t;
+  document.getElementById('stage').appendChild(el);
+  const cs = MV.chars(el);
+  MV.to(cs, { from: { y: 420, opacity: 0, rx: -60 }, to: { y: 0, opacity: 1, rx: 0 }, at: p.at, dur: .7, ease: 'outExpo', stagger: .045 });
+  MV.sfx('whoosh_grave', Math.max(0, p.at), .7);
+  MV.to(el, { from: { scale: 1.08 }, to: { scale: 1 }, at: p.at, dur: p.dur, ease: 'outCubic' });
+  MV.fx.out(el, p.at + p.dur, { dur: .35, y: -60, blur: 20 });
+});
+MV.setup({ w: 1080, h: 1920, fps: 30, dur: D.dur });
+</script></body></html>

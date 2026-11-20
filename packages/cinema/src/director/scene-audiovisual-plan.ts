@@ -30,6 +30,11 @@ export interface SceneAudiovisualPlan {
   missingRequiredResources: string[];
 }
 
+/** Planned SFX cues: every planned scene carries exactly one (`sfxEventType` at `sfxAtMs`). */
+export function countPlannedSfxCues(plan: Pick<SceneAudiovisualPlan, 'scenes'> | undefined): number {
+  return plan?.scenes.filter((scene) => Boolean(scene.sfxEventType)).length ?? 0;
+}
+
 export function validateSceneAudiovisualPlan(plan: SceneAudiovisualPlan): {
   valid: boolean;
   errors: string[];
@@ -93,7 +98,7 @@ export function buildSceneAudiovisualPlan(input: {
     const isGraphicRecovery = clip.effects.some((e) => e.kind === 'graphic_recovery' && e.enabled);
 
     const matchingComedy = (input.comedyBeats ?? []).find((b) => {
-      const timeRef = b.at ?? (b as { timeRange?: { start?: { value: number; rate: number } } }).timeRange?.start;
+      const timeRef = b.timeRange?.start;
       if (!timeRef) return false;
       const bStart = timeRef.value / Math.max(1, timeRef.rate);
       return bStart >= startSec && bStart < endSec;
@@ -113,12 +118,12 @@ export function buildSceneAudiovisualPlan(input: {
     ];
 
     if (matchingComedy) {
-      const cTime = matchingComedy.at ?? (matchingComedy as { timeRange?: { start?: { value: number; rate: number } } }).timeRange?.start;
+      const cTime = matchingComedy.timeRange?.start;
       humorBeats.push({
         beatId: matchingComedy.beatId,
         sceneId,
         atSec: cTime ? Number((cTime.value / Math.max(1, cTime.rate)).toFixed(2)) : startSec,
-        kind: matchingComedy.kind,
+        kind: matchingComedy.humorMechanism,
       });
     }
 

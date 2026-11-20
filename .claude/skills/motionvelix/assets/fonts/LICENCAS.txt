@@ -1,0 +1,4 @@
+Fontes incluídas (todas SIL Open Font License 1.1 — uso comercial e redistribuição permitidos, inclusive embutidas em produto):
+Inter (Rasmus Andersson), Anton (Vernon Adams), Archivo Black (Omnibus-Type), Bebas Neue (Dharma Type),
+Instrument Serif (Instrument), JetBrains Mono (JetBrains), Space Grotesk (Florian Karsten).
+Obtidas via pacotes @fontsource (npm). Texto completo da licença: https://openfontlicense.org

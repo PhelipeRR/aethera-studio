@@ -1,0 +1,7 @@
+{ "theme":"t-vermelho-glow", "handle":"", "progress":false,
+  "beats":[
+   {"type":"text","dur":1.8,"lines":["*PARE* de vender","página genérica"]},
+   {"type":"price","dur":2.2,"caption":"Tem designer cobrando","value":"R$ 5.000"},
+   {"type":"text","dur":2.4,"lines":["Nível Apple.","Feita com *IA.*","Sem programar."]},
+   {"type":"cta","dur":3,"lead":"aprenda o método","word":"Toque em","keyword":"SAIBA MAIS","reply":"garantia de 7 dias"}
+  ]}

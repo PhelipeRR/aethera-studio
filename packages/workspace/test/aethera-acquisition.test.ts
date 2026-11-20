@@ -87,7 +87,41 @@ describe('acquisition with the fake yt-dlp', () => {
     expect(parseAcquisitionProgress('frame=  125 fps=30 q=-1.0 size=    1024KiB time=00:00:05.00 bitrate=1677.7kbits/s', 10)).toEqual({
       bytesDone: 1024 * 1024,
       bytesTotal: 2048 * 1024,
+      pct: 50,
+    });
+    expect(parseAcquisitionProgress('frame=  125 fps=30 q=-1.0 size=N/A time=00:00:15.00 bitrate=N/A', 60)).toEqual({
+      bytesDone: 0,
+      bytesTotal: null,
+      pct: 25,
     });
     expect(parseAcquisitionProgress('[download] 50%')).toBeNull();
+  });
+
+  it('forwards ffmpeg progress emitted on stderr when downloading sections', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'aethera-acq-'));
+    const outFile = join(root, 'media', 'slot_1.mp4');
+    const script = [
+      'const fs = require("fs");',
+      'const path = require("path");',
+      'fs.mkdirSync(path.dirname(process.argv[1]), { recursive: true });',
+      'process.stderr.write("frame=10 fps=30 q=-1.0 size=N/A time=00:00:15.00 bitrate=N/A\\n");',
+      'process.stderr.write("frame=20 fps=30 q=-1.0 size=  512KiB time=00:00:30.00 bitrate=100kbits/s\\n");',
+      'fs.writeFileSync(process.argv[1], "video");',
+      'process.stdout.write(process.argv[1] + "\\n");',
+    ].join('');
+    const seen: Array<{ bytesDone: number; bytesTotal: number | null; pct?: number | null }> = [];
+    await acquireWithYtDlp({
+      ytDlp: { command: process.execPath, prefix: ['-e', script, outFile] },
+      url: 'https://www.youtube.com/watch?v=aaaaaaaaaaa',
+      root,
+      relativeDir: 'media',
+      fileStem: 'slot_1',
+      downloadSection: '*0:00-1:00',
+      onProgress: (item) => seen.push(item),
+    });
+    expect(seen).toEqual([
+      { bytesDone: 0, bytesTotal: null, pct: 25 },
+      { bytesDone: 512 * 1024, bytesTotal: 1024 * 1024, pct: 50 },
+    ]);
   });
 });

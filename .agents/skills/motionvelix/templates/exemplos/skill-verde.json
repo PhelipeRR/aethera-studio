@@ -1,0 +1,8 @@
+{ "theme":"t-verde-terminal", "handle":"@MOTIONVELIX", "progress":true,
+  "beats":[
+   {"type":"text","dur":2.2,"kicker":"deixa eu te mostrar","lines":["Essa skill faz","reels *ilimitados*"]},
+   {"type":"chips","dur":2.4,"title":"Sem *limite*","items":["qualquer estilo","sem crédito por vídeo","no seu computador"]},
+   {"type":"window","dur":2.8,"title":"reel.json","typing":"{ gancho: 'ideia', estilo: 'neon' }","caption":"Feito em *código*, não em app."},
+   {"type":"counter","dur":2.4,"label":"visualizações · 30 dias","from":0,"to":1000000,"suffix":"+","caption":"*1 milhão+* de views."},
+   {"type":"cta","dur":3.2,"lead":"quer saber como?","word":"Comenta","keyword":"MOTION","reply":"resposta automática · DM enviada"}
+  ]}

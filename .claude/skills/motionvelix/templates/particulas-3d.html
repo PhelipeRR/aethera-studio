@@ -1,0 +1,94 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- TEMPLATE: PARTÍCULAS 3D → MARCA (Three.js/WebGL, ~7s, loop)
+     Inspirado em: V08 grafigator (esfera de partículas que vira "CLAUDE"), V19 (ponto/forma, aurora), V16 (3D com profundidade).
+     Render: node engine/render.mjs templates/particulas-3d.html out.mp4 --webgl --data dados.json [--mb 4]
+     Dados: {brand:"MOTIONVELIX", tagline:"motion que prende", theme:"t-aurora", cores:["#5b8cff","#3ef0d0","#c04bff"], n:9000, w:1080, h:1920} -->
+<link rel="stylesheet" href="../engine/mv.css">
+<script src="../engine/mv.js"></script>
+<style>
+  canvas{position:absolute;inset:0}
+  .tg{position:absolute;left:0;right:0;top:calc(50% + 170px);text-align:center;font:500 30px Mono;letter-spacing:.42em;text-transform:uppercase;color:var(--mute)}
+  .kick{position:absolute;left:0;right:0;top:calc(50% - 330px);text-align:center;font:300 40px Inter;color:var(--fg);opacity:.9}
+</style></head>
+<body class="t-aurora">
+<div id="stage"><div class="bg-glow" id="bg"></div></div>
+<div class="kick" id="kick"></div><div class="tg" id="tg"></div><div class="bg-vignette"></div>
+<script type="module">
+import * as THREE from '../engine/vendor/three.module.min.js';
+const D = Object.assign({ brand: 'MOTIONVELIX', tagline: 'motion que prende', kicker: '', theme: 't-aurora', cores: null, n: 9000, w: 1080, h: 1920, fps: 30 }, window.MV_DATA || {});
+document.body.className = D.theme;
+const W = D.w, H = D.h, N = D.n, DUR = 7;
+const css = getComputedStyle(document.body);
+const cores = (D.cores || [css.getPropertyValue('--ac'), css.getPropertyValue('--ac2'), css.getPropertyValue('--ac3') || css.getPropertyValue('--ac')]).map(c => new THREE.Color(c.trim() || '#ffffff'));
+tg.textContent = D.tagline; kick.textContent = D.kicker;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1); renderer.setSize(W, H); document.getElementById('stage').appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(40, W / H, .1, 100); cam.position.set(0, 0, 9);
+
+// sprite circular suave
+const sc = document.createElement('canvas'); sc.width = sc.height = 64; const g = sc.getContext('2d');
+const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(.25, 'rgba(255,255,255,.85)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+const tex = new THREE.CanvasTexture(sc);
+
+const rnd = MV.rand(42);
+const A = new Float32Array(N * 3), B = new Float32Array(N * 3), C = new Float32Array(N * 3), delay = new Float32Array(N), pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+// A: esfera (fibonacci) | C: galáxia espiral
+for (let i = 0; i < N; i++) {
+  const y = 1 - (i / (N - 1)) * 2, r = Math.sqrt(1 - y * y), th = i * 2.399963;
+  const R = 1.45 * (1 + (rnd() - .5) * .04);
+  A.set([Math.cos(th) * r * R, y * R, Math.sin(th) * r * R], i * 3);
+  const arm = i % 3, d = Math.pow(rnd(), .6) * 3.4, ang = d * 1.3 + arm * 2.094 + (rnd() - .5) * .5;
+  C.set([Math.cos(ang) * d, (rnd() - .5) * .35 * (4 - d) * .3, Math.sin(ang) * d], i * 3);
+  delay[i] = rnd() * .35;
+  const c = cores[i % cores.length].clone().lerp(cores[(i + 1) % cores.length], rnd()); col.set([c.r, c.g, c.b], i * 3);
+}
+// B: texto da marca amostrado de um canvas 2D (precisa das fontes carregadas)
+window.MV_READY = (async () => {
+  await document.fonts.load('900 300px Inter'); await document.fonts.ready;
+  const cw = 1400, ch = 360, cv = document.createElement('canvas'); cv.width = cw; cv.height = ch; const x = cv.getContext('2d');
+  let fs = 300; x.font = `900 ${fs}px Inter`; while (x.measureText(D.brand).width > cw * .94) { fs -= 6; x.font = `900 ${fs}px Inter`; }
+  x.fillStyle = '#fff'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(D.brand, cw / 2, ch / 2);
+  const px = x.getImageData(0, 0, cw, ch).data, pts = [];
+  for (let yy = 0; yy < ch; yy += 2) for (let xx = 0; xx < cw; xx += 2) if (px[(yy * cw + xx) * 4 + 3] > 128) pts.push([xx, yy]);
+  const sx = 3.35 / cw;
+  for (let i = 0; i < N; i++) { const p = pts[Math.floor(rnd() * pts.length)] || [cw / 2, ch / 2]; B.set([(p[0] - cw / 2) * sx + (rnd() - .5) * .02, -(p[1] - ch / 2) * sx + (rnd() - .5) * .02, (rnd() - .5) * .12], i * 3); }
+})();
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+const mat = new THREE.PointsMaterial({ size: .04, map: tex, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+const pts = new THREE.Points(geo, mat); scene.add(pts);
+
+const E = MV.E, cl = MV.clamp;
+// linha do tempo: 0 esfera girando → 1.6 vira MARCA → 4.3 explode em galáxia → 5.6 volta à esfera (loop)
+const K = [[1.6, 1.3, 'A', 'B'], [4.3, 1.1, 'B', 'C'], [5.6, 1.4, 'C', 'A']];
+const S = { A, B, C };
+MV.fn(-1, 1e9, (lt, p, t) => {
+  let from = 'A', to = 'A', q = 0, at = 0, d = 1;
+  for (const [a, dd, f, tt] of K) if (t >= a) { from = f; to = tt; at = a; d = dd; }
+  const F = S[from], T = S[to];
+  for (let i = 0; i < N; i++) {
+    const qq = t < K[0][0] ? 0 : E.inOutCubic(cl((t - at - delay[i] * d * .6) / (d * .7)));
+    const j = i * 3;
+    pos[j] = F[j] + (T[j] - F[j]) * qq; pos[j + 1] = F[j + 1] + (T[j + 1] - F[j + 1]) * qq; pos[j + 2] = F[j + 2] + (T[j + 2] - F[j + 2]) * qq;
+  }
+  geo.attributes.position.needsUpdate = true;
+  // rotação: gira na esfera/galáxia, fica de frente na marca
+  const face = cl((t - 1.4) / .9) * (1 - cl((t - 4.2) / .6));
+  pts.rotation.y = (t * .6) * (1 - face) + (Math.sin(t * .8) * .08) * face;
+  pts.rotation.x = .25 * (1 - face) + (t > 4.3 ? .5 * cl((t - 4.3) / 1) * (1 - cl((t - 5.6) / 1.4)) : 0);
+  cam.position.z = 9 - .8 * Math.sin(Math.min(t, DUR) / DUR * Math.PI);
+  mat.size = .04 + .012 * face;
+  renderer.render(scene, cam);
+});
+MV.to('#tg', { from: { opacity: 0, ls: .9 }, to: { opacity: 1, ls: .42 }, at: 2.6, dur: .9, ease: 'outExpo' });
+MV.to('#tg', { from: {}, to: { opacity: 0, blur: 10 }, at: 4.2, dur: .3, ease: 'inCubic' });
+if (D.kicker) { MV.fx.rise('#kick', 2.3, { y: 20 }); MV.fx.out('#kick', 4.2, { dur: .3 }); }
+MV.sfx('brilho', 0, .5); MV.sfx('whoosh', 1.55, .6); MV.sfx('impacto', 2.35, .6); MV.sfx('whoosh_grave', 4.25, .7); MV.sfx('deslize_reverso', 5.6, .5);
+MV.fn(0, DUR, lt => { bg.style.scale = 1 + .06 * Math.sin(lt * .9); });
+MV.setup({ w: W, h: H, fps: D.fps, dur: DUR });
+</script></body></html>

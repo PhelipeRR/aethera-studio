@@ -2,7 +2,8 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { CinemaProductionPackage } from '../index.js';
 import { synthesizeElevenLabsWav, synthesizeElevenLabsWavWithTimestamps, type ElevenLabsWordTimestamp } from './elevenlabs-tts.js';
@@ -180,6 +181,17 @@ export interface RealRenderResult {
     expected: { width: number; height: number; fps: number; durationSec: number; audioCodec: string; videoCodec: string };
     actual: { width: number; height: number; fps: number; durationSec: number; audioCodec: string | null; videoCodec: string; audioSampleRate: number | null; audioDurationSec: number };
     errors: string[];
+  };
+  /** P2/P5 fix: explicit MotionVelix execution report. A production is never "completed" without this evidence when Velix was requested. */
+  motionVelixReport?: {
+    motionVelixRequested: boolean;
+    motionVelixAvailable: boolean;
+    motionVelixExecuted: boolean;
+    effectsPlanned: string[];
+    effectsRendered: string[];
+    fallbackReason?: string;
+    kitRoot?: string;
+    templatePath?: string;
   };
 }
 
@@ -843,26 +855,59 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     adjustedDurationMs: number;
     reason: string;
   }> = [];
-  if (audioFirstBase.finalTimelineDurationMs > audioFirstBase.plannedDurationMs && clipSpecs.length > 0) {
-    const audioDurationByScene = clipSpecs.map(() => 0);
+  // Always align every visual scene to the measured duration of its narration segments (Master Clock Audio-First).
+  // When buildSceneMontage splits a parent scene (e.g. clip_3 -> clip_3, clip_3_p2), group sub-clips by their
+  // parent scene index so all sub-clips of scene k sum to narrationSegment[k]'s measured duration.
+  if (narrationSegments.length > 0 && clipSpecs.length > 0) {
+    const parentSceneIndexOf = (spec: (typeof clipSpecs)[number], fallbackIdx: number): number => {
+      const id = spec.clip?.clipId ?? spec.shot?.shotId ?? '';
+      const m = /(?:clip|shot)_(\d+)/i.exec(id);
+      if (m?.[1]) return Math.max(0, Number(m[1]) - 1);
+      return fallbackIdx;
+    };
+    const parentIndices = clipSpecs.map((spec, idx) => parentSceneIndexOf(spec, idx));
+    const maxParentIdx = Math.max(...parentIndices, narrationSegments.length - 1);
+    const audioDurationByParent = Array.from({ length: maxParentIdx + 1 }, () => 0);
     for (const segment of narrationSegments) {
-      const sceneIndex = Math.min(Math.max(0, segment.sceneIndex), audioDurationByScene.length - 1);
-      audioDurationByScene[sceneIndex] = (audioDurationByScene[sceneIndex] ?? 0) + segment.durationMs;
+      const sIdx = Math.min(Math.max(0, segment.sceneIndex), audioDurationByParent.length - 1);
+      audioDurationByParent[sIdx] = (audioDurationByParent[sIdx] ?? 0) + segment.durationMs;
     }
-    clipSpecs.forEach((spec, index) => {
-      const measuredSceneMs = audioDurationByScene[index] ?? 0;
-      if (measuredSceneMs <= 0) return;
-      const plannedDurationMs = Math.round(spec.effectiveDur * 1000);
-      const transitionCompensationMs = index < clipSpecs.length - 1 ? Math.round(xfadeDur * 1000) : 0;
-      const adjustedDurationMs = Math.max(1_200, measuredSceneMs + transitionCompensationMs);
-      spec.effectiveDur = Number((adjustedDurationMs / 1000).toFixed(2));
-      sceneDurationAdjustments.push({
-        sceneId: spec.shot?.shotId ?? `scene_${index + 1}`,
-        plannedDurationMs,
-        adjustedDurationMs: Math.round(spec.effectiveDur * 1000),
-        reason: 'Duração da cena ajustada pela duração medida dos segmentos de narração atribuídos, preservando a transição FFmpeg.',
-      });
+    const specsByParent = new Map<number, number[]>();
+    parentIndices.forEach((pIdx, specIdx) => {
+      const list = specsByParent.get(pIdx) ?? [];
+      list.push(specIdx);
+      specsByParent.set(pIdx, list);
     });
+    const totalMeasuredAssignedMs = audioDurationByParent.reduce((a, b) => a + b, 0);
+    const activeParentCount = [...specsByParent.keys()].filter((pIdx) => (audioDurationByParent[pIdx] ?? 0) > 0).length;
+    const residualSlackMs = Math.max(0, audioFirstBase.finalTimelineDurationMs - totalMeasuredAssignedMs);
+    const slackPerParentMs = activeParentCount > 0 ? Math.floor(residualSlackMs / activeParentCount) : 0;
+
+    for (const [pIdx, specIndices] of specsByParent.entries()) {
+      const measuredSceneMs = audioDurationByParent[pIdx] ?? 0;
+      if (measuredSceneMs <= 0) continue;
+      const totalSubDur = specIndices.reduce((s, si) => s + (clipSpecs[si]?.effectiveDur ?? 1), 0);
+      const transitionCompMs = specIndices.reduce(
+        (s, si) => s + (si < clipSpecs.length - 1 ? Math.round(xfadeDur * 1000) : 0),
+        0,
+      );
+      const targetParentMs = Math.max(1_200 * specIndices.length, measuredSceneMs + slackPerParentMs + transitionCompMs);
+      for (const si of specIndices) {
+        const spec = clipSpecs[si]!;
+        const plannedDurationMs = Math.round(spec.effectiveDur * 1000);
+        const share = totalSubDur > 0 ? spec.effectiveDur / totalSubDur : 1 / specIndices.length;
+        const adjustedDurationMs = Math.max(1_200, Math.round(targetParentMs * share));
+        if (Math.abs(adjustedDurationMs - plannedDurationMs) >= 150) {
+          spec.effectiveDur = Number((adjustedDurationMs / 1000).toFixed(2));
+          sceneDurationAdjustments.push({
+            sceneId: spec.shot?.shotId ?? `scene_${si + 1}`,
+            plannedDurationMs,
+            adjustedDurationMs: Math.round(spec.effectiveDur * 1000),
+            reason: 'Duração da cena alinhada ao relógio mestre Audio-First (narração medida + transição).',
+          });
+        }
+      }
+    }
     const adjustedVideoDuration = clipSpecs.reduce((sum, spec) => sum + spec.effectiveDur, 0) - Math.max(0, clipSpecs.length - 1) * xfadeDur;
     const lastClip = clipSpecs.at(-1);
     if (lastClip && adjustedVideoDuration < targetTimelineDurationSec) {
@@ -872,7 +917,7 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
         sceneId: lastClip.shot?.shotId ?? `scene_${clipSpecs.length}`,
         plannedDurationMs,
         adjustedDurationMs: Math.round(lastClip.effectiveDur * 1000),
-        reason: 'Cauda final estendida para cobrir a duração total medida sem truncar a narração.',
+        reason: 'Cauda final ajustada para fechar exatamente na duração alvo do relógio mestre.',
       });
     }
   }
@@ -974,9 +1019,13 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     'Encerramento',
   ];
 
+  // P2 fix: robust MotionVelix kit discovery — search multiple candidate roots
+  // including the package's own source tree (derived from import.meta.url), so it works regardless of cwd.
   const velixKit = (() => {
+    const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
     const candidates = [
       process.env['NB_VELIX_DIR'],
+      join(packageRoot, '.claude', 'skills', 'motionvelix'),
       join(process.cwd(), '.claude', 'skills', 'motionvelix'),
       join(homedir(), '.claude', 'skills', 'motionvelix'),
     ].filter((p): p is string => Boolean(p));
@@ -1036,10 +1085,18 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
       ? `trim=start=${sourceRangeStartSec.toFixed(3)}:duration=${sourceRangeDurationSec.toFixed(3)},setpts=PTS-STARTPTS,loop=loop=-1:size=${sourceRangeLoopFrames}:start=0,setpts=N/FRAME_RATE/TB`
       : '';
     const imageZoomFrames = Math.max(30, Math.round(spec.effectiveDur * targetFps));
+    const isPanMotion = spec.clip?.effects?.some((e) => e.kind === 'ken_burns_pan' && e.enabled) ?? false;
+    const zoompanExpr = isPanMotion
+      ? `zoompan=z='1.08':x='(iw-iw/zoom)*on/${Math.max(1, imageZoomFrames)}':y='ih/2-(ih/zoom/2)':d=${imageZoomFrames}:s=${targetWidth}x${targetHeight}:fps=${targetFps}`
+      : `zoompan=z='min(zoom+0.0008,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${imageZoomFrames}:s=${targetWidth}x${targetHeight}:fps=${targetFps}`;
+    const videoFitFilter =
+      `split[fg][bg];[bg]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},boxblur=24:2,eq=brightness=-0.18[bgb];` +
+      `[fg]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease[fgs];` +
+      `[bgb][fgs]overlay=(W-w)/2:(H-h)/2,fps=${targetFps},setpts=(PTS-STARTPTS)/${Math.max(0.25, spec.clip?.speed ?? 1)},trim=duration=${spec.effectiveDur},setpts=PTS-STARTPTS`;
     const baseFilter = spec.sourceUri
       ? isImageSource
-        ? `scale=${Math.round(targetWidth * 1.15)}:${Math.round(targetHeight * 1.15)}:force_original_aspect_ratio=increase,crop=${Math.round(targetWidth * 1.15)}:${Math.round(targetHeight * 1.15)},zoompan=z='min(zoom+0.0008,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${imageZoomFrames}:s=${targetWidth}x${targetHeight}:fps=${targetFps},trim=duration=${spec.effectiveDur},setpts=PTS-STARTPTS`
-        : `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2,fps=${targetFps},setpts=(PTS-STARTPTS)/${Math.max(0.25, spec.clip?.speed ?? 1)},trim=duration=${spec.effectiveDur},setpts=PTS-STARTPTS`
+        ? `scale=${Math.round(targetWidth * 1.15)}:${Math.round(targetHeight * 1.15)}:force_original_aspect_ratio=increase,crop=${Math.round(targetWidth * 1.15)}:${Math.round(targetHeight * 1.15)},${zoompanExpr},trim=duration=${spec.effectiveDur},setpts=PTS-STARTPTS`
+        : videoFitFilter
       : `geq=r='clip(44+38*sin(X/45+T*1.4)+24*cos(Y/35-T),24,235)':g='clip(34+28*cos(X/55-T)+30*sin((X+Y)/60+T),20,235)':b='clip(68+58*sin((X-Y)/42+T*1.8),32,235)',scale=${targetWidth}:${targetHeight}:flags=bilinear`;
 
     const isDiscrete = Boolean(directives?.discreteTypography);
@@ -1941,5 +1998,29 @@ export async function renderRealCinemaMp4(input: RealRenderInput): Promise<RealR
     musicSelection: resolvedRealAudio.musicSelection,
     deliveryGate,
     deliveryValidation,
+    // P2/P5 fix: explicit MotionVelix execution report so a production is never
+    // marked completed without evidence of whether Velix was requested, available
+    // and executed. When Velix was requested but not executed, fallbackReason
+    // explains why and the caller can refuse to mark the job as completed.
+    motionVelixReport: {
+      motionVelixRequested: input.useVelix !== false,
+      motionVelixAvailable: velixKit !== null,
+      motionVelixExecuted: velixApplied,
+      effectsPlanned: [
+ ...new Set([
+ ...(input.pkg.audiovisualPlan?.scenes?.map((s) => s.sfxEventType) ?? []),
+ ...(input.pkg.audiovisualPlan?.scenes?.flatMap((s) => s.vfxEffects ?? []) ?? []),
+ ]),
+ ],
+      effectsRendered: velixApplied
+        ? ['overlay_composite', 'animated_captions', 'scene_badges', ...(velixOverlaySfxWav ? ['sfx_mix'] : [])]
+        : [],
+      ...(velixKit === null && input.useVelix !== false
+        ? { fallbackReason: 'MotionVelix kit not found: engine/render.mjs or templates/aethera-cinema-overlay.html missing in all candidate paths.' }
+        : !velixApplied && velixKit !== null
+          ? { fallbackReason: 'MotionVelix overlay rendering failed or was skipped; fell back to libass captions and FFmpeg-only composition.' }
+          : {}),
+      ...(velixKit ? { kitRoot: velixKit.root, templatePath: velixKit.overlayTemplate } : {}),
+    },
   };
 }

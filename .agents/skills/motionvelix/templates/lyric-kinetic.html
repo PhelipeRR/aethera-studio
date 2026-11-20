@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- TEMPLATE: LYRIC / KINETIC TYPE 3D sincronizado com voz ou música (V16 slate academy)
+     1) python3 scripts/transcrever.py musica.mp3 palavras.json   (ou narração)
+     2) node engine/render.mjs templates/lyric-kinetic.html out.mp4 --data dados.json --audio musica.mp3 --mb 4
+     Dados: {words:[{w,s,e}], dur, cores:["#ffe14d","#ff3b1f","#4f8cff"], alternar:true, logo:"MARCA", maxLinha:2} -->
+<link rel="stylesheet" href="../engine/mv.css">
+<script src="../engine/mv.js"></script>
+<style>
+  #bgc{position:absolute;inset:0}
+  .ph{position:absolute;left:60px;right:60px;top:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;transform-style:preserve-3d}
+  .ln{display:flex;gap:0;justify-content:center;transform-style:preserve-3d;white-space:nowrap}
+  .lw{display:inline-block;margin:0 .11em;font:900 150px/0.95 Inter;letter-spacing:-.05em;transform-style:preserve-3d}
+  .lw.s2{font-family:Serif;font-style:italic;font-weight:400;letter-spacing:-.03em}
+  .lw.s3{font-family:Anton;font-weight:400;text-transform:uppercase;letter-spacing:0}
+  .logo{position:absolute;inset:0;display:grid;place-items:center;font:900 130px Inter;letter-spacing:-.05em}
+</style></head>
+<body class="t-dark-laranja">
+<div id="stage"><div id="bgc"></div><div class="grain"></div><div id="ph"></div><div class="logo" id="logo"></div><div class="bg-vignette"></div></div>
+<script>
+const D = Object.assign({ cores: ['#ffe14d', '#ff3b1f', '#4f8cff', '#ffffff'], alternar: true, maxLinha: 2, logo: '', fps: 30,
+  words: 'Você não precisa de um editor você precisa de um sistema que trabalha enquanto você dorme'.split(' ').map((w, i) => ({ w, s: .1 + i * .32, e: .1 + i * .32 + .28 })) }, window.MV_DATA || {});
+const words = D.words; const R = MV.rand(11);
+const DUR = D.dur || (words.at(-1).e + (D.logo ? 2.4 : .8));
+// frases: quebra em pausa > .38s, pontuação ou 6 palavras
+const phr = []; let cur = [];
+words.forEach((w, i) => { cur.push(w); const nx = words[i + 1]; if (!nx || nx.s - w.e > .38 || /[.!?,;]$/.test(w.w) || cur.length >= 6) { phr.push(cur); cur = []; } });
+const bgc = document.getElementById('bgc'), PH = document.getElementById('ph');
+const looks = []; // por frase: fundo, cor do texto
+phr.forEach((p, pi) => {
+  const light = D.alternar && pi % 3 === 2;
+  const cor = light ? '#0d0d0d' : D.cores[pi % D.cores.length];
+  looks.push({ at: p[0].s - .05, bg: light ? '#ecebe6' : '#060606', cor });
+  const el = document.createElement('div'); el.className = 'ph'; PH.appendChild(el);
+  // monta linhas (no máx. 3 palavras/linha) e escolhe estilo tipográfico da frase
+  const style = ['', 's3', 's2', ''][pi % 4];
+  const per = D.maxLinha || 2; const lines = []; for (let i = 0; i < p.length; i += per) lines.push(p.slice(i, i + per));
+  const cw = { '': .58, s3: .44, s2: .45 }[style];   // largura média do caractere por fonte
+  const fs = Math.min(260, 930 / Math.max(...lines.map(l => l.reduce((a, w) => a + w.w.length, 0) * cw + l.length * .24)));
+  el.innerHTML = lines.map(l => `<div class="ln">${l.map(w => `<span class="lw ${style}" style="font-size:${fs}px;color:${w.cor || cor}${!light && w === p[0] ? ';text-shadow:0 0 40px ' + cor + '66' : ''}">${w.w}</span>`).join('')}</div>`).join('');
+  const sp = el.querySelectorAll('.lw');
+  p.forEach((w, wi) => {
+    const k = Math.floor(R() * 4), a = (pi === 0 && wi === 0) ? Math.min(w.s - .06, -.15) : w.s - .06;   // 1º frame já com texto
+    const fx = [
+      { from: { z: -900, opacity: 0, blur: 16 }, to: { z: 0, opacity: 1, blur: 0 } },                          // vem do fundo
+      { from: { rx: -85, y: 80, opacity: 0 }, to: { rx: 0, y: 0, opacity: 1 } },                                // gira em X
+      { from: { x: (wi % 2 ? 1 : -1) * 500, skx: (wi % 2 ? -1 : 1) * 25, blur: 20, opacity: 0 }, to: { x: 0, skx: 0, blur: 0, opacity: 1 } }, // chicote lateral
+      { from: { scale: 2.6, opacity: 0, blur: 12 }, to: { scale: 1, opacity: 1, blur: 0 } },                     // slam
+    ][k];
+    MV.to(sp[wi], { ...fx, at: a, dur: .32, ease: 'outExpo' });
+    if (k === 3) MV.sfx('tap', a, .35);
+  });
+  // câmera: frase gira levemente e, na próxima, atravessa a câmera (zoom-through)
+  const end = phr[pi + 1] ? phr[pi + 1][0].s - .08 : p.at(-1).e + .5;
+  MV.to(el, { from: { ry: (pi % 2 ? -14 : 14), rx: 6, scale: .96 }, to: { ry: (pi % 2 ? 6 : -6), rx: -3, scale: 1.04 }, at: p[0].s - .1, dur: Math.max(.5, end - p[0].s + .1), ease: 'linear' });
+  MV.to(el, { from: {}, to: { scale: 3.2, opacity: 0, blur: 30 }, at: end, dur: .2, ease: 'inQuad' });
+  MV.to(el, { from: { opacity: 0 }, to: { opacity: 1 }, at: p[0].s - .1, dur: .01 });
+  MV.sfx('whoosh_rapido', end - .05, .4);
+});
+MV.sfx('whoosh', 0, .55);   // som desde o 1º frame
+// fundo alterna por frase (corte seco = choque visual)
+MV.fn(-1, 1e9, (lt, p, t) => { let L = looks[0]; looks.forEach(l => { if (t >= l.at) L = l; }); bgc.style.background = `radial-gradient(70% 50% at 50% 50%, ${L.bg === '#060606' ? L.cor + '22' : '#ffffff'}, ${L.bg} 75%)`; });
+if (D.logo) { const lg = document.getElementById('logo'); lg.textContent = D.logo; lg.style.color = D.cores[0]; lg.style.fontSize = Math.min(130, 1500 / D.logo.length) + 'px'; const at = words.at(-1).e + .5; looks.push({ at: at - .05, bg: '#060606', cor: D.cores[0] }); MV.fx.blurIn(lg, at, { s0: 1.4, dur: .7 }); MV.sfx('boom', at, .8); }
+else document.getElementById('logo').remove();
+MV.setup({ w: 1080, h: 1920, fps: D.fps, dur: DUR });
+</script></body></html>

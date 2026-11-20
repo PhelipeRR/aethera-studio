@@ -1,0 +1,199 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- MotionVelix · Reels "Seu celular rouba R$ 20 mil" (corte de vídeo do @thiago.nigro) -->
+<link rel="stylesheet" href="../../../engine/mv.css">
+<script src="../../../engine/mv.js"></script>
+<style>
+  :root{--yel:#FFD84D;--red:#E5372B;--red2:#FF2D2D;--ink:#121014;--paper:#F4EFE6;--green:#2FD27A}
+  html,body{background:transparent}
+  #stage{position:absolute;inset:0;overflow:hidden}
+  .abs{position:absolute}.ctr{left:0;right:0;text-align:center}
+  .scn{position:absolute;inset:0;overflow:hidden;display:none}
+  .an{font-family:Anton;line-height:.9;text-transform:uppercase}
+  .in9{font:900 1em Inter;letter-spacing:-.04em}
+  .mono{font-family:Mono;font-weight:700;letter-spacing:.16em;text-transform:uppercase}
+  .chip{position:absolute;padding:12px 26px;border-radius:16px;font:800 40px Inter;white-space:nowrap;box-shadow:0 16px 40px rgba(0,0,0,.3)}
+  .cap{position:absolute;left:70px;right:150px;text-align:center;font:900 70px/1.12 Inter;letter-spacing:-.02em;color:#fff;text-shadow:0 4px 18px rgba(0,0,0,.6),0 0 2px rgba(0,0,0,.9);display:none;z-index:50}
+  .cap .w{display:inline-block;margin:0 .08em;padding:0 .12em;border-radius:12px}
+  .cap .w.hl{color:var(--yel)}
+  .cap .w.on{background:var(--yel);color:var(--ink);text-shadow:none}
+  body.light .cap{color:var(--ink);text-shadow:none}
+  body.light .cap .w.hl{color:var(--red)}
+  body.light .cap .w.on{background:var(--ink);color:var(--yel)}
+  .hook{position:absolute;left:70px;right:140px;top:1020px;text-align:center;z-index:40}
+  .hook .k{display:inline-block;font:800 34px Mono;letter-spacing:.12em;color:#fff;background:var(--red);padding:8px 18px;border-radius:10px;margin-bottom:12px}
+  .hook .b{display:inline;background:#fff;color:var(--ink);font:900 62px/1.3 Inter;letter-spacing:-.03em;padding:4px 18px;border-radius:14px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+  .hook .b em{font-style:normal;color:var(--red)}
+  /* celular (tempo de uso) */
+  .ph{position:absolute;left:255px;top:430px;width:570px;height:1000px;border-radius:70px;background:#1C1C1F;padding:18px;box-shadow:0 0 0 3px #333,0 50px 100px rgba(0,0,0,.6)}
+  .ph .s{position:relative;width:100%;height:100%;border-radius:54px;background:#000;overflow:hidden;padding:90px 40px 0;color:#fff;font-family:Inter}
+  .ph .isl{position:absolute;top:22px;left:50%;width:150px;height:40px;margin-left:-75px;border-radius:22px;background:#111}
+  .ph .t1{font:800 54px Inter;letter-spacing:-.02em}
+  .ph .t2{font:600 26px Inter;color:#8E8E93;margin-top:30px}
+  .ph .big{font:800 96px Inter;letter-spacing:-.04em;margin-top:4px}
+  .bars{position:absolute;left:40px;right:40px;top:470px;height:300px;display:flex;align-items:flex-end;gap:16px;border-bottom:2px solid #333}
+  .bars i{flex:1;border-radius:10px 10px 4px 4px;background:#0A84FF;transform-origin:50% 100%}
+  .bars i.over{background:var(--red2)}
+  .lim{position:absolute;left:30px;right:30px;border-top:5px dashed var(--red2)}
+  .lim span{position:absolute;right:0;top:-46px;font:800 28px Inter;color:var(--red2)}
+  .days{position:absolute;left:40px;right:40px;top:784px;display:flex;justify-content:space-between;font:600 24px Inter;color:#8E8E93}
+  .bill{position:absolute;width:150px;height:76px;border-radius:10px;background:linear-gradient(135deg,#7DDC8A,#3DAA57);border:4px solid #CFF5D4;display:grid;place-items:center;font:900 34px Inter;color:#145C2A}
+  .barW{position:absolute;left:90px;right:90px;top:900px;height:150px;border-radius:30px;background:#1B1B1F;overflow:visible}
+  .seg{position:absolute;top:0;bottom:0;border-radius:30px;display:grid;place-items:center;font:900 46px Inter;color:#0B2414}
+  .hg{position:absolute;left:390px;top:260px;width:300px;height:420px}
+</style></head>
+<body class="alpha"><div id="stage"></div>
+<script>
+const S = document.getElementById('stage'), E = MV.E, clamp = MV.clamp, R = MV.rand(5);
+const DUR = 46.9;
+const H = (h, p = S) => { const t = document.createElement('template'); t.innerHTML = h.trim(); const el = t.content.firstElementChild; p.appendChild(el); return el; };
+const win = (el, a, b) => MV.fn(-1, 1e9, (lt, p, g) => { el.style.display = (g >= a && g < b) ? 'block' : 'none'; });
+const LIGHT = [];
+function scene(a, b, bg, { inn = 'circle', out = 'cut', ox = 540, oy = 960, light = false } = {}) {
+  const el = H(`<div class="scn" style="background:${bg}"></div>`);
+  if (light) LIGHT.push([a, b]);
+  MV.sfx(inn === 'up' ? 'deslize' : 'deslize', a - .05, .32);
+  if (out === 'up') MV.sfx('deslize_reverso', b - .32, .3);
+  MV.fn(-1, 1e9, (lt, p, g) => {
+    if (g < a || g >= b) { el.style.display = 'none'; return; } el.style.display = 'block';
+    let cp = 'none'; const pi = clamp((g - a) / .4), po = clamp((g - (b - .32)) / .32);
+    if (pi < 1) { const q = E.inOutQuart(pi); cp = inn === 'circle' ? `circle(${q * 2300}px at ${ox}px ${oy}px)` : inn === 'up' ? `inset(${(1 - q) * 100}% 0 0 0 round ${(1 - q) * 80}px ${(1 - q) * 80}px 0 0)` : `inset(0 0 0 ${(1 - q) * 100}%)`; }
+    if (po > 0 && out === 'up') { const q = E.inOutQuart(po); cp = `inset(0 0 ${q * 100}% 0 round 0 0 ${q * 90}px ${q * 90}px)`; }
+    el.style.clipPath = cp;
+  });
+  return el;
+}
+const slam = (el, at, s0 = 2.2) => { MV.to(el, { from: { scale: s0, opacity: 0, blur: 10 }, to: { scale: 1, opacity: 1, blur: 0 }, at, dur: .35, ease: 'outExpo' }); MV.sfx('tap', at + .02, .45); };
+const pop = (el, at, snd = 'bolha') => { MV.to(el, { from: { scale: 0, opacity: 0 }, to: { scale: 1, opacity: 1 }, at, dur: .42, ease: 'outBack' }); if (snd) MV.sfx(snd, at, .4); };
+const count = (el, a, b, at, dur, fmt) => MV.fn(-1, 1e9, (lt, p, g) => { const q = E.outExpo(clamp((g - at) / dur)); el.textContent = fmt(a + (b - a) * q); });
+const brl = v => 'R$ ' + Math.round(v).toLocaleString('pt-BR');
+
+// ===== GANCHO sobre o vídeo (0 → 4.5)
+{ const h = H(`<div class="hook"><div class="k">📱 TEMPO DE USO</div><br><span class="b">Seu celular pode estar<br>te roubando <em>R$ 20 mil</em> por ano</span></div>`);
+  MV.to(h.querySelector('.k'), { from: { y: -40, opacity: 0 }, to: { y: 0, opacity: 1 }, at: -.2, dur: .35, ease: 'outBack' });
+  MV.to(h.querySelector('.b'), { from: { scale: .7, opacity: 0 }, to: { scale: 1, opacity: 1 }, at: -.1, dur: .4, ease: 'outBack' });
+  MV.fx.punch(h.querySelector('.b'), 1.4, { s: 1.05, sfx: false });
+  MV.to(h, { from: {}, to: { opacity: 0, y: -40 }, at: 4.3, dur: .25 }); }
+
+// ===== M2 · TEMPO DE USO (4.6 → 10.42)
+{ const s = scene(4.6, 10.42, '#0B0B0D', { ox: 540, oy: 1100, out: 'up' });
+  const t = H(`<div class="abs ctr an" style="top:150px;font-size:150px;color:#fff">ABRE <span style="color:var(--yel)">AÍ</span> 👀</div>`, s);
+  const t2 = H(`<div class="abs ctr mono" style="top:310px;font-size:30px;color:#9a9a9f">AJUSTES › TEMPO DE USO</div>`, s);
+  slam(t, 4.7); MV.fx.rise(t2, 5.0, { y: 14, sfx: false });
+  const ph = H(`<div class="ph"><div class="s"><div class="isl"></div><div class="t1">Tempo de Uso</div><div class="t2">MÉDIA DIÁRIA</div><div class="big">0h 00min</div>
+     <div class="bars">${'<i></i>'.repeat(7)}</div><div class="days"><span>D</span><span>S</span><span>T</span><span>Q</span><span>Q</span><span>S</span><span>S</span></div></div></div>`, s);
+  MV.to(ph, { from: { y: 1200, rot: 8 }, to: { y: 0, rot: 0 }, at: 4.8, dur: .6, ease: 'outBack' });
+  const big = ph.querySelector('.big'); count(big, 0, 192, 5.5, 1.4, v => `${Math.floor(v / 60)}h ${String(Math.floor(v % 60)).padStart(2, '0')}min`);
+  MV.fn(5.5, 6.9, (lt, p, g) => {}); for (let k = 0; k < 14; k++) MV.sfx('tic', 5.5 + k * .09, .18);
+  const H7 = [.62, .78, .55, .95, .7, 1, .84]; const bars = [...ph.querySelectorAll('.bars i')];
+  bars.forEach((b, i) => { b.style.height = (H7[i] * 290) + 'px'; MV.to(b, { from: { sy: 0 }, to: { sy: 1 }, at: 5.6 + i * .08, dur: .5, ease: 'outBack' }); });
+  // limite 2h (escala: 3h12 = 100% da barra mais alta)
+  const lim = H(`<div class="lim" style="top:${470 + 300 - 300 * (120 / 192) * 0.97}px"><span>LIMITE 2h</span></div>`, ph.querySelector('.s'));
+  MV.to(lim, { from: { sx: 0, opacity: 0 }, to: { sx: 1, opacity: 1 }, at: 7.9, dur: .35, ease: 'outCubic' }); lim.style.transformOrigin = '0 50%'; MV.sfx('traco', 7.9, .4);
+  MV.fn(-1, 1e9, (lt, p, g) => bars.forEach((b, i) => b.classList.toggle('over', g > 8.15 && H7[i] * 192 > 120 * 1.0)));
+  const z = H(`<div class="chip" style="left:600px;top:1260px;background:var(--red2);color:#fff;rotate:-6deg;font-size:44px">R$ 0 ganhos 💸</div>`, s);
+  MV.to(z, { from: { scale: 2.4, opacity: 0 }, to: { scale: 1, opacity: 1 }, at: 9.38, dur: .28, ease: 'outBack' }); MV.sfx('tap', 9.45, .5);
+}
+
+// ===== M3 · QUANTO VALE SUA HORA (15.0 → 22.0) amarelo
+{ const s = scene(15.0, 22.0, 'var(--yel)', { inn: 'right', light: true });
+  H(`<div class="abs ctr mono" style="top:140px;font-size:30px;color:var(--ink)">PENSA COMIGO 🧠</div>`, s);
+  const q = H(`<div class="abs ctr an" style="top:200px;font-size:104px;color:var(--red)">QUANTO VALE SUA HORA?</div>`, s); slam(q, 15.3, 1.6);
+  const a = H(`<div class="abs ctr an" style="top:360px;font-size:240px;color:var(--ink)">R$ 3.000</div>`, s);
+  const a2 = H(`<div class="abs ctr mono" style="top:595px;font-size:34px;color:var(--ink)">POR MÊS</div>`, s);
+  const b = H(`<div class="abs ctr an" style="top:690px;font-size:220px;color:var(--ink)">÷ 160h</div>`, s);
+  const b2 = H(`<div class="abs ctr mono" style="top:905px;font-size:34px;color:var(--ink)">TRABALHADAS NO MÊS</div>`, s);
+  const ln = H(`<div class="abs" style="left:140px;right:140px;top:985px;height:14px;border-radius:7px;background:var(--ink);transform-origin:0 50%"></div>`, s);
+  const c = H(`<div class="abs ctr" style="top:1035px"><span class="an" style="display:inline-block;background:var(--ink);color:var(--yel);font-size:210px;padding:18px 44px 6px;border-radius:30px">R$ 18,75</span></div>`, s);
+  const c2 = H(`<div class="abs ctr in9" style="top:1320px;font-size:64px;color:var(--ink)">por hora ⏱</div>`, s);
+  slam(a, 16.55); MV.fx.rise(a2, 16.9, { y: 14, sfx: false });
+  slam(b, 18.3); MV.fx.rise(b2, 18.6, { y: 14, sfx: false });
+  MV.to(ln, { from: { sx: 0 }, to: { sx: 1 }, at: 20.5, dur: .45, ease: 'inOutCubic' }); MV.sfx('traco', 20.5, .35);
+  MV.to(c, { from: { scale: 0, rot: -8 }, to: { scale: 1, rot: -2 }, at: 21.05, dur: .45, ease: 'outBack' }); MV.sfx('ding', 21.1, .45);
+  MV.fx.rise(c2, 21.3, { y: 20, sfx: false });
+}
+
+// ===== STICKER no vídeo (22 → 24.9)
+{ const st = H(`<div class="chip" style="left:110px;top:1120px;background:#fff;color:var(--ink);rotate:-4deg">🤔 parece pouco…</div>`);
+  pop(st, 22.6); MV.fx.out(st, 24.6, { y: 0, scale: .8, sfx: false }); }
+
+// ===== M4 · 3h POR DIA = R$ 1.687/MÊS (24.9 → 33.2) vermelho
+{ const s = scene(24.9, 33.7, 'var(--red)', { ox: 540, oy: 700 });
+  const r1 = H(`<div class="abs ctr an" style="top:170px;font-size:270px;color:#fff">3H <span style="font-size:120px">/DIA</span></div>`, s);
+  const r1b = H(`<div class="abs ctr mono" style="top:420px;font-size:32px;color:#FFD0CC">NO CELULAR 📱</div>`, s);
+  const r2 = H(`<div class="abs ctr in9" style="top:500px;font-size:96px;color:#fff">× 30 dias = <span style="color:var(--yel)">90h</span></div>`, s);
+  const r3 = H(`<div class="abs ctr in9" style="top:640px;font-size:96px;color:#fff">× R$ 18,75</div>`, s);
+  const ln = H(`<div class="abs" style="left:140px;right:140px;top:790px;height:12px;border-radius:6px;background:#fff;transform-origin:0 50%"></div>`, s);
+  const big = H(`<div class="abs ctr an" style="top:830px;font-size:260px;color:var(--yel)">R$ 0</div>`, s);
+  const per = H(`<div class="abs ctr in9" style="top:1100px;font-size:70px;color:#fff">por mês</div>`, s);
+  const stp = H(`<div class="chip an" style="left:250px;top:1220px;background:#fff;color:var(--red);font-size:90px;rotate:-5deg;padding:8px 34px;border:8px solid #fff">JOGADOS FORA</div>`, s);
+  slam(r1, 25.15); MV.fx.rise(r1b, 25.5, { y: 14, sfx: false });
+  pop(r2, 26.9, 'bolha'); pop(r3, 28.85, 'bolha');
+  MV.to(ln, { from: { sx: 0 }, to: { sx: 1 }, at: 29.6, dur: .4, ease: 'inOutCubic' }); MV.sfx('traco', 29.6, .35);
+  MV.to(big, { from: { opacity: 0, scale: .7 }, to: { opacity: 1, scale: 1 }, at: 30.1, dur: .3, ease: 'outBack' });
+  count(big, 0, 1687, 30.15, 1.5, brl); for (let k = 0; k < 12; k++) MV.sfx('tic', 30.15 + k * .1, .2); MV.fx.punch(big, 31.7, { s: 1.12, sfx: 'pop' });
+  MV.fx.rise(per, 31.8, { y: 16, sfx: false });
+  MV.to(stp, { from: { scale: 2.6, opacity: 0 }, to: { scale: 1, opacity: 1 }, at: 32.75, dur: .25, ease: 'outBack' }); MV.sfx('tap', 32.82, .55);
+  // notas voando
+  for (let i = 0; i < 14; i++) { const b = H(`<div class="bill" style="left:${470}px;top:1700px">R$</div>`, s); const a0 = 30.2 + i * .1, dx = (R() - .5) * 1100, dy = -900 - R() * 600, rot = (R() - .5) * 720;
+    MV.to(b, { from: { x: 0, y: 0, rot: 0, opacity: 0, scale: .6 }, to: { x: dx, y: dy, rot, opacity: 1, scale: 1 }, at: a0, dur: 1.2, ease: 'outCubic' }); MV.to(b, { from: {}, to: { opacity: 0 }, at: a0 + .9, dur: .3 }); }
+}
+
+// ===== M5 · R$ 20 MIL / 20% DOS SEUS 100 MIL (33.2 → 40.95) preto
+{ const s = scene(33.2, 40.95, '#0B0B0D', { inn: 'up' });
+  const y = H(`<div class="abs ctr an" style="top:190px;font-size:250px;color:#fff">R$ 0</div>`, s);
+  const y2 = H(`<div class="abs ctr in9" style="top:440px;font-size:70px;color:#9a9a9f">por ano</div>`, s);
+  MV.to(y, { from: { opacity: 0, scale: .7 }, to: { opacity: 1, scale: 1 }, at: 33.3, dur: .3, ease: 'outBack' }); count(y, 0, 20000, 33.35, 1.0, v => 'R$ ' + (Math.round(v / 1000) >= 20 ? '20 MIL' : Math.round(v).toLocaleString('pt-BR')));
+  for (let k = 0; k < 8; k++) MV.sfx('tic', 33.35 + k * .1, .2); MV.fx.punch(y, 34.4, { s: 1.1, sfx: 'pop' }); MV.fx.rise(y2, 34.5, { y: 14, sfx: false });
+  const lb = H(`<div class="abs ctr mono" style="top:830px;font-size:30px;color:#cfcfd4">SEUS PRIMEIROS R$ 100 MIL</div>`, s);
+  const bw = H(`<div class="barW"></div>`, s);
+  const g = H(`<div class="seg" style="left:0;width:80%;background:var(--green);border-radius:30px 0 0 30px">80%</div>`, bw);
+  const r = H(`<div class="seg" style="left:80%;width:20%;background:var(--green);border-radius:0 30px 30px 0;color:#fff">20%</div>`, bw);
+  MV.fx.rise(lb, 34.7, { y: 14, sfx: false }); MV.to(bw, { from: { sx: 0, opacity: 0 }, to: { sx: 1, opacity: 1 }, at: 34.8, dur: .5, ease: 'outCubic' }); bw.style.transformOrigin = '0 50%'; MV.sfx('deslize', 34.8, .3);
+  MV.fn(-1, 1e9, (lt, p, gg) => { r.style.background = gg > 35.6 ? 'var(--red2)' : 'var(--green)'; g.style.color = '#0B2414'; });
+  MV.fx.punch(r, 35.62, { s: 1.15, sfx: 'tap' });
+  MV.to(r, { from: {}, to: { y: 900, x: 80, rot: 28 }, at: 37.0, dur: .9, ease: 'inQuad' }); MV.to(r, { from: {}, to: { opacity: 0 }, at: 37.6, dur: .3 });
+  const apps = [['▶ Reels', 37.9, 150, 1230, -6], ['♪ TikTok', 38.1, 600, 1300, 5], ['💬 Grupo da família', 39.65, 230, 1440, -3]]
+    .map(([t, a, x, yy, rt]) => { const c = H(`<div class="chip" style="left:${x}px;top:${yy}px;background:#fff;color:var(--ink);rotate:${rt}deg">${t}</div>`, s); pop(c, a); return c; });
+  for (let i = 0; i < 10; i++) { const c = H(`<div class="abs" style="left:${860 + (i % 3) * 10}px;top:990px;width:46px;height:46px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#FFE58A,#E0A800);border:4px solid #FFF1B8"></div>`, s);
+    const a0 = 37.95 + i * .2, tx = [-500, -60, -420][i % 3], ty = [300, 360, 500][i % 3];
+    MV.to(c, { from: { x: 0, y: 0, scale: 0, opacity: 0 }, to: { x: tx, y: ty, scale: 1, opacity: 1 }, at: a0, dur: .6, ease: 'inOutCubic' }); MV.to(c, { from: {}, to: { opacity: 0, scale: .2 }, at: a0 + .6, dur: .15 }); }
+}
+
+// ===== M6 · O TEMPO NÃO VOLTA (43.15 → fim) papel
+{ const s = scene(43.12, 99, 'var(--paper)', { ox: 540, oy: 900, light: true });
+  const hg = H(`<svg class="hg" viewBox="0 0 300 420"><rect x="20" y="0" width="260" height="26" rx="12" fill="#121014"/><rect x="20" y="394" width="260" height="26" rx="12" fill="#121014"/>
+    <path d="M50 30 L250 30 L160 210 L250 390 L50 390 L140 210 Z" fill="none" stroke="#121014" stroke-width="12" stroke-linejoin="round"/>
+    <path id="sandT" d="M70 40 L230 40 L150 200 Z" fill="#E5372B"/><path id="sandB" d="M150 380 L60 380 L150 380 Z" fill="#E5372B"/><rect id="fall" x="146" y="205" width="8" height="175" fill="#E5372B"/></svg>`, s);
+  MV.to(hg, { from: { scale: 0, rot: -180 }, to: { scale: 1, rot: 0 }, at: 43.2, dur: .6, ease: 'outBack' }); MV.sfx('bolha', 43.25, .4);
+  const sT = hg.querySelector('#sandT'), sB = hg.querySelector('#sandB');
+  MV.fn(-1, 1e9, (lt, p, g) => { const q = clamp((g - 43.6) / 3.2); const top = 40 + 160 * q; sT.setAttribute('d', `M${70 + 80 * q} ${top} L${230 - 80 * q} ${top} L150 200 Z`); const h = 160 * q; sB.setAttribute('d', `M150 ${380 - h} L${150 - 90 * Math.min(1, q * 1.4)} 380 L${150 + 90 * Math.min(1, q * 1.4)} 380 Z`); });
+  const t1 = H(`<div class="abs ctr an" style="top:740px;font-size:120px;color:var(--ink)">O TEMPO É O ÚNICO<br>RECURSO</div>`, s);
+  const t2 = H(`<div class="abs ctr an" style="top:1010px;font-size:150px;color:var(--red)">QUE NÃO VOLTA.</div>`, s);
+  MV.fx.maskUp(MV.words(t1, { mask: true }), 43.4, { stagger: .07 });
+  slam(t2, 44.75, 1.8);
+  const cta = H(`<div class="chip" style="left:150px;top:1250px;background:var(--ink);color:#fff;font-size:42px">📲 Manda pra quem vive no celular</div>`, s);
+  pop(cta, 45.6); const cr = H(`<div class="abs ctr mono" style="top:1370px;font-size:24px;color:rgba(18,16,20,.55)">CORTE DE @THIAGO.NIGRO</div>`, s); MV.fx.rise(cr, 45.9, { y: 10, sfx: false });
+}
+
+// ===== LEGENDAS
+const KW = new Set(['celular', 'celular,', 'celular.', 'problema', '3', 'mil', '160', '18,75', '18,75:', '90', '1.687', 'distração.', '20', '20%', '100', 'reels,', 'tiktok', 'whatsapp.', 'pior?', 'percebe.', 'tempo', 'volta.', 'dinheiro']);
+MV.fn(-1, 1e9, (lt, p, g) => document.body.classList.toggle('light', LIGHT.some(([a, b]) => g >= a && g < b)));
+const SCN = [[4.6, 10.42], [15, 22], [24.9, 33.7], [33.2, 40.95], [43.12, 99]];
+window.MV_READY = MV.loadJSON('palavras.json').then(j => {
+  const W = j.words, ch = []; let cur = [];
+  W.forEach((w, i) => { cur.push(w); const nx = W[i + 1]; if (cur.length >= 3 || !nx || nx.s - w.e > .28 || /[.!?,;:…]$/.test(w.w)) { ch.push(cur); cur = []; } });
+  ch.forEach((c, ci) => {
+    const el = H(`<div class="cap">${c.map(w => `<span class="w${KW.has(w.w.toLowerCase()) ? ' hl' : ''}">${w.w}</span>`).join(' ')}</div>`);
+    const a = c[0].s - .04, b = Math.min(ch[ci + 1] ? ch[ci + 1][0].s - .045 : c[c.length - 1].e + .4, c[c.length - 1].e + .6), sp = el.querySelectorAll('.w');
+    MV.fn(-1, 1e9, (lt, p, g) => {
+      const vis = g >= a && g < b; el.style.display = vis ? 'block' : 'none'; if (!vis) return;
+      el.style.top = (SCN.some(([x, y]) => g >= x && g < y) || g < 4.5 ? 1520 : 1330) + 'px';
+      const k = clamp((g - a) / .16), e = E.outBack(k); el.style.transform = `translateY(${(1 - e) * 24}px) scale(${.92 + .08 * e})`; el.style.opacity = k;
+      c.forEach((w, wi) => { const on = g >= w.s - .03 && g < (c[wi + 1] ? c[wi + 1].s : b); sp[wi].classList.toggle('on', on); sp[wi].style.transform = on ? 'scale(1.07)' : ''; });
+    });
+  });
+});
+const prog = H(`<div class="abs" style="top:0;left:0;height:9px;background:var(--yel);z-index:60"></div>`); MV.fn(-1, 1e9, (lt, p, g) => { prog.style.width = clamp(g / DUR) * 1080 + 'px'; });
+MV.setup({ w: 1080, h: 1920, fps: 30, dur: DUR });
+</script></body></html>

@@ -1,0 +1,32 @@
+<h2 class="sr-only">Plano de cenas do vídeo proposto pelo Velix, para aprovar ou ajustar</h2>
+<div id="vx" style="padding:1rem 0"></div>
+<script>
+const D = {
+  titulo: "Plano do seu reel · 47 s · 9:16",
+  resumo: "5 cenas, legenda palavra por palavra e trilha com efeitos na batida.",
+  cenas: [
+    [0, 4, "Gancho", "“Seu celular rouba R$20 mil” com zoom e número gigante", "motion"],
+    [4, 15, "Contexto", "Fala com legenda dinâmica e texto atrás de você", "fala"],
+    [15, 24, "Cena de motion", "Conta animada: 9 h × 365 dias = horas perdidas", "motion"],
+    [24, 40, "Virada", "Fala com cortes secos e zoom nas frases fortes", "fala"],
+    [40, 47, "Fechamento", "Frase final + chamada para seguir", "motion"]
+  ],
+  extras: ["Trilha animada (IA)", "Efeitos suaves na batida", "Legenda estilo viral, laranja"]
+};
+const tot = D.cenas[D.cenas.length - 1][1];
+const cor = { motion: ["var(--bg-tint-orange)", "var(--text-tint-orange)"], fala: ["var(--bg-tint-blue)", "var(--text-tint-blue)"] };
+const h = [];
+h.push(`<div style="display:flex;align-items:center;gap:12px;margin-bottom:1rem"><div style="width:40px;height:40px;border-radius:50%;background:var(--bg-tint-orange);color:var(--text-tint-orange);display:flex;align-items:center;justify-content:center"><i class="ti ti-route" style="font-size:22px" aria-hidden="true"></i></div><div><p style="margin:0;font-weight:500;font-size:15px">${D.titulo}</p><p style="margin:0;font-size:13px;color:var(--text-secondary)">${D.resumo}</p></div></div>`);
+h.push(`<div style="display:flex;height:34px;border-radius:var(--radius);overflow:hidden;gap:2px;margin-bottom:6px">${D.cenas.map((c, i) => `<button class="vc" data-i="${i}" title="${c[2]}" style="flex:${c[1] - c[0]};height:34px;min-width:0;border:0;border-radius:0;background:${cor[c[4]][0]};color:${cor[c[4]][1]};font-size:12px;padding:0 4px;overflow:hidden;white-space:nowrap">${c[2]}</button>`).join("")}</div>`);
+h.push(`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:1rem"><span>0 s</span><span><i class="ti ti-square" style="color:var(--text-tint-orange)" aria-hidden="true"></i> motion · <i class="ti ti-square" style="color:var(--text-tint-blue)" aria-hidden="true"></i> fala</span><span>${tot} s</span></div>`);
+h.push(`<div style="margin-bottom:1rem">${D.cenas.map((c, i) => `<div class="vr" data-i="${i}" style="display:flex;gap:12px;padding:10px 0;border-bottom:0.5px solid var(--border);font-size:14px"><span style="font-family:var(--font-mono);font-size:12px;color:var(--text-muted);min-width:64px">${c[0]}–${c[1]} s</span><span><span style="font-weight:500">${c[2]}</span><br><span style="color:var(--text-secondary)">${c[3]}</span></span></div>`).join("")}</div>`);
+h.push(`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:1.25rem">${D.extras.map(e => `<span style="font-size:12px;padding:4px 10px;border-radius:var(--radius);background:var(--surface-1);color:var(--text-secondary)">${e}</span>`).join("")}</div>`);
+h.push(`<textarea id="vadj" placeholder="Quer mudar algo? Ex.: deixa o gancho mais curto e a legenda amarela" style="width:100%;min-height:60px;margin-bottom:8px"></textarea><p id="verr" style="font-size:13px;color:var(--text-danger);margin:0 0 6px"></p>`);
+h.push(`<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="vok" style="background:var(--fill-primary);color:var(--on-primary);border-color:transparent">Aprovar e renderizar ↗</button><button id="vaj">Ajustar o plano ↗</button></div>`);
+document.getElementById("vx").innerHTML = h.join("");
+document.querySelectorAll(".vc").forEach(b => b.onclick = () => document.querySelectorAll(".vr").forEach(r => r.style.background = r.dataset.i === b.dataset.i ? "var(--surface-1)" : ""));
+const adj = document.getElementById("vadj"), err = document.getElementById("verr");
+adj.oninput = () => err.textContent = "";
+document.getElementById("vok").onclick = () => sendPrompt("Velix, plano aprovado. Pode renderizar." + (adj.value.trim() ? " Só um detalhe: " + adj.value.trim() : ""));
+document.getElementById("vaj").onclick = () => { if (!adj.value.trim()) { err.textContent = "Escreve o que você quer mudar primeiro."; return; } sendPrompt("Velix, ajusta o plano: " + adj.value.trim()); };
+</script>

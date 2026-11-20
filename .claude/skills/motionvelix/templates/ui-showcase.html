@@ -1,0 +1,88 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- TEMPLATE: UI / PRODUTO / APP SHOWCASE (lançamento de app, SaaS, site)
+     Inspirado em: V20 warmblu (cards de UI flutuando + mão tocando + headline curta), V16 slate (celular 3D voando),
+     V03 tommello (prints 3D inclinados + preço), V05 (cursor "Claude" apontando).
+     Dados: {theme, handle, scenes:[{img:"tela.png", head:"Seu *pedido*.", sub:"...", tap:[x%,y%], tilt:-12}], cta:{text, keyword}} -->
+<link rel="stylesheet" href="../engine/mv.css">
+<script src="../engine/mv.js"></script>
+<style>
+  .dev{position:absolute;left:50%;top:62%;width:560px;height:1120px;margin:-560px 0 0 -280px;border-radius:84px;background:#0c0c0e;padding:22px;box-shadow:0 80px 160px rgba(0,0,0,.55),inset 0 0 0 3px #2b2b30;transform-style:preserve-3d}
+  .dev .scr{width:100%;height:100%;border-radius:64px;overflow:hidden;position:relative;background:linear-gradient(160deg,var(--ac2),var(--ac))}
+  .dev .scr img{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
+  .dev .scr .ph{position:absolute;inset:0;display:flex;flex-direction:column;gap:26px;padding:120px 40px}
+  .dev .scr .ph i{display:block;height:150px;border-radius:30px;background:rgba(255,255,255,.85)}
+  .dev .island{position:absolute;top:44px;left:50%;width:170px;height:48px;margin-left:-85px;border-radius:30px;background:#000;z-index:3}
+  .hd{position:absolute;left:70px;right:140px;top:240px;text-align:left;z-index:30;text-shadow:0 10px 40px rgba(0,0,0,.35)}
+  .hd .h-l{font-size:124px}
+  .hd .sub{font:600 40px Inter;color:var(--mute);margin-top:18px}
+  .hand{position:absolute;width:150px;height:150px;font-size:130px;line-height:1;z-index:20;filter:drop-shadow(0 18px 24px rgba(0,0,0,.35))}
+  .tapfx{position:absolute;width:60px;height:60px;margin:-30px;border-radius:50%;border:5px solid #fff;z-index:19}
+  .float{position:absolute;padding:24px 30px;border-radius:28px;background:#fff;color:#111;font:800 40px Inter;box-shadow:0 40px 90px rgba(0,0,0,.3);z-index:15}
+</style></head>
+<body class="t-vermelho-glow">
+<div id="stage"><div class="bg-glow" id="bg"></div><div class="grain"></div>
+  <div class="dev" id="dev"><div class="island"></div><div class="scr" id="scr"></div></div>
+  <div id="hds"></div><div id="flt"></div>
+  <div class="tapfx" id="tapfx"></div><div class="hand" id="hand">👆</div>
+</div>
+<script>
+const D = Object.assign({ theme: 't-vermelho-glow', fps: 30, scenes: [
+  { head: 'Seu *pedido* de sempre.', sub: 'em 2 toques', tap: [.7, .62], tilt: -14, float: '✓ Pedido feito' },
+  { head: 'Faça do *seu jeito.*', sub: 'personalize tudo', tap: [.5, .8], tilt: 12, float: '+ 2.400 pts' },
+  { head: 'Um pouco mais *feliz.*', sub: '', tap: null, tilt: 0 } ], cta: { text: 'Baixe agora', keyword: '' } }, window.MV_DATA || {});
+document.body.className = D.theme;
+const dev = document.getElementById('dev'), scr = document.getElementById('scr');
+const SD = 3.0; let T = 0;
+// entrada do aparelho (voa de longe girando) — frame 0 já mostra o aparelho em movimento
+MV.sfx('whoosh_grave', 0, .7);
+MV.to(dev, { from: { y: 900, rx: 55, rot: -18, scale: .7 }, to: { y: 0, rx: 0, rot: 0, scale: 1 }, at: -0.3, dur: 1.1, ease: 'outExpo' });
+D.scenes.forEach((s, i) => {
+  const a = T, b = T + SD;
+  // tela
+  const layer = document.createElement('div'); layer.className = 'full';
+  layer.innerHTML = s.img ? `<img src="${s.img}">` : `<div class="ph">${'<i></i>'.repeat(5)}</div>`;
+  scr.appendChild(layer);
+  if (i > 0) MV.sfx('whoosh_rapido', a, .5);
+  if (i > 0) MV.to(layer, { from: { clipT: 100 }, to: { clipT: 0 }, at: a, dur: .55, ease: 'inOutExpo' }); else MV.set(layer, { opacity: 1 });
+  MV.to(layer, { from: {}, to: { opacity: i === D.scenes.length - 1 ? 1 : 1 }, at: b, dur: .01 });
+  // inclinação 3D do aparelho por cena
+  MV.to(dev, { from: {}, to: { ry: s.tilt || 0, rx: (s.tilt || 0) * .3, x: (s.tilt || 0) * -6 }, at: a + .1, dur: 1.2, ease: 'inOutCubic' });
+  // headline
+  const hd = document.createElement('div'); hd.className = 'hd';
+  hd.innerHTML = `<div class="h-l">${s.head}</div>` + (s.sub ? `<div class="sub">${s.sub}</div>` : '');
+  document.getElementById('hds').appendChild(hd);
+  MV.fx.maskUp(MV.words(hd.querySelector('.h-l'), { mask: true }), i === 0 ? -.2 : a + .15, { stagger: .06 });
+  if (s.sub) MV.fx.rise(hd.querySelector('.sub'), a + .5, { y: 20 });
+  if (i < D.scenes.length - 1) MV.fx.out(hd, b - .2, { dur: .25 });
+  // toque da mão
+  if (s.tap) {
+    const tx = 260 + s.tap[0] * 560, ty = 630 + s.tap[1] * 1120;
+    MV.to('#hand', { from: { x: 1200, y: 1900, opacity: 1 }, to: { x: tx - 40, y: ty - 10 }, at: a + .6, dur: .7, ease: 'outCubic' });
+    MV.to('#hand', { from: {}, to: { scale: .82 }, at: a + 1.35, dur: .1, ease: 'outQuad' });
+    MV.to('#hand', { from: {}, to: { scale: 1 }, at: a + 1.45, dur: .2, ease: 'outBack' });
+    MV.to('#hand', { from: {}, to: { x: 1200, y: 2100 }, at: a + 2.1, dur: .6, ease: 'inCubic' });
+    MV.to('#tapfx', { from: { x: tx, y: ty, scale: .2, opacity: 0 }, to: { x: tx, y: ty, scale: .2, opacity: 1 }, at: a + 1.38, dur: .01 });
+    MV.to('#tapfx', { from: {}, to: { scale: 2.6, opacity: 0 }, at: a + 1.39, dur: .5, ease: 'outCubic' });
+    MV.fx.punch(dev, a + 1.38, { s: 1.03, sfx: 'click' });
+  }
+  if (s.float) {
+    const f = document.createElement('div'); f.className = 'float'; f.textContent = s.float; f.style.left = '120px'; f.style.top = (1200 + i * 60) + 'px';
+    document.getElementById('flt').appendChild(f);
+    MV.sfx('pop', a + 1.5, .6);
+    MV.to(f, { from: { scale: .3, opacity: 0, z: 200, rot: -8 }, to: { scale: 1, opacity: 1, z: 0, rot: -4 }, at: a + 1.5, dur: .5, ease: 'outBack' });
+    MV.fx.out(f, b - .25, { dur: .2 });
+  }
+  T = b;
+});
+// CTA final: aparelho se afasta, logo/texto entra
+if (D.cta) {
+  const c = document.createElement('div'); c.className = 'layer'; c.style.top = '520px'; c.innerHTML = `<div class="pill ac" style="font-size:52px;padding:26px 52px">${D.cta.text}${D.cta.keyword ? ` · comenta “${D.cta.keyword}”` : ''}</div>`;
+  document.getElementById('stage').appendChild(c); c.style.bottom = 'auto'; c.style.height = '200px';
+  c.style.top = '1480px'; c.style.zIndex = 40;
+  MV.fx.pop(c.firstChild, T - 1.2, { s0: .5 });
+  MV.fx.punch(c.firstChild, T - .3);
+}
+MV.fn(0, T, (lt) => { bg.style.translate = `${Math.sin(lt * .5) * 50}px ${Math.cos(lt * .4) * 70}px`; dev.style.translate = `0 ${Math.sin(lt * 1.3) * 10}px`; });
+MV.setup({ w: 1080, h: 1920, fps: D.fps, dur: T });
+</script></body></html>

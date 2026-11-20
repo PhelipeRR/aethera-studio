@@ -1,0 +1,3 @@
+interface:
+  display_name: "Aethera Audio Engineering"
+  short_description: "Music selection, semantic SFX matching, ducking, and FFmpeg audio QA"

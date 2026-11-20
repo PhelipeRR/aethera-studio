@@ -1,0 +1,28 @@
+<h2 class="sr-only">Diagnóstico do Velix sobre o material recebido, com sugestões aplicáveis</h2>
+<div id="vx" style="padding:1rem 0"></div>
+<script>
+const D = {
+  titulo: "Analisei seus takes",
+  resumo: "Material bom: fala clara e boa luz. Dá um reel forte de 45 s.",
+  metricas: [["Material", "22 min"], ["Fala útil", "71%"], ["Pausas", "6 min"], ["Nota do gancho", "8/10"]],
+  falta: [["ok", "Áudio limpo, sem eco"], ["aviso", "Sem B-roll: vou criar cenas de motion no lugar"], ["aviso", "Logo da marca não enviado (opcional)"]],
+  ganchos: [["Seu celular rouba R$20 mil", "aos 10:42 · número forte"], ["Os primeiros 100 mil", "aos 03:15 · curiosidade"], ["O carro é uma âncora", "aos 17:02 · polêmica"]],
+  melhorias: [["Cortar 38% de pausas e respiros", "Corta as pausas"], ["Zoom suave nas frases fortes", "Aplica zoom nas frases fortes"], ["Texto gigante atrás de você", "Coloca texto atrás de mim nos momentos fortes"], ["Trilha animada com efeitos na batida", "Gera trilha e efeitos sonoros no ritmo"]]
+};
+const ic = { ok: ["ti-circle-check", "var(--text-success)"], aviso: ["ti-alert-circle", "var(--text-warning)"], falta: ["ti-circle-x", "var(--text-danger)"] };
+const h = [];
+h.push(`<div style="display:flex;align-items:center;gap:12px;margin-bottom:1rem"><div style="width:40px;height:40px;border-radius:50%;background:var(--bg-tint-orange);color:var(--text-tint-orange);display:flex;align-items:center;justify-content:center"><i class="ti ti-robot" style="font-size:22px" aria-hidden="true"></i></div><div><p style="margin:0;font-weight:500;font-size:15px">${D.titulo}</p><p style="margin:0;font-size:13px;color:var(--text-secondary)">${D.resumo}</p></div></div>`);
+h.push(`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:1.25rem">${D.metricas.map(m => `<div style="background:var(--surface-1);border-radius:var(--radius);padding:1rem"><p style="margin:0;font-size:13px;color:var(--text-secondary)">${m[0]}</p><p style="margin:0;font-size:24px;font-weight:500">${m[1]}</p></div>`).join("")}</div>`);
+h.push(`<p style="margin:0 0 6px;font-size:13px;color:var(--text-secondary)">O que eu tenho e o que falta</p><div style="margin-bottom:1.25rem">${D.falta.map(f => `<div style="display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:0.5px solid var(--border);font-size:14px"><i class="ti ${ic[f[0]][0]}" style="font-size:18px;color:${ic[f[0]][1]}" aria-hidden="true"></i>${f[1]}</div>`).join("")}</div>`);
+h.push(`<p style="margin:0 0 8px;font-size:13px;color:var(--text-secondary)">Escolha o gancho de abertura</p><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:1.25rem">${D.ganchos.map((g, i) => `<button class="vg" data-i="${i}" style="text-align:left;border-radius:12px;padding:12px 14px;height:auto;${i === 0 ? "border:2px solid var(--border-accent)" : ""}"><span style="display:block;font-size:14px;font-weight:500">“${g[0]}”</span><span style="font-size:12px;color:var(--text-muted)">${g[1]}${i === 0 ? " · recomendado" : ""}</span></button>`).join("")}</div>`);
+h.push(`<p style="margin:0 0 8px;font-size:13px;color:var(--text-secondary)">Melhorias que eu sugiro</p><div style="margin-bottom:1rem">${D.melhorias.map((m, i) => `<label style="display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:0.5px solid var(--border);font-size:14px;cursor:pointer"><input type="checkbox" class="vm" data-i="${i}" checked>${m[0]}</label>`).join("")}</div>`);
+h.push(`<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="vgo" style="background:var(--fill-primary);color:var(--on-primary);border-color:transparent">Montar o plano ↗</button><button id="vask">Tenho uma dúvida ↗</button></div><p id="verr" style="font-size:13px;color:var(--text-danger);margin:6px 0 0"></p>`);
+document.getElementById("vx").innerHTML = h.join("");
+let gancho = 0;
+document.querySelectorAll(".vg").forEach(b => b.onclick = () => { gancho = +b.dataset.i; document.querySelectorAll(".vg").forEach(x => x.style.border = x === b ? "2px solid var(--border-accent)" : ""); });
+document.getElementById("vgo").onclick = () => {
+  const ms = [...document.querySelectorAll(".vm:checked")].map(c => D.melhorias[+c.dataset.i][1]);
+  sendPrompt(`Velix, monta o plano com o gancho “${D.ganchos[gancho][0]}”.` + (ms.length ? ` Aplica: ${ms.join("; ")}.` : " Sem melhorias extras."));
+};
+document.getElementById("vask").onclick = () => sendPrompt("Velix, antes do plano tenho uma dúvida: ");
+</script>

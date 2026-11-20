@@ -1,0 +1,278 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- MotionVelix · "Bolo de caneca em 3 minutos" — receita em motion do zero (narração + trilha 112 BPM + SFX no beat) -->
+<link rel="stylesheet" href="../../../engine/mv.css">
+<script src="../../../engine/mv.js"></script>
+<style>
+  :root{--cream:#FFF1E4;--choco:#4A2A1A;--choco2:#7A4A2E;--pink:#FF8FB1;--pinkL:#FFD3E0;--yel:#FFC93C;--mint:#7ED7C1;--ink:#2B1A12}
+  html,body{background:var(--cream)}
+  #stage{position:absolute;inset:0;overflow:hidden}
+  #bg{position:absolute;inset:0}
+  #dots{position:absolute;inset:-60px;background-image:radial-gradient(rgba(74,42,26,.08) 3px,transparent 3.5px);background-size:64px 64px}
+  .abs{position:absolute}
+  .ctr{left:0;right:0;text-align:center}
+  .fr{font-family:Fredoka;font-weight:700;line-height:.95;letter-spacing:-.01em}
+  .stroke{paint-order:stroke fill;-webkit-text-stroke:14px #fff}
+  img.obj{position:absolute;filter:drop-shadow(0 22px 26px rgba(74,42,26,.22))}
+  .chip{position:absolute;padding:12px 28px;border-radius:999px;font:700 44px Fredoka;white-space:nowrap;box-shadow:0 10px 0 rgba(74,42,26,.15)}
+  .row{position:absolute;left:90px;right:90px;height:96px;display:flex;align-items:center;gap:22px;font:600 52px Fredoka;color:var(--ink)}
+  .row .ck{width:64px;height:64px;border-radius:50%;border:6px solid var(--choco2);display:flex;align-items:center;justify-content:center;flex:none}
+  .row .ck svg{width:40px;height:40px}
+  .row .q{font:700 58px Fredoka;color:var(--pink);min-width:84px;text-align:right;-webkit-text-stroke:0}
+  .row b{font-weight:700}
+  .part{position:absolute;border-radius:50%}
+  .scn{position:absolute;inset:0;display:none}
+</style></head>
+<body>
+<div id="stage"><div id="bg"></div><div id="dots"></div></div>
+<script>
+const S = document.getElementById('stage'), E = MV.E, clamp = MV.clamp, lerp = MV.lerp, R = MV.rand(11);
+const DUR = 36.6;
+const BEATS = [0.65, 1.207, 1.718, 2.276, 2.81, 3.344, 3.878, 4.435, 4.946, 5.503, 6.014, 6.548, 7.082, 7.639, 8.173, 8.731, 9.242, 9.776, 10.31, 10.867, 11.378, 11.935, 12.469, 13.003, 13.537, 14.071, 14.605, 15.163, 15.673, 16.231, 16.765, 17.322, 17.833, 18.367, 18.901, 19.458, 19.969, 20.526, 21.06, 21.595, 22.129, 22.663, 23.197, 23.754, 24.265, 24.822, 25.356, 25.89, 26.424, 26.958, 27.492, 28.05, 28.561, 29.118, 29.652, 30.186, 30.72, 31.277, 31.788, 32.345, 32.856, 33.414, 33.948, 34.482, 35.016, 35.573, 36.084, 36.641, 37.152, 37.709, 38.243, 38.777, 39.311, 39.869];
+const snap = (t, tol = .16) => { let best = t, d = 9; for (const b of BEATS) { for (const x of [b, b + .267]) { const dd = Math.abs(x - t); if (dd < d) { d = dd; best = x; } } } return d < tol ? best : t; };
+const H = (html, p = S) => { const t = document.createElement('template'); t.innerHTML = html.trim(); const el = t.content.firstElementChild; p.appendChild(el); return el; };
+const pos = (el, x, y, w) => { el.style.left = x + 'px'; el.style.top = y + 'px'; if (w) el.style.width = w + 'px'; return el; };
+const img = (src, x, y, w, p) => pos(H(`<img class="obj" src="a/${src}.webp">`, p), x, y, w);
+const win = (el, a, b, disp = 'block') => MV.fn(-1, 1e9, (lt, p, g) => { el.style.display = (g >= a && g < b) ? disp : 'none'; });
+const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const mix = (a, b, p) => { const A = hex(a), B = hex(b); return `rgb(${A.map((v, i) => Math.round(lerp(v, B[i], p))).join(',')})`; };
+
+// ---------- fundo que muda de cor por capítulo ----------
+const BGK = [[0, '#FFF1E4'], [17.2, '#FFF1E4'], [17.6, '#FFE1EA'], [21.2, '#FFE1EA'], [21.6, '#DDF4EC'], [26.6, '#DDF4EC'], [27.0, '#FFF1E4'], [30.7, '#FFF1E4'], [31.1, '#FFE6BF']];
+const bg = document.getElementById('bg'), dots = document.getElementById('dots');
+MV.fn(-1, 1e9, (lt, p, g) => { let i = 0; while (i < BGK.length - 1 && BGK[i + 1][0] <= g) i++; const [t0, c0] = BGK[i], [t1, c1] = BGK[Math.min(i + 1, BGK.length - 1)]; bg.style.background = t1 > t0 ? mix(c0, c1, E.inOutCubic(clamp((g - t0) / (t1 - t0)))) : c0; dots.style.transform = `translateY(${-g * 14 % 64}px)`; });
+
+// ---------- partículas (respingos/pó) ----------
+function burst(t, x, y, { cor = '#fff', n = 14, tam = [14, 30], forca = 700, grav = 1500, blur = 0, sfx = null, up = true, pai = null } = {}) {
+  for (let i = 0; i < n; i++) {
+    const s = tam[0] + R() * (tam[1] - tam[0]), ang = up ? -Math.PI / 2 + (R() - .5) * 2.2 : R() * 6.283, v = forca * (.4 + R() * .7), dl = R() * .05;
+    const el = H(`<div class="part" style="width:${s}px;height:${s}px;background:${[].concat(cor)[i % [].concat(cor).length]};${blur ? `filter:blur(${blur}px)` : ''}"></div>`, pai || PL);
+    pos(el, x - s / 2, y - s / 2);
+    MV.fn(-1, 1e9, (lt, p, g) => { const tt = g - t - dl; if (tt < 0 || tt > 1) { el.style.display = 'none'; return; } el.style.display = 'block';
+      el.style.transform = `translate(${Math.cos(ang) * v * tt}px,${Math.sin(ang) * v * tt + grav * tt * tt}px) scale(${1 - tt * .6})`; el.style.opacity = 1 - clamp((tt - .6) / .4); });
+  }
+  if (sfx) MV.sfx(sfx, t, .45);
+}
+
+// =====================================================================================
+// CENA A · GANCHO + MONTAGEM (0 → 17.4) — a caneca cai e fica; ingredientes voam pra dentro
+// =====================================================================================
+const A = H(`<div class="scn"></div>`); win(A, 0, 17.45);
+const MUGX = 300, MUGY = 1200, MUGW = 480, RIMX = 300 + 480 * .39, RIMY = 1222;
+const shadow = H(`<div class="abs" style="left:270px;top:1615px;width:480px;height:66px;border-radius:50%;background:radial-gradient(closest-side,rgba(74,42,26,.25),transparent)"></div>`, A);
+// caderno (fica ATRÁS de tudo)
+const nb = H(`<div class="abs" style="left:60px;right:60px;top:110px;height:790px;background:#fff;border-radius:48px;box-shadow:0 18px 0 rgba(74,42,26,.08),0 30px 60px rgba(74,42,26,.12)"></div>`, A);
+const nbt = H(`<div class="abs ctr fr" style="top:140px;font-size:60px;color:var(--choco2)">📝 RECEITA · 7 ingredientes</div>`, A);
+MV.to(nb, { from: { y: 1900, rot: 6, opacity: 0 }, to: { y: 0, rot: 0, opacity: 1 }, at: 4.25, dur: .55, ease: 'outBack' });
+MV.to(nbt, { from: { y: 1900, opacity: 0 }, to: { y: 0, opacity: 1 }, at: 4.25, dur: .55, ease: 'outBack' }); MV.sfx('papel', 4.3, .5);
+const lines = [...Array(7)].map((_, i) => H(`<div class="abs" style="left:120px;right:120px;top:${236 + i * 88 + 80}px;height:3px;background:#F3E1D3;border-radius:3px;transform-origin:0 50%"></div>`, A));
+MV.to(lines, { from: { sx: 0 }, to: { sx: 1 }, at: 4.6, dur: .4, ease: 'outCubic', stagger: .04 });
+const CK = `<svg viewBox="0 0 40 40"><path d="M8 21 L17 30 L33 11" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ITENS = [
+  { q: 1, txt: '<b>ovo</b>', img: 'ovo_ok', tipo: 'cai', w: 210, ar: 723 / 656, row: 6.32, word: 6.57, part: { cor: ['#FFC93C', '#FFB000', '#FFF6D8'], n: 14, tam: [16, 30] }, snd: 'drop' },
+  { q: 4, txt: 'colheres de <b>leite</b>', img: 'leite_ok', tipo: 'despeja', liq: '#FFFFFF', w: 150, ar: 1005 / 505, row: 7.77, word: 8.65, part: { cor: ['#FFFFFF', '#F5F1EA'], n: 16, tam: [12, 24] }, snd: 'drop' },
+  { q: 3, txt: 'colheres de <b>óleo</b>', img: 'oleo_ok', tipo: 'despeja', liq: '#F7C948', w: 150, ar: 1004 / 505, row: 9.61, word: 10.09, part: { cor: ['#F7C948', '#FFD966'], n: 12, tam: [10, 20] }, snd: 'drop' },
+  { q: 4, txt: 'colheres de <b>açúcar</b>', img: 'acucar_ok', tipo: 'colher', po: '#FFFFFF', w: 400, ar: 422 / 997, row: 10.89, word: 11.37, part: { cor: ['#FFFFFF', '#EEE'], n: 20, tam: [6, 12] }, snd: 'brilho' },
+  { q: 4, txt: 'colheres de <b>farinha</b>', img: 'farinha_ok', tipo: 'colher', po: '#FFFFFF', w: 400, ar: 389 / 987, row: 12.41, word: 12.89, part: { cor: ['rgba(255,255,255,.95)'], n: 12, tam: [40, 90], blur: 8, forca: 380 }, snd: 'papel_pop' },
+  { q: 2, txt: 'de <b>chocolate em pó</b>', img: 'cacau_ok', tipo: 'colher', po: '#6B3F26', w: 400, ar: 406 / 981, row: 13.77, word: 14.25, part: { cor: ['rgba(92,52,30,.85)', 'rgba(122,74,46,.8)'], n: 12, tam: [40, 90], blur: 8, forca: 380 }, snd: 'papel_pop' },
+  { q: 1, txt: 'colher (chá) de <b>fermento</b>', img: 'farinha_ok', tipo: 'colher', po: '#FFFFFF', w: 280, ar: 389 / 987, row: 15.41, word: 16.49, part: { cor: ['#FFFFFF'], n: 14, tam: [6, 12] }, snd: 'brilho' },
+];
+const ROWS = ITENS.map((it, i) => H(`<div class="row" style="top:${236 + i * 88}px;height:84px;font-size:46px"><div class="ck" style="width:56px;height:56px">${CK}</div><span class="q" style="font-size:52px">0</span><span>${it.txt}</span></div>`, A));
+const ING = H(`<div class="abs" style="inset:0"></div>`, A);       // ingredientes (atrás da caneca, na frente do caderno)
+const mug = img('caneca_ok', MUGX, MUGY, MUGW, A);
+const PL = H(`<div class="abs" style="inset:0"></div>`, A);        // partículas (na frente)
+// gancho
+const t1 = H(`<div class="abs ctr fr stroke" style="top:190px;font-size:150px;color:var(--ink)">BOLO DE</div>`, A);
+const t2 = H(`<div class="abs ctr fr stroke" style="top:350px;font-size:168px;color:var(--choco2)">CHOCOLATE</div>`, A);
+const drip = H(`<svg class="abs" style="left:110px;top:505px" width="860" height="120" viewBox="0 0 860 120"><path d="M0 0 H860 V18 C 830 18 828 70 806 70 C 784 70 786 22 760 22 C 735 22 735 100 705 100 C 676 100 680 26 650 26 C 600 26 610 58 585 58 C 560 58 560 24 520 24 C 480 24 485 86 455 86 C 425 86 430 22 380 22 C 340 22 345 64 318 64 C 292 64 296 24 250 24 C 210 24 215 108 182 108 C 150 108 156 26 110 26 C 70 26 76 54 52 54 C 28 54 30 18 0 18 Z" fill="#7A4A2E"/></svg>`, A);
+const t3 = H(`<div class="abs ctr" style="top:660px"><span class="chip" style="position:relative;display:inline-block;background:var(--yel);color:var(--ink);font-size:84px;padding:14px 46px">⏱ 3 MIN</span></div>`, A);
+const t4 = H(`<div class="abs ctr fr stroke" style="top:820px;font-size:120px;color:var(--pink)">na caneca!</div>`, A);
+MV.to(t1, { from: { scale: 2.2, opacity: 0, blur: 8 }, to: { scale: 1, opacity: 1, blur: 0 }, at: -.15, dur: .4, ease: 'outExpo' }); MV.sfx('pop', .05, .4);
+MV.to(t2, { from: { scale: 2.2, opacity: 0, blur: 8 }, to: { scale: 1, opacity: 1, blur: 0 }, at: .62, dur: .4, ease: 'outExpo' }); MV.sfx('pop', snap(.7), .45);
+MV.to(drip, { from: { sy: 0 }, to: { sy: 1 }, at: .95, dur: .9, ease: 'outBack' }); drip.style.transformOrigin = '50% 0';
+MV.to(t3, { from: { scale: 0, rot: -12 }, to: { scale: 1, rot: 0 }, at: 1.62, dur: .5, ease: 'outBack' }); MV.sfx('tic', snap(1.7), .5);
+MV.fx.punch(t3.firstElementChild, 2.25, { s: 1.1, sfx: false });
+MV.to(t4, { from: { y: 60, opacity: 0, rot: -6 }, to: { y: 0, opacity: 1, rot: -3 }, at: 2.75, dur: .45, ease: 'outBack' });
+const MUGLAND = snap(3.0);
+MV.to(mug, { from: { y: -2300, rot: -14 }, to: { y: 0, rot: 0 }, at: MUGLAND - .45, dur: .45, ease: 'inQuad' });
+MV.to(mug, { from: {}, to: { sy: .82, sx: 1.12 }, at: MUGLAND, dur: .07, ease: 'outQuad' }); MV.to(mug, { from: {}, to: { sy: 1, sx: 1 }, at: MUGLAND + .07, dur: .45, ease: 'outElastic' });
+mug.style.transformOrigin = '50% 100%';
+MV.to(shadow, { from: { scale: .2, opacity: 0 }, to: { scale: 1, opacity: 1 }, at: MUGLAND - .35, dur: .4, ease: 'inQuad' });
+MV.sfx('tap', MUGLAND, .7); burst(MUGLAND, 540, 1640, { cor: ['#FFC93C', '#FF8FB1', '#7ED7C1'], n: 12, tam: [12, 22], forca: 600 });
+MV.to([t1, t2, drip, t3, t4], { from: {}, to: { y: -900, opacity: 0 }, at: 4.05, dur: .45, ease: 'inBack', stagger: .03 }); MV.sfx('deslize', 4.05, .35);
+// fio caindo (líquido ou pó) do ponto (x,y0) até a boca da caneca
+function fio(a, b, x, y0, cor, larg = 18, po = false) {
+  const el = H(`<div class="abs" style="left:${x - larg / 2}px;top:${y0}px;width:${larg}px;height:${RIMY + 12 - y0}px;border-radius:${larg}px;background:${cor};transform-origin:50% 0;${po ? 'filter:blur(3px);opacity:.9' : 'box-shadow:0 0 0 2px rgba(0,0,0,.04)'}"></div>`, ING);
+  MV.fn(-1, 1e9, (lt, p, g) => { if (g < a || g > b + .2) { el.style.display = 'none'; return; } el.style.display = 'block';
+    const i = clamp((g - a) / .12), o = clamp((g - b) / .2); el.style.transform = `scaleY(${i})`; el.style.clipPath = `inset(${o * 100}% 0 0 0)`; });
+}
+ITENS.forEach((it, i) => {
+  const row = ROWS[i], ck = row.querySelector('.ck'), q = row.querySelector('.q');
+  MV.to(row, { from: { x: -120, opacity: 0 }, to: { x: 0, opacity: 1 }, at: it.row, dur: .4, ease: 'outBack' });
+  const land = snap(it.word + .35);           // momento em que cai na caneca (no beat)
+  const W = it.w, Hh = W * it.ar, side = i % 2 ? -1 : 1;
+  const el = img(it.img, 0, 0, W, ING);
+  if (it.tipo === 'cai') {                     // ovo: entra pela lateral, para em cima e cai pra dentro
+    pos(el, RIMX - W / 2, RIMY - Hh - 40);
+    MV.to(el, { from: { x: 760 * side, y: -220, rot: 40 * side, opacity: 1 }, to: { x: 0, y: 0, rot: -8 * side }, at: land - .8, dur: .42, ease: 'outBack' });
+    MV.to(el, { from: {}, to: { y: Hh + 200, rot: 25 * side, scale: .85 }, at: land - .22, dur: .24, ease: 'inQuad' });
+    MV.to(el, { from: {}, to: { opacity: 0 }, at: land + .1, dur: .01 });
+    MV.sfx('tac', land - .25, .4);
+  } else if (it.tipo === 'despeja') {          // garrafa: entra, inclina e despeja um fio
+    const wrap = H(`<div class="abs" style="left:${RIMX + 26 - W / 2}px;top:${RIMY - 230}px;width:${W}px;height:${Hh}px;transform-origin:50% 0"></div>`, ING);
+    el.remove(); wrap.appendChild(el); pos(el, 0, 0, W);
+    MV.to(wrap, { from: { x: 760, y: -140, rot: 0, opacity: 1 }, to: { x: 0, y: 0, rot: 0 }, at: land - .95, dur: .4, ease: 'outBack' });
+    MV.to(wrap, { from: {}, to: { rot: -128 }, at: land - .55, dur: .3, ease: 'inOutCubic' });
+    fio(land - .3, land + .32, RIMX + 26, RIMY - 228, it.liq, 20);
+    MV.to(wrap, { from: {}, to: { rot: -30, x: 800, y: -250 }, at: land + .38, dur: .42, ease: 'inBack' });
+    MV.sfx('deslize', land - .55, .3);
+  } else {                                     // colher: entra, vira e o pó cai
+    pos(el, RIMX - W * .22, RIMY - Hh - 190); el.style.transformOrigin = '22% 60%';
+    MV.to(el, { from: { x: 760, y: -160, rot: 20, opacity: 1 }, to: { x: 0, y: 0, rot: 0 }, at: land - .85, dur: .4, ease: 'outBack' });
+    MV.to(el, { from: {}, to: { rot: -62 }, at: land - .38, dur: .22, ease: 'inOutCubic' });
+    fio(land - .2, land + .18, RIMX, RIMY - 175, it.po, 26, true);
+    MV.to(el, { from: {}, to: { rot: -20, x: 820, y: -200 }, at: land + .3, dur: .4, ease: 'inBack' });
+    MV.sfx('deslize', land - .4, .25);
+  }
+  // impacto na caneca + respingos/pó
+  MV.to(mug, { from: {}, to: { sy: .9, sx: 1.06 }, at: land, dur: .06, ease: 'outQuad' }); MV.to(mug, { from: {}, to: { sy: 1, sx: 1 }, at: land + .06, dur: .35, ease: 'outElastic' });
+  burst(land + .02, RIMX, RIMY + 8, { ...it.part, sfx: it.snd });
+  // check + contador no ritmo (colcheias)
+  MV.to(ck, { from: { scale: 1 }, to: { scale: 1.25 }, at: land, dur: .1 }); MV.to(ck, { from: {}, to: { scale: 1 }, at: land + .1, dur: .3, ease: 'outBack' });
+  MV.fn(-1, 1e9, (lt, p, g) => { const on = g >= land; ck.style.background = on ? 'var(--choco2)' : 'transparent'; ck.querySelector('svg').style.opacity = on ? 1 : 0;
+    const k = g < land ? 0 : Math.min(it.q, 1 + Math.floor((g - land) / .267)); q.textContent = k ? (k + '') : ''; });
+  for (let k = 0; k < it.q; k++) { MV.sfx(k ? 'tic' : 'pop', land + k * .267, k ? .5 : .4); MV.fx.punch(q, land + k * .267, { s: 1.35, sfx: false }); }
+});
+// a caneca "dança" no beat enquanto monta
+MV.fn(4.5, 17.3, (lt, p, g) => { let k = 0; for (const b of BEATS) if (b <= g) k = Math.exp(-(g - b) * 10); shadow.style.opacity = .9 + .1 * k; });
+
+// =====================================================================================
+// CENA B · MEXER (17.4 → 21.35) — vista de cima, redemoinho satisfatório
+// =====================================================================================
+const B = H(`<div class="scn"></div>`); win(B, 17.3, 21.8);
+MV.fn(17.3, 17.75, (lt, p) => { B.style.clipPath = `circle(${E.inOutQuart(clamp(lt / .45)) * 1500}px at ${RIMX}px ${RIMY}px)`; });
+MV.fn(17.75, 30, () => { B.style.clipPath = 'none'; });
+MV.sfx('deslize', 17.3, .4);
+const ring = H(`<div class="abs" style="left:190px;top:620px;width:700px;height:700px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#FFE3EC,#FF9DBB 60%,#F27CA1);box-shadow:0 40px 60px rgba(74,42,26,.18)"></div>`, B);
+const handle = H(`<div class="abs" style="left:840px;top:880px;width:170px;height:180px;border:44px solid #F58DAE;border-left:none;border-radius:0 90px 90px 0"></div>`, B);
+const bowl = H(`<div class="abs" style="left:250px;top:680px;width:580px;height:580px;border-radius:50%;overflow:hidden;box-shadow:inset 0 14px 30px rgba(0,0,0,.35)"></div>`, B);
+const sw = H(`<div class="abs" style="inset:-30%;background:conic-gradient(from 0deg,#C99A6A,#5A3220,#C99A6A,#5A3220,#C99A6A,#5A3220,#C99A6A)"></div>`, bowl);
+const sw2 = H(`<div class="abs" style="inset:0;background:radial-gradient(circle at 50% 50%,#E9C79F 0 8%,transparent 40%)"></div>`, bowl);
+const smooth = H(`<div class="abs" style="inset:0;background:radial-gradient(circle at 38% 32%,#8A5636,#4E2A18 55%,#3B1F12)"></div>`, bowl);
+const gloss = H(`<div class="abs" style="left:110px;top:80px;width:220px;height:90px;border-radius:50%;background:rgba(255,255,255,.35);filter:blur(10px);rotate:-25deg"></div>`, bowl);
+const spoon = H(`<svg class="abs" style="left:250px;top:680px;overflow:visible" width="580" height="580" viewBox="0 0 580 580"><g id="sp"><rect x="285" y="-260" width="34" height="420" rx="17" fill="#D9D9DE"/><ellipse cx="302" cy="190" rx="58" ry="78" fill="#C7C7CF"/><ellipse cx="292" cy="178" rx="20" ry="34" fill="rgba(255,255,255,.6)"/></g></svg>`, B);
+const spg = spoon.querySelector('#sp');
+MV.fn(17.4, 21.35, (lt, p, g) => {
+  const mixP = clamp((g - 18.0) / 2.3), ang = E.inOutCubic(clamp((g - 17.5) / 3.6)) * 1440;
+  sw.style.transform = `rotate(${ang * .9}deg) scale(${1 + .2 * Math.sin(g * 3)})`; sw.style.filter = `blur(${2 + mixP * 18}px)`;
+  smooth.style.opacity = E.inOutCubic(mixP); gloss.style.opacity = .4 + .6 * mixP; sw2.style.transform = `rotate(${-ang}deg)`;
+  spg.setAttribute('transform', `rotate(${ang} 290 290) translate(0 ${-30 + 20 * Math.sin(g * 6)})`);
+});
+MV.to([ring, handle, bowl, spoon], { from: { scale: 1.6, opacity: 0 }, to: { scale: 1, opacity: 1 }, at: 17.3, dur: .5, ease: 'outCubic' });
+const mx1 = H(`<div class="abs ctr fr stroke" style="top:240px;font-size:170px;color:var(--choco2)">MEXE</div>`, B);
+const mx2 = H(`<div class="abs ctr fr stroke" style="top:410px;font-size:130px;color:var(--pink)">mexe!</div>`, B);
+MV.to(mx1, { from: { scale: 0, rot: -10 }, to: { scale: 1, rot: -4 }, at: snap(17.93) - .05, dur: .4, ease: 'outBack' }); MV.sfx('deslize', snap(17.93), .4);
+MV.to(mx2, { from: { scale: 0, rot: 10 }, to: { scale: 1, rot: 4 }, at: snap(18.61) - .05, dur: .4, ease: 'outBack' }); MV.sfx('deslize', snap(18.61), .4);
+MV.fn(18, 21.35, (lt, p, g) => { let k = 0; for (const b of BEATS) if (b <= g) k = Math.exp(-(g - b) * 9); mx1.style.translate = `0 ${-k * 14}px`; mx2.style.translate = `0 ${-k * 10}px`; });
+MV.to([mx1, mx2], { from: {}, to: { opacity: 0, y: -40 }, at: 19.85, dur: .25 });
+const lis = H(`<div class="abs ctr fr stroke" style="top:300px;font-size:180px;color:var(--choco2)">lisinho ✨</div>`, B);
+MV.to(lis, { from: { scale: .2, opacity: 0, blur: 10 }, to: { scale: 1, opacity: 1, blur: 0 }, at: snap(20.25) - .08, dur: .45, ease: 'outBack' }); MV.sfx('brilho', snap(20.25), .6);
+const spk = [...Array(8)].map((_, i) => H(`<div class="abs" style="left:${300 + (i * 67) % 480}px;top:${740 + (i * 113) % 440}px;font-size:${50 + (i % 3) * 20}px">✨</div>`, B));
+spk.forEach((s, i) => { const a = 20.3 + i * .07; MV.to(s, { from: { scale: 0, rot: -40 }, to: { scale: 1, rot: 0 }, at: a, dur: .3, ease: 'outBack' }); MV.to(s, { from: {}, to: { scale: 0 }, at: a + .55, dur: .25, ease: 'inBack' }); });
+
+// =====================================================================================
+// CENA C · MICRO-ONDAS (21.35 → 26.75) — contagem rápida + "ding"
+// =====================================================================================
+const C = H(`<div class="scn"></div>`); win(C, 21.35, 26.75);
+MV.fn(21.35, 21.75, (lt, p) => { C.style.clipPath = `inset(${(1 - E.inOutQuart(clamp(lt / .4))) * 100}% 0 0 0 round 80px 80px 0 0)`; }); MV.fn(21.75, 40, () => { C.style.clipPath = 'none'; });
+MV.sfx('deslize', 21.33, .35);
+const mwT = H(`<div class="abs ctr fr stroke" style="top:200px;font-size:150px;color:var(--ink)">MICRO-ONDAS</div>`, C);
+const pot = H(`<div class="abs ctr" style="top:390px"><span class="chip" style="position:relative;display:inline-block;background:#FF6B4A;color:#fff">🔥 potência alta</span></div>`, C);
+const mw = H(`<div class="abs" style="left:70px;top:620px;width:940px;height:640px;border-radius:70px;background:linear-gradient(180deg,#9FE3D2,#6CC9B2);box-shadow:0 26px 0 rgba(30,90,75,.25),0 40px 70px rgba(30,90,75,.25)"></div>`, C);
+const glass = H(`<div class="abs" style="left:60px;top:70px;width:560px;height:500px;border-radius:44px;background:#2A2F35;overflow:hidden;box-shadow:inset 0 0 0 10px #4B5560"></div>`, mw);
+const glow = H(`<div class="abs" style="inset:0;background:radial-gradient(circle at 50% 65%,rgba(255,206,92,.95),rgba(255,140,40,.55) 45%,rgba(40,30,20,0) 75%)"></div>`, glass);
+const plate = H(`<div class="abs" style="left:90px;top:380px;width:380px;height:70px;border-radius:50%;background:radial-gradient(#fff,#d9d9d9)"></div>`, glass);
+const mugIn = img('caneca_ok', 160, 175, 240, glass);
+const panel = H(`<div class="abs" style="left:660px;top:70px;width:220px;height:500px;border-radius:36px;background:rgba(255,255,255,.35)"></div>`, mw);
+const disp = H(`<div class="abs" style="left:20px;top:30px;width:180px;height:100px;border-radius:20px;background:#1F2429;color:#7CFFB2;font:700 64px Mono;display:flex;align-items:center;justify-content:center;text-shadow:0 0 14px #7CFFB2">--:--</div>`, panel);
+const knob1 = H(`<div class="abs" style="left:55px;top:190px;width:110px;height:110px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,#cfd8d6);box-shadow:0 8px 0 rgba(0,0,0,.12)"><div style="position:absolute;left:50px;top:8px;width:10px;height:40px;border-radius:5px;background:#FF6B4A"></div></div>`, panel);
+const knob2 = H(`<div class="abs" style="left:55px;top:340px;width:110px;height:110px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,#cfd8d6);box-shadow:0 8px 0 rgba(0,0,0,.12)"><div style="position:absolute;left:50px;top:8px;width:10px;height:40px;border-radius:5px;background:#2B1A12"></div></div>`, panel);
+MV.to(mw, { from: { y: 900, rot: -4 }, to: { y: 0, rot: 0 }, at: 21.45, dur: .55, ease: 'outBack' });
+MV.to(mwT, { from: { scale: 2, opacity: 0, blur: 8 }, to: { scale: 1, opacity: 1, blur: 0 }, at: snap(22.02) - .1, dur: .38, ease: 'outExpo' }); MV.sfx('pop', snap(22.02), .4);
+MV.to(pot, { from: { scale: 0 }, to: { scale: 1 }, at: snap(22.61), dur: .4, ease: 'outBack' }); MV.sfx('click', snap(22.61), .5);
+MV.to(knob1, { from: { rot: 0 }, to: { rot: 140 }, at: 22.6, dur: .4, ease: 'outBack' });
+const T230 = snap(23.85), CD0 = 24.95, CD1 = 26.35, DING = snap(26.45);
+MV.to(knob2, { from: { rot: 0 }, to: { rot: 220 }, at: T230 - .1, dur: .5, ease: 'outBack' }); MV.sfx('catraca', T230 - .1, .4);
+MV.fn(-1, 1e9, (lt, p, g) => {
+  let s = 150; if (g < T230) { disp.textContent = '--:--'; } else { if (g > CD0) s = Math.round(150 * (1 - E.inQuad(clamp((g - CD0) / (CD1 - CD0))))); disp.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+  const on = g > T230 && g < DING + .2; glow.style.opacity = on ? .75 + .25 * Math.sin(g * 14) : .08;
+  const rot = on ? (g - T230) * 2.6 : 0; mugIn.style.transform = `translateX(${Math.sin(rot) * 12}px)`; plate.style.background = `radial-gradient(circle at ${50 + 30 * Math.sin(rot)}% 40%,#fff,#d4d4d4 70%)`;
+});
+MV.fx.punch(disp, T230, { s: 1.25, sfx: 'tap' });
+for (let t = CD0; t < CD1; t += .134) MV.sfx('tic', t, .28);
+const big = H(`<div class="abs ctr" style="top:1330px;font:700 170px Mono;color:var(--ink)"></div>`, C);
+MV.fn(-1, 1e9, (lt, p, g) => { big.textContent = disp.textContent === '--:--' ? '' : disp.textContent; });
+MV.to(big, { from: { scale: 0 }, to: { scale: 1 }, at: T230, dur: .4, ease: 'outBack' });
+MV.sfx('ding', DING, .7); MV.to(C, { from: {}, to: { bright: 1.6 }, at: DING, dur: .1 }); MV.to(C, { from: {}, to: { bright: 1 }, at: DING + .1, dur: .4 });
+MV.fx.punch(big, DING, { s: 1.15, sfx: false });
+
+// =====================================================================================
+// CENA D · CRESCENDO + BRIGADEIRO (26.75 → 31) e PRONTO (31 → fim)
+// =====================================================================================
+const Dd = H(`<div class="scn"></div>`); win(Dd, 26.6, 99);
+MV.fn(26.6, 27.0, (lt, p) => { Dd.style.clipPath = `circle(${E.inOutQuart(clamp(lt / .4)) * 1600}px at 540px 1000px)`; }); MV.fn(27.0, 99, () => { Dd.style.clipPath = 'none'; });
+const sh2 = H(`<div class="abs" style="left:250px;top:1285px;width:560px;height:70px;border-radius:50%;background:radial-gradient(closest-side,rgba(74,42,26,.25),transparent)"></div>`, Dd);
+const BX = 190, BY = 640, BW = 700, RIML = .42;              // caixa da foto (1024px) e linha da boca da caneca
+const cakeWrap = H(`<div class="abs" style="left:${BX}px;top:${BY}px;width:${BW}px;height:${BW * RIML}px;overflow:hidden"></div>`, Dd);
+const cakeTop = pos(H(`<img class="obj" src="a/simples_full.webp">`, cakeWrap), 0, 0, BW); cakeTop.style.filter = 'none';
+const body = img('simples_full', BX, BY, BW, Dd); body.style.clipPath = `inset(${RIML * 100}% 0 0 0)`;
+const hero = img('bolo_full', BX, BY, BW, Dd);
+const mug2 = body, dome = cakeWrap;
+const steam = H(`<svg class="abs" style="left:330px;top:560px" width="360" height="360" viewBox="0 0 360 360"><path d="M80 350 C 40 290, 120 250, 80 190 C 40 130, 120 90, 90 20" fill="none" stroke="rgba(255,255,255,.95)" stroke-width="14" stroke-linecap="round"/><path d="M180 350 C 140 290, 220 250, 180 190 C 140 130, 220 90, 190 20" fill="none" stroke="rgba(255,255,255,.95)" stroke-width="14" stroke-linecap="round"/><path d="M280 350 C 240 290, 320 250, 280 190 C 240 130, 320 90, 290 20" fill="none" stroke="rgba(255,255,255,.95)" stroke-width="14" stroke-linecap="round"/></svg>`, Dd);
+steam.style.filter = 'drop-shadow(0 0 6px rgba(74,42,26,.25))';
+const RISE = snap(27.3);
+MV.to(cakeTop, { from: { y: BW * RIML + 20, sx: .92 }, to: { y: -14, sx: 1.03 }, at: RISE - .15, dur: 1.05, ease: 'outCubic' }); MV.to(cakeTop, { from: {}, to: { y: 0, sx: 1 }, at: RISE + .9, dur: .45, ease: 'outElastic' }); cakeTop.style.transformOrigin = '50% 100%';
+MV.fn(RISE - .15, RISE + 1.4, (lt) => { body.style.translate = `0 ${Math.sin(lt * 40) * 1.5 * Math.max(0, 1 - lt)}px`; });
+MV.sfx('riser', RISE - .2, .35); MV.sfx('pop', RISE + .9, .45);
+MV.draw(steam.querySelectorAll('path'), 27.9, 1.0, 'outCubic'); MV.fn(27.9, 31, (lt) => { steam.style.translate = `0 ${-lt * 30}px`; steam.style.opacity = Math.max(0, 1 - lt / 2.6); });
+const cr1 = H(`<div class="abs ctr fr stroke" style="top:200px;font-size:140px;color:var(--ink)">OLHA ISSO</div>`, Dd);
+const cr2 = H(`<div class="abs ctr fr stroke" style="top:350px;font-size:150px;color:var(--pink)">crescendo! 😍</div>`, Dd);
+MV.to(cr1, { from: { y: 50, opacity: 0 }, to: { y: 0, opacity: 1 }, at: 26.85, dur: .4, ease: 'outBack' });
+MV.to(cr2, { from: { scale: 0, rot: -8 }, to: { scale: 1, rot: -3 }, at: snap(27.25), dur: .45, ease: 'outBack' });
+MV.to([cr1, cr2], { from: {}, to: { y: -600, opacity: 0 }, at: 28.65, dur: .4, ease: 'inBack', stagger: .04 });
+// brigadeiro cai e vira o bolo pronto
+const brig = H(`<div class="abs" style="left:410px;top:-300px;width:220px;height:190px;border-radius:50% 50% 46% 54%/60% 60% 40% 40%;background:radial-gradient(circle at 35% 30%,#8B5A3C,#3E2215 60%,#2A160D);box-shadow:inset -10px -14px 20px rgba(0,0,0,.35)"></div>`, Dd);
+const BR = snap(29.5);
+MV.to(brig, { from: { y: 0, rot: -20 }, to: { y: 1000, rot: 0 }, at: BR - .45, dur: .45, ease: 'inQuad' });
+MV.to(brig, { from: {}, to: { sy: .45, sx: 1.6, opacity: 0 }, at: BR, dur: .25, ease: 'outQuad' });
+MV.sfx('drop', BR, .7); MV.sfx('whoosh_rapido', BR - .45, .25);
+MV.to([dome, mug2], { from: {}, to: { opacity: 0 }, at: BR + .05, dur: .2 });
+MV.to(hero, { from: { opacity: 0 }, to: { opacity: 1 }, at: BR, dur: .3, ease: 'outCubic' });
+const gran = [...Array(26)].map((_, i) => { const el = H(`<div class="abs" style="left:${300 + (i * 37) % 460}px;top:-60px;width:12px;height:34px;border-radius:6px;background:${['#3E2215', '#5B3423', '#FF8FB1', '#FFC93C'][i % 4]};rotate:${(i * 47) % 180}deg"></div>`, Dd);
+  const a = BR + .05 + (i % 9) * .05, yEnd = 720 + (i * 53) % 220; MV.to(el, { from: { y: 0, opacity: 0 }, to: { y: yEnd, opacity: 1 }, at: a, dur: .45, ease: 'inQuad' }); MV.to(el, { from: {}, to: { opacity: 0 }, at: a + .45, dur: .2 }); return el; });
+// PRONTO!
+const PR = snap(31.0);
+const pr = H(`<div class="abs ctr" style="top:230px"><span class="fr" style="display:inline-block;background:var(--choco2);color:#fff;font-size:190px;padding:20px 60px 30px;border-radius:40px;box-shadow:0 14px 0 rgba(74,42,26,.25)">PRONTO!</span></div>`, Dd);
+MV.to(pr, { from: { scale: 2.6, opacity: 0, rot: -12 }, to: { scale: 1, opacity: 1, rot: -4 }, at: PR - .05, dur: .32, ease: 'outBack' }); MV.sfx('sucesso', PR, .55);
+const PL2 = H(`<div class="abs" style="inset:0;z-index:5"></div>`, Dd);
+burst(PR + .05, 540, 420, { cor: ['#FF8FB1', '#FFC93C', '#7ED7C1', '#7A4A2E', '#fff'], n: 34, tam: [14, 28], forca: 1300, grav: 1600, up: false, pai: PL2 });
+MV.fn(31, 99, (lt, p, g) => { hero.style.translate = `0 ${Math.sin(g * 3) * 8}px`; });
+MV.to(hero, { from: {}, to: { scale: .82, y: -60 }, at: 32.0, dur: .5, ease: 'outCubic' });
+MV.to(pr, { from: {}, to: { scale: .7, y: -60 }, at: 32.0, dur: .5, ease: 'outCubic' });
+// CTA salvar
+const cta = H(`<div class="abs ctr" style="top:1370px"><span class="chip" style="position:relative;display:inline-flex;align-items:center;gap:22px;background:#fff;color:var(--ink);font-size:64px;padding:22px 46px">
+  <svg width="70" height="84" viewBox="0 0 70 84"><path id="bm" d="M8 6 H62 V78 L35 58 L8 78 Z" fill="none" stroke="#2B1A12" stroke-width="8" stroke-linejoin="round"/></svg> Salva e faz hoje!</span></div>`, Dd);
+const bm = cta.querySelector('#bm');
+const tap = H(`<div class="abs" style="left:300px;top:1500px;font-size:130px">👆</div>`, Dd);
+const CT = snap(32.05), TAP = snap(33.0);
+MV.to(cta, { from: { y: 300, opacity: 0 }, to: { y: 0, opacity: 1 }, at: CT, dur: .5, ease: 'outBack' }); MV.sfx('deslize', CT, .35);
+MV.to(tap, { from: { x: 260, y: 300, opacity: 0 }, to: { x: 0, y: 0, opacity: 1 }, at: TAP - .5, dur: .45, ease: 'outCubic' });
+MV.to(tap, { from: {}, to: { scale: .82 }, at: TAP, dur: .08 }); MV.to(tap, { from: {}, to: { scale: 1 }, at: TAP + .08, dur: .3, ease: 'outBack' });
+MV.fn(-1, 1e9, (lt, p, g) => { bm.setAttribute('fill', g >= TAP ? '#FF8FB1' : 'none'); bm.setAttribute('stroke', g >= TAP ? '#FF5F95' : '#2B1A12'); });
+MV.fx.punch(cta.firstElementChild, TAP, { s: 1.1, sfx: 'click' }); burst(TAP + .02, 420, 1440, { cor: ['#FF8FB1', '#FFC93C'], n: 12, tam: [10, 20], forca: 600, up: false, pai: PL2 });
+MV.to(tap, { from: {}, to: { opacity: 0, y: 200 }, at: TAP + .9, dur: .4 });
+const fim = H(`<div class="abs ctr fr" style="top:1560px;font-size:44px;color:var(--choco2);opacity:.85">Bolo de caneca · 3 min · 7 ingredientes</div>`, Dd);
+const mvx = H(`<div class="abs ctr mono" style="top:1640px;font:700 24px Mono;letter-spacing:.16em;color:rgba(43,26,18,.5)">FEITO COM MOTIONVELIX</div>`, Dd);
+MV.fx.rise(fim, 34.0, { y: 20, sfx: false }); MV.fx.rise(mvx, 34.3, { y: 10, sfx: false });
+MV.setup({ w: 1080, h: 1920, fps: 30, dur: DUR });
+</script></body></html>

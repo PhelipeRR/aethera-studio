@@ -86,6 +86,11 @@ async function main() {
     },
     // analyzeFrames is the multi-frame interface used by runAutonomousMediaAcquisition.
     // Without it, requireVisualVerification=true causes all candidates to remain unverified.
+    // P0 fix: this stub is explicitly tagged as untrusted. The media-relevance gate
+    // now discards analyses whose provider is not in TRUSTED_VISION_PROVIDERS, so
+    // candidates verified only by this stub remain unverified_metadata_only and
+    // cannot be approved for assembly. Replace with a real vision provider for
+    // production-quality E2E validation.
     analyzeFrames: async (_uri, timestampsSec, segment) => {
       const narrationLower = (segment.spokenText ?? '').toLowerCase();
       const entities = ['one piece', 'shanks', 'pirates', 'marineford', 'grand line', 'luffy', 'yonko']

@@ -1,0 +1,5 @@
+{ "theme":"t-vermelho-glow", "scenes":[
+  {"head":"Seu *pedido* de sempre.","sub":"em 2 toques","tap":[0.7,0.62],"tilt":-14,"float":"✓ Pedido feito"},
+  {"head":"Faça do *seu jeito.*","sub":"personalize tudo","tap":[0.5,0.8],"tilt":12,"float":"+ 2.400 pts"},
+  {"head":"Um pouco mais *feliz.*","tilt":0}],
+  "cta":{"text":"Baixe agora","keyword":""} }

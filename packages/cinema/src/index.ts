@@ -45,6 +45,7 @@ export * from './evolution/director-orchestrator.js';
 export * from './evolution/academy-engine.js';
 export * from './evolution/transition-academy.js';
 export * from './calendar/editorial-calendar-engine.js';
+export * from './recap/index.js';
 
 import {
   buildSceneAudiovisualPlan,
@@ -247,6 +248,7 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
     mediaCatalog: catalog,
     fps,
     ...(input.externalDirection ? { externalDirection: input.externalDirection } : {}),
+    ...(input.editorialScript ? { editorialScript: input.editorialScript } : {}),
   });
   const scriptValidation = validateScriptAndBreakdown(direction, targetDur);
 
@@ -286,12 +288,16 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
           kind: idx % 2 === 0 ? 'ken_burns_in' : 'ken_burns_pan',
           enabled: true,
           params: { zoom: 1.06, easing: 'ease_in_out' },
+          estimatedCostMs: 12,
+          fallbackMode: 'cpu_basic',
         },
         {
           effectId: `fx_grade_${idx + 1}`,
           kind: 'color_grade_rec709',
           enabled: true,
           params: { contrast: 1.04, saturation: 1.05 },
+          estimatedCostMs: 8,
+          fallbackMode: 'skip',
         },
       ],
     }),
@@ -328,7 +334,7 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
     timelineRange: { start: fromFrames(Math.round(v.startSec * fps.value), fps), duration: fromFrames(Math.max(15, Math.round(v.durationSec * fps.value)), fps) },
     speed: 1,
     approved: true,
-    effects: [{ effectId: `vfx_fx_${idx + 1}`, kind: v.effect, enabled: true, params: { sceneId: v.sceneId } }],
+    effects: [{ effectId: `vfx_fx_${idx + 1}`, kind: v.effect, enabled: true, params: { sceneId: v.sceneId }, estimatedCostMs: 6, fallbackMode: 'skip' as const }],
     keyframes: [],
   }));
 

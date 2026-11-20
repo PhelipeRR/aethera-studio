@@ -1,0 +1,46 @@
+<h2 class="sr-only">Passo a passo do Velix para colocar os arquivos do projeto numa pasta do computador</h2>
+<div style="display:flex;align-items:center;gap:12px;padding:1rem 0">
+  <div style="width:40px;height:40px;border-radius:50%;background:var(--bg-tint-orange);color:var(--text-tint-orange);display:flex;align-items:center;justify-content:center"><i class="ti ti-folder" style="font-size:22px" aria-hidden="true"></i></div>
+  <div><p style="margin:0;font-weight:500;font-size:15px">Vamos preparar a pasta do projeto</p><p style="margin:0;font-size:13px;color:var(--text-secondary)">Sem limite de tamanho e sem falha de upload. O vídeo final também é salvo nela.</p></div>
+</div>
+<div id="steps"></div>
+<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin:1rem 0 8px">
+  <label style="font-size:13px;color:var(--text-secondary)">Onde você criou a pasta?
+    <select id="onde" style="width:100%;margin-top:4px">
+      <option value="Documentos">Documentos</option>
+      <option value="Área de Trabalho">Área de Trabalho</option>
+      <option value="Downloads">Downloads</option>
+      <option value="outro">Outro lugar</option>
+    </select>
+  </label>
+  <label style="font-size:13px;color:var(--text-secondary)">Nome da pasta
+    <input id="nome" type="text" value="MotionVelix" style="width:100%;margin-top:4px">
+  </label>
+</div>
+<input id="cam" type="text" placeholder="Caminho completo, ex.: D:\Projetos\MeuReel" style="width:100%;display:none;margin-bottom:8px">
+<p id="verr" style="font-size:13px;color:var(--text-danger);margin:0 0 6px"></p>
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+  <button id="vok" style="background:var(--fill-primary);color:var(--on-primary);border-color:transparent">Pronto, coloquei os arquivos ↗</button>
+  <button id="vaj">Não consegui ↗</button>
+</div>
+<script>
+const P = [
+  ["ti-folder-plus", "Crie uma pasta no seu computador", "Ex.: dentro de Documentos, uma pasta chamada MotionVelix."],
+  ["ti-files", "Coloque dentro tudo o que o vídeo vai usar", "Vídeos (MP4, MOV), músicas ou narração (MP3, WAV, M4A) e imagens ou logo (PNG, JPG)."],
+  ["ti-shield-check", "Clique em Pronto e permita o acesso", "Vou pedir permissão para abrir essa pasta. Vai aparecer um aviso aqui no Cowork: clique em Permitir."]
+];
+document.getElementById("steps").innerHTML = P.map((p, i) => `<div style="display:flex;gap:12px;padding:10px 0;border-bottom:0.5px solid var(--border)"><div style="width:28px;height:28px;flex:none;border-radius:50%;background:var(--surface-1);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:500">${i + 1}</div><div><p style="margin:0;font-size:14px;font-weight:500"><i class="ti ${p[0]}" style="font-size:16px;vertical-align:-2px;margin-right:6px" aria-hidden="true"></i>${p[1]}</p><p style="margin:0;font-size:13px;color:var(--text-secondary)">${p[2]}</p></div></div>`).join("");
+const onde = document.getElementById("onde"), nome = document.getElementById("nome"), cam = document.getElementById("cam"), err = document.getElementById("verr");
+onde.onchange = () => { cam.style.display = onde.value === "outro" ? "block" : "none"; err.textContent = ""; };
+[nome, cam].forEach(x => x.oninput = () => err.textContent = "");
+document.getElementById("vok").onclick = () => {
+  if (onde.value === "outro") {
+    if (!cam.value.trim()) { err.textContent = "Escreve o caminho da pasta primeiro."; return; }
+    sendPrompt(`Velix, meus arquivos estão na pasta ${cam.value.trim()}. Pode pedir acesso e começar.`);
+  } else {
+    if (!nome.value.trim()) { err.textContent = "Escreve o nome da pasta primeiro."; return; }
+    sendPrompt(`Velix, meus arquivos estão na pasta ${onde.value} > ${nome.value.trim()}. Pode pedir acesso e começar.`);
+  }
+};
+document.getElementById("vaj").onclick = () => sendPrompt("Velix, não consegui preparar a pasta. Me ajuda passo a passo?");
+</script>

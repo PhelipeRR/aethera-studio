@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- TEMPLATE: SHOWREEL BAUHAUS (motion do zero, ~12s, loop perfeito)
+     Inspirado em: V10 e V13 cevox_ (bola vermelha, squash&stretch, "MAKE IT MOVE", formas primárias, cubos, título final),
+     V08 grafigator (HUD técnico nos cantos, cortes a cada ~0.6s).
+     Dados opcionais: {w,h,words:["MAKE","IT","MOVE"], title:"MOTION", title2:"REEL", year:"'26", brand:"SEU NOME", chapters:[...]} -->
+<link rel="stylesheet" href="../engine/mv.css">
+<script src="../engine/mv.js"></script>
+<style>
+  :root{--red:#e8381e;--blue:#1f3fe0;--yel:#f6c51d;--ink:#0e0e0e;--cream:#efe9dc}
+  .scene{position:absolute;inset:0;overflow:hidden}
+  .hudc{position:absolute;font:700 20px Mono;letter-spacing:.2em;text-transform:uppercase;opacity:.75;z-index:50}
+  .ball{position:absolute;width:150px;height:150px;border-radius:50%;background:var(--red);left:50%;margin-left:-75px}
+  .floor{position:absolute;left:12%;right:12%;height:3px;background:#f2efe8;opacity:.6}
+  .mega{font-family:Anton;text-transform:uppercase;line-height:.82;letter-spacing:-.01em;white-space:nowrap}
+  .shape{position:absolute;left:50%;top:50%}
+  .dot{position:absolute;border-radius:50%}
+  .title{font-family:Archivo Black;line-height:.86;letter-spacing:-.03em;text-transform:uppercase;color:var(--ink)}
+  .title .yr{font-family:Serif;font-style:italic;color:var(--red);text-transform:none;letter-spacing:-.04em}
+</style></head>
+<body class="t-bauhaus">
+<div id="stage"></div>
+<script>
+const D = Object.assign({ w: 1080, h: 1920, fps: 30, words: ['MAKE', 'IT', 'MOVE'], title: 'MOTION', title2: 'REEL', year: "'26", brand: 'MOTIONVELIX',
+  chapters: ['01 — RHYTHM', '02 — TYPE', '03 — FORM', '04 — PATTERN', '05 — DATA', '06 — TITLE'] }, window.MV_DATA || {});
+const W = D.w, H = D.h, V = H > W; const S = document.getElementById('stage');
+const U = Math.min(W, H) / 1080;                       // unidade de escala
+const scene = (bg) => { const s = document.createElement('div'); s.className = 'scene'; s.style.background = bg; S.appendChild(s); return s; };
+const show = (el, a, b) => MV.to(el, { from: { opacity: 0 }, to: { opacity: 1 }, at: a, dur: .001, ease: 'linear' }).to(el, { from: {}, to: { opacity: 0 }, at: b, dur: .001, ease: 'linear' });
+const hud = document.createElement('div'); S.appendChild(hud);
+hud.innerHTML = `<div class="hudc" style="top:${V ? 240 : 40}px;left:60px">${D.brand} · MOTION REEL</div><div class="hudc tcode" style="top:${V ? 240 : 40}px;right:${V ? 150 : 60}px"></div><div class="hudc chap" style="bottom:${V ? 460 : 40}px;left:60px"></div>`;
+let T = 0;
+
+// 1) RITMO — bola quica com squash & stretch (0 → 2.1s)
+{ const s = scene('#1b1b1f'); const fl = document.createElement('div'); fl.className = 'floor'; fl.style.top = (H * .62) + 'px'; s.appendChild(fl);
+  const b = document.createElement('div'); b.className = 'ball'; b.style.width = b.style.height = 190 * U + 'px'; b.style.marginLeft = -95 * U + 'px'; s.appendChild(b);
+  const floorY = H * .62 - 190 * U; MV.sfx('whoosh_rapido', 0, .5);
+  MV.fn(-1, 2.1, (lt, p, g) => {
+    const t = Math.max(0, g); const hops = [[0, .55, 520], [.55, 1.0, 300], [1.0, 1.32, 150]];
+    let y = floorY, sx = 1, sy = 1;
+    for (const [a, c, hh] of hops) if (t >= a && t < c) { const q = (t - a) / (c - a); y = floorY - hh * U * 4 * q * (1 - q); const v = Math.abs(1 - 2 * q); sy = 1 + .25 * v * (hh / 520); sx = 1 / sy; if (q < .08 || q > .92) { sx = 1.35; sy = .7; } }
+    if (t >= 1.32) { const q = MV.clamp((t - 1.32) / .7); y = floorY; sx = 1 + 6 * MV.E.inExpo(q); sy = 1 - .6 * MV.E.inExpo(q); }
+    b.style.transform = `translateY(${y}px) scale(${sx},${sy})`; b.style.transformOrigin = '50% 100%';
+  });
+  [0.53, 0.98, 1.3].forEach((t, i) => MV.sfx('tap', t, .8 - i * .15)); MV.sfx('whoosh_grave', 1.6, .6);
+  show(s, -1, 2.1); T = 2.1; }
+
+// 2) TIPO — palavras batendo, condensada gigante, smear de velocidade (2.1 → 4.3)
+{ const s = scene('var(--red)'); const box = document.createElement('div'); box.className = 'layer'; s.appendChild(box);
+  box.innerHTML = D.words.map(w => `<div class="mega" style="font-size:${(V ? 420 : 330) * U}px;color:var(--ink)">${w}</div>`).join('');
+  const ws = box.querySelectorAll('.mega');
+  ws.forEach((w, i) => { const a = T + i * .32; MV.sfx(i === ws.length - 1 ? 'impacto' : 'whoosh_rapido', a, .7); MV.to(w, { from: { x: (i % 2 ? -1 : 1) * 900 * U, sx: 1.8, blur: 18, opacity: 1 }, to: { x: 0, sx: 1, blur: 0, opacity: 1 }, at: a, dur: .42, ease: 'outExpo' }); });
+  MV.to(box, { from: { scale: 1, rot: 0 }, to: { scale: 1.12, rot: -4 }, at: T + 1, dur: 1.2, ease: 'inOutCubic' });
+  MV.to(box, { from: {}, to: { x: -1400 * U, blur: 24 }, at: T + 1.9, dur: .3, ease: 'inExpo' });
+  show(s, T, T + 2.2); T += 2.2; }
+
+// 3) FORMA — círculo → quadrado → triângulo (morph via border-radius/clip) sobre creme (4.3 → 6.3)
+{ const s = scene('var(--cream)'); const sh = document.createElement('div'); sh.className = 'shape'; const sz = 460 * U;
+  Object.assign(sh.style, { width: sz + 'px', height: sz + 'px', margin: `${-sz / 2}px 0 0 ${-sz / 2}px`, background: 'var(--blue)' }); s.appendChild(sh);
+  const sh2 = sh.cloneNode(); sh2.style.background = 'var(--red)'; sh2.style.mixBlendMode = 'multiply'; s.appendChild(sh2);
+  MV.to(sh, { from: { scale: 0, radius: sz / 2, rot: 0 }, to: { scale: 1, radius: sz / 2, rot: 0 }, at: T, dur: .5, ease: 'outBack' });
+  MV.to(sh, { from: {}, to: { radius: 30 * U, rot: 135 }, at: T + .6, dur: .6, ease: 'inOutExpo' });
+  MV.to(sh2, { from: { scale: 0, radius: 30 * U, x: 0 }, to: { scale: .8, radius: 30 * U, x: 160 * U }, at: T + .7, dur: .55, ease: 'outExpo' });
+  MV.to(sh2, { from: {}, to: { radius: sz / 2, x: -120 * U, y: 120 * U }, at: T + 1.25, dur: .5, ease: 'inOutExpo' });
+  MV.to([sh, sh2], { from: {}, to: { scale: 0, rot: 360 }, at: T + 1.75, dur: .3, ease: 'inBack' });
+  MV.sfx('pop', T, .7); MV.sfx('pop_agudo', T + .7, .6); MV.sfx('deslize_reverso', T + 1.5, .6);
+  show(s, T, T + 2.05); T += 2.05; }
+
+// 4) PADRÃO — grade de pontos em onda (6.3 → 8.3)
+{ const s = scene('var(--blue)'); const cols = V ? 9 : 16, rows = V ? 16 : 9, gap = (V ? W : W) / (cols + 1); const r = MV.rand(3); const dots = [];
+  const cs = ['#fff', 'var(--yel)', 'var(--red)', '#fff'];
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) { const d = document.createElement('div'); d.className = 'dot'; const z = gap * .5; Object.assign(d.style, { width: z + 'px', height: z + 'px', left: gap * (x + .75) + 'px', top: (H - gap * rows) / 2 + gap * y + 'px', background: cs[Math.floor(r() * 4)] }); s.appendChild(d); dots.push([d, x, y]); }
+  const t0 = T; MV.sfx('brilho', T, .7);
+  MV.fn(t0, t0 + 2.05, (lt) => dots.forEach(([d, x, y]) => { const dist = Math.hypot(x - cols / 2, y - rows / 2); const k = MV.clamp((lt * 9 - dist) / 3); const wv = Math.sin(lt * 6 - dist * .7); d.style.transform = `scale(${MV.E.outBack(k) * (.55 + .45 * wv)}) rotate(${wv * 45}deg)`; d.style.borderRadius = wv > .2 ? '50%' : '18%'; }));
+  show(s, T, T + 2.05); T += 2.05; }
+
+// 5) DADOS — dashboard com contador e barras (8.3 → 10.3)
+{ const s = scene('var(--cream)'); const L = document.createElement('div'); L.className = 'layer'; L.style.gap = 30 * U + 'px'; s.appendChild(L);
+  L.innerHTML = `<div style="display:flex;flex-direction:${V ? 'column' : 'row'};align-items:center;gap:${24 * U}px"><div class="card" style="background:var(--red);border:0;padding:${40 * U}px ${56 * U}px;color:#fff"><div style="font:700 ${26 * U}px Mono;opacity:.8">ENGAGEMENT</div><div class="n" style="font:900 ${190 * U}px Inter;letter-spacing:-.05em">0%</div></div>
+  <div class="card" style="background:var(--ink);border:0;padding:${40 * U}px;display:flex;align-items:flex-end;gap:${14 * U}px;height:${330 * U}px">${[.4, .7, .5, .9, .65, 1].map(h => `<i class="bar" style="display:block;width:${34 * U}px;height:${h * 230 * U}px;background:var(--yel);border-radius:8px;transform-origin:bottom"></i>`).join('')}</div></div>`;
+  MV.fx.pop(L.querySelectorAll('.card'), T, { stagger: .12, s0: .7 });
+  MV.count(L.querySelector('.n'), 0, 248, T + .1, 1.3, { prefix: '+', suffix: '%' });
+  MV.to(L.querySelectorAll('.bar'), { from: { sy: 0 }, to: { sy: 1 }, at: T + .3, dur: .6, ease: 'outBack', stagger: .07 });
+  show(s, T, T + 2); T += 2; }
+
+// 6) TÍTULO + volta para a bola (loop) (10.3 → 12.4)
+{ const s = scene('var(--cream)'); const L = document.createElement('div'); L.className = 'layer'; s.appendChild(L);
+  L.innerHTML = `<div class="title" style="font-size:${(V ? 190 : 210) * U}px"><div class="l1">${D.title}</div><div class="l2"><span class="t2">${D.title2}</span> <span class="mask"><span class="yr" style="display:inline-block">${D.year}</span></span><span class="pt" style="display:inline-block;width:${44 * U}px;height:${44 * U}px;border-radius:50%;background:var(--red);margin-left:${10 * U}px"></span></div></div><div class="kicker" style="margin-top:${30 * U}px;color:var(--ink)">${D.brand}</div>`;
+  const ws = MV.words(L.querySelectorAll('.l1,.t2'), { mask: true });
+  MV.fx.maskUp([...ws, L.querySelector('.yr')], T, { stagger: .08, y: 260 * U }); MV.sfx('boom', T, .8);
+  MV.fx.pop(L.querySelector('.pt'), T + .5, { s0: 0 });
+  MV.fx.rise(L.querySelector('.kicker'), T + .6, { y: 20 });
+  MV.to(L, { from: {}, to: { scale: .3, opacity: 0, blur: 10 }, at: T + 1.7, dur: .35, ease: 'inExpo' });
+  show(s, T, T + 2.05); T += 2.05; }
+
+const DUR = T;
+const tc = hud.querySelector('.tcode'), ch = hud.querySelector('.chap'); const cut = [0, 2.1, 4.3, 6.35, 8.4, 10.4];
+MV.fn(-1, 1e9, (lt, p, g) => { const t = Math.max(0, g); tc.textContent = `TC ${String(Math.floor(t)).padStart(2, '0')}:${String(Math.floor((t % 1) * 30)).padStart(2, '0')}`; let k = 0; cut.forEach((c, i) => { if (t >= c) k = i; }); ch.textContent = D.chapters[k] || ''; const light = [2, 4, 5].includes(k); hud.style.color = light ? 'var(--ink)' : '#f2efe8'; });
+MV.setup({ w: W, h: H, fps: D.fps, dur: DUR });
+</script></body></html>

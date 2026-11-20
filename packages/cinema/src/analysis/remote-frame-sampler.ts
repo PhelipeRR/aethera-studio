@@ -140,7 +140,7 @@ export function computeAdaptiveSampleTimestamps(input: AdaptiveSampleInput): num
   const frameCount = dur <= 35 ? 3 : dur <= 120 ? 5 : 7;
   const out: number[] = [];
   for (let i = 0; i < frameCount; i += 1) {
-    const frac = frameCount === 1 ? 0.5 : i / (frameCount - 1);
+    const frac = i / Math.max(1, frameCount - 1);
     const ts = Number(Math.min(dur - 0.25, Math.max(0, spanStart + spanLen * (0.08 + frac * 0.84))).toFixed(2));
     if (!out.some((prev) => Math.abs(prev - ts) < 0.4)) {
       out.push(ts);

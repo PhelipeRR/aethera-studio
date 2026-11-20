@@ -39,6 +39,29 @@ export interface ScriptSegmentExpectation {
   expectsAnimeWork?: boolean;
 }
 
+/**
+ * Vision providers that produce real per-frame analysis from pixel data in production.
+ * Any provider not in this set (e.g. 'e2e_fallback', 'mock', 'stub', 'test_vision')
+ * is treated as untrusted: its analyses are discarded and the candidate remains unverified.
+ *
+ * IMPORTANT: `provider === undefined` is NOT accepted as verified evidence in production.
+ * Only frames with an explicit provider in this set count as real visual verification.
+ */
+export const TRUSTED_VISION_PROVIDERS = new Set([
+  'gemini_vision',
+  'openai_gpt4o',
+  'clip_local',
+  'voicestudio_whisper',
+  'trace_moe',
+  'anime_provenance',
+]);
+
+/**
+ * Test-only vision providers accepted exclusively in test environments (NODE_ENV=test).
+ * These are NEVER trusted in production regardless of how they appear in analyses.
+ */
+export const TEST_ONLY_VISION_PROVIDERS = new Set(['test_vision']);
+
 export interface DistributedFrameAnalysis {
   timestampSec: number;
   visualCategory: VisualCategory;
@@ -48,6 +71,8 @@ export interface DistributedFrameAnalysis {
   /** OCR/transcription of text burned into the frame; never identity proof by itself. */
   visibleText?: string[];
   confidence: number;
+  /** Identifier of the vision provider that produced this analysis. When absent or not in TRUSTED_VISION_PROVIDERS, the analysis is discarded. */
+  provider?: string;
 }
 
 export interface VisionVerificationDiagnostics {
@@ -696,7 +721,21 @@ export async function evaluateMediaRelevance(
       .toLowerCase(),
   );
 
-  const validVisualFrames = frameAnalyses.filter(
+  // P0 fix (hardened): only frames with an explicit provider in TRUSTED_VISION_PROVIDERS
+  // count as real visual evidence in production. `provider === undefined` is NOT accepted
+  // as verified — it indicates a caller that predates the provider tag or a stub that
+  // never identified itself. Test-only providers (e.g. 'test_vision') are accepted only
+  // when NODE_ENV=test; they are NEVER trusted in production.
+  const isTestEnv = typeof process !== 'undefined' && process.env?.['NODE_ENV'] === 'test';
+  const trustedFrameAnalyses = frameAnalyses.filter((f) => {
+    if (f.provider === undefined) return isTestEnv; // reject undefined in production
+    if (TRUSTED_VISION_PROVIDERS.has(f.provider)) return true;
+    if (isTestEnv && TEST_ONLY_VISION_PROVIDERS.has(f.provider)) return true;
+    return false;
+  });
+  const untrustedProviderCount = frameAnalyses.length - trustedFrameAnalyses.length;
+
+  const validVisualFrames = trustedFrameAnalyses.filter(
     (f) =>
       f.confidence > 0.15 &&
       !isTextOnlyFrame(f) &&

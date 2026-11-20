@@ -1,0 +1,136 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- TEMPLATE: KINETIC EXPLAINER (motion do zero, 9:16)
+     Inspirado em: V12 lucassena (creme/laranja), V07 andreoliveira (verde terminal), V06 (azul), V03 (vermelho glow).
+     Data-driven: passe --data roteiro.json  (ver templates/exemplos/explainer.json) -->
+<link rel="stylesheet" href="../engine/mv.css">
+<script src="../engine/mv.js"></script>
+<style>
+  .beat{position:absolute;left:70px;right:140px;top:300px;bottom:460px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:34px}
+  .lines .ln{display:block}
+  .lines .ln.dimmed{opacity:.3}
+  .big{font-size:300px;font-weight:900;letter-spacing:-.06em;line-height:.9;color:var(--ac)}
+  .stats{display:flex;gap:18px;padding:0 30px 30px}
+  .hub{position:relative;width:820px;height:820px}
+  .hub .core{position:absolute;left:50%;top:50%;width:190px;height:190px;margin:-95px;border-radius:44px;background:#fff;display:grid;place-items:center;font-size:110px;color:var(--ac);box-shadow:0 30px 90px var(--glow)}
+  .hub .node{position:absolute;width:150px;height:250px;margin:-125px -75px;border-radius:26px;background:linear-gradient(160deg,var(--ac2),var(--ac));box-shadow:0 30px 70px rgba(0,0,0,.3)}
+  .hub svg{position:absolute;inset:0}
+  .list{font:500 40px/1.7 Mono;text-align:left}
+  .list .it::before{content:'> ';color:var(--ac)}
+  .wm{position:absolute;bottom:440px;width:100%;text-align:center;font:500 22px Mono;letter-spacing:.3em;color:var(--mute);opacity:.6}
+  .prog{position:absolute;top:0;left:0;height:8px;background:var(--ac);width:0}
+  .ring{width:520px;height:520px}
+  .t-claude-creme .win .body,.t-bauhaus .win .body{color:#eee}
+</style></head>
+<body class="t-claude-creme">
+<div id="stage">
+  <div class="bg-paper" id="bgp"></div><div class="bg-glow" id="bgg" style="display:none"></div><div class="grain"></div>
+  <div id="beats"></div>
+  <div class="wm" id="wm"></div>
+  <div class="prog" id="prog"></div>
+</div>
+<script>
+const D = window.MV_DATA || {
+  theme: 't-claude-creme', fps: 30, handle: '@seuperfil', progress: false,
+  beats: [
+    { type: 'text', dur: 2.2, kicker: '', lines: ['Quanto eu *ganho*', 'só com IA?'] },
+    { type: 'text', dur: 1.8, lines: ['Faz a conta', '*comigo.*'] },
+    { type: 'window', dur: 2.6, title: 'claude code · terminal', typing: '> claude, gera o reel', caption: 'Eu faço *3 vídeos* por dia.' },
+    { type: 'counter', dur: 2.4, label: 'vídeos no mês', from: 0, to: 90, caption: '*90* vídeos no mês.' },
+    { type: 'price', dur: 2.2, caption: 'Cada vídeo me custa…', value: 'R$ 1,20' },
+    { type: 'hub', dur: 2.6, caption: '90 vídeos dão pra *6 clientes.*' },
+    { type: 'list', dur: 3, title: 'O que ele faz sozinho:', items: ['edita o vídeo', 'legenda no ritmo', 'zoom no rosto', 'corta na batida'] },
+    { type: 'cta', dur: 3.2, lead: 'quer o passo a passo?', word: 'Comenta', keyword: 'GUIA', reply: 'te mando no direct' },
+  ]
+};
+document.body.className = D.theme || 't-claude-creme';
+const dark = !/creme|bauhaus|branco/.test(D.theme || '');
+if (dark) { bgp.style.display = 'none'; bgg.style.display = 'block'; }
+wm.textContent = D.handle || '';
+const fps = D.fps || 30;
+let T = 0; const OV = .18; // sobreposição entre beats
+const root = document.getElementById('beats');
+const hl = s => s.replace(/\*(.+?)\*/g, '<span class="hl">$1</span>');
+
+D.beats.forEach((b, bi) => {
+  const el = document.createElement('div'); el.className = 'beat'; root.appendChild(el);
+  // primeiro beat começa "no meio" da animação => frame 0 já tem conteúdo (regra do gancho)
+  const at = bi === 0 ? -0.35 : T;
+  let end = T + b.dur;
+  // SINCRONIA COM A MÚSICA: se houver D.batidas (mv_edit.py batidas trilha.mp3 --salvar b.json → campo "batidas"), a troca cai na batida
+  if (D.batidas && D.batidas.length) { const cand = D.batidas.filter(x => x > T + .9); if (cand.length) end = cand.reduce((m, x) => Math.abs(x - (T + b.dur)) < Math.abs(m - (T + b.dur)) ? x : m, cand[0]); }
+  const last = bi === D.beats.length - 1;
+  if (bi > 0) MV.sfx('whoosh_rapido', T - .1, .45);   // transição entre beats
+  else MV.sfx(D.somInicial || 'impacto', 0, .5);      // som no 1º frame (gancho sonoro)
+  MV.to(el, { from: { opacity: 0 }, to: { opacity: 1 }, at: Math.max(at, -1), dur: .01, ease: 'linear' }); // invisível até seu momento
+
+  if (b.type === 'text') {
+    el.innerHTML = (b.kicker ? `<div class="kicker">${b.kicker}</div>` : '') + `<div class="h-l lines">${b.lines.map(l => `<span class="ln">${l}</span>`).join('')}</div>`;
+    const words = MV.words(el.querySelectorAll('.ln'), { mask: true });
+    MV.fx.maskUp(words, at, { stagger: .07 });
+    if (b.kicker) MV.fx.rise(el.querySelector('.kicker'), at, { y: 20 });
+  }
+  if (b.type === 'window') {
+    el.innerHTML = `<div class="win"><div class="bar"><i></i><i></i><i></i>&nbsp;${b.title || ''}</div><div class="body"><span class="ty"></span></div></div><div class="h-m cap">${b.caption || ''}</div>`;
+    MV.to(el.querySelector('.win'), { from: { y: 120, opacity: 0, rx: 25, scale: .92 }, to: { y: 0, opacity: 1, rx: 0, scale: 1 }, at, dur: .7, ease: 'outExpo' });
+    MV.type(el.querySelector('.ty'), b.typing || '', at + .35, Math.min(1.4, (b.typing || '').length * .045));
+    MV.fx.maskUp(MV.words(el.querySelector('.cap'), { mask: true }), at + .5, { stagger: .06 });
+  }
+  if (b.type === 'counter') {
+    const maxTxt = (b.prefix || '') + Math.round(Math.max(Math.abs(b.to), Math.abs(b.from || 0))).toLocaleString('pt-BR') + (b.suffix || '');
+    const fsz = Math.min(300, Math.floor(1500 / Math.max(1, maxTxt.length)));   // auto-ajuste: número nunca vaza
+    el.innerHTML = `<div class="kicker">${b.label || ''}</div><div class="big num" style="font-size:${fsz}px">0</div><div class="h-m cap">${b.caption || ''}</div>`;
+    MV.fx.pop(el.querySelector('.num'), at, { s0: .5 });
+    MV.sfx(/R\$/.test(b.prefix || '') ? 'dinheiro' : 'sucesso', at + Math.min(1.4, b.dur * .6), .5);
+    MV.count(el.querySelector('.num'), b.from || 0, b.to, at, Math.min(1.4, b.dur * .6), { prefix: b.prefix || '', suffix: b.suffix || '', dec: b.dec || 0 });
+    MV.fx.rise(el.querySelector('.kicker'), at, { y: 20 });
+    MV.fx.maskUp(MV.words(el.querySelector('.cap'), { mask: true }), at + .45, { stagger: .06 });
+  }
+  if (b.type === 'price') {
+    el.innerHTML = `<div class="h-l cap">${b.caption}</div><div class="tag" style="font-size:96px;padding:18px 44px;border-radius:26px">${b.value}</div>`;
+    MV.fx.maskUp(MV.words(el.querySelector('.cap'), { mask: true }), at, { stagger: .06 });
+    MV.fx.slam(el.querySelector('.tag'), at + .55, { s0: 2 });
+    MV.fx.shake('#stage', at + .62, { amp: 12, dur: .25 });
+  }
+  if (b.type === 'hub') {
+    const N = b.items || 6, R = 330;
+    let nodes = '', lines = '';
+    for (let i = 0; i < N; i++) { const a = -Math.PI / 2 + i * 2 * Math.PI / N, x = 410 + Math.cos(a) * R, y = 410 + Math.sin(a) * R; nodes += `<div class="node" style="left:${x}px;top:${y}px;rotate:${(i % 2 ? 8 : -8)}deg"></div>`; lines += `<path class="ln${i}" d="M410 410 L${x} ${y}" stroke="var(--ac)" stroke-width="4" fill="none" opacity=".7"/>`; }
+    el.innerHTML = `<div class="hub"><svg viewBox="0 0 820 820">${lines}</svg>${nodes}<div class="core">${b.center || '✳'}</div></div><div class="h-m cap">${b.caption || ''}</div>`;
+    MV.fx.pop(el.querySelector('.core'), at, { s0: .3 });
+    MV.draw(el.querySelectorAll('svg path'), at + .2, .5);
+    MV.fx.pop(el.querySelectorAll('.node'), at + .35, { stagger: .07, s0: .2 });
+    MV.fn(at, end + 1, (lt) => el.querySelector('.hub').style.rotate = (lt * 4) + 'deg');
+    MV.fx.maskUp(MV.words(el.querySelector('.cap'), { mask: true }), at + .6, { stagger: .06 });
+  }
+  if (b.type === 'list') {
+    el.innerHTML = `<div class="h-m">${hl(b.title || '')}</div><div class="list">${b.items.map(i => `<div class="it">${i}</div>`).join('')}</div>`;
+    MV.fx.rise(el.querySelector('.h-m'), at);
+    MV.fx.slideL(el.querySelectorAll('.it'), at + .3, { stagger: Math.min(.35, (b.dur - 1) / b.items.length), x: -80 });
+  }
+  if (b.type === 'chips') {
+    el.innerHTML = `<div class="h-l">${b.title || ''}</div><div style="display:flex;flex-direction:column;gap:18px;align-items:center">${b.items.map(i => `<span class="chip"><span class="dot">✓</span>${i}</span>`).join('')}</div>`;
+    MV.fx.maskUp(MV.words(el.querySelector('.h-l'), { mask: true }), at, { stagger: .06 });
+    MV.fx.pop(el.querySelectorAll('.chip'), at + .4, { stagger: .18 });
+  }
+  if (b.type === 'cta') {
+    el.innerHTML = `<div class="kicker">${b.lead || ''}</div><div class="h-l">*✳* ${b.word || 'Comenta'}</div><div class="comment"><span class="av"></span><span class="kw"></span><span class="pub">Publicar</span></div><div class="pill ac rep" style="font-size:30px">↳ ${b.reply || ''}</div>`;
+    MV.fx.rise(el.querySelector('.kicker'), at, { y: 20 });
+    MV.fx.maskUp(MV.words(el.querySelector('.h-l'), { mask: true }), at + .1);
+    MV.fx.pop(el.querySelector('.comment'), at + .35, { s0: .8 });
+    MV.type(el.querySelector('.kw'), b.keyword || 'EU QUERO', at + .7, .6);
+    MV.fx.punch(el.querySelector('.pub'), at + 1.5);
+    MV.fx.rise(el.querySelector('.rep'), at + 1.6, { y: 30 });
+    MV.sfx('ding', at + 1.6, .55);
+  }
+  // saída (exceto último)
+  if (!last) MV.fx.out(el, end - OV, { dur: .3, y: -40, blur: 16 });
+  else MV.fx.out(el, end - .35, { dur: .35, y: 0, blur: 20 }); // dissolve => loop limpo para o 1º frame
+  T = end;
+});
+const DUR = T;
+if (D.progress) MV.to('#prog', { from: { width: 0 }, to: { width: 1080 }, at: 0, dur: DUR, ease: 'linear' });
+// fundo vivo: o glow respira e deriva (nunca fica estático)
+MV.fn(0, DUR, (lt) => { bgg.style.translate = `${Math.sin(lt * .6) * 40}px ${Math.cos(lt * .4) * 60}px`; bgg.style.scale = 1 + Math.sin(lt * .8) * .04; });
+MV.setup({ w: 1080, h: 1920, fps, dur: DUR });
+</script></body></html>

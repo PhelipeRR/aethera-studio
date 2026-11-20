@@ -156,7 +156,7 @@ export function parseSectionDurationSec(sectionOrLine: string): number | null {
 export function parseAcquisitionProgress(
   line: string,
   sectionDurationSec?: number | null,
-): { bytesDone: number; bytesTotal: number | null } | null {
+): { bytesDone: number; bytesTotal: number | null; pct?: number | null } | null {
   const match = new RegExp(`${PROGRESS_TAG} (\\d+|NA) (\\d+|NA) ([\\d.]+|NA)`).exec(line);
   if (match && match[1] !== 'NA') {
     const total = match[2] !== 'NA' ? Number(match[2]) : match[3] !== 'NA' ? Math.round(Number(match[3])) : null;
@@ -172,7 +172,8 @@ export function parseAcquisitionProgress(
     if (timeSec <= 0 && bytesDone <= 0) return null;
     const ratio = sectionDurationSec && sectionDurationSec > 0 ? Math.min(0.99, timeSec / sectionDurationSec) : null;
     const bytesTotal = ratio && ratio > 0.01 && bytesDone > 0 ? Math.round(bytesDone / ratio) : null;
-    return { bytesDone, bytesTotal };
+    const pct = ratio !== null ? Math.min(99, Math.max(0, Math.round(ratio * 100))) : null;
+    return { bytesDone, bytesTotal, ...(pct !== null ? { pct } : {}) };
   }
   return null;
 }
@@ -205,27 +206,40 @@ export async function acquireWithYtDlp(input: {
   downloadSection?: string;
   maxFilesize?: string;
   signal?: AbortSignal;
-  onProgress?: (progress: { bytesDone: number; bytesTotal: number | null }) => void;
+  onProgress?: (progress: { bytesDone: number; bytesTotal: number | null; pct?: number | null }) => void;
 }): Promise<{ relativePath: string; bytesTransferred: number; downloadMs: number; durationSec?: number }> {
   const startedAt = Date.now();
   if (isAbsolute(input.relativeDir) || input.relativeDir.split(/[/\\]/).includes('..')) throw new Error('forbidden: a pasta de mídia precisa ficar dentro do projeto.');
   const base = realpathSync(input.root);
   const directory = resolve(base, input.relativeDir);
   mkdirSync(directory, { recursive: true });
-  let buffer = '';
+  let stdoutTail = '';
   let printed: string | null = null;
   let sectionDurationSec = input.downloadSection ? parseSectionDurationSec(input.downloadSection) : null;
+  const createLinePump = (onLine: (line: string) => void) => {
+    let buf = '';
+    return (text: string) => {
+      buf += text;
+      const lines = buf.split(/\r\n|\r|\n/);
+      buf = lines.pop() ?? '';
+      for (const line of lines) onLine(line);
+      return buf;
+    };
+  };
+  const handleLine = (line: string, allowPrinted: boolean) => {
+    const parsedDur = parseSectionDurationSec(line);
+    if (parsedDur) sectionDurationSec = parsedDur;
+    const progress = parseAcquisitionProgress(line, sectionDurationSec);
+    if (progress) input.onProgress?.(progress);
+    else if (allowPrinted && line.trim() && !line.includes(PROGRESS_TAG) && /\.(mp4|mkv|webm)$/i.test(line.trim())) printed = line.trim();
+  };
+  const pumpStdout = createLinePump((line) => handleLine(line, true));
+  const pumpStderr = createLinePump((line) => handleLine(line, false));
   const onOutput = (text: string) => {
-    buffer += text;
-    const lines = buffer.split(/\r\n|\r|\n/);
-    buffer = lines.pop() ?? '';
-    for (const line of lines) {
-      const parsedDur = parseSectionDurationSec(line);
-      if (parsedDur) sectionDurationSec = parsedDur;
-      const progress = parseAcquisitionProgress(line, sectionDurationSec);
-      if (progress) input.onProgress?.(progress);
-      else if (line.trim() && !line.includes(PROGRESS_TAG) && /\.(mp4|mkv|webm)$/i.test(line.trim())) printed = line.trim();
-    }
+    stdoutTail = pumpStdout(text);
+  };
+  const onStderr = (text: string) => {
+    pumpStderr(text);
   };
   try {
     await runVelixCommand(
@@ -242,12 +256,12 @@ export async function acquireWithYtDlp(input: {
           ...(input.maxFilesize ? { maxFilesize: input.maxFilesize } : {}),
         }),
       ],
-      { cwd: directory, ...(input.signal ? { signal: input.signal } : {}), onOutput },
+      { cwd: directory, ...(input.signal ? { signal: input.signal } : {}), onOutput, onStderr },
     );
   } catch (error) {
     throw new Error(classifyAcquisitionError(input.signal?.aborted ? 'cancelled:' : error instanceof Error ? error.message : String(error)).message, { cause: error });
   }
-  if (buffer.trim() && /\.(mp4|mkv|webm)$/i.test(buffer.trim())) printed = buffer.trim();
+  if (stdoutTail.trim() && /\.(mp4|mkv|webm)$/i.test(stdoutTail.trim())) printed = stdoutTail.trim();
   const final = printed ?? join(directory, `${input.fileStem}.mp4`);
   if (!existsSync(final)) throw new Error('unavailable: o yt-dlp terminou sem gerar o arquivo.');
   const realFinal = realpathSync(final);

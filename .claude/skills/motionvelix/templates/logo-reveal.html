@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- TEMPLATE: LOGO REVEAL PREMIUM (~6s, loop perfeito)
+     Inspirado em: V17 madebyext (ponto de luz, traço em arco, serif elegante, glow quente), V19 youmotion (ponto→forma, aurora),
+     V21 creators studio (revelação por luz).  Dados: {brand, tagline, logo:"caminho/para/logo.png", theme, font:"serif|sans|wide", w, h} -->
+<link rel="stylesheet" href="../engine/mv.css">
+<script src="../engine/mv.js"></script>
+<style>
+  .pt{position:absolute;left:50%;top:50%;width:26px;height:26px;margin:-13px;border-radius:50%;background:#fff;box-shadow:0 0 30px 10px var(--ac),0 0 120px 40px var(--glow)}
+  svg.streak{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+  .brand{position:absolute;left:0;right:0;top:50%;translate:0 -55%;text-align:center;white-space:nowrap}
+  .brand.serif{font-family:Serif;font-size:220px;letter-spacing:-.03em}
+  .brand.sans{font:800 190px Inter;letter-spacing:-.05em}
+  .brand.wide{font-family:Archivo Black;font-size:150px;letter-spacing:-.02em;text-transform:uppercase}
+  .brand img{max-width:640px;max-height:360px}
+  .tagline{position:absolute;left:0;right:0;top:calc(50% + 150px);text-align:center;font:500 30px Mono;letter-spacing:.42em;text-transform:uppercase;color:var(--mute)}
+  .flash{position:absolute;inset:0;background:radial-gradient(40% 30% at 50% 50%,#fff,var(--ac) 40%,transparent 75%);mix-blend-mode:screen}
+  .ring{position:absolute;left:50%;top:50%;border:2px solid var(--ac);border-radius:50%}
+</style></head>
+<body class="t-dark-laranja">
+<div id="stage">
+  <div class="bg-glow" id="bg"></div><div class="grain"></div>
+  <svg class="streak" id="sv"><defs><filter id="gl" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><path id="arc" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" filter="url(#gl)"/></svg>
+  <div class="ring" id="ring"></div>
+  <div class="pt" id="pt"></div>
+  <div class="flash" id="fl"></div>
+  <div class="brand" id="brand"></div>
+  <div class="tagline" id="tag"></div>
+  <div class="bg-vignette"></div>
+</div>
+<script>
+const D = Object.assign({ brand: 'MotionVelix', tagline: 'motion que prende', theme: 't-dark-laranja', font: 'serif', w: 1080, h: 1920, fps: 30 }, window.MV_DATA || {});
+document.body.className = D.theme;
+const W = D.w, H = D.h, cx = W / 2, cy = H / 2;
+const B = document.getElementById('brand');
+B.className = 'brand ' + D.font;
+if (D.logo) B.innerHTML = `<img src="${D.logo}">`; else { B.textContent = D.brand; const L = D.brand.length; B.style.fontSize = ({ serif: Math.min(220, 2050 / L), sans: Math.min(190, 1650 / L), wide: Math.min(150, 1250 / L) }[D.font] || 180) + 'px'; }   // auto-ajuste ao tamanho do nome
+tag.textContent = D.tagline;
+// traço de luz em arco que termina no centro
+arc.setAttribute('d', `M ${cx - 380} ${cy + 520} C ${cx - 520} ${cy - 120}, ${cx + 260} ${cy - 420}, ${cx} ${cy}`);
+sv.setAttribute('viewBox', `0 0 ${W} ${H}`);
+ring.style.width = ring.style.height = '40px'; ring.style.margin = '-20px';
+
+// 0.0–1.0 ponto respira  |  0.3–1.3 arco desenha até o centro
+MV.to('#pt', { from: { scale: .2, opacity: 0 }, to: { scale: 1, opacity: 1 }, at: -0.2, dur: .5, ease: 'outBack' });
+MV.fn(-1, 1e9, (lt, p, g) => { if (g < 1.4) pt.style.translate = `0 0`; });
+MV.draw('#arc', .3, 1.0, 'inOutCubic');
+MV.sfx('riser', 0, .55); MV.sfx('boom', 1.3, .9); MV.sfx('brilho', 1.4, .6); MV.sfx('deslize_reverso', 4.6, .5);
+MV.to('#arc', { from: { opacity: 1 }, to: { opacity: 0 }, at: 1.35, dur: .4, ease: 'outCubic' });
+// 1.3 impacto: flash + onda + ponto explode
+MV.to('#fl', { from: { opacity: 0, scale: .3 }, to: { opacity: 1, scale: 1.4 }, at: 1.3, dur: .18, ease: 'outExpo' });
+MV.to('#fl', { from: {}, to: { opacity: 0, scale: 2.2 }, at: 1.48, dur: .7, ease: 'outCubic' });
+MV.to('#ring', { from: { scale: 1, opacity: 0 }, to: { scale: 28, opacity: 0 }, at: 1.3, dur: .9, ease: 'outExpo' });
+MV.to('#ring', { from: { opacity: .9 }, to: { opacity: 0 }, at: 1.3, dur: .9, ease: 'outCubic' });
+MV.to('#pt', { from: {}, to: { scale: 0, opacity: 0 }, at: 1.32, dur: .2, ease: 'inCubic' });
+// 1.4 marca surge (letra a letra com blur) | 2.1 tagline
+if (D.logo) MV.fx.blurIn('#brand', 1.4, { s0: 1.25, dur: .8 });
+else { MV.chars('#brand'); MV.to('#brand .c', { from: { opacity: 0, blur: 22, y: 30, scale: 1.3 }, to: { opacity: 1, blur: 0, y: 0, scale: 1 }, at: 1.38, dur: .7, ease: 'outExpo', stagger: .045 }); }
+MV.to('#brand', { from: { ls: null, scale: 1.0 }, to: { scale: 1.04 }, at: 1.4, dur: 3, ease: 'linear' });  // drift lento (vida)
+MV.to('#tag', { from: { opacity: 0, ls: .9 }, to: { opacity: 1, ls: .42 }, at: 2.1, dur: 1, ease: 'outExpo' });
+// 4.6–5.6 recolhe para o ponto => loop perfeito
+MV.to(['#brand', '#tag'], { from: {}, to: { opacity: 0, blur: 18, scale: .85 }, at: 4.6, dur: .5, ease: 'inCubic' });
+MV.to('#pt', { from: {}, to: { scale: 1, opacity: 1 }, at: 5.0, dur: .5, ease: 'outBack' });
+MV.fn(0, 6, (lt) => { bg.style.scale = 1 + .05 * Math.sin(lt * 1.1); });
+MV.setup({ w: W, h: H, fps: D.fps, dur: 5.6 });
+</script></body></html>

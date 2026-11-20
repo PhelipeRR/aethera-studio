@@ -1695,7 +1695,9 @@ export function CinemaDirectorPanel() {
                           </span>
                           <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
                             {stagedJob.downloadProgress.pct !== null
-                              ? `${stagedJob.downloadProgress.pct}% (${(stagedJob.downloadProgress.bytesDone / (1024 * 1024)).toFixed(1)} / ${((stagedJob.downloadProgress.bytesTotal ?? 0) / (1024 * 1024)).toFixed(1)} MB)`
+                              ? stagedJob.downloadProgress.bytesTotal && stagedJob.downloadProgress.bytesTotal > 0
+                                ? `${stagedJob.downloadProgress.pct}% (${(stagedJob.downloadProgress.bytesDone / (1024 * 1024)).toFixed(1)} / ${(stagedJob.downloadProgress.bytesTotal / (1024 * 1024)).toFixed(1)} MB)`
+                                : `${stagedJob.downloadProgress.pct}%`
                               : stagedJob.downloadProgress.bytesDone > 0
                                 ? `${(stagedJob.downloadProgress.bytesDone / (1024 * 1024)).toFixed(1)} MB recebidos`
                                 : 'Iniciando conexão...'}

@@ -1,0 +1,22 @@
+<h2 class="sr-only">Resumo da entrega do vídeo com ajustes rápidos</h2>
+<div id="vx" style="padding:1rem 0"></div>
+<script>
+const D = {
+  titulo: "Seu reel está pronto",
+  arquivo: "MotionVelix-reel.mp4",
+  metricas: [["Duração", "47 s"], ["Formato", "1080×1920"], ["Palavras na legenda", "168"], ["Cenas de motion", "5"]],
+  revisao: ["Revisado quadro a quadro", "Nada cobre o rosto", "Legenda dentro da zona segura do Reels", "Áudio normalizado para redes"],
+  ajustes: ["Legenda maior", "Mais rápido", "Trocar a música", "Versão de 30 s", "Outra cor de destaque", "Versão sem trilha"]
+};
+const h = [];
+h.push(`<div style="display:flex;align-items:center;gap:12px;margin-bottom:1rem"><div style="width:40px;height:40px;border-radius:50%;background:var(--bg-success);color:var(--text-success);display:flex;align-items:center;justify-content:center"><i class="ti ti-check" style="font-size:22px" aria-hidden="true"></i></div><div><p style="margin:0;font-weight:500;font-size:15px">${D.titulo}</p><p style="margin:0;font-size:13px;color:var(--text-secondary);font-family:var(--font-mono)">${D.arquivo}</p></div></div>`);
+h.push(`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:1.25rem">${D.metricas.map(m => `<div style="background:var(--surface-1);border-radius:var(--radius);padding:1rem"><p style="margin:0;font-size:13px;color:var(--text-secondary)">${m[0]}</p><p style="margin:0;font-size:24px;font-weight:500">${m[1]}</p></div>`).join("")}</div>`);
+h.push(`<div style="margin-bottom:1.25rem">${D.revisao.map(r => `<div style="display:flex;gap:10px;align-items:center;padding:6px 0;font-size:14px"><i class="ti ti-circle-check" style="font-size:18px;color:var(--text-success)" aria-hidden="true"></i>${r}</div>`).join("")}</div>`);
+h.push(`<p style="margin:0 0 8px;font-size:13px;color:var(--text-secondary)">Quer um ajuste rápido?</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1rem">${D.ajustes.map(a => `<button class="va">${a} ↗</button>`).join("")}</div>`);
+h.push(`<div style="display:flex;gap:8px"><input id="vt" type="text" placeholder="Ou descreve outro ajuste" style="flex:1"><button id="vgo">Pedir ↗</button></div><p id="verr" style="font-size:13px;color:var(--text-danger);margin:6px 0 0"></p>`);
+document.getElementById("vx").innerHTML = h.join("");
+document.querySelectorAll(".va").forEach(b => b.onclick = () => sendPrompt("Velix, ajuste: " + b.textContent.replace(" ↗", "").toLowerCase()));
+const t = document.getElementById("vt"), err = document.getElementById("verr");
+t.oninput = () => err.textContent = "";
+document.getElementById("vgo").onclick = () => { if (!t.value.trim()) { err.textContent = "Escreve o ajuste primeiro."; return; } sendPrompt("Velix, ajuste: " + t.value.trim()); };
+</script>

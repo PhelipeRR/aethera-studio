@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- TEMPLATE: LEGENDA DINÂMICA PREMIUM (camada --alpha para compor sobre o vídeo)
+     Palavras surgem uma a uma (blur + subida), palavras-chave em serifa itálica maior com sublinhado que "desenha",
+     sem caixa chapada. Visual de marca premium (arquitetura, design, imóveis, moda, cosmético).
+     Dados: { dur, words:[{w,s,e}], keywords:[], capY, ac, maxWords, sombra, estilo:'claro'|'escuro', sfx:false } -->
+<link rel="stylesheet" href="../engine/mv.css">
+<script src="../engine/mv.js"></script>
+<style>
+  html,body{background:transparent}
+  #stage{position:absolute;inset:0;overflow:hidden}
+  .cap{position:absolute;left:90px;right:150px;text-align:center;display:none;line-height:1.08}
+  .w{display:inline-block;margin:0 .13em;font:800 68px Inter;letter-spacing:-.025em;color:#fff;
+     text-shadow:0 6px 26px rgba(0,0,0,.5),0 1px 3px rgba(0,0,0,.55);vertical-align:baseline;position:relative}
+  .w.k{font:400 104px Serif;font-style:italic;letter-spacing:-.01em;margin:0 .1em}
+  .w.k .ul{position:absolute;left:4%;right:4%;bottom:.02em;height:6px;border-radius:6px;background:var(--ac);
+     box-shadow:0 0 18px var(--ac);transform-origin:0 50%}
+  body.escuro .w{color:#141210;text-shadow:none}
+  .scrim{position:absolute;left:-140px;right:-140px;height:620px;background:radial-gradient(ellipse 50% 50% at 50% 50%,rgba(0,0,0,.62),rgba(0,0,0,.42) 42%,rgba(0,0,0,.12) 68%,rgba(0,0,0,0) 85%);pointer-events:none}
+  .w{text-shadow:0 4px 22px rgba(0,0,0,.6),0 1px 3px rgba(0,0,0,.7)}
+  .w.k{text-shadow:0 4px 26px rgba(0,0,0,.75),0 0 2px rgba(0,0,0,.8)}
+  .line{position:absolute;left:50%;height:2px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.9),transparent);transform:translateX(-50%)}
+</style></head>
+<body class="alpha">
+<div id="stage"></div>
+<script>
+const D = window.MV_DATA || { dur: 4, keywords: ['inox'], words: [{ w: 'Cubas', s: .2, e: .5 }, { w: 'de', s: .5, e: .6 }, { w: 'inox', s: .6, e: 1.1 }, { w: 'premium.', s: 1.2, e: 1.8 }] };
+const S = document.getElementById('stage'), E = MV.E, clamp = MV.clamp;
+document.documentElement.style.setProperty('--ac', D.ac || '#7FD8FF');
+if (D.estilo === 'escuro') document.body.classList.add('escuro');
+const norm = w => w.toLowerCase().replace(/[^\p{L}\p{N}%-]/gu, '');
+const KW = new Set((D.keywords || []).map(norm));
+const capY = D.capY || 1240, maxW = D.maxWords || 3;
+const W = D.words || [], chunks = []; let cur = [];
+W.forEach((w, i) => { cur.push(w); const nx = W[i + 1]; const pause = nx ? nx.s - w.e : 9;
+  const isK = KW.has(norm(w.w)), nxK = nx && KW.has(norm(nx.w));
+  if (cur.length >= maxW || pause > .32 || /[.!?,;:…]$/.test(w.w) || (isK && cur.length >= 2) || (nxK && cur.length >= 2)) { chunks.push(cur); cur = []; } });
+if (cur.length) chunks.push(cur);
+// véu escuro suave atrás da legenda (legibilidade sobre fundo claro/claro estourado)
+const SCR = D.veu === false ? null : (() => { const v = document.createElement('div'); v.className = 'scrim'; v.style.top = (capY - 250) + 'px'; S.appendChild(v); return v; })();
+const WIN = [];
+chunks.forEach((c, ci) => {
+  const el = document.createElement('div'); el.className = 'cap'; el.style.top = capY + 'px';
+  el.innerHTML = c.map(w => KW.has(norm(w.w)) ? `<span class="w k">${w.w}<i class="ul"></i></span>` : `<span class="w">${w.w}</span>`).join(' ');
+  S.appendChild(el);
+  const a = c[0].s - .06, nextA = chunks[ci + 1] ? chunks[ci + 1][0].s - .06 : 1e9, b = Math.min(nextA, c[c.length - 1].e + .55);
+  const sp = [...el.querySelectorAll('.w')]; WIN.push([a, b + .18]);
+  MV.fn(-1, 1e9, (lt, p, g) => {
+    const vis = g >= a && g < b + .18; el.style.display = vis ? 'block' : 'none'; if (!vis) return;
+    const out = clamp((g - b) / .18), oe = E.inCubic(out);
+    el.style.opacity = 1 - oe; el.style.transform = `translateY(${-oe * 18}px)`; el.style.filter = out > 0 ? `blur(${oe * 8}px)` : '';
+    c.forEach((w, wi) => {
+      const k = clamp((g - (w.s - .06)) / .26), e = E.outCubic(k), s = sp[wi];
+      s.style.opacity = k; s.style.transform = `translateY(${(1 - e) * 28}px) scale(${.94 + .06 * e})`; s.style.filter = k < 1 ? `blur(${(1 - e) * 10}px)` : '';
+      const ul = s.querySelector('.ul'); if (ul) { const u = E.inOutCubic(clamp((g - w.s - .05) / .35)); ul.style.transform = `scaleX(${u})`; }
+    });
+  });
+  if (D.sfx) MV.sfx(D.sfx, a, .2);
+});
+if (SCR) MV.fn(-1, 1e9, (lt, p, g) => { let o = 0; for (const [a, b] of WIN) { const gap = .45; if (g > a - gap && g < b + gap) o = Math.max(o, Math.min(clamp((g - a + gap) / gap), clamp((b + gap - g) / gap))); } SCR.style.opacity = o * (D.veu ?? 1); });
+MV.setup({ w: 1080, h: 1920, fps: D.fps || 30, dur: D.dur || 5 });
+</script></body></html>

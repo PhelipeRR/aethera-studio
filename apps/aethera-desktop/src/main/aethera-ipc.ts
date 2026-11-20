@@ -2317,6 +2317,10 @@ productionConsole,
             description: frameDesc,
             ...(visibleText.length > 0 ? { visibleText } : {}),
             confidence: segVal.confidence,
+            // P0 fix: propagate the actual vision provider to each frame so the media-relevance gate
+            // can verify it against TRUSTED_VISION_PROVIDERS. Without this field, frames analyzed
+            // by real providers were treated as unverified because provider === undefined.
+            ...(lastProvider ? { provider: lastProvider } : {}),
           });
         }
       }
@@ -2386,6 +2390,7 @@ productionConsole,
         throw new Error(analyzed.attempts.map((a) => `${a.provider}:${a.outcome}`).join('; ') || 'pre_vision_failed');
       }
       const segVal = analyzed.value;
+      const remoteProvider = analyzed.provider;
       return framesPayload.map((f, idx) => {
         const mf = segVal.frames[idx];
         return {
@@ -2399,6 +2404,9 @@ productionConsole,
             .map((a) => a.description.toLowerCase()),
           description: mf?.observed ?? segVal.description,
           confidence: segVal.confidence ?? 0.85,
+          // P0 fix: propagate provider so remote-frame analyses are not silently discarded
+          // by the media-relevance gate when they come from a trusted vision adapter.
+          ...(remoteProvider ? { provider: remoteProvider } : {}),
         };
       });
     },

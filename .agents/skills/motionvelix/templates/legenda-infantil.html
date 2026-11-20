@@ -1,0 +1,117 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- TEMPLATE: LEGENDA INFANTIL (música/animação para crianças) — camada --alpha para compor sobre o vídeo
+     Palavras fofas (Fredoka, cores de bala, contorno branco grosso), entram uma a uma no tempo do canto,
+     pulam no BEAT da música, a palavra cantada dá um pulinho; efeitos interativos: emojis, chuvas de emoji,
+     balões ("Bate palma!"), notas musicais, girar/tremer a frase.
+     Dados: { dur, words:[{w,s,e,l}], lines:[{a,b}], beats:[...], capY, cores:[...], efeitos:[...] }  ver references/10-legendas-especiais.md -->
+<link rel="stylesheet" href="../engine/mv.css">
+<script src="../engine/mv.js"></script>
+<style>
+  html,body{background:transparent}
+  #stage{position:absolute;inset:0;overflow:hidden}
+  .ln{position:absolute;left:60px;right:60px;display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-end;column-gap:34px;row-gap:0;transform-origin:50% 60%}
+  .wd{display:inline-block;font:700 116px/1.05 Fredoka;letter-spacing:.005em;paint-order:stroke fill;-webkit-text-stroke:16px #fff;
+      filter:drop-shadow(0 9px 0 rgba(92,52,24,.38));transform-origin:50% 85%;white-space:nowrap}
+  .fx{position:absolute;transform-origin:50% 50%;line-height:1;text-align:center}
+  .bal{position:absolute;padding:20px 36px 24px;border-radius:44px;background:#fff;font:700 64px Fredoka;white-space:nowrap;
+       box-shadow:0 12px 0 rgba(92,52,24,.25);transform-origin:50% 100%}
+  .bal::after{content:'';position:absolute;left:50%;bottom:-26px;margin-left:-22px;border:22px solid transparent;border-top-color:#fff;border-bottom:0}
+</style></head>
+<body class="alpha">
+<div id="stage"></div>
+<script>
+const D = window.MV_DATA || { dur: 4, beats: [0, .4, .8, 1.2, 1.6, 2, 2.4, 2.8, 3.2, 3.6],
+  words: [{ w: 'Capi,', s: .3, e: .7, l: 0 }, { w: 'capi,', s: .8, e: 1.2, l: 0 }, { w: 'capivarinha', s: 1.3, e: 2.6, l: 0 }], lines: [{ a: .3, b: 3.4 }],
+  efeitos: [{ tipo: 'chuva', at: 1.4, e: ['✨', '💖', '⭐'], x: 540, y: 600, n: 14 }, { tipo: 'balao', at: 2, dur: 1.5, t: 'Dança comigo! 💃', x: 540, y: 820 }] };
+const S = document.getElementById('stage'), E = MV.E, clamp = MV.clamp, R = MV.rand(42);
+const COR = D.cores || ['#FF5FA2', '#FFB703', '#2EC4B6', '#FF7B2E', '#9B5DE5', '#3DBE5B', '#3A86FF'];
+const capY = D.capY || 1420, B = D.beats || [];
+const H = (html, p = S) => { const t = document.createElement('template'); t.innerHTML = html.trim(); const el = t.content.firstElementChild; p.appendChild(el); return el; };
+// fase do beat: 1 no beat, decai rápido
+const beatK = g => { let lo = 0, hi = B.length - 1; if (!B.length || g < B[0]) return 0; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (B[m] <= g) lo = m; else hi = m - 1; } return Math.exp(-(g - B[lo]) * 9); };
+
+// ---------------------------------------------------------------- LINHAS
+const LN = (D.lines || []).map((L, li) => {
+  const ws = (D.words || []).filter(w => w.l === li);
+  const el = H(`<div class="ln" style="top:${L.y ?? capY}px"></div>`);
+  const sp = ws.map((w, i) => { const s = H(`<span class="wd" style="color:${w.cor || COR[(li * 3 + i) % COR.length]}">${w.w}</span>`, el); s._r0 = (R() - .5) * 50; s._r1 = (R() - .5) * 9; return s; });
+  const a = L.a, b = L.b;
+  MV.fn(-1, 1e9, (lt, p, g) => {
+    const vis = g >= ws[0].s - .1 && g < b + .35; el.style.display = vis ? 'flex' : 'none'; if (!vis) return;
+    const bk = beatK(g);
+    ws.forEach((w, i) => {
+      const s = sp[i], t0 = w.s - .06, k = clamp((g - t0) / .42);
+      const outK = clamp((g - (b + i * .035)) / .22);
+      let sc = k <= 0 ? 0 : E.spring(k) * (1 - E.inBack(outK));
+      const rot = k <= 0 ? s._r0 : s._r0 + (s._r1 - s._r0) * E.outBack(clamp(k * 1.4));
+      const nx = ws[i + 1] ? ws[i + 1].s : w.e;
+      const on = g >= w.s - .03 && g < Math.max(nx, w.s + .25);
+      const hop = on ? Math.sin(Math.PI * clamp((g - w.s + .03) / .28)) : 0;
+      const sq = 1 + .07 * bk;                                   // squash no beat
+      s.style.opacity = k > 0 ? 1 : 0;
+      s.style.transform = `translateY(${-hop * 34 - bk * 10}px) rotate(${rot + outK * 40}deg) scale(${sc * (on ? 1.14 : 1)}) scaleY(${1 / sq}) scaleX(${sq})`;
+    });
+  });
+  return el;
+});
+
+// ---------------------------------------------------------------- EFEITOS
+const FX = {
+  /* emoji grande que salta, balança e sobe/some: e, x, y, size, dur, anim pulsa|gira|pula */
+  emoji(o) {
+    const el = H(`<div class="fx" style="left:${o.x - 200}px;top:${o.y - 200}px;width:400px;height:400px;display:flex;align-items:center;justify-content:center;font-size:${o.size || 200}px">${o.e}</div>`);
+    const a = o.at, d = o.dur ?? 1.4, rr = (R() - .5) * 30;
+    MV.fn(-1, 1e9, (lt, p, g) => {
+      if (g < a - .01 || g > a + d + .4) { el.style.display = 'none'; return; } el.style.display = 'flex';
+      const k = clamp((g - a) / .5), out = clamp((g - a - d) / .35), t = g - a;
+      let sc = E.spring(k) * (1 - E.inBack(out)), rot = rr * (1 - k) + Math.sin(t * 9) * 10, y = -out * 80;
+      if (o.anim === 'pulsa') sc *= 1 + .12 * Math.abs(Math.sin(t * 7));
+      if (o.anim === 'gira') rot = t * 400;
+      if (o.anim === 'pula') y += -Math.abs(Math.sin(t * 9)) * 50;
+      el.style.transform = `translateY(${y}px) rotate(${rot}deg) scale(${sc})`; el.style.opacity = 1 - out;
+    });
+    if (o.sfx !== false) MV.sfx(o.sfx || 'pop', a, o.vol ?? .2);
+  },
+  /* explosão de emojis com gravidade: e (lista), x, y, n, forca */
+  chuva(o) {
+    const n = o.n || 12, list = [].concat(o.e || ['✨']);
+    for (let i = 0; i < n; i++) {
+      const e = list[i % list.length], sz = 60 + R() * 60, ang = -Math.PI / 2 + (R() - .5) * Math.PI * 1.5, v = (o.forca || 900) * (.55 + R() * .6), rot = (R() - .5) * 720, dl = R() * .08;
+      const el = H(`<div class="fx" style="left:${o.x - 50}px;top:${o.y - 50}px;width:100px;height:100px;font-size:${sz}px">${e}</div>`);
+      MV.fn(-1, 1e9, (lt, p, g) => { const t = g - o.at - dl; if (t < 0 || t > 1.3) { el.style.display = 'none'; return; } el.style.display = 'block';
+        const x = Math.cos(ang) * v * t, y = Math.sin(ang) * v * t + 1100 * t * t; el.style.transform = `translate(${x}px,${y}px) rotate(${rot * t}deg) scale(${Math.min(1, t * 8)})`; el.style.opacity = 1 - clamp((t - .9) / .4); });
+    }
+    if (o.sfx !== false) MV.sfx(o.sfx || 'brilho', o.at, o.vol ?? .18);
+  },
+  /* balão de fala interativo: t, x, y, dur, bg, cor */
+  balao(o) {
+    const el = H(`<div class="bal" style="color:${o.cor || '#FF5FA2'};${o.bg ? `background:${o.bg}` : ''}">${o.t}</div>`);
+    requestAnimationFrame(() => {}); el.style.left = '0px'; el.style.top = '0px';
+    const a = o.at, d = o.dur ?? 2;
+    MV.fn(-1, 1e9, (lt, p, g) => {
+      if (g < a || g > a + d + .3) { el.style.display = 'none'; return; } el.style.display = 'block';
+      const w = el.offsetWidth, h = el.offsetHeight; el.style.left = (o.x - w / 2) + 'px'; el.style.top = (o.y - h) + 'px';
+      const k = clamp((g - a) / .5), out = clamp((g - a - d) / .3), t = g - a;
+      el.style.transform = `rotate(${Math.sin(t * 6) * 4}deg) scale(${E.spring(k) * (1 - E.inBack(out)) * (1 + .05 * beatK(g))})`;
+    });
+    if (o.sfx !== false) MV.sfx(o.sfx || 'pop_agudo', a, o.vol ?? .2);
+  },
+  /* notas musicais subindo no ritmo: a, b, cores */
+  notas(o) {
+    const bs = B.filter(t => t >= o.a && t <= o.b).filter((t, i) => i % (o.cada || 2) === 0);
+    bs.forEach((t, i) => {
+      const left = i % 2 === 0, x = left ? 70 + R() * 160 : 850 + R() * 150, y = (o.y ?? 1100) + (R() - .5) * 300, e = ['♪', '♫', '♬'][i % 3], c = COR[i % COR.length];
+      const el = H(`<div class="fx" style="left:${x}px;top:${y}px;font:700 ${80 + R() * 40}px Fredoka;color:${c};-webkit-text-stroke:8px #fff;paint-order:stroke fill">${e}</div>`);
+      MV.fn(-1, 1e9, (lt, p, g) => { const tt = g - t; if (tt < 0 || tt > 1.6) { el.style.display = 'none'; return; } el.style.display = 'block';
+        el.style.transform = `translate(${Math.sin(tt * 5) * 30}px,${-tt * 260}px) rotate(${Math.sin(tt * 4) * 20}deg) scale(${E.outBack(clamp(tt * 4))})`; el.style.opacity = 1 - clamp((tt - 1.1) / .5); });
+    });
+  },
+  /* gira a frase 360° (ex.: "dá uma voltinha") */
+  girar(o) { const el = LN[o.linha]; if (!el) return; MV.fn(o.at, o.at + (o.dur || .7), (lt, p) => { el.style.rotate = `${E.inOutCubic(p) * 360}deg`; el.style.scale = 1 - .25 * Math.sin(Math.PI * p); }); MV.fn(o.at + (o.dur || .7), 1e9, () => { el.style.rotate = '0deg'; }); MV.sfx('deslize', o.at, .25); },
+  /* tremidinha da frase (ex.: "pé no chão") */
+  tremer(o) { const el = LN[o.linha]; if (!el) return; const r = MV.rand(9); MV.fn(o.at, o.at + (o.dur || .4), (lt, p) => { const a = (1 - p) * 18; el.style.translate = `${(r() - .5) * a}px ${(r() - .5) * a}px`; }); MV.fn(o.at + (o.dur || .4), 1e9, () => { el.style.translate = '0 0'; }); },
+};
+(D.efeitos || []).forEach(o => FX[o.tipo] && FX[o.tipo](o));
+MV.setup({ w: 1080, h: 1920, fps: D.fps || 30, dur: D.dur || 5 });
+</script></body></html>

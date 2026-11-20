@@ -1,0 +1,144 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- TEMPLATE: OVERLAY PARA VÍDEO FALADO (renderizar com --alpha e compor com scripts/mv_edit.py compor)
+     Inspirado em: V02 tiagolemosx (headline topo + tarja + legenda com palavra-chave), V11 brunofuzetto (HUD + mono),
+     V01 oandreneu (palavra única gigante), V05 vinicius (palavra-chave em caixa).
+     Dados: --data overlay.json  (words vem de scripts/transcrever.py) -->
+<link rel="stylesheet" href="../engine/mv.css">
+<script src="../engine/mv.js"></script>
+<style>
+  body{background:transparent}
+  .cap{position:absolute;left:80px;right:150px;text-align:center;line-height:1.08}
+  .cap .w{margin:0 .1em;transition:none}
+  /* estilos de legenda */
+  .s-destaque{font:900 74px Inter;letter-spacing:-.02em;color:#fff;text-shadow:0 4px 18px rgba(0,0,0,.55),0 0 2px rgba(0,0,0,.8)}
+  .s-destaque .w.on{color:var(--ac)}
+  .s-palavra{font:900 170px Inter;letter-spacing:-.05em;color:#fff;text-shadow:0 10px 40px rgba(0,0,0,.45)}
+  .s-palavra .w.hl{color:var(--ac)}
+  .s-caixa{font:800 66px Inter;color:#fff;text-shadow:0 3px 14px rgba(0,0,0,.6)}
+  .s-caixa .w.on{background:var(--ac);color:var(--acink,#fff);border-radius:12px;padding:0 .14em;text-shadow:none}
+  .s-mono{font:700 54px Mono;color:#fff;text-shadow:0 3px 12px rgba(0,0,0,.7)}
+  .s-mono .w.on,.s-mono .w.hl{color:var(--ac)}
+  .s-glow{font:600 54px Inter;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,.6)}
+  .s-glow .w.on{color:#ffe14d;text-shadow:0 0 18px rgba(255,225,77,.85),0 0 40px rgba(255,200,0,.5)}
+  .cap .w.hl{color:var(--ac)}
+  .cap.s-caixa .w.on{color:var(--acink,#fff)}
+  .head{position:absolute;left:70px;right:140px;top:250px;text-align:center}
+  .head .kicker{color:#fff;opacity:.85;margin-bottom:14px;text-shadow:0 2px 10px rgba(0,0,0,.6)}
+  .head .t{font:900 112px/0.95 Inter;letter-spacing:-.04em;color:#fff;text-shadow:0 8px 30px rgba(0,0,0,.45);text-transform:uppercase}
+  .head .t.cond{font-family:Anton;font-weight:400;font-size:150px;letter-spacing:0}
+  .head .tarja{font:900 64px Inter;text-transform:uppercase;margin-top:12px;border-radius:10px;letter-spacing:-.02em}
+  .hud{position:absolute;top:150px;left:70px;right:150px;display:flex;justify-content:space-between;font:700 24px Mono;letter-spacing:.12em;color:#fff;opacity:.85;text-shadow:0 2px 8px rgba(0,0,0,.6)}
+  .hud .rec::before{content:'';display:inline-block;width:16px;height:16px;border-radius:50%;background:#ff3b30;margin-right:12px;vertical-align:-1px}
+  .head.box .t{display:inline;background:#fff;color:#111;text-shadow:none;font-size:74px;line-height:1.32;padding:4px 18px;border-radius:14px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+  .head.box .t .hl{color:var(--ac)}
+  .head.box.dark .t{background:#111;color:#fff}
+  .lower{position:absolute;left:70px;bottom:560px;display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+  .lower b{display:inline-block;padding:10px 22px;background:var(--ac);color:var(--acink,#fff);font:900 40px Inter;letter-spacing:-.02em;border-radius:10px}
+  .lower span{display:inline-block;padding:8px 18px;background:rgba(0,0,0,.72);color:#fff;font:600 28px Inter;border-radius:8px}
+  .stk{position:absolute;padding:14px 28px;border-radius:18px;font:800 46px Inter;background:#fff;color:#111;box-shadow:0 20px 50px rgba(0,0,0,.35)}
+  .stk.ac{background:var(--ac);color:var(--acink,#fff)}
+  .ctab{position:absolute;left:0;right:0;bottom:520px;display:flex;flex-direction:column;align-items:center;gap:20px}
+  .credit{position:absolute;top:120px;left:0;right:0;text-align:center;font:700 26px Mono;letter-spacing:.14em;color:#fff;opacity:.8;text-shadow:0 2px 8px rgba(0,0,0,.7)}
+  .prog{position:absolute;top:0;left:0;height:8px;background:var(--ac)}
+</style></head>
+<body class="t-roxo-neon alpha">
+<div id="stage"></div>
+<script>
+const D = window.MV_DATA || {
+  theme: 't-roxo-neon', dur: 8, fps: 30, style: 'destaque', capY: 1180, maxWords: 3, keywords: ['IA', 'editado'],
+  hud: { left: 'EDITANDO AO VIVO', right: 'CORTE 01/13' },
+  progress: true,
+  heads: [{ at: 0, dur: 2.6, kicker: 'são só', text: '3 minutos', tarja: '100% editado por IA' }],
+  stickers: [{ at: 3.2, dur: 1.4, text: '🔥 sem programa de edição', x: 160, y: 900, ac: true }],
+  cta: { at: 6, keyword: 'EDIT', lead: 'comenta' },
+  words: [ {w:'Esse',s:0.1,e:0.3},{w:'vídeo',s:0.3,e:0.6},{w:'foi',s:0.6,e:0.75},{w:'editado',s:0.75,e:1.2},{w:'100%',s:1.25,e:1.7},{w:'por',s:1.7,e:1.85},{w:'IA.',s:1.85,e:2.3},
+           {w:'Eu',s:2.6,e:2.7},{w:'não',s:2.7,e:2.9},{w:'abri',s:2.9,e:3.2},{w:'nenhum',s:3.2,e:3.5},{w:'programa',s:3.5,e:3.9},{w:'de',s:3.9,e:4.0},{w:'edição.',s:4.0,e:4.6} ]
+};
+document.body.className = (D.theme || 't-roxo-neon') + ' alpha';
+if (D.ac) { document.documentElement.style.setProperty('--ac', D.ac); document.body.style.setProperty('--ac', D.ac); }
+if (D.acInk) document.body.style.setProperty('--acink', D.acInk);
+const S = document.getElementById('stage');
+const fps = D.fps || 30;
+const DUR = D.dur || Math.max(...(D.words || [{ e: 5 }]).map(w => w.e)) + .5;
+const KW = new Set((D.keywords || []).map(k => k.toLowerCase().replace(/[^\p{L}\p{N}%]/gu, '')));
+const norm = w => w.toLowerCase().replace(/[^\p{L}\p{N}%]/gu, '');
+
+// ---------- LEGENDAS: agrupa palavras em blocos (por pausa, pontuação ou nº máximo) ----------
+const style = D.style || 'destaque';
+const maxW = style === 'palavra' ? 1 : (D.maxWords || 3);
+const chunks = []; let cur = [];
+(D.words || []).forEach((w, i, a) => {
+  cur.push(w);
+  const next = a[i + 1];
+  const pause = next ? next.s - w.e : 9;
+  if (cur.length >= maxW || pause > .3 || /[.!?,;:]$/.test(w.w)) { chunks.push(cur); cur = []; }
+});
+if (cur.length) chunks.push(cur);
+chunks.forEach((c, ci) => {
+  const el = document.createElement('div'); el.className = `cap s-${style}`; el.style.top = (D.capY || 1180) + 'px';
+  el.innerHTML = c.map(w => `<span class="w${KW.has(norm(w.w)) ? ' hl' : ''}">${w.w}</span>`).join(' ');
+  S.appendChild(el);
+  const a = c[0].s - .04, b = Math.min(chunks[ci + 1] ? chunks[ci + 1][0].s - .045 : c[c.length - 1].e + .4, c[c.length - 1].e + .6);
+  // entrada do bloco
+  if (style === 'palavra') MV.to(el, { from: { opacity: 0, scale: 1.35, blur: 10 }, to: { opacity: 1, scale: 1, blur: 0 }, at: a, dur: .18, ease: 'outExpo' });
+  else MV.to(el, { from: { opacity: 0, y: 26, scale: .92 }, to: { opacity: 1, y: 0, scale: 1 }, at: a, dur: .16, ease: 'outBack' });
+  MV.to(el, { from: {}, to: { opacity: 0 }, at: b, dur: .001, ease: 'linear' }); // troca seca: nunca 2 blocos juntos
+  // palavra ativa (karaokê)
+  const spans = el.querySelectorAll('.w');
+  c.forEach((w, wi) => MV.fn(-1, 1e9, (lt, p, g) => { spans[wi].classList.toggle('on', g >= w.s - .03 && g < (c[wi + 1] ? c[wi + 1].s : b)); }));
+  c.forEach((w, wi) => { if (style !== 'palavra') MV.to(spans[wi], { from: { scale: 1 }, to: { scale: 1.08 }, at: w.s - .03, dur: .08, ease: 'outQuad' }); MV.to(spans[wi], { from: {}, to: { scale: 1 }, at: w.s + .08, dur: .2, ease: 'outCubic' }); });
+});
+
+// ---------- HEADLINES DO TOPO ----------
+(D.heads || []).forEach(h => {
+  const el = document.createElement('div'); el.className = 'head' + (h.box ? ' box' : '') + (h.dark ? ' dark' : ''); if (h.top != null) el.style.top = h.top + 'px';
+  el.innerHTML = (h.kicker ? `<div class="kicker">${h.kicker}</div>` : '') + `<div class="t ${h.cond ? 'cond' : ''}">${h.text}</div>` + (h.tarja ? `<div><span class="tarja">${h.tarja}</span></div>` : '');
+  S.appendChild(el);
+  const at = Math.max(h.at, -.25);
+  const ws = MV.words(el.querySelector('.t'), { mask: true });
+  MV.fx.maskUp(ws, at, { stagger: .06 });
+  MV.sfx(h.sfx || 'deslize', Math.max(0, at), .45);
+  if (h.kicker) MV.fx.rise(el.querySelector('.kicker'), at, { y: 16 });
+  if (h.tarja) MV.fx.wipeR(el.querySelector('.tarja'), at + .25, { dur: .4 });
+  MV.fx.out(el, h.at + h.dur, { dur: .25, y: -20 });
+});
+
+// ---------- LOWER THIRD (nome do convidado) ----------
+(D.lowers || []).forEach(l => {
+  const el = document.createElement('div'); el.className = 'lower'; if (l.bottom != null) el.style.bottom = l.bottom + 'px';
+  el.innerHTML = `<b>${l.nome}</b>` + (l.cargo ? `<span>${l.cargo}</span>` : '');
+  S.appendChild(el);
+  MV.fx.wipeR(el.querySelector('b'), l.at, { dur: .35, sfx: 'blip' }); if (l.cargo) MV.fx.wipeR(el.querySelector('span'), l.at + .15, { dur: .35, sfx: false });
+  MV.fx.out(el, l.at + (l.dur || 3), { dur: .25, y: 0 });
+});
+
+// ---------- HUD (estilo "gravando") ----------
+if (D.hud) {
+  const el = document.createElement('div'); el.className = 'hud';
+  el.innerHTML = `<span class="rec">${D.hud.left || 'REC'} <span class="tc"></span></span><span>${D.hud.right || ''}</span>`;
+  S.appendChild(el);
+  const tc = el.querySelector('.tc');
+  MV.fn(-1, 1e9, (lt, p, g) => { const f = Math.max(0, g); tc.textContent = `${String(Math.floor(f / 60)).padStart(2, '0')}:${String(Math.floor(f % 60)).padStart(2, '0')}:${String(Math.floor((f % 1) * fps)).padStart(2, '0')}`; });
+}
+
+// ---------- STICKERS ----------
+(D.stickers || []).forEach(s => {
+  const el = document.createElement('div'); el.className = 'stk' + (s.ac ? ' ac' : ''); el.textContent = s.text;
+  el.style.left = (s.x ?? 160) + 'px'; el.style.top = (s.y ?? 900) + 'px'; el.style.rotate = (s.rot ?? -4) + 'deg';
+  S.appendChild(el);
+  MV.fx.pop(el, s.at, { s0: .4 }); MV.fx.out(el, s.at + (s.dur || 1.5), { dur: .2, y: 0, scale: .8 });
+});
+
+// ---------- CTA ----------
+if (D.cta) {
+  const el = document.createElement('div'); el.className = 'ctab';
+  el.innerHTML = D.cta.html ? `<div class="pill ac" style="font-size:40px;color:var(--acink,#fff)">${D.cta.html}</div>` : `<div class="pill ac" style="font-size:44px;color:var(--acink,#fff)">✳ ${D.cta.lead || 'comenta'} <b>“${D.cta.keyword}”</b></div>`;
+  S.appendChild(el);
+  MV.fx.pop(el.firstChild, D.cta.at, { s0: .5 }); if (D.cta.y) el.style.bottom = D.cta.y + 'px';
+  MV.fx.punch(el.firstChild, D.cta.at + 1.2, { s: 1.08 });
+}
+if (D.credit) { const c = document.createElement('div'); c.className = 'credit'; c.textContent = D.credit; S.appendChild(c); MV.fx.rise(c, .2, { y: 10 }); }
+if (D.progress) { const p = document.createElement('div'); p.className = 'prog'; S.appendChild(p); MV.to(p, { from: { width: 0 }, to: { width: 1080 }, at: 0, dur: DUR, ease: 'linear' }); }
+MV.setup({ w: 1080, h: 1920, fps, dur: DUR });
+</script></body></html>

@@ -33,6 +33,24 @@ Implementação full-stack do motor cinematográfico determinístico em `package
 - **Edição, VFX, Cor & Som (`CINEMA-03`..`CINEMA-05`):** trim frame-accurate, ripple, J/L cuts, speed ramp, reframe HUD-safe, undo/redo transacional, catálogo VFX com fallback, Rec.709/LUT provenance e stems EBU R128 (`-14`/`-12.5` LUFS).
 - **QC Multi-pass, Reparo & Benchmarks (`CINEMA-00`, `CINEMA-07`..`CINEMA-09`):** `IssueLedger`, ensemble independente, reparo incremental (`budget <= 3`), Release Gates e suíte de 12 cenários (`8` dev / `4` holdout). Documentação detalhada em `docs/aethera/cinema/`.
 
+## Aethera Recap — Pipeline de Mangá/Manhwa para Roteiro Narrativo
+
+Plano mestre: [`docs/plans/aethera-recap-master-plan.md`](plans/aethera-recap-master-plan.md).
+
+**⚠️ Correção arquitetural (2026-11-20):** O Aethera Recap **não está vinculado ao Claude CLI, ao modelo claude-opus-5-5 ou a qualquer provedor específico**. Claude/claude-opus-5-5 foi utilizado apenas como evidência histórica do primeiro teste E2E multimodal real da Fase 2.1. Em produção, o Recap utiliza descoberta dinâmica de agentes via VisionRouter + TaskEngine, com fallback automático entre todos os provedores disponíveis (Claude, Codex, Antigravity, Local VLM, SigLIP, FFmpeg Heuristics). Ver seção "Arquitetura Multiagente" no plano mestre para matriz de capacidades, estratégias de fallback e hardcodes identificados.
+
+| Fase | Objetivo | Estado |
+|---|---|---|
+| **Fase 1** | Importação e extração de painéis | ✅ Concluída |
+| **Fase 2** | Story Engine (análise narrativa + roteiro) | ✅ Concluída |
+| **Fase 2.1** | Integração multimodal real (RecapVisionAdapter + multiagente) | ✅ Concluída (2026-11-20) |
+| **Fase 2.2** | Narrative Enhancement (Humanize + YouTube Agent) | 📋 Planejada |
+| **Fase 3** | MotionVelix | 📋 Planejada (gate: teste narrativo real com personagens recorrentes) |
+| **Fase 4** | Produção audiovisual (TTS, legendas, SFX, VFX) | 📋 Planejada |
+| **Fase 5** | Revisão inteligente (QC multi-pass) | 📋 Planejada |
+
+**Fase 2.1 — evidências históricas (não restritivas):** Primeiro teste E2E executado com Claude CLI autenticado (modelo `claude-opus-5-5`), 4 painéis reais analisados em 201,8s, confiança 0,93–0,96, 2 beats, 2 cenas, Gate G PASS. A arquitetura de produção utiliza VisionRouter com descoberta dinâmica e fallback entre todos os provedores configurados. Pendências de robustez: validação com sequência real de mangá/manhwa, continuidade de personagens, cache, limpeza de temporários e detecção de hallucinação.
+
 ## FASE ATIVA — SEP-2026-01: Separação do Singularity Ecosystem (SEP-01..SEP-09 CONCLUÍDAS em 2026-11-13)
 
 Plano de separação em três aplicativos independentes (**Singularity Orchestrator**, **Aethera Studio** e **Void**), mantendo `apps/desktop` operacional durante toda a migração:

@@ -1,0 +1,7 @@
+{ "theme":"t-dark-laranja", "dur":8, "style":"destaque", "capY":1180, "maxWords":3,
+  "keywords":["100%","IA","edição"],
+  "hud":{"left":"EDITANDO AO VIVO","right":"CORTE 03/13"}, "progress":true,
+  "heads":[{"at":0,"dur":2.6,"kicker":"sem abrir nenhum editor","text":"6 comandos.","tarja":"1 vídeo."}],
+  "stickers":[{"at":3.2,"dur":1.4,"text":"🔥 sem programa de edição","x":160,"y":900,"ac":true}],
+  "cta":{"at":5.8,"keyword":"MOTION","lead":"comenta"},
+  "words":[{"w":"Esse","s":0.1,"e":0.3},{"w":"vídeo","s":0.3,"e":0.6},{"w":"foi","s":0.6,"e":0.75},{"w":"editado","s":0.75,"e":1.2},{"w":"100%","s":1.25,"e":1.7},{"w":"por","s":1.7,"e":1.85},{"w":"IA.","s":1.85,"e":2.3},{"w":"Eu","s":2.6,"e":2.7},{"w":"não","s":2.7,"e":2.9},{"w":"abri","s":2.9,"e":3.2},{"w":"nenhum","s":3.2,"e":3.5},{"w":"programa","s":3.5,"e":3.9},{"w":"de","s":3.9,"e":4.0},{"w":"edição.","s":4.0,"e":4.6},{"w":"Comenta","s":5.8,"e":6.2},{"w":"MOTION","s":6.2,"e":6.8}]}

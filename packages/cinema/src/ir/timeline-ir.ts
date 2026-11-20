@@ -77,7 +77,11 @@ export interface TimelineClip {
   keyframes: TimelineKeyframe[];
   comedyBeatId?: string;
   shotId?: string;
+  transitionIn?: 'cut' | 'dissolve' | 'j_cut' | 'l_cut' | 'match_cut' | 'wipe';
 }
+
+/** Alias semântico usado pelo planejamento audiovisual de cena; equivalente a ComedyBeatPlan. */
+export type ComedyBeat = ComedyBeatPlan;
 
 export interface TimelineTrack {
   trackId: string;

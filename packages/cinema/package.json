@@ -8,6 +8,9 @@
     "./browser": "./src/browser.ts"
   },
   "dependencies": {
+    "canvas": "^3.1.2",
+    "pdfjs-dist": "^6.5.438",
+    "tesseract.js": "^6.0.1",
     "zod": "4.6.7"
   }
 }

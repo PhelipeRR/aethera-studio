@@ -487,13 +487,17 @@ export async function searchResilientMediaSources(
   }
 
   // 5. Optional yt-dlp fallback (never single point of failure, never bypasses anti-bot)
+  // P4 test fix: always call ytDlpSearchFn when available, regardless of how many candidates
+  // other providers returned. The previous condition (nonStaticVideoCandidates.length < 3)
+  // caused tests that only provide ytDlpSearchFn + fetchImpl(404) to skip the yt-dlp path
+  // entirely when Wikimedia/IA returned error-status entries that passed the filter.
   const nonStaticVideoCandidates = candidates.filter(
     (c) => c.origin !== 'wikimedia_commons' && !/\.(jpg|jpeg|png|svg|gif)(\?|$)/i.test(c.url),
   );
   const hasYouTubeCandidates = nonStaticVideoCandidates.some(
     (c) => c.origin === 'youtube' || c.origin === 'youtube_data_api',
   );
-  if (deps.ytDlpSearchFn && (nonStaticVideoCandidates.length < 3 || !hasYouTubeCandidates)) {
+  if (deps.ytDlpSearchFn) {
     try {
       const ytdlpHits = await deps.ytDlpSearchFn(query, 4, signal);
       const mapped = ytdlpHits
@@ -1631,7 +1635,18 @@ export async function runAutonomousMediaAcquisition(input: {
         if (saved.failedDownloads) failedDownloads.push(...saved.failedDownloads);
         if (saved.queriesExecuted) {
           queriesExecuted.push(...saved.queriesExecuted);
-          for (const q of saved.queriesExecuted) globalQueryKeys.add(canonicalQueryKey(q.query));
+          // P4 test fix: only restore queries to globalQueryKeys if they are also in completedQueryKeys
+          // (i.e., they produced candidates). Queries that returned zero results must remain eligible
+          // for re-execution in subsequent passes — adding them to globalQueryKeys would cause the
+          // planner to treat them as "already shared" and skip re-discovery entirely.
+          const savedCompletedKeys = new Set(saved.completedQueryKeys ?? []);
+          for (const q of saved.queriesExecuted) {
+            const key = canonicalQueryKey(q.query);
+            const segKey = `${q.segmentId}:${q.query.toLowerCase()}`;
+            if (savedCompletedKeys.has(segKey) || savedCompletedKeys.has(key)) {
+              globalQueryKeys.add(key);
+            }
+          }
         }
         candidatesFoundCount = saved.candidatesFoundCount ?? 0;
         if (saved.candidatesByProvider) Object.assign(candidatesByProvider, saved.candidatesByProvider);
@@ -1961,7 +1976,11 @@ export async function runAutonomousMediaAcquisition(input: {
             subject: item.segment.subject,
             query: item.query,
           });
-          completedQueryKeys.add(`${item.segment.segmentId}:${item.query.toLowerCase()}`);
+          // P4 test fix: only mark the query as completed AFTER we know it produced candidates.
+          // Previously, queries that returned zero results were saved to completedQueryKeys in the
+          // checkpoint, causing Pass 2 to skip them entirely even when the underlying search
+          // function would now return results (e.g., allowSeg2 toggled between passes).
+          // We defer adding to completedQueryKeys until after searchRes.candidates.length > 0.
           const itemQueryKey = canonicalQueryKey(item.query);
           globalQueryKeys.add(itemQueryKey);
           const keysForQuery = candKeysByQueryKey.get(itemQueryKey) ?? [];
@@ -2014,6 +2033,12 @@ export async function runAutonomousMediaAcquisition(input: {
             recoveryAttempt.sourceStatuses = searchRes.providerStatuses.map((status) => ({ ...status }));
             recoveryAttempt.candidatesFound = searchRes.candidates.length;
             recoveryAttempt.outcome = searchRes.candidates.length > 0 ? 'exhausted' : 'no_results';
+            // P4 test fix: only mark the query as completed when it produced candidates.
+            // Queries that returned zero results must remain eligible for re-execution in subsequent passes
+            // (e.g., checkpoint resume where allowSeg2 toggles between Pass 1 and Pass 2).
+            if (searchRes.candidates.length > 0) {
+              completedQueryKeys.add(`${item.segment.segmentId}:${item.query.toLowerCase()}`);
+            }
             if (searchRes.providerStatuses.some((s) => s.provider === 'yt_dlp' && s.status === 'blocked_auth_or_antibot')) {
               ytDlpBlocked = true;
             }

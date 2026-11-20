@@ -160,6 +160,7 @@ export type ProductionStageState =
   | 'paused_pending_research'
   | 'paused_pending_media'
   | 'paused_pending_script'
+  | 'paused_pending_review'
   | 'cancelled'
   | 'error';
 
@@ -266,6 +267,10 @@ export interface StagedProductionJob {
   musicSelection?: RealRenderResult['musicSelection'];
   deliveryGate?: RealRenderResult['deliveryGate'];
   qualityGates?: QualityGateReport[];
+  /** P5 fix: whether MotionVelix was requested for this production; defaults to true when absent. */
+  useVelix?: boolean;
+  /** P5 fix: explicit MotionVelix execution report from the renderer; required by the completion gate. */
+  motionVelixReport?: RealRenderResult['motionVelixReport'];
   error?: string;
   startedAt?: string;
   updatedAt: string;
@@ -2503,14 +2508,124 @@ export class StagedCinemaPipeline {
               );
               relevanceDecisions.push(relevance);
               if (!isAssemblyEligibleDecision(relevance)) {
-                // Keep the downloaded file for re-evaluation and human inspection; only the editorial decision is
-                // rejected. A later run with a new grounding policy must not need to download it again.
-                pending.push({
-                  slotIndex: i,
-                  clipId: `clip_${i + 1}`,
-                  query,
-                  reason: `Mídia rejeitada pelo Media Relevance Gate (${relevance.rejectionCode ?? 'incompatível'}): ${relevance.reason}`,
-                });
+                // P4 fix: automatic media recovery — when a candidate is rejected, attempt up to 2 retries
+                // with entity-specific queries derived from the rejection reason before giving up.
+                // Never silently substitutes the expected character; each retry targets the same entities.
+                const MAX_RECOVERY_ATTEMPTS = 2;
+                let recovered = false;
+                // P4 semantic fix: recovery queries MUST use expectedEntities (from narration/editorial context),
+                // never matchedEntities from the rejected media. Using matchedEntities would cause the system to
+                // search for the WRONG character (e.g., searching "Zoro" when the narration requires "Shanks").
+                // The rejected media's entities are evidence of mismatch, not recovery targets.
+                const baseEntityQuery = expectedEntities.slice(0, 3).join(' ');
+                const recoveryQueries: string[] = [];
+                if (relevance.rejectionCode === 'wrong_anime_or_entity' || relevance.rejectionCode === 'same_universe_wrong_event') {
+                  // Specific character + event query to avoid getting another character from the same franchise
+                  recoveryQueries.push(`${baseEntityQuery} ${query}`);
+                  recoveryQueries.push(`${baseEntityQuery} scene clip`);
+                } else if (relevance.rejectionCode === 'unrelated_real_person' || relevance.rejectionCode === 'non_anime_real_person') {
+                  // Explicitly request anime/animation footage of the expected entity
+                  recoveryQueries.push(`${baseEntityQuery} anime animation scene`);
+                  recoveryQueries.push(`${baseEntityQuery} sakuga clip`);
+                } else {
+                  // Generic recovery: add entity name to the original query
+                  recoveryQueries.push(`${baseEntityQuery} ${query}`);
+                }
+                for (let retryIdx = 0; retryIdx < Math.min(MAX_RECOVERY_ATTEMPTS, recoveryQueries.length); retryIdx += 1) {
+                  if (recovered) break;
+                  checkCancelled();
+                  const retryQuery = recoveryQueries[retryIdx]!;
+                  let retryUri: string | null = null;
+                  let retryCandidate: SearchCandidate | undefined;
+                  if (this.deps.searchExternalMedia) {
+                    try {
+                      const retryCandidates = await this.deps.searchExternalMedia(retryQuery, i * 100 + retryIdx, signal, {
+                        projectId: job.projectId,
+                      });
+                      retryCandidate = retryCandidates[0];
+                      if (retryCandidate?.url) {
+                        retryUri = await this.deps.acquireExternalMedia?.(
+                          retryQuery,
+                          i * 100 + retryIdx,
+                          projectPaths.mediaDir,
+                          signal,
+                          retryCandidate.url,
+                          { projectId: job.projectId },
+                        ) ?? null;
+                      }
+                    } catch {
+                      retryUri = null;
+                    }
+                  }
+                  if (!retryUri && this.deps.acquireExternalMedia) {
+                    try {
+                      retryUri = await this.deps.acquireExternalMedia(
+                        retryQuery,
+                        i * 100 + retryIdx,
+                        projectPaths.mediaDir,
+                        signal,
+                        undefined,
+                        { projectId: job.projectId },
+                      );
+                    } catch {
+                      retryUri = null;
+                    }
+                  }
+                  if (!retryUri) continue;
+                  const retryMedia = await buildSourceMediaFromFile(retryUri, `${job.projectId}_retry_${i + 1}_${retryIdx + 1}`);
+                  if (!retryMedia) continue;
+                  const retryDurSec = retryMedia.duration.value / Math.max(1, retryMedia.duration.rate);
+                  const retryRelevance = await evaluateMediaRelevance(
+                    {
+                      mediaId: retryMedia.mediaId,
+                      uri: retryMedia.uri,
+                      title: retryCandidate?.title ?? retryQuery,
+                      origin: retryCandidate?.origin ?? 'recovery_retry',
+                      ...(retryCandidate?.url ? { url: retryCandidate.url } : {}),
+                      projectId: job.projectId,
+                      durationSec: retryDurSec,
+                    },
+                    {
+                      segmentId: `slot_${i + 1}`,
+                      prompt: job.prompt,
+                      narrationText: query,
+                      ...(job.genre ? { genre: job.genre } : {}),
+                      expectedEntities,
+                    },
+                    {
+                      ...(this.deps.analyzeFrames ? { analyzeFrames: this.deps.analyzeFrames } : {}),
+                      requireVisualVerification: this.deps.requireVisualVerification ?? true,
+                    },
+                  );
+                  relevanceDecisions.push(retryRelevance);
+                  if (isAssemblyEligibleDecision(retryRelevance)) {
+                    this.cache.registerConsumer({
+                      url: retryCandidate?.url ?? `local://${job.projectId}/retry/${i + 1}/${encodeURIComponent(retryQuery)}`,
+                      origin: retryCandidate?.origin ?? 'recovery_retry',
+                      license: retryCandidate?.license ?? retryMedia.license,
+                      topic: job.prompt,
+                      query: retryQuery,
+                      sourceFilePath: retryMedia.uri,
+                      width: retryMedia.width ?? 1280,
+                      height: retryMedia.height ?? 720,
+                      durationSec: retryDurSec,
+                      projectId: job.projectId,
+                    });
+                    job.acquiredMedia.push(retryMedia);
+                    recovered = true;
+                  }
+                }
+                if (!recovered) {
+                  // Keep the downloaded file for re-evaluation and human inspection; only the editorial decision is
+                  // rejected. A later run with a new grounding policy must not need to download it again.
+                  pending.push({
+                    slotIndex: i,
+                    clipId: `clip_${i + 1}`,
+                    query,
+                    reason: `Mídia rejeitada pelo Media Relevance Gate (${relevance.rejectionCode ?? 'incompatível'}): ${relevance.reason}. Recuperação automática tentou ${MAX_RECOVERY_ATTEMPTS} busca(s) específica(s) sem sucesso.`,
+                    attempts: MAX_RECOVERY_ATTEMPTS,
+                  });
+                }
                 continue;
               }
               this.cache.registerConsumer({
@@ -3493,6 +3608,51 @@ export class StagedCinemaPipeline {
       job.qualityGates = [...(job.qualityGates ?? []), gateCFinal];
       this.deps.onRenderReady(job.projectId, render);
       job.completedStages = [...new Set([...job.completedStages, 'previa', 'editor'])] as ProductionStageState[];
+
+      // P5 fix: mandatory completion gate — a production is NEVER marked as completed
+      // without evidence that all required validations passed. This prevents the system
+      // from delivering a basic video and pretending cinematic production was finished.
+      const velixReport = render.motionVelixReport;
+      const velixRequired = job.useVelix !== false;
+      const velixGateFailures: string[] = [];
+      if (velixRequired && velixReport && !velixReport.motionVelixExecuted) {
+        velixGateFailures.push(
+          `MotionVelix foi solicitado mas não executado: ${velixReport.fallbackReason ?? 'motivo não informado'}.`,
+        );
+      }
+      // Check semantic validation: at least one media must have trusted visual verification
+      const hasTrustedVisualVerification = relevanceDecisions.some(
+        (d) => d.visualVerificationStatus === 'visually_verified' && d.assemblyEligible === true,
+      );
+      if (!hasTrustedVisualVerification && job.acquiredMedia.length > 0) {
+        velixGateFailures.push(
+          'Nenhuma mídia adquirida possui verificação visual confiável (provedor real). Todas as evidências visuais são de provedores não confiáveis ou metadados.',
+        );
+      }
+      // Check audio integrity
+      if (!render.probe.audioCodec || gateCFinal.verdict !== 'pass') {
+        velixGateFailures.push(`Áudio íntegro não confirmado: codec=${render.probe.audioCodec ?? 'ausente'}, GateC verdict=${gateCFinal.verdict}.`);
+      }
+      // Check duration tolerance
+      const durationDeltaMs = Math.abs(render.probe.durationSec * 1000 - job.targetDurationSec * 1000);
+      const durationToleranceMs = 3000; // 3s tolerance
+      if (durationDeltaMs > durationToleranceMs) {
+        velixGateFailures.push(
+          `Duração final (${render.probe.durationSec.toFixed(1)}s) diverge do alvo (${job.targetDurationSec}s) por ${(durationDeltaMs / 1000).toFixed(1)}s (tolerância: ${durationToleranceMs / 1000}s).`,
+        );
+      }
+
+      if (velixGateFailures.length > 0) {
+        job.state = 'paused_pending_review';
+        job.progressPct = 98;
+        job.error = `completion_gate_failed: ${velixGateFailures.join(' | ')}`;
+        job.message = `Produção pausada no gate de conclusão: ${velixGateFailures[0]} Revise os critérios e retome quando corrigido.`;
+        job.motionVelixReport = velixReport;
+        return this.saveJob(job);
+      }
+
+      // All gates passed — store the Velix report and mark as completed
+      job.motionVelixReport = velixReport;
 
       // EDITOR
       job.state = 'editor';
