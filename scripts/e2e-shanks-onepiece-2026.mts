@@ -144,8 +144,8 @@ async function main() {
     console.log(`  Codec vídeo: ${probe.videoCodec}`);
     console.log(`  Codec áudio: ${probe.audioCodec}`);
     console.log(`  Tamanho: ${(probe.fileSizeBytes / 1024 / 1024).toFixed(1)} MB`);
-    console.log(`  Válido: ${probe.valid}`);
-    if (!probe.valid) {
+    console.log(`  Válido: ${probe.valid ?? 'desconhecido'}`);
+    if (probe.valid === false && probe.errors?.length) {
       console.log(`  Erros: ${probe.errors.join('; ')}`);
     }
   }
