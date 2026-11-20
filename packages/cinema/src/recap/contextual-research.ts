@@ -18,6 +18,23 @@
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+/**
+ * Source type classification — describes WHERE the information comes from,
+ * NOT whether it is true. A Wikipedia article is a secondary source even if
+ * accurate; an official publisher announcement is a primary source.
+ */
+export const SOURCE_TYPE_VALUES = ['primary_official', 'secondary_community', 'secondary_editorial', 'user_generated', 'unknown'] as const;
+export type SourceType = (typeof SOURCE_TYPE_VALUES)[number];
+
+/**
+ * Confidence level — describes HOW RELIABLE the information is, independent
+ * of where it came from. A primary source can be unverified if the claim is
+ * ambiguous; a secondary source can be confirmed if corroborated by evidence.
+ */
+export const CONFIDENCE_LEVEL_VALUES = ['confirmed', 'corroborated', 'interpretation', 'theory', 'unverified'] as const;
+export type ConfidenceLevel = (typeof CONFIDENCE_LEVEL_VALUES)[number];
+
+/** @deprecated Use SourceType + ConfidenceLevel instead. Kept for backward compatibility with recap-types.ts exports. */
 export const RESEARCH_CONFIDENCE_TAGS = ['confirmed_fact', 'official_source', 'interpretation', 'theory', 'unverified'] as const;
 export type ResearchConfidenceTag = (typeof RESEARCH_CONFIDENCE_TAGS)[number];
 
@@ -30,7 +47,11 @@ export interface RawResearchReference {
 }
 
 export interface ContextualReference extends RawResearchReference {
-	/** Classification of the information reliability. */
+	/** Where the information comes from (source provenance). */
+	sourceType: SourceType;
+	/** How reliable the information is (evidence strength). */
+	confidenceLevel: ConfidenceLevel;
+	/** @deprecated Use sourceType + confidenceLevel instead. */
 	confidenceTag: ResearchConfidenceTag;
 	/** Chapter/episode/timeline boundary this reference applies to. Null = general work info. */
 	applicableUpToChapter?: number | null;
@@ -119,42 +140,78 @@ function containsSpoilerIndicators(text: string): boolean {
 	return SPOILER_KEYWORDS.some((kw) => lower.includes(kw));
 }
 
-function classifyConfidence(reference: RawResearchReference, allowTheories: boolean): ResearchConfidenceTag {
+/** Domains that are PRIMARY OFFICIAL sources (publisher, author, studio). */
+const PRIMARY_OFFICIAL_DOMAINS = [
+	'shueisha.co.jp', 'kodansha.com', 'shogakukan.co.jp', 'akita-shoten.co.jp',
+	'webtoons.com', 'tapas.io', 'tappytoon.com',
+	'viz.com', 'crunchyroll.com/manga', 'mangaplus.shueisha.co.jp',
+];
+
+/** Domains that are SECONDARY COMMUNITY sources (user-edited wikis, databases). */
+const SECONDARY_COMMUNITY_DOMAINS = [
+	'wikipedia.org', 'myanimelist.net', 'anilist.co', 'mangaupdates.com',
+	'fandom.com', 'wikia.com', 'reddit.com', 'discord.com',
+];
+
+interface ClassificationResult {
+	sourceType: SourceType;
+	confidenceLevel: ConfidenceLevel;
+	/** @deprecated backward compat */
+	confidenceTag: ResearchConfidenceTag;
+}
+
+function classifySource(reference: RawResearchReference): ClassificationResult {
 	const noteLower = reference.note.toLowerCase();
 	const titleLower = reference.title.toLowerCase();
-	const combined = `${titleLower} ${noteLower}`;
+	const urlLower = reference.url.toLowerCase();
 
-	// Official sources
-	if (reference.url.includes('wikipedia.org') || reference.url.includes('myanimelist.net') ||
-		reference.url.includes('anilist.co') || reference.url.includes('mangaupdates.com') ||
-		noteLower.includes('oficial') || noteLower.includes('official')) {
-		return 'official_source';
+	// ─── Source Type ────────────────────────────────────────────────────────
+	let sourceType: SourceType = 'unknown';
+
+	if (PRIMARY_OFFICIAL_DOMAINS.some((d) => urlLower.includes(d))) {
+		sourceType = 'primary_official';
+	} else if (SECONDARY_COMMUNITY_DOMAINS.some((d) => urlLower.includes(d))) {
+		sourceType = 'secondary_community';
+	} else if (noteLower.includes('editorial') || noteLower.includes('review') || noteLower.includes('resenha')) {
+		sourceType = 'secondary_editorial';
+	} else if (noteLower.includes('fan ') || noteLower.includes('usuário') || noteLower.includes('user') || noteLower.includes('comunidade')) {
+		sourceType = 'user_generated';
+	} else if (noteLower.includes('oficial') || noteLower.includes('official') || noteLower.includes('publisher') || noteLower.includes('editora')) {
+		sourceType = 'primary_official';
 	}
 
-	// Confirmed facts
+	// ─── Confidence Level ───────────────────────────────────────────────────
+	let confidenceLevel: ConfidenceLevel = 'unverified';
+
 	if (noteLower.includes('confirmado') || noteLower.includes('confirmed') ||
-		noteLower.includes('fato') || noteLower.includes('fact')) {
-		return 'confirmed_fact';
-	}
-
-	// Theories and interpretations
-	if (noteLower.includes('teoria') || noteLower.includes('theory') ||
+		noteLower.includes('fato verificado') || noteLower.includes('verified fact')) {
+		confidenceLevel = 'confirmed';
+	} else if (noteLower.includes('corroborado') || noteLower.includes('corroborated') ||
+		noteLower.includes('múltiplas fontes') || noteLower.includes('multiple sources')) {
+		confidenceLevel = 'corroborated';
+	} else if (noteLower.includes('interpretação') || noteLower.includes('interpretation') ||
+		noteLower.includes('análise') || noteLower.includes('analysis') ||
+		noteLower.includes('resenha') || noteLower.includes('review')) {
+		confidenceLevel = 'interpretation';
+	} else if (noteLower.includes('teoria') || noteLower.includes('theory') ||
 		noteLower.includes('especulação') || noteLower.includes('speculation') ||
+		noteLower.includes('hipótese') || noteLower.includes('hypothesis') ||
 		titleLower.includes('teoria') || titleLower.includes('theory')) {
-		return allowTheories ? 'theory' : 'unverified';
+		confidenceLevel = 'theory';
+	} else if (sourceType === 'primary_official') {
+		// Primary official sources default to corroborated unless explicitly marked otherwise
+		confidenceLevel = 'corroborated';
 	}
 
-	if (noteLower.includes('interpretação') || noteLower.includes('interpretation') ||
-		noteLower.includes('análise') || noteLower.includes('analysis')) {
-		return 'interpretation';
-	}
+	// ─── Deprecated tag mapping ─────────────────────────────────────────────
+	let confidenceTag: ResearchConfidenceTag = 'unverified';
+	if (confidenceLevel === 'confirmed') confidenceTag = 'confirmed_fact';
+	else if (confidenceLevel === 'corroborated' && sourceType === 'primary_official') confidenceTag = 'official_source';
+	else if (confidenceLevel === 'corroborated') confidenceTag = 'confirmed_fact';
+	else if (confidenceLevel === 'interpretation') confidenceTag = 'interpretation';
+	else if (confidenceLevel === 'theory') confidenceTag = 'theory';
 
-	// Default: treat as confirmed fact if textual/data, otherwise unverified
-	if (reference.kind === 'texto' || reference.kind === 'dado') {
-		return 'confirmed_fact';
-	}
-
-	return 'unverified';
+	return { sourceType, confidenceLevel, confidenceTag };
 }
 
 function filterReference(
@@ -165,44 +222,63 @@ function filterReference(
 	const noteChapter = extractChapterFromNote(ref.note);
 	const titleChapter = extractChapterFromNote(ref.title);
 	const refChapter = noteChapter ?? titleChapter;
+	const classification = classifySource(ref);
 
-	// Spoiler keyword check
+	// ─── Layer 1: Spoiler keyword check ─────────────────────────────────────
 	if (containsSpoilerIndicators(`${ref.title} ${ref.note}`)) {
 		return {
 			...ref,
-			confidenceTag: 'unverified',
+			...classification,
 			applicableUpToChapter: refChapter,
 			rejected: true,
 			rejectionReason: 'Contains spoiler indicators in title or note.',
 		};
 	}
 
-	// Temporal boundary check
+	// ─── Layer 2: Temporal boundary check ───────────────────────────────────
 	if (refChapter !== null && refChapter > maxChapter) {
 		return {
 			...ref,
-			confidenceTag: classifyConfidence(ref, options.allowTheories ?? false),
+			...classification,
 			applicableUpToChapter: refChapter,
 			rejected: true,
 			rejectionReason: `Reference applies to chapter ${refChapter}, beyond allowed limit (${maxChapter}).`,
 		};
 	}
 
-	// Theory/interpretation filter
-	const confidenceTag = classifyConfidence(ref, options.allowTheories ?? false);
-	if (!options.allowTheories && (confidenceTag === 'theory' || confidenceTag === 'unverified')) {
+	// ─── Layer 3: Conservative policy for unverifiable temporal context ─────
+	// When we cannot determine which chapter a reference applies to AND it is
+	// not from a primary official source, reject it to prevent accidental spoilers.
+	// Primary official sources about the work in general (no chapter mention) are
+	// accepted because they typically describe established facts.
+	if (refChapter === null && classification.sourceType !== 'primary_official') {
+		const isGeneralWorkInfo = noteChapter === null && titleChapter === null &&
+			!containsSpoilerIndicators(`${ref.title} ${ref.note}`);
+		if (!isGeneralWorkInfo || classification.confidenceLevel === 'theory' || classification.confidenceLevel === 'unverified') {
+			return {
+				...ref,
+				...classification,
+				applicableUpToChapter: null,
+				rejected: true,
+				rejectionReason: `No verifiable temporal context and source type "${classification.sourceType}" is not primary_official. Conservative rejection to prevent potential spoilers.`,
+			};
+		}
+	}
+
+	// ─── Layer 4: Theory/unverified filter ──────────────────────────────────
+	if (!options.allowTheories && (classification.confidenceLevel === 'theory' || classification.confidenceLevel === 'unverified')) {
 		return {
 			...ref,
-			confidenceTag,
+			...classification,
 			applicableUpToChapter: refChapter,
 			rejected: true,
-			rejectionReason: `Confidence tag "${confidenceTag}" not allowed (allowTheories=false).`,
+			rejectionReason: `Confidence level "${classification.confidenceLevel}" not allowed (allowTheories=false).`,
 		};
 	}
 
 	return {
 		...ref,
-		confidenceTag,
+		...classification,
 		applicableUpToChapter: refChapter,
 		rejected: false,
 	};
@@ -305,4 +381,128 @@ export async function runContextualResearch(input: RunContextualResearchInput): 
 			skipped: true,
 		};
 	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONCRETE PORT ADAPTERS — Phase 2.2.3
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Minimal TaskEngine port for text-only structured execution.
+ * Decouples the adapter from the full TaskEngine type so this module
+ * can be tested and reused without importing @neuralbridge/orchestrator.
+ */
+export interface TextTaskEnginePort {
+	runStructuredReadOnly(input: {
+		projectId: string | null;
+		agent: string;
+		prompt: string;
+		outputSchema: object;
+		origin?: string;
+		model?: string | null;
+		lean?: { systemPrompt: string };
+		signal?: AbortSignal;
+	}): Promise<{ agent: string; text: string; structured: unknown; model: string | null }>;
+}
+
+/**
+ * Creates a TextEnhancementPort backed by TaskEngine.runStructuredReadOnly().
+ * Supports dynamic agent selection: tries each agent in priority order until
+ * one succeeds, implementing real multi-agent fallback for text tasks.
+ */
+export function createTaskEngineTextEnhancementAdapter(input: {
+	taskEngine: TextTaskEnginePort;
+	projectId: string | null;
+	agentPriority?: readonly string[];
+	model?: string | null;
+}): import('./recap-types.js').TextEnhancementPort {
+	const agents = input.agentPriority ?? ['claude', 'codex'];
+	return {
+		name: `taskengine-text-enhancement[${agents.join(',')}]`,
+		async enhance(request: import('./recap-types.js').TextEnhancementRequest): Promise<import('./recap-types.js').TextEnhancementResult> {
+			let lastError: string | undefined;
+			for (const agent of agents) {
+				try {
+					const runInput: Parameters<TextTaskEnginePort['runStructuredReadOnly']>[0] = {
+						projectId: input.projectId,
+						agent,
+						prompt: request.text,
+						outputSchema: request.outputSchema,
+						origin: 'neura',
+						lean: { systemPrompt: request.systemPrompt },
+					};
+					if (input.model !== undefined) runInput.model = input.model;
+					if (request.signal !== undefined) runInput.signal = request.signal;
+					const result = await input.taskEngine.runStructuredReadOnly(runInput);
+					return {
+						text: typeof result.structured === 'string' ? result.structured : JSON.stringify(result.structured),
+						agentId: result.agent,
+						model: result.model,
+						ok: true,
+					};
+				} catch (err) {
+					lastError = err instanceof Error ? err.message : String(err);
+				}
+			}
+			return { text: '', agentId: 'none', model: null, ok: false, error: lastError ?? 'All agents failed.' };
+		},
+	};
+}
+
+/**
+ * Minimal AgentAdapter port for video research execution.
+ * Decouples the adapter from @neuralbridge/agents so this module
+ * can be tested and reused independently.
+ */
+export interface ResearchAgentAdapterPort {
+	id: string;
+	detect(): Promise<{ installed: boolean; authenticated: boolean; problems: string[] }>;
+	run(request: { prompt: string; cwd: string; mode: string; timeoutMs?: number; allowedTools?: string[]; outputSchema?: object; webSearch?: boolean }, signal?: AbortSignal): AsyncIterable<{ kind: string; data?: unknown }>;
+}
+
+/**
+ * Creates a ResearchPort backed by runVideoResearch() from @neuralbridge/orchestrator.
+ * The actual import is injected at runtime to avoid circular dependencies.
+ */
+export function createVideoResearchPortAdapter(input: {
+	adapter: ResearchAgentAdapterPort;
+	cwd: string;
+	runVideoResearchFn: (adapter: ResearchAgentAdapterPort, topic: string, cwd: string, signal?: AbortSignal) => Promise<{ references: RawResearchReference[]; rejected: number; generation: { executionId: string; model: string | null } }>;
+}): ResearchPort {
+	return {
+		name: `video-research-port[${input.adapter.id}]`,
+		async research(request: ResearchPortRequest): Promise<ResearchPortResult> {
+			try {
+				const detection = await input.adapter.detect();
+				if (!detection.installed || !detection.authenticated) {
+					return {
+						references: [],
+						rejectedCount: 0,
+						agentId: input.adapter.id,
+						model: null,
+						ok: false,
+						error: detection.problems[0] ?? 'Agent not available.',
+					};
+				}
+				const run = await input.runVideoResearchFn(input.adapter, request.topic, input.cwd, request.signal);
+				return {
+					references: run.references,
+					rejectedCount: run.rejected,
+					agentId: input.adapter.id,
+					model: run.generation.model,
+					executionId: run.generation.executionId,
+					ok: true,
+				};
+			} catch (err) {
+				return {
+					references: [],
+					rejectedCount: 0,
+					agentId: input.adapter.id,
+					model: null,
+					ok: false,
+					error: err instanceof Error ? err.message : String(err),
+				};
+			}
+		},
+	};
 }

@@ -135,6 +135,9 @@ export {
 	type RecapVisionAdapterOptions,
 } from './recap-vision-adapter.js';
 
+// ─── Claude Vision Provider (E2E Phase 2.2.4) ────────────────────────────────
+export { createClaudeVisionProvider, type ClaudeVisionProviderOptions } from './claude-vision-provider.js';
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // FASE 2.2 — NARRATIVE ENHANCEMENT EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -162,6 +165,14 @@ export {
 	type ResearchPortRequest,
 	type ResearchPortResult,
 	type RawResearchReference,
+	SOURCE_TYPE_VALUES,
+	CONFIDENCE_LEVEL_VALUES,
+	type SourceType,
+	type ConfidenceLevel,
+	createTaskEngineTextEnhancementAdapter,
+	createVideoResearchPortAdapter,
+	type TextTaskEnginePort,
+	type ResearchAgentAdapterPort,
 } from './contextual-research.js';
 
 export {
@@ -170,4 +181,5 @@ export {
 	type ContextualReference,
 	type ContextualResearchOptions,
 	type ContextualResearchResult,
+	type StoryEngineResearchOptions,
 } from './recap-types.js';

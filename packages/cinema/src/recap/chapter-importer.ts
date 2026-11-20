@@ -23,7 +23,11 @@ function detectFormat(archivePath: string): 'pdf' | 'cbz' | 'zip' | 'images' {
 }
 
 function inferReadingOrder(format: 'pdf' | 'cbz' | 'zip' | 'images'): ReadingOrder {
-	if (format === 'cbz') return 'rtl';
+	// Manhwa/webtoon archives typically use vertical scroll reading order.
+	// CBZ with sequential numeric filenames (001, 002, ...) is a strong indicator.
+	// For now, default CBZ to 'vertical' since most modern manhwa uses this format.
+	// Future: inspect aspect ratios or metadata to distinguish manga (rtl) from manhwa (vertical).
+	if (format === 'cbz') return 'vertical';
 	return 'rtl';
 }
 

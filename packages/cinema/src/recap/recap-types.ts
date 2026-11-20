@@ -408,6 +408,13 @@ export interface HumanizeResult {
 
 // ─── Contextual Research / YouTube Agent ─────────────────────────────────────
 
+export const SOURCE_TYPE_VALUES = ['primary_official', 'secondary_community', 'secondary_editorial', 'user_generated', 'unknown'] as const;
+export type SourceType = (typeof SOURCE_TYPE_VALUES)[number];
+
+export const CONFIDENCE_LEVEL_VALUES = ['confirmed', 'corroborated', 'interpretation', 'theory', 'unverified'] as const;
+export type ConfidenceLevel = (typeof CONFIDENCE_LEVEL_VALUES)[number];
+
+/** @deprecated Use SourceType + ConfidenceLevel instead. */
 export const RESEARCH_CONFIDENCE_TAGS = ['confirmed_fact', 'official_source', 'interpretation', 'theory', 'unverified'] as const;
 export type ResearchConfidenceTag = (typeof RESEARCH_CONFIDENCE_TAGS)[number];
 
@@ -417,6 +424,9 @@ export interface ContextualReference {
 	url: string;
 	license: string;
 	note: string;
+	sourceType: SourceType;
+	confidenceLevel: ConfidenceLevel;
+	/** @deprecated Use sourceType + confidenceLevel instead. */
 	confidenceTag: ResearchConfidenceTag;
 	applicableUpToChapter?: number | null;
 	rejected: boolean;
@@ -447,6 +457,29 @@ export interface ContextualResearchResult {
 
 // ─── Story Engine Options Extension ──────────────────────────────────────────
 
+/**
+ * Minimal port for contextual research execution. Defined here to avoid
+ * circular dependency with contextual-research.ts. The canonical interface
+ * lives in contextual-research.ts; this is a structural subset for type safety.
+ */
+export interface StoryEngineResearchPort {
+	readonly name: string;
+	research(input: { topic: string; signal?: AbortSignal }): Promise<{
+		references: Array<{ kind: string; title: string; url: string; license: string; note: string }>;
+		rejectedCount: number;
+		agentId: string;
+		model: string | null;
+		executionId?: string;
+		ok: boolean;
+		error?: string;
+	}>;
+}
+
+export interface StoryEngineResearchOptions extends ContextualResearchOptions {
+	/** ResearchPort instance for executing contextual research. Required when enabled. */
+	port: StoryEngineResearchPort;
+}
+
 export interface StoryEngineOptions {
 	chapterId: string;
 	panels: ExtractedPanel[];
@@ -459,6 +492,8 @@ export interface StoryEngineOptions {
 	minBeatConfidence?: number;
 	/** Phase 2.2: optional humanization after script generation. */
 	humanize?: HumanizeOptions & { port: TextEnhancementPort };
+	/** Phase 2.2.3: optional contextual research before script generation. */
+	research?: StoryEngineResearchOptions;
 }
 
 // ─── Vision Adapter Interface (for panel visual analysis) ────────────────────
