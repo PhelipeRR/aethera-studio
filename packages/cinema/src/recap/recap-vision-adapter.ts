@@ -441,8 +441,13 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		const analyzeResult = await router.analyze(routerAnalyzeInput);
 
 		for (const attempt of analyzeResult.attempts) {
-			if (attempt.outcome === 'error' && attempt.detail) {
-				const classified = classifyVisionError(attempt.detail, attempt.provider);
+			if (attempt.outcome === 'ok' || attempt.outcome === 'cached') {
+				circuitBreaker.recordSuccess(attempt.provider);
+			} else if (attempt.outcome === 'error' && attempt.detail) {
+				const classified = classifyVisionError(attempt.detail, attempt.provider, 'UNKNOWN_PROVIDER_ERROR');
+				circuitBreaker.recordError(attempt.provider, classified);
+			} else if (attempt.outcome === 'unavailable' && attempt.detail && !attempt.detail.startsWith('circuit_open:')) {
+				const classified = classifyVisionError(attempt.detail, attempt.provider, 'PROVIDER_UNAVAILABLE');
 				if (classified.code === 'QUOTA_EXCEEDED' || classified.code === 'AUTHENTICATION_FAILED') {
 					circuitBreaker.recordError(attempt.provider, classified);
 				}
@@ -503,11 +508,13 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		// All providers failed — throw structured error when strict, or return zero confidence
 		if (throwOnAllUnavailable) {
 			const diagnostics: VisionProviderDiagnostic[] = analyzeResult.attempts.map((a) => {
-				const c = classifyVisionError(a.detail ?? a.outcome, a.provider, 'PROVIDER_UNAVAILABLE');
+				const fallback = a.outcome === 'unavailable' ? 'PROVIDER_UNAVAILABLE' : 'UNKNOWN_PROVIDER_ERROR';
+				const c = classifyVisionError(a.detail ?? a.outcome, a.provider, fallback);
 				return {
 					providerId: a.provider,
 					code: c.code,
 					message: c.message,
+					...(c.exitCode !== undefined ? { exitCode: c.exitCode } : {}),
 					...(c.resetAtText ? { resetAtText: c.resetAtText } : {}),
 				};
 			});
@@ -621,4 +628,37 @@ export function createRoutedRecapVisionAdapter(input: {
 	if (input.circuitBreaker) opts.circuitBreaker = input.circuitBreaker;
 	if (input.throwOnAllUnavailable !== undefined) opts.throwOnAllUnavailable = input.throwOnAllUnavailable;
 	return createRecapVisionAdapter(opts);
+}
+
+
+export interface VisionRoutingStepSummary {
+	provider: string;
+	outcome: string;
+	code?: string;
+	reason?: string;
+	fallbackTo?: string;
+}
+
+/**
+ * Formats concise, secret-free and prompt-free routing diagnostics showing which
+ * agent was tried, why it failed, and whether fallback occurred.
+ */
+export function formatVisionRoutingSummary(
+	attempts: readonly { provider: string; outcome: string; detail?: string }[],
+): VisionRoutingStepSummary[] {
+	return attempts.map((a, idx) => {
+		const next = attempts[idx + 1];
+		if (a.outcome === 'ok' || a.outcome === 'cached') {
+			return { provider: a.provider, outcome: a.outcome };
+		}
+		const fallback = a.outcome === 'unavailable' ? 'PROVIDER_UNAVAILABLE' : 'UNKNOWN_PROVIDER_ERROR';
+		const c = classifyVisionError(a.detail ?? a.outcome, a.provider, fallback);
+		return {
+			provider: a.provider,
+			outcome: a.outcome,
+			code: c.code,
+			reason: c.message,
+			...(next ? { fallbackTo: next.provider } : {}),
+		};
+	});
 }

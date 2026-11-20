@@ -131,6 +131,8 @@ export {
 	createRecapVisionAdapter,
 	createTaskEngineRecapVisionAdapter,
 	createRoutedRecapVisionAdapter,
+	formatVisionRoutingSummary,
+	type VisionRoutingStepSummary,
 	type RecapVisualAnalysisPort,
 	type RecapVisionRouterPort,
 	type RecapVisionAdapterOptions,

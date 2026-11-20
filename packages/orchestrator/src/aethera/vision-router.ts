@@ -46,7 +46,7 @@ export interface VisionRouterConfig {
   maxAttempts?: number;
 }
 export function isVisionQuotaError(message: string): boolean {
-  return /QUOTA_EXCEEDED|weekly limit|hit your (?:weekly|daily|monthly|usage) limit|out of usage credits?|usage limit|quota|rate[- ]limit|too many requests|\b429\b|try again at|insufficient[_ ]quota|credit balance/i.test(message);
+  return /QUOTA_EXHAUSTED|QUOTA_EXCEEDED|RESOURCE_EXHAUSTED|insufficient[_ ]?credits?|cr[ée]ditos?\s+insuficientes?|saldo\s+insuficiente|weekly limit|hit your (?:weekly|daily|monthly|usage) limit|out of (?:usage )?credits?|usage limit|quota|rate[- ]limit|too many requests|\b429\b|try again at|insufficient[_ ]quota|credit balance/i.test(message);
 }
 export type VisionAttempt = { provider: string; outcome: VisionAttemptOutcome; detail?: string; durationMs?: number };
 type Attempt = VisionAttempt;

@@ -11,6 +11,7 @@ import {
 	invalidateCheckpointCache,
 	RECAP_ANALYZER_VERSION,
 	createRecapVisionAdapter,
+	formatVisionRoutingSummary,
 	createMultiAgentVideoResearchPortAdapter,
 	buildGateGDivergenceReport,
 	runNarrativeHumanizer,
@@ -435,6 +436,132 @@ describe('Phase 2.2.4 Enhancements (Quota, Circuit Breaker, Vision Fallback, Dur
 			const div = buildGateGDivergenceReport(hum.postHumanizeGateG, hum.postHumanizeGateG, hum.diffs);
 			expect(div.revertedScenes).toBe(1);
 			expect(div.evidencePreserved).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('regression (Antigravity): RESOURCE_EXHAUSTED 429 opens circuit breaker as QUOTA_EXCEEDED without retries and strips prompts/schemas', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'recap-agy-reg-'));
+		try {
+			const img = join(dir, 'p0.png');
+			writeFileSync(img, 'img-bytes');
+			const panels = [makePanel('p-0', 0, img, 'hash-agy-0'), makePanel('p-1', 1, img, 'hash-agy-1')];
+
+			const rawAgyError =
+				'Command failed: agy --output-format json --mode plan --print Analyze the local video frame images... Respond ONLY with valid JSON matching this JSON Schema: {"type":"object","properties":{"description":{"type":"string"}}} | exit code 1 — API error 429 RESOURCE_EXHAUSTED: insufficient credits';
+
+			let agyCalls = 0;
+			let gwCalls = 0;
+			const circuitBreaker = new AgentCircuitBreaker();
+
+			const agyProvider: RecapVisualAnalysisPort = {
+				id: 'antigravity',
+				model: 'agy-1.5.13',
+				async detect() { return { available: true }; },
+				async analyze() {
+					agyCalls++;
+					throw new Error(rawAgyError);
+				},
+			};
+			const gwProvider = makeSuccessProvider('claude-gateway', () => { gwCalls++; });
+
+			const adapter = createRecapVisionAdapter({
+				root: dir,
+				providers: [agyProvider, gwProvider],
+				circuitBreaker,
+				throwOnAllUnavailable: true,
+			});
+
+			const res = await runNarrativeAnalyzer({ panels, visionAdapter: adapter, analyzedBy: adapter.name });
+			expect(agyCalls).toBe(1);
+			expect(gwCalls).toBe(2);
+			expect(circuitBreaker.isAvailable('antigravity')).toBe(false);
+			expect(circuitBreaker.getState('antigravity')?.code).toBe('QUOTA_EXCEEDED');
+			expect(circuitBreaker.getState('antigravity')?.reason).not.toContain('JSON Schema');
+			expect(circuitBreaker.getState('antigravity')?.reason).not.toContain('--print Analyze');
+			expect(res.analyses).toHaveLength(2);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('regression (Codex): preserves original exit code and stderr as UNKNOWN_PROVIDER_ERROR (not generic PROVIDER_UNAVAILABLE) and trips circuit breaker on Codex quota', async () => {
+		const rawUnknown = 'codex visual run failed: exit code 1 — stderr: unsupported image format or sandbox error';
+		const unknownErr = classifyVisionError(rawUnknown, 'codex');
+		expect(unknownErr.code).toBe('UNKNOWN_PROVIDER_ERROR');
+		expect(unknownErr.exitCode).toBe(1);
+		expect(unknownErr.message).toContain('unsupported image format');
+
+		const rawCodexQuota = 'codex visual run failed: exit code 1 — You have reached your usage limit until 2026-11-23';
+		const quotaErr = classifyVisionError(rawCodexQuota, 'codex');
+		expect(quotaErr.code).toBe('QUOTA_EXCEEDED');
+		expect(quotaErr.resetAtText).toContain('2026-11-23');
+
+		const cb = new AgentCircuitBreaker();
+		cb.recordError('codex', quotaErr);
+		expect(cb.isAvailable('codex')).toBe(false);
+
+		const summary = formatVisionRoutingSummary([
+			{ provider: 'claude', outcome: 'error', detail: REAL_CLAUDE_QUOTA_MSG },
+			{ provider: 'codex', outcome: 'error', detail: rawUnknown },
+			{ provider: 'antigravity', outcome: 'error', detail: '429 RESOURCE_EXHAUSTED: insufficient credits' },
+			{ provider: 'claude-gateway', outcome: 'ok' },
+		]);
+		expect(summary).toEqual([
+			expect.objectContaining({ provider: 'claude', code: 'QUOTA_EXCEEDED', fallbackTo: 'codex' }),
+			expect.objectContaining({ provider: 'codex', code: 'UNKNOWN_PROVIDER_ERROR', fallbackTo: 'antigravity' }),
+			expect.objectContaining({ provider: 'antigravity', code: 'QUOTA_EXCEEDED', fallbackTo: 'claude-gateway' }),
+			{ provider: 'claude-gateway', outcome: 'ok' },
+		]);
+	});
+
+	it('regression (incremental checkpoint): preserves completed valid panels on disk even when run aborts with AllVisionProvidersUnavailableError', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'recap-inc-abort-'));
+		const ckptDir = join(dir, 'checkpoints');
+		try {
+			const panels: ExtractedPanel[] = [];
+			for (let i = 0; i < 4; i++) {
+				const img = join(dir, `p-${i}.png`);
+				writeFileSync(img, `panel-${i}`);
+				panels.push(makePanel(`p-${i}`, i, img, `hash-inc-${i}`));
+			}
+
+			let calls = 0;
+			const flakyProvider: RecapVisualAnalysisPort = {
+				id: 'claude',
+				model: 'claude-sonnet',
+				async detect() { return { available: true }; },
+				async analyze({ frames }) {
+					calls++;
+					if (calls <= 2) {
+						return makeSuccessProvider('claude').analyze!({ frames });
+					}
+					throw classifyVisionError(REAL_CLAUDE_QUOTA_MSG, 'claude');
+				},
+			};
+
+			const adapter = createRecapVisionAdapter({
+				root: dir,
+				providers: [flakyProvider],
+				throwOnAllUnavailable: true,
+			});
+
+			await expect(
+				runStoryEngine({
+					chapterId: 'ch-abort',
+					panels,
+					outputDir: join(dir, 'out'),
+					checkpointDir: ckptDir,
+					visionAdapter: adapter,
+					analysisConcurrency: 1,
+				}),
+			).rejects.toBeInstanceOf(AllVisionProvidersUnavailableError);
+
+			// Panels 0 and 1 MUST remain persisted on disk despite abort on panel 2
+			const saved = loadCheckpoint(ckptDir);
+			expect(saved?.panelAnalyses).toHaveLength(2);
+			expect(saved?.panelAnalyses?.map((a) => a.panelId)).toEqual(['p-0', 'p-1']);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

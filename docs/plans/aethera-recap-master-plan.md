@@ -256,7 +256,11 @@ Adicionar a skill YouTube Agent como recurso opcional de pesquisa contextual.
 - Fallback multimodal real no `scripts/e2e-recap-phase224.mts` usando `VisionRouter` (`claude` -> `claude-gateway` -> `codex` -> `antigravity`), com erro estruturado `AllVisionProvidersUnavailableError` se nenhum estiver operacional.
 - Checkpoints duráveis em `.aethera-recap-data/phase224/` com escrita atômica (`tmp` + `rename`), chave composta `imageHash::model::analyzerVersion`, persistência incremental por painel e filtragem estrita contra armazenamento de falhas (`confidence === 0`).
 - Diagnóstico detalhado no Gate F (`ocrNotRunOnDialogueCount`, `ocrEmptyOnDialogueCount`, `dialoguePanelCount`, `nonDialoguePanelCount`) sem mascarar `needs_review`.
-- Testes adicionados em `packages/cinema/test/recap/phase224-enhancements.test.ts` (incluindo os 10 cenários de quota, circuit breaker, failover, concorrência e checkpoint durável).
+- Diagnóstico real do Codex visual corrigido em `createAgentAdapterVisionProvider` (`vision-providers.ts`): captura eventos `text`, `error`, `stderr` e `exitCode`, classificando falhas desconhecidas como `UNKNOWN_PROVIDER_ERROR` sem mascarar como `PROVIDER_UNAVAILABLE`.
+- Classificação `RESOURCE_EXHAUSTED` (429 por créditos insuficientes no Antigravity) mapeada para `QUOTA_EXCEEDED` (sem retries imediatos), abrindo o circuit breaker de forma consistente nos 4 provedores.
+- `formatVisionRoutingSummary()` + `sanitizeErrorMessage()` removem prompts completos, esquemas JSON e credenciais dos logs do `VisionRouter`.
+- Runner `scripts/e2e-recap-phase224.mts` detecta o cofre `aethera-claude-gateway.bin` do Aethera Desktop e aceita variáveis em memória sem exportar tokens para logs ou arquivos temporários.
+- Testes de regressão adicionados em `packages/cinema/test/recap/phase224-enhancements.test.ts` (Codex, Antigravity `RESOURCE_EXHAUSTED`, circuit breaker nos 4 provedores e persistência incremental de checkpoint em `AllVisionProvidersUnavailableError`).
 
 **Pendências para encerramento da Fase 2.2.4:**
 - Executar `tsc --noEmit` e `vitest` no ambiente com `node_modules` instalados.

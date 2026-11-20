@@ -39,6 +39,7 @@ import {
 	runGateFPanelIntegrity,
 	createClaudeVisionProvider,
 	createRoutedRecapVisionAdapter,
+	formatVisionRoutingSummary,
 	createTaskEngineTextEnhancementAdapter,
 	createMultiAgentVideoResearchPortAdapter,
 	runStoryEngine,
@@ -87,8 +88,27 @@ async function runAgyPrompt(req: { prompt: string; cwd: string; model?: string; 
 		});
 		return { ok: true, output: stdout };
 	} catch (err) {
-		return { ok: false, output: '', error: sanitizeErrorMessage(err instanceof Error ? err.message : String(err)) };
+		const execErr = err as { code?: number | string; stderr?: string; stdout?: string; message?: string };
+		const rawDetail = [
+			execErr.code !== undefined ? `exit code ${execErr.code}` : '',
+			execErr.stderr?.trim() || execErr.stdout?.trim() || execErr.message || String(err),
+		].filter(Boolean).join(' — ');
+		return { ok: false, output: '', error: sanitizeErrorMessage(rawDetail) };
 	}
+}
+
+function detectDesktopClaudeGatewayStore(): { found: boolean; storePath?: string } {
+	const appData = process.env['APPDATA'];
+	const candidates = [
+		process.env['NB_AETHERA_USER_DATA_DIR'] ? join(process.env['NB_AETHERA_USER_DATA_DIR'], 'aethera-claude-gateway.bin') : '',
+		appData ? join(appData, 'aethera-desktop', 'aethera-claude-gateway.bin') : '',
+		appData ? join(appData, 'Aethera Studio', 'aethera-claude-gateway.bin') : '',
+		appData ? join(appData, 'neuralbridge-aethera-desktop', 'aethera-claude-gateway.bin') : '',
+	].filter(Boolean);
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) return { found: true, storePath: candidate };
+	}
+	return { found: false };
 }
 
 function log(stage: string, msg: string, data?: unknown) {
@@ -120,9 +140,11 @@ async function main() {
 	const claudeAdapter = new ClaudeCliAdapter();
 	const codexAdapter = new CodexCliAdapter();
 
-	// Claude Gateway: configuracao e disponibilidade independentes do Claude CLI
+	// Claude Gateway: reutiliza configuracao em memoria (env) ou detecta cofre encriptado do Aethera Desktop (safeStorage)
+	const desktopGatewayStore = detectDesktopClaudeGatewayStore();
 	const gatewayToken = process.env['NB_CLAUDE_GATEWAY_TOKEN'] ?? process.env['ANTHROPIC_AUTH_TOKEN'];
 	const gatewayBaseUrl = process.env['NB_CLAUDE_GATEWAY_BASE_URL'] ?? process.env['ANTHROPIC_BASE_URL'];
+	const gatewayModel = process.env['NB_CLAUDE_GATEWAY_MODEL'] ?? process.env['ANTHROPIC_MODEL'];
 	const gatewayConfigured = Boolean(gatewayToken && gatewayBaseUrl);
 	const claudeGatewayAdapter = gatewayConfigured
 		? new ClaudeCliAdapter({
@@ -130,6 +152,8 @@ async function main() {
 			resolveEnv: () => ({
 				ANTHROPIC_AUTH_TOKEN: gatewayToken,
 				ANTHROPIC_BASE_URL: gatewayBaseUrl,
+				...(gatewayModel ? { ANTHROPIC_MODEL: gatewayModel } : {}),
+				ANTHROPIC_API_KEY: undefined,
 			}),
 		})
 		: null;
@@ -148,8 +172,14 @@ async function main() {
 	log('AGENTS', 'Status detectado', {
 		claude: { installed: claudeStatus.installed, authenticated: claudeStatus.authenticated, problems: claudeStatus.problems },
 		claudeGateway: gatewayConfigured
-			? { configured: true, installed: gatewayStatus?.installed, authenticated: gatewayStatus?.authenticated }
-			: { configured: false, reason: 'NB_CLAUDE_GATEWAY_TOKEN / NB_CLAUDE_GATEWAY_BASE_URL nao configurados' },
+			? { configured: true, source: 'env', installed: gatewayStatus?.installed, authenticated: gatewayStatus?.authenticated }
+			: desktopGatewayStore.found
+				? {
+					configured: false,
+					desktopStoreDetected: true,
+					reason: 'Cofre safeStorage detectado no Aethera Desktop (criptografado pelo Electron). Em CLI standalone, informe NB_CLAUDE_GATEWAY_BASE_URL e NB_CLAUDE_GATEWAY_TOKEN em memoria na sessao.',
+				}
+				: { configured: false, desktopStoreDetected: false, reason: 'NB_CLAUDE_GATEWAY_TOKEN / NB_CLAUDE_GATEWAY_BASE_URL nao configurados' },
 		codex: { installed: codexStatus.installed, authenticated: codexStatus.authenticated, problems: codexStatus.problems },
 		antigravity_agy: agyStatus,
 	});
@@ -352,9 +382,11 @@ async function main() {
 		log('DONE', `Relatorio salvo em ${reportPath}`, summary);
 	} catch (err) {
 		if (err instanceof AllVisionProvidersUnavailableError) {
+			const routingSummary = formatVisionRoutingSummary(visionAdapter.getLastTrace()?.attempts ?? []);
 			log('BLOCKED', 'Todos os agentes multimodais falharam ou estao indisponiveis', {
 				code: err.code,
 				message: err.message,
+				routingSummary,
 				diagnostics: err.diagnostics,
 				circuitBreakerState: circuitBreaker.getSnapshot(),
 				checkpointDir: CHECKPOINT_DIR,
