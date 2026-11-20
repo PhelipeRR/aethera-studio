@@ -27,8 +27,28 @@ export interface RecapReadinessView {
   checkedAtIso: string;
 }
 
+interface RecapRevisionPlanView {
+  prompt: string;
+  understood: boolean;
+  affectedSceneIds: string[];
+  reprocessStages: string[];
+  reusedStages: string[];
+  estimatedVideoReworkRatio: number;
+  summary: string;
+  actions: Array<{ kind: string; description: string }>;
+}
+
+interface EditableSceneRow {
+  sceneId: string;
+  panelId: string;
+  narrationText: string;
+  motionStyle: string;
+  estimatedDurationSec: number;
+}
+
 interface RecapBridge {
   recapGetReadiness?: (input?: { chapterId?: string }) => Promise<RecapReadinessView>;
+  recapPlanRevision?: (input: { prompt: string; script: unknown; availablePanelIds?: string[] }) => Promise<RecapRevisionPlanView>;
   recapStartProduction?: (input: {
     archivePath: string;
     workTitle: string;
@@ -112,6 +132,55 @@ export function RecapProductionPanel() {
   const [readiness, setReadiness] = useState<RecapReadinessView>(DEFAULT_READINESS);
   const [loading, setLoading] = useState(false);
   const [statusNote, setStatusNote] = useState<string | null>(null);
+
+  // Fase 4.3 — Editor de Cenas
+  const [scenes, setScenes] = useState<EditableSceneRow[]>([
+    { sceneId: 'scene-1', panelId: 'panel-001', narrationText: 'Abertura cinematográfica no pátio sombrio.', motionStyle: 'ken_burns_out', estimatedDurationSec: 3.5 },
+    { sceneId: 'scene-2', panelId: 'panel-002', narrationText: 'O protagonista encara o rival antes do confronto.', motionStyle: 'static_focus', estimatedDurationSec: 4.0 },
+    { sceneId: 'scene-3', panelId: 'panel-003', narrationText: 'O golpe decide o ritmo do capítulo.', motionStyle: 'impact_push', estimatedDurationSec: 3.5 },
+  ]);
+
+  // Fase 4.4 — Revisão por Prompt com Plano de Impacto
+  const [revisionPrompt, setRevisionPrompt] = useState('');
+  const [impactPlan, setImpactPlan] = useState<RecapRevisionPlanView | null>(null);
+
+  const handlePlanRevision = async (promptText?: string) => {
+    const text = (promptText ?? revisionPrompt).trim();
+    if (!text) return;
+    setRevisionPrompt(text);
+    const bridge = getRecapBridge();
+    const scriptPayload = {
+      chapterId: workTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      title: workTitle,
+      style: scriptStyle,
+      totalEstimatedDurationSec: scenes.reduce((s, r) => s + r.estimatedDurationSec, 0),
+      generatedAtIso: new Date().toISOString(),
+      generatedBy: 'ui-editor',
+      scenes: scenes.map((s) => ({
+        sceneId: s.sceneId,
+        narrationText: s.narrationText,
+        characters: [],
+        eventDescription: s.narrationText,
+        panelIds: [s.panelId],
+        croppedImagePaths: [],
+        estimatedDurationSec: s.estimatedDurationSec,
+        emotion: 'tension',
+        narrativeIntent: 'rising_action',
+        confidence: 1,
+        reviewStatus: 'needs_review',
+      })),
+    };
+    if (bridge?.recapPlanRevision) {
+      const planRes = await bridge.recapPlanRevision({
+        prompt: text,
+        script: scriptPayload,
+        availablePanelIds: ['panel-001', 'panel-002', 'panel-003', 'panel-004'],
+      });
+      setImpactPlan(planRes);
+    } else {
+      setStatusNote('IPC recapPlanRevision indisponível fora do Electron.');
+    }
+  };
 
   const refreshReadiness = useCallback(async () => {
     setLoading(true);
@@ -367,6 +436,151 @@ export function RecapProductionPanel() {
 
         {statusNote && (
           <p style={{ margin: '12px 0 0', fontSize: 12, color: '#555562' }}>{statusNote}</p>
+        )}
+      </section>
+
+      {/* Fase 4.3 — Editor de Cenas */}
+      <section style={CARD_STYLE}>
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: '#6a46d8' }}>
+          EDITOR DE CENAS • FASE 4.3
+        </span>
+        <h3 style={{ margin: '4px 0 12px', fontSize: 17, fontWeight: 700, color: '#111111' }}>
+          Painéis, Narração, Câmera e Duração
+        </h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {scenes.map((row, idx) => (
+            <div
+              key={row.sceneId}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '90px 110px 1fr 140px 80px',
+                gap: 8,
+                alignItems: 'center',
+                padding: 10,
+                borderRadius: 14,
+                background: '#f8f8fb',
+                border: '1px solid #e4e4ec',
+              }}
+            >
+              <strong style={{ fontSize: 12, color: '#111111' }}>{row.sceneId}</strong>
+              <input
+                value={row.panelId}
+                onChange={(e) => {
+                  const next = [...scenes];
+                  next[idx] = { ...row, panelId: e.target.value };
+                  setScenes(next);
+                }}
+                style={{ ...INPUT_STYLE, padding: '6px 10px', fontSize: 12 }}
+              />
+              <input
+                value={row.narrationText}
+                onChange={(e) => {
+                  const next = [...scenes];
+                  next[idx] = { ...row, narrationText: e.target.value };
+                  setScenes(next);
+                }}
+                style={{ ...INPUT_STYLE, padding: '6px 10px', fontSize: 12 }}
+              />
+              <select
+                value={row.motionStyle}
+                onChange={(e) => {
+                  const next = [...scenes];
+                  next[idx] = { ...row, motionStyle: e.target.value };
+                  setScenes(next);
+                }}
+                style={{ ...INPUT_STYLE, padding: '6px 10px', fontSize: 12 }}
+              >
+                <option value="ken_burns_in">Ken Burns In</option>
+                <option value="ken_burns_out">Ken Burns Out</option>
+                <option value="parallax">Parallax</option>
+                <option value="pan_vertical">Pan Vertical</option>
+                <option value="static_focus">Foco Balão</option>
+                <option value="impact_push">Impact Push</option>
+              </select>
+              <input
+                type="number"
+                step="0.5"
+                min="1"
+                value={row.estimatedDurationSec}
+                onChange={(e) => {
+                  const next = [...scenes];
+                  next[idx] = { ...row, estimatedDurationSec: Number(e.target.value) || 2 };
+                  setScenes(next);
+                }}
+                style={{ ...INPUT_STYLE, padding: '6px 8px', fontSize: 12 }}
+              />
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Fase 4.4 — Revisão por Prompt com Plano de Impacto */}
+      <section style={CARD_STYLE}>
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: '#6a46d8' }}>
+          REVISÃO POR PROMPT • FASE 4.4 & 5.4
+        </span>
+        <h3 style={{ margin: '4px 0 10px', fontSize: 17, fontWeight: 700, color: '#111111' }}>
+          Edição Incremental com Plano de Impacto
+        </h3>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+          {[
+            'Deixe a cena 2 mais dramática',
+            'Reduza a música e destaque a narração',
+            'Troque o painel da cena 1',
+            'Corrija a pronúncia de "Cheon" para "Tchon"',
+          ].map((ex) => (
+            <button
+              key={ex}
+              type="button"
+              onClick={() => void handlePlanRevision(ex)}
+              style={{
+                padding: '5px 10px',
+                borderRadius: 9999,
+                border: '1px solid #d4d4dc',
+                background: '#ffffff',
+                color: '#32323d',
+                fontSize: 11,
+                cursor: 'pointer',
+              }}
+            >
+              {ex}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            value={revisionPrompt}
+            onChange={(e) => setRevisionPrompt(e.target.value)}
+            placeholder="Ex: Reduza a música e destaque a narração na cena 2..."
+            style={INPUT_STYLE}
+          />
+          <button
+            type="button"
+            onClick={() => void handlePlanRevision()}
+            style={{
+              padding: '10px 16px',
+              borderRadius: 9999,
+              border: 0,
+              background: '#111111',
+              color: '#ffffff',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Simular Impacto
+          </button>
+        </div>
+
+        {impactPlan && (
+          <div style={{ marginTop: 12, padding: 12, borderRadius: 14, background: '#f4f4f8', fontSize: 12, color: '#111111' }}>
+            <strong>{impactPlan.summary}</strong>
+            <div style={{ marginTop: 6, color: '#4b5563' }}>
+              Reprocessar: <code>{impactPlan.reprocessStages.join(', ') || 'nenhuma'}</code> · Reaproveitar:{' '}
+              <code>{impactPlan.reusedStages.join(', ')}</code>
+            </div>
+          </div>
         )}
       </section>
     </div>

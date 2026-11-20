@@ -232,4 +232,6 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeUpscaleProjectBackground: (input: { projectId: string; model: string }) => ipcRenderer.invoke('creative:upscale-project-background', input),
   creativeImageEngineSettings: () => ipcRenderer.invoke('creative:image-engine-settings'),
   creativeSaveImageEngineSettings: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:save-image-engine-settings', input),
+  recapGetReadiness: (input?: { chapterId?: string }) => ipcRenderer.invoke('recap:get-readiness', input),
+  recapPlanRevision: (input: { prompt: string; script: unknown; availablePanelIds?: string[] }) => ipcRenderer.invoke('recap:plan-revision', input),
 });

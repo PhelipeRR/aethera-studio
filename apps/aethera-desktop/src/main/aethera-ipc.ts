@@ -7,6 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
+import { AgentCircuitBreaker, checkRecapProductionReadiness, planRecapRevisionImpact, type RecapScript } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -4910,6 +4911,71 @@ productionConsole,
       return stagedPipeline.resolvePendingMedia(input.projectId, normalized);
     },
   );
+
+
+  // ─── Aethera Recap IPC (Fases 4.2, 4.4 & 7.1) ──────────────────────────────
+  const recapCircuitBreaker = new AgentCircuitBreaker();
+
+  ipcMain.handle('recap:get-readiness', async (event, input?: { chapterId?: string }) => {
+    ensureTrusted(event.senderFrame);
+    const chapterId = input?.chapterId ?? 'nano-machine-cap-01';
+    const checkpointDir = join(userDataDir, 'recap-checkpoints', chapterId);
+    const gwCfg = claudeGatewaySecretStore.load();
+
+    return checkRecapProductionReadiness({
+      circuitBreaker: recapCircuitBreaker,
+      checkpointDir,
+      providers: [
+        {
+          id: 'claude',
+          label: 'Claude CLI',
+          detect: async () => {
+            const st = await claude.detect();
+            return st.installed && st.authenticated !== false && st.problems.length === 0
+              ? { available: true }
+              : { available: false, reason: st.problems[0] ?? 'Claude CLI não autenticado.' };
+          },
+        },
+        {
+          id: 'claude-gateway',
+          label: 'Claude Gateway',
+          detect: async () =>
+            gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl
+              ? { available: true }
+              : { available: false, reason: 'Claude Gateway não configurado nas configurações do Aethera.' },
+        },
+        {
+          id: 'codex',
+          label: 'Codex CLI',
+          detect: async () => {
+            const st = await codex.detect();
+            return st.installed && st.authenticated !== false && st.problems.length === 0
+              ? { available: true }
+              : { available: false, reason: st.problems[0] ?? 'Codex CLI não autenticado.' };
+          },
+        },
+        {
+          id: 'antigravity',
+          label: 'Antigravity CLI (agy)',
+          detect: async () => {
+            const st = await detectAntigravityCli();
+            return st.installed && st.problems.length === 0
+              ? { available: true }
+              : { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.' };
+          },
+        },
+      ],
+    });
+  });
+
+  ipcMain.handle('recap:plan-revision', async (event, input: { prompt: string; script: RecapScript; availablePanelIds?: string[] }) => {
+    ensureTrusted(event.senderFrame);
+    return planRecapRevisionImpact({
+      prompt: input.prompt,
+      script: input.script,
+      ...(input.availablePanelIds ? { availablePanelIds: input.availablePanelIds } : {}),
+    });
+  });
 
   // Keep unused imports referenced for proxy/agent orchestration readiness
   void AetheraMediaProxyRepository;

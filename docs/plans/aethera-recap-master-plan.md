@@ -386,3 +386,12 @@ Adicionar a skill YouTube Agent como recurso opcional de pesquisa contextual.
 6. **Edição incremental:** reprocessar apenas o necessário.
 7. **Observabilidade:** registrar métricas, erros, agentes e artefatos.
 8. **Qualidade:** SFX, VFX, legendas e áudio fazem parte obrigatória da validação.
+
+
+### Estado Consolidado de Implementação (2026-11-20)
+- **Fase 2.2.4 (Homologação Narrativa Real):** Código, circuit breakers, fallback real (`VisionRouter`), checkpoints duráveis e 33 testes aprovados no Windows; aguardando apenas quota de pelo menos 1 agente multimodal para homologação do roteiro real.
+- **Fase 3 (3.1–3.4 — Motor Audiovisual):** Implementada e validada no Windows com MP4 real (`recap-preview.mp4`, `ffprobe` OK, Gate H técnico limpo, TTS encadeado VoiceStudio/ElevenLabs/SAPI + auditoria PCM, SFX reais do MotionVelix, burn-in opcional de legendas `.ass`, renderização parcial por hash de shot, formatos `16:9` e `9:16`, `parallax` e `detectFramingCropRisk`).
+- **Fase 4 (4.1–4.4 — Interface & Editor):** Aba `Mangá Recap` (`RecapProductionPanel.tsx`) integrada em `App.tsx` com criação de projeto, painel de circuit breakers/quotas/checkpoints, editor de cenas, revisão por prompt com plano de impacto e IPC real (`recap:get-readiness`, `recap:plan-revision`).
+- **Fase 5 (5.1–5.4 — Orquestração & Edição Incremental):** Máquina de estados persistente (`recap-production-orchestrator.ts`) com preflight, pausa segura em quota esgotada, retomada idempotente, gate de aprovação da prévia e grafo de dependências (`recap-prompt-revision.ts`).
+- **Fase 6 (Testes & Qualidade):** Suítes automatizadas `phase224-enhancements.test.ts`, `phase3-audiovisual.test.ts` e `phase4-to-7-complete.test.ts` (homologação E2E narrativa real 6.1 pendente de quota).
+- **Fase 7 (Integração & Exportação):** Integração Desktop (IPC + UI) e `exportRecapReleaseBundle()` padronizando `project.json`, MP4, `.ass`, roteiro editável, plano audiovisual e thumbnail.
