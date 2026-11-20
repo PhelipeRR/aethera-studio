@@ -117,6 +117,10 @@ export const recapCheckpointSchema = z.object({
 	/** Partial results that can be resumed. */
 	importedChapter: importedChapterSchema.optional(),
 	extractedPanels: z.array(extractedPanelSchema).optional(),
+	/** Cached panel analyses (Phase 2.2.4) to avoid re-running vision calls on resume. */
+	panelAnalyses: z.array(z.any()).optional(),
+	/** Cache keyed by panel imageHash (Phase 2.2.4) for deduplicated/resumable vision analysis. */
+	analysisCacheByHash: z.record(z.string(), z.any()).optional(),
 	warnings: z.array(z.string()).optional(),
 });
 export type RecapCheckpoint = z.infer<typeof recapCheckpointSchema>;
@@ -319,6 +323,17 @@ export interface GateGReport {
 	hints: GateGFidelityHint[];
 }
 
+export interface GateGDivergenceReport {
+	preVerdict: GateGVerdict;
+	postVerdict: GateGVerdict;
+	totalScenes: number;
+	modifiedScenes: number;
+	revertedScenes: number;
+	revertReasons: Array<{ sceneId: string; reason: string }>;
+	newHintsAfterHumanize: GateGFidelityHint[];
+	evidencePreserved: boolean;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // FASE 2.2 — NARRATIVE ENHANCEMENT TYPES
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -490,6 +505,8 @@ export interface StoryEngineOptions {
 	language?: string;
 	/** Minimum confidence to auto-approve a beat. Below → needs_review. */
 	minBeatConfidence?: number;
+	/** Optional bounded concurrency (1..4) for fresh panel visual analysis. Default: 1. */
+	analysisConcurrency?: number;
 	/** Phase 2.2: optional humanization after script generation. */
 	humanize?: HumanizeOptions & { port: TextEnhancementPort };
 	/** Phase 2.2.3: optional contextual research before script generation. */

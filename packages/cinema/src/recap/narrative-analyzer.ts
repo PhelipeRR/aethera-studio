@@ -19,11 +19,21 @@ export interface NarrativeAnalyzerOptions {
 	analyzedBy: string;
 	/** Minimum confidence to consider an analysis reliable. Default: 0.5. */
 	minConfidence?: number | undefined;
+	/** Bounded concurrency for fresh vision calls (clamped 1..4). Default: 1. */
+	concurrency?: number | undefined;
+	/** Previously completed panel analyses from checkpoint (keyed by panelId). */
+	cachedAnalyses?: readonly PanelAnalysis[] | undefined;
+	/** Previously completed panel analyses keyed by imageHash. */
+	analysisCacheByHash?: Readonly<Record<string, PanelAnalysis>> | undefined;
+	/** Optional callback invoked after each fresh panel analysis for incremental checkpointing. */
+	onPanelAnalyzed?: ((analysis: PanelAnalysis, panel: ExtractedPanel) => void) | undefined;
 }
 
 export interface NarrativeAnalysisResult {
 	analyses: PanelAnalysis[];
 	warnings: string[];
+	cacheHits?: number;
+	analyzedFresh?: number;
 }
 
 /**
@@ -253,27 +263,92 @@ async function analyzePanel(
 export async function runNarrativeAnalyzer(
 	options: NarrativeAnalyzerOptions,
 ): Promise<NarrativeAnalysisResult> {
-	const { panels, minConfidence = 0.5 } = options;
+	const { panels, minConfidence = 0.5, concurrency = 1, cachedAnalyses, analysisCacheByHash, onPanelAnalyzed } = options;
 	const warnings: string[] = [];
+
+	// Build lookup caches for valid reusable analyses (never reuse zero-confidence failures)
+	const cacheByPanelId = new Map<string, PanelAnalysis>();
+	if (cachedAnalyses) {
+		for (const entry of cachedAnalyses) {
+			const parsed = panelAnalysisSchema.safeParse(entry);
+			if (parsed.success && parsed.data.analysisConfidence > 0) {
+				cacheByPanelId.set(parsed.data.panelId, parsed.data);
+			}
+		}
+	}
+	const cacheByHash = new Map<string, PanelAnalysis>();
+	if (analysisCacheByHash) {
+		for (const [hash, entry] of Object.entries(analysisCacheByHash)) {
+			const parsed = panelAnalysisSchema.safeParse(entry);
+			if (parsed.success && parsed.data.analysisConfidence > 0) {
+				cacheByHash.set(hash, parsed.data);
+			}
+		}
+	}
 
 	// Sort panels by reading order before analysis
 	const orderedPanels = sortPanelsByReadingOrder(panels);
+	const results: Array<PanelAnalysis | undefined> = new Array(orderedPanels.length);
+	const panelWarnings: string[][] = orderedPanels.map(() => []);
+	let cacheHits = 0;
+	let analyzedFresh = 0;
+
+	const maxWorkers = Math.max(1, Math.min(4, Math.floor(concurrency)));
+	let nextIndex = 0;
+
+	const worker = async () => {
+		while (true) {
+			const idx = nextIndex++;
+			if (idx >= orderedPanels.length) break;
+			const panel = orderedPanels[idx]!;
+
+			// Check cache by panelId first, then by imageHash
+			const cached = cacheByPanelId.get(panel.panelId) ?? cacheByHash.get(panel.imageHash);
+			if (cached) {
+				const reused: PanelAnalysis = cached.panelId === panel.panelId
+					? cached
+					: {
+						...cached,
+						panelId: panel.panelId,
+						evidence: cached.evidence.map((e) => ({ ...e, sourcePanelId: panel.panelId })),
+					};
+				results[idx] = reused;
+				cacheHits++;
+				if (reused.analysisConfidence < minConfidence) {
+					panelWarnings[idx]!.push(
+						`Panel ${panel.panelId}: analysis confidence ${reused.analysisConfidence.toFixed(2)} below threshold ${minConfidence}. Marked for review.`,
+					);
+				}
+				continue;
+			}
+
+			try {
+				const analysis = await analyzePanel(panel, options);
+				results[idx] = analysis;
+				analyzedFresh++;
+				if (analysis.analysisConfidence > 0) {
+					cacheByHash.set(panel.imageHash, analysis);
+				}
+				onPanelAnalyzed?.(analysis, panel);
+				if (analysis.analysisConfidence < minConfidence) {
+					panelWarnings[idx]!.push(
+						`Panel ${panel.panelId}: analysis confidence ${analysis.analysisConfidence.toFixed(2)} below threshold ${minConfidence}. Marked for review.`,
+					);
+				}
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				panelWarnings[idx]!.push(`Panel ${panel.panelId}: analysis failed — ${msg}`);
+			}
+		}
+	};
+
+	await Promise.all(Array.from({ length: Math.min(maxWorkers, Math.max(1, orderedPanels.length)) }, () => worker()));
 
 	const analyses: PanelAnalysis[] = [];
-	for (const panel of orderedPanels) {
- try {
- const analysis = await analyzePanel(panel, options);
- if (analysis.analysisConfidence < minConfidence) {
- warnings.push(
- `Panel ${panel.panelId}: analysis confidence ${analysis.analysisConfidence.toFixed(2)} below threshold ${minConfidence}. Marked for review.`,
- );
- }
- analyses.push(analysis);
- } catch (err) {
- const msg = err instanceof Error ? err.message : String(err);
- warnings.push(`Panel ${panel.panelId}: analysis failed — ${msg}`);
- }
+	for (let i = 0; i < orderedPanels.length; i++) {
+		warnings.push(...panelWarnings[i]!);
+		if (results[i]) analyses.push(results[i]!);
 	}
 
-	return { analyses, warnings };
+	return { analyses, warnings, cacheHits, analyzedFresh };
 }

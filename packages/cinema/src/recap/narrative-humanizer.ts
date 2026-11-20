@@ -83,14 +83,15 @@ interface StructuralCheck {
 }
 
 function checkStructuralIntegrity(original: Scene, humanizedText: string): StructuralCheck {
-	// Characters must be preserved (subset check — humanized may mention fewer but not different ones)
-	const originalCharsLower = new Set(original.characters.map((c) => c.toLowerCase()));
-	// We don't extract characters from free text reliably, so we check that the text
-	// doesn't introduce obvious new character names by comparing word overlap.
-	// This is a heuristic — Gate G does the real validation.
-
-	// Panel references are structural fields, not in narrationText, so they're safe
-	// as long as we only modify narrationText and copy everything else.
+	// Verify that named characters explicitly mentioned in the original narration are preserved
+	const originalLower = original.narrationText.toLowerCase();
+	const humanizedLower = humanizedText.toLowerCase();
+	for (const charName of original.characters) {
+		const normalized = charName.trim().toLowerCase();
+		if (normalized.length >= 2 && originalLower.includes(normalized) && !humanizedLower.includes(normalized)) {
+			return { ok: false, reason: `Humanized text omitted character "${charName}" present in original narration.` };
+		}
+	}
 
 	// Check for hallucinated dialogue markers
 	if (humanizedText.includes('"') && !original.narrationText.includes('"')) {

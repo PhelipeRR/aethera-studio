@@ -506,3 +506,55 @@ export function createVideoResearchPortAdapter(input: {
 		},
 	};
 }
+
+
+/**
+ * Multi-agent ResearchPort backed by runVideoResearch().
+ * Dynamically checks each adapter via detect() and falls back to the next
+ * compatible agent if an adapter is unavailable, unauthenticated, or fails
+ * (e.g. quota/rate-limit).
+ */
+export function createMultiAgentVideoResearchPortAdapter(input: {
+	adapters: readonly ResearchAgentAdapterPort[];
+	cwd: string;
+	runVideoResearchFn: (adapter: ResearchAgentAdapterPort, topic: string, cwd: string, signal?: AbortSignal) => Promise<{ references: RawResearchReference[]; rejected: number; generation: { executionId: string; model: string | null } }>;
+}): ResearchPort {
+	const names = input.adapters.map((a) => a.id).join(',');
+	return {
+		name: `video-research-port-multi[${names}]`,
+		async research(request: ResearchPortRequest): Promise<ResearchPortResult> {
+			const errors: string[] = [];
+			for (const adapter of input.adapters) {
+				if (request.signal?.aborted) {
+					return { references: [], rejectedCount: 0, agentId: 'none', model: null, ok: false, error: 'Research aborted.' };
+				}
+				try {
+					const detection = await adapter.detect();
+					if (!detection.installed || !detection.authenticated) {
+						errors.push(`${adapter.id}: ${detection.problems[0] ?? 'not available/authenticated'}`);
+						continue;
+					}
+					const run = await input.runVideoResearchFn(adapter, request.topic, input.cwd, request.signal);
+					return {
+						references: run.references,
+						rejectedCount: run.rejected,
+						agentId: adapter.id,
+						model: run.generation.model,
+						executionId: run.generation.executionId,
+						ok: true,
+					};
+				} catch (err) {
+					errors.push(`${adapter.id}: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
+			return {
+				references: [],
+				rejectedCount: 0,
+				agentId: 'none',
+				model: null,
+				ok: false,
+				error: errors.length > 0 ? errors.join(' | ') : 'No research adapters configured.',
+			};
+		},
+	};
+}

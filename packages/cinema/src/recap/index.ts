@@ -93,6 +93,7 @@ export {
 	type GateGVerdict,
 	type GateGFidelityHint,
 	type GateGReport,
+	type GateGDivergenceReport,
 	type VisionAnalysisResult,
 	type VisionAdapter,
 	type StoryEngineOptions,
@@ -120,7 +121,7 @@ export {
 } from './script-generator.js';
 
 // ─── Gate G — Narrative Fidelity ─────────────────────────────────────────────
-export { runGateGNarrativeFidelity, type GateGInput } from './gate-g-narrative-fidelity.js';
+export { runGateGNarrativeFidelity, buildGateGDivergenceReport, type GateGInput } from './gate-g-narrative-fidelity.js';
 
 // ─── Story Engine Orchestrator ───────────────────────────────────────────────
 export { runStoryEngine, type StoryEngineResult } from './story-engine.js';
@@ -171,6 +172,7 @@ export {
 	type ConfidenceLevel,
 	createTaskEngineTextEnhancementAdapter,
 	createVideoResearchPortAdapter,
+	createMultiAgentVideoResearchPortAdapter,
 	type TextTaskEnginePort,
 	type ResearchAgentAdapterPort,
 } from './contextual-research.js';

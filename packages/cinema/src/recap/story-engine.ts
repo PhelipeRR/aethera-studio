@@ -5,6 +5,7 @@ import type {
 	StoryEngineOptions,
 	RecapScript,
 	GateGReport,
+	GateGDivergenceReport,
 	VisionAdapter,
 	OcrAdapter,
 	ScriptStyle,
@@ -16,7 +17,7 @@ import type {
 import { runNarrativeAnalyzer } from './narrative-analyzer.js';
 import { runStoryContinuityEngine } from './story-continuity-engine.js';
 import { runScriptGenerator } from './script-generator.js';
-import { runGateGNarrativeFidelity } from './gate-g-narrative-fidelity.js';
+import { runGateGNarrativeFidelity, buildGateGDivergenceReport } from './gate-g-narrative-fidelity.js';
 import { runNarrativeHumanizer } from './narrative-humanizer.js';
 import { runContextualResearch } from './contextual-research.js';
 import { saveCheckpoint, loadCheckpoint } from './checkpoint-persistence.js';
@@ -26,6 +27,8 @@ export interface StoryEngineResult {
 	gateGReport: GateGReport;
 	/** Gate G report before humanization (Phase 2.2). Null when humanize is disabled. */
 	preHumanizeGateG?: GateGReport;
+	/** Comparative divergence report between pre- and post-humanize Gate G. */
+	divergenceReport?: GateGDivergenceReport;
 	/** Humanization result with diffs and post-humanize Gate G (Phase 2.2). Null when disabled/skipped. */
 	humanizeResult?: HumanizeResult;
 	/** Contextual research result (Phase 2.2). Null when disabled/skipped. */
@@ -63,6 +66,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		visionAdapter,
 		scriptStyle = 'narrative_recap',
 		minBeatConfidence = 0.5,
+		analysisConcurrency = 1,
 		humanize,
 		research,
 	} = options;
@@ -79,9 +83,12 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 	let analyses: PanelAnalysis[] = [];
 
 	const existingCheckpoint = loadCheckpoint(checkpointDir);
-	if (existingCheckpoint?.completedStages.includes('narrative') && existingCheckpoint.extractedPanels) {
-		// Resume: check if we have cached analyses (future: store in checkpoint)
-		warnings.push('Resuming from checkpoint. Re-running narrative analysis (analysis caching pending).');
+	const cachedAnalyses = (existingCheckpoint?.panelAnalyses ?? []) as PanelAnalysis[];
+	const analysisCacheByHash: Record<string, PanelAnalysis> = {
+		...((existingCheckpoint?.analysisCacheByHash ?? {}) as Record<string, PanelAnalysis>),
+	};
+	if (cachedAnalyses.length > 0 || Object.keys(analysisCacheByHash).length > 0) {
+		warnings.push(`Resuming from checkpoint with ${cachedAnalyses.length} cached panel analyses and ${Object.keys(analysisCacheByHash).length} hash cache entries.`);
 	}
 
 	const analysisResult = await runNarrativeAnalyzer({
@@ -89,17 +96,34 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		visionAdapter,
 		analyzedBy,
 		minConfidence: minBeatConfidence,
+		concurrency: analysisConcurrency,
+		cachedAnalyses,
+		analysisCacheByHash,
+		onPanelAnalyzed: (analysis, panel) => {
+			if (analysis.analysisConfidence > 0) {
+				analysisCacheByHash[panel.imageHash] = analysis;
+			}
+		},
 	});
 	analyses = analysisResult.analyses;
 	warnings.push(...analysisResult.warnings);
+	for (let idx = 0; idx < analyses.length; idx++) {
+		const a = analyses[idx]!;
+		const p = panels.find((x) => x.panelId === a.panelId);
+		if (p && a.analysisConfidence > 0) {
+			analysisCacheByHash[p.imageHash] = a;
+		}
+	}
 
-	// Save checkpoint after analysis
+	// Save checkpoint after analysis (persisting analyses and hash cache for resume)
 	saveCheckpoint(checkpointDir, {
 		chapterId,
 		completedStages: ['import', 'extraction', 'narrative'],
 		lastUpdatedAtIso: new Date().toISOString(),
 		sourceHash: panels[0]?.imageHash ?? 'unknown',
 		extractedPanels: panels,
+		panelAnalyses: analyses,
+		analysisCacheByHash,
 		warnings,
 	});
 
@@ -236,6 +260,8 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		lastUpdatedAtIso: new Date().toISOString(),
 		sourceHash: panels[0]?.imageHash ?? 'unknown',
 		extractedPanels: panels,
+		panelAnalyses: analyses,
+		analysisCacheByHash,
 		warnings,
 	});
 
@@ -246,7 +272,14 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		analyses,
 		warnings,
 	};
-	if (humanize?.enabled && preHumanizeGateG) finalResult.preHumanizeGateG = preHumanizeGateG;
+	if (humanize?.enabled && preHumanizeGateG) {
+		finalResult.preHumanizeGateG = preHumanizeGateG;
+		finalResult.divergenceReport = buildGateGDivergenceReport(
+			preHumanizeGateG,
+			finalGateG,
+			humanizeResult?.diffs ?? [],
+		);
+	}
 	if (humanizeResult) finalResult.humanizeResult = humanizeResult;
 	if (contextualResearchResult) finalResult.contextualResearchResult = contextualResearchResult;
 	return finalResult;

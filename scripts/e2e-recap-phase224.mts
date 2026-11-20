@@ -1,420 +1,219 @@
 /**
- * E2E Phase 2.2.4 — Aethera Recap Narrative Enhancement
+ * E2E Live Test — Aethera Recap Fase 2.2.4 (Nano Machine Cap. 01)
  *
- * Pipeline completo com CBZ real:
- *   CBZ → Import → Extract Panels → Visual Analysis (Claude CLI)
- *   → Continuity → Contextual Research (optional) → Script Generation
- *   → Gate G Initial → Humanize → Gate G Final
+ * Pipeline completo:
+ *   CBZ -> Import/Extracao -> Gate F -> Analise Visual (com checkpoint/hash cache)
+ *   -> Continuidade -> Pesquisa Contextual (ResearchPort + runVideoResearch)
+ *   -> Roteiro -> Gate G Inicial -> Humanize (PT-BR) -> Gate G Final -> Relatorio
  *
- * Dataset: tests/fixtures/real-manga/Nano-Machine-Capitulo-01.cbz
- * Agente: Claude CLI (OAuth autenticado)
+ * Pre-requisitos no ambiente de execucao:
+ * - Node.js 20+ e dependencias instaladas (`node_modules`)
+ * - Pelo menos 1 agente autenticado (Claude CLI, Claude Gateway ou Codex CLI)
  *
- * Execução: npx tsx scripts/e2e-recap-phase224.mts
+ * Execucao:
+ *   npx tsx scripts/e2e-recap-phase224.mts
+ *   NB_RECAP_E2E_MAX_PANELS=24 NB_RECAP_CONCURRENCY=2 npx tsx scripts/e2e-recap-phase224.mts
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
-import { join, dirname, basename } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createHash } from 'node:crypto';
 
-// Database
 import { openDatabase } from '@neuralbridge/database';
-
-// Agents
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
-
-// Orchestrator
-import { TaskEngine, createTaskEngineVisionProvider } from '@neuralbridge/orchestrator';
-
-// Cinema / Recap
+import { TaskEngine, runVideoResearch } from '@neuralbridge/orchestrator';
 import {
 	importChapter,
 	extractPanels,
+	runGateFPanelIntegrity,
+	createClaudeVisionProvider,
 	createRecapVisionAdapter,
-	runStoryEngine,
-	saveCheckpoint,
-	loadCheckpoint,
 	createTaskEngineTextEnhancementAdapter,
-	type ExtractedPanel,
-	type StoryEngineResult,
+	createMultiAgentVideoResearchPortAdapter,
+	runStoryEngine,
+	type ResearchAgentAdapterPort,
 } from '@neuralbridge/cinema';
 
-// ─── Configuração ──────────────────────────────────────────────────────────────
+const execFileAsync = promisify(execFile);
 
 const REPO_ROOT = realpathSync(join(dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')), '..'));
 const CBZ_PATH = join(REPO_ROOT, 'tests', 'fixtures', 'real-manga', 'Nano-Machine-Capitulo-01.cbz');
-const TEST_DIR = join(tmpdir(), 'recap-e2e-224-' + Date.now());
-const OUTPUT_DIR = join(TEST_DIR, 'output');
-const DB_FILE = join(TEST_DIR, 'test.db');
+const WORK_DIR = process.env['NB_RECAP_E2E_DIR'] ?? join(tmpdir(), `recap-phase224-${Date.now()}`);
+const OUTPUT_DIR = join(WORK_DIR, 'output');
+const DB_FILE = join(WORK_DIR, 'recap-e2e.db');
 const MIGRATIONS_DIR = join(REPO_ROOT, 'packages', 'database', 'migrations');
 
-// Limite de painéis para análise (começar com 24 conforme especificado)
-const MAX_PANELS_TO_ANALYZE = 24;
+const MAX_PANELS = Number(process.env['NB_RECAP_E2E_MAX_PANELS'] ?? '24');
+const CONCURRENCY = Number(process.env['NB_RECAP_CONCURRENCY'] ?? '2');
+const CHAPTER_ID = 'nano-machine-cap-01';
 
-// ─── Helpers ───────────────────────────────────────────────────────────────────
+async function detectAgyCli(): Promise<{ installed: boolean; detail: string }> {
+	try {
+		const { stdout } = await execFileAsync('agy', ['--version'], { timeout: 3000 });
+		return { installed: true, detail: stdout.trim() };
+	} catch (err) {
+		return { installed: false, detail: err instanceof Error ? err.message : String(err) };
+	}
+}
 
-function log(step: string, message: string, data?: unknown) {
+function log(stage: string, msg: string, data?: unknown) {
 	const ts = new Date().toISOString().slice(11, 23);
-	console.log(`[${ts}] ${step}: ${message}`);
+	console.log(`[${ts}] [${stage}] ${msg}`);
 	if (data !== undefined) console.log(JSON.stringify(data, null, 2));
 }
 
-function elapsed(startMs: number): string {
-	return `${((Date.now() - startMs) / 1000).toFixed(1)}s`;
-}
-
-// ─── Main ──────────────────────────────────────────────────────────────────────
-
 async function main() {
-	const totalStart = Date.now();
-	log('INIT', `Test directory: ${TEST_DIR}`);
-	log('INIT', `Repository root: ${REPO_ROOT}`);
-	log('INIT', `CBZ path: ${CBZ_PATH}`);
-
-	// Validar CBZ
+	const t0 = Date.now();
 	if (!existsSync(CBZ_PATH)) {
-		log('ERROR', `CBZ not found: ${CBZ_PATH}`);
-		process.exit(1);
+		throw new Error(`Dataset CBZ nao encontrado: ${CBZ_PATH}`);
 	}
 
-	// Setup directories
 	mkdirSync(OUTPUT_DIR, { recursive: true });
+	log('INIT', `Workspace: ${WORK_DIR}`);
 
-	// ═══════════════════════════════════════════════════════════════════════════
-	// STAGE 1: Import Chapter from CBZ
-	// ═══════════════════════════════════════════════════════════════════════════
-	log('STAGE-1', 'Importing chapter from CBZ...');
-	const importStart = Date.now();
-
-	const chapter = await importChapter({
-		chapterId: 'nano-machine-ch01',
-		archivePath: CBZ_PATH,
-		outputDir: OUTPUT_DIR,
-	});
-
-	log('STAGE-1', `Imported in ${elapsed(importStart)}`, {
-		format: chapter.format,
-		pageCount: chapter.pageCount,
-		readingOrder: chapter.readingOrder,
-	});
-
-	// ═══════════════════════════════════════════════════════════════════════════
-	// STAGE 2: Extract Panels
-	// ═══════════════════════════════════════════════════════════════════════════
-	log('STAGE-2', 'Extracting panels from pages...');
-	const extractStart = Date.now();
-
-	const extractionResult = await extractPanels({
-		chapter,
-		outputDir: join(OUTPUT_DIR, chapter.chapterId, 'panels'),
-	});
-
-	log('STAGE-2', `Extracted in ${elapsed(extractStart)}`, {
-		totalPanels: extractionResult.panels.length,
-		warnings: extractionResult.warnings.length,
-	});
-
-	// Limitar painéis para análise (conforme especificado: começar com 24)
-	const panelsToAnalyze = extractionResult.panels.slice(0, MAX_PANELS_TO_ANALYZE);
-	log('STAGE-2', `Using ${panelsToAnalyze.length} panels for analysis (of ${extractionResult.panels.length} total)`);
-
-	// ═══════════════════════════════════════════════════════════════════════════
-	// STAGE 3: Setup Agents and TaskEngine
-	// ═══════════════════════════════════════════════════════════════════════════
-	log('STAGE-3', 'Setting up agents and TaskEngine...');
-
-	// Open database
-	const handle = openDatabase(DB_FILE, { migrationsFolder: MIGRATIONS_DIR });
-	log('STAGE-3', `Database ready: ${DB_FILE}`);
-
-	// Create agent adapters
+	// 1. Detectar agentes reais
 	const claudeAdapter = new ClaudeCliAdapter();
 	const codexAdapter = new CodexCliAdapter();
+	const [claudeStatus, codexStatus, agyStatus] = await Promise.all([
+		claudeAdapter.detect({ refresh: true }),
+		codexAdapter.detect({ refresh: true }),
+		detectAgyCli(),
+	]);
 
-	const claudeStatus = await claudeAdapter.detect();
-	const codexStatus = await codexAdapter.detect();
+	const claudeReady = claudeStatus.installed && claudeStatus.authenticated !== false && claudeStatus.problems.length === 0;
+	const codexReady = codexStatus.installed && codexStatus.authenticated !== false && codexStatus.problems.length === 0;
 
-	log('STAGE-3', 'Agent detection', {
-		claude: { installed: claudeStatus.installed, authenticated: claudeStatus.authenticated, version: claudeStatus.version },
-		codex: { installed: codexStatus.installed, authenticated: codexStatus.authenticated },
+	log('AGENTS', 'Status detectado', {
+		claude: { installed: claudeStatus.installed, authenticated: claudeStatus.authenticated, problems: claudeStatus.problems },
+		codex: { installed: codexStatus.installed, authenticated: codexStatus.authenticated, problems: codexStatus.problems },
+		antigravity_agy: agyStatus,
 	});
 
-	if (!claudeStatus.installed || !claudeStatus.authenticated) {
-		log('BLOCKED', 'Claude CLI not available or not authenticated.');
-		log('BLOCKED', 'Run `claude auth login` and retry.');
-		handle.close();
-		process.exit(1);
+	if (!claudeReady && !codexReady) {
+		throw new Error('Nenhum agente CLI autenticado (Claude ou Codex) disponivel no ambiente.');
 	}
 
-	// Create TaskEngine
-	const taskEngine = new TaskEngine({
-		handle,
-		adapters: { claude: claudeAdapter, codex: codexAdapter },
-		availability: async () => ({
-			claude: claudeStatus.installed && claudeStatus.problems.length === 0,
-			codex: codexStatus.installed && codexStatus.problems.length === 0,
-		}),
-		limits: { maxIterations: 1, stepTimeoutMs: 180_000, tokenBudget: 1_000_000 },
+	// 2. Importar CBZ e extrair paineis reais
+	const imported = await importChapter({
+		chapterId: CHAPTER_ID,
+		archivePath: CBZ_PATH,
+		outputDir: OUTPUT_DIR,
+		readingOrder: 'vertical',
 	});
-	log('STAGE-3', 'TaskEngine ready');
+	log('IMPORT', `${imported.pageCount} paginas importadas de Nano-Machine-Capitulo-01.cbz`);
 
-	// Create Vision Provider backed by TaskEngine (Claude)
-	const taskEngineProvider = createTaskEngineVisionProvider({
-		id: 'claude',
-		model: '',
-		root: TEST_DIR,
-		projectId: null,
-		enabled: true,
-		taskEngine,
-		checkAvailable: async () => ({ available: true }),
+	const extracted = await extractPanels({
+		chapter: imported,
+		outputDir: OUTPUT_DIR,
 	});
+	log('EXTRACT', `${extracted.panels.length} paineis extraidos (limitando amostra a ${MAX_PANELS})`);
 
-	const detectResult = await taskEngineProvider.detect();
-	if (!('available' in detectResult) || !detectResult.available) {
-		log('BLOCKED', 'Vision provider not available', detectResult);
-		handle.close();
-		process.exit(1);
+	const samplePanels = MAX_PANELS > 0 ? extracted.panels.slice(0, MAX_PANELS) : extracted.panels;
+	const gateF = runGateFPanelIntegrity({
+		panels: samplePanels,
+		minOcrConfidence: 0,
+		expectedReadingOrder: 'vertical',
+	});
+	log('GATE-F', `Veredicto: ${gateF.verdict}`, gateF.metrics);
+	if (gateF.verdict === 'fail') {
+		throw new Error(`Gate F falhou: ${gateF.reasons.join('; ')}`);
 	}
-	log('STAGE-3', 'Vision provider ready');
 
-	// Create RecapVisionAdapter
-	const recapAdapter = createRecapVisionAdapter({
-		root: TEST_DIR,
-		provider: taskEngineProvider as Parameters<typeof createRecapVisionAdapter>[0]['provider'],
-	});
-	log('STAGE-3', `RecapVisionAdapter: ${recapAdapter.name}`);
+	// 3. TaskEngine e adapters multiagente
+	const handle = openDatabase(DB_FILE, { migrationsFolder: MIGRATIONS_DIR });
+	try {
+		const taskEngine = new TaskEngine({
+			handle,
+			adapters: { claude: claudeAdapter, codex: codexAdapter },
+			availability: async () => ({
+				claude: claudeReady,
+				codex: codexReady,
+			}),
+			limits: { maxIterations: 1, stepTimeoutMs: 120_000, tokenBudget: 500_000 },
+		});
 
-	// Create TextEnhancementPort for Humanize (uses TaskEngine with fallback)
-	const textEnhancementPort = createTaskEngineTextEnhancementAdapter({
-		taskEngine: taskEngine as unknown as Parameters<typeof createTaskEngineTextEnhancementAdapter>[0]['taskEngine'],
-		projectId: null,
-		agentPriority: ['claude', 'codex'],
-	});
-	log('STAGE-3', `TextEnhancementPort: ${textEnhancementPort.name}`);
+		const visionProvider = createClaudeVisionProvider({
+			adapter: claudeAdapter,
+			cwd: OUTPUT_DIR,
+		});
+		const visionAdapter = createRecapVisionAdapter({
+			root: WORK_DIR,
+			provider: visionProvider,
+		});
 
-	// ═══════════════════════════════════════════════════════════════════════════
-	// STAGE 4: Run Story Engine (full pipeline)
-	// ═══════════════════════════════════════════════════════════════════════════
-	log('STAGE-4', 'Running Story Engine pipeline...');
-	log('STAGE-4', `Processing ${panelsToAnalyze.length} panels with Claude CLI vision...`);
+		const agentPriority: string[] = [];
+		if (claudeReady) agentPriority.push('claude');
+		if (codexReady) agentPriority.push('codex');
 
-	const pipelineStart = Date.now();
+		const textEnhancementPort = createTaskEngineTextEnhancementAdapter({
+			taskEngine,
+			projectId: null,
+			agentPriority,
+		});
 
-	// Research port stub (disabled for now — will use panel-only evidence)
-	// When web search becomes available, enable via createVideoResearchPortAdapter
-	const researchDisabled = {
-		enabled: false,
-		workTitle: 'Nano Machine',
-		currentChapter: 1,
-		cwd: REPO_ROOT,
-		port: {
-			name: 'stub-research-port',
-			async research() {
-				return { references: [], rejectedCount: 0, agentId: 'none', model: null, ok: true };
+		const researchAdapters: ResearchAgentAdapterPort[] = [];
+		if (claudeReady) researchAdapters.push(claudeAdapter as unknown as ResearchAgentAdapterPort);
+		if (codexReady) researchAdapters.push(codexAdapter as unknown as ResearchAgentAdapterPort);
+
+		const researchPort = createMultiAgentVideoResearchPortAdapter({
+			adapters: researchAdapters,
+			cwd: OUTPUT_DIR,
+			runVideoResearchFn: (adapter, topic, cwd, signal) =>
+				runVideoResearch(adapter as unknown as Parameters<typeof runVideoResearch>[0], topic, cwd, signal),
+		});
+
+		// 4. Executar Story Engine completo (Fase 2.2.4)
+		const result = await runStoryEngine({
+			chapterId: CHAPTER_ID,
+			panels: samplePanels,
+			outputDir: OUTPUT_DIR,
+			visionAdapter,
+			scriptStyle: 'narrative_recap',
+			minBeatConfidence: 0.5,
+			analysisConcurrency: CONCURRENCY,
+			research: {
+				enabled: true,
+				workTitle: 'Nano Machine',
+				currentChapter: 1,
+				maxAllowedChapter: 1,
+				cwd: OUTPUT_DIR,
+				port: researchPort,
 			},
-		},
-	};
-
-	const storyEngineResult: StoryEngineResult = await runStoryEngine({
-		chapterId: chapter.chapterId,
-		panels: panelsToAnalyze,
-		outputDir: OUTPUT_DIR,
-		visionAdapter: recapAdapter,
-		scriptStyle: 'narrative_recap',
-		minBeatConfidence: 0.5,
-		humanize: {
-			enabled: true,
-			style: 'narrative_recap',
-			maxDurationDeviation: 0.15,
-			port: textEnhancementPort,
-		},
-		research: researchDisabled,
-	});
-
-	log('STAGE-4', `Pipeline completed in ${elapsed(pipelineStart)}`, {
-		analysesCount: storyEngineResult.analyses.length,
-		beatsCount: storyEngineResult.sequence.beats.length,
-		scenesCount: storyEngineResult.script.scenes.length,
-		gateGVerdict: storyEngineResult.gateGReport.verdict,
-		warnings: storyEngineResult.warnings.length,
-	});
-
-	// ═══════════════════════════════════════════════════════════════════════════
-	// STAGE 5: Report Results
-	// ═══════════════════════════════════════════════════════════════════════════
-	log('RESULTS', '═══════════════════════════════════════════════════════════');
-	log('RESULTS', 'E2E Phase 2.2.4 — Final Report');
-	log('RESULTS', '═══════════════════════════════════════════════════════════');
-
-	// Agent info
-	log('RESULTS', 'Agent used', {
-		provider: recapAdapter.name,
-		model: taskEngineProvider.lastReportedModel?.() ?? 'unknown',
-	});
-
-	// Panel analysis summary
-	const avgConfidence = storyEngineResult.analyses.length > 0
-		? storyEngineResult.analyses.reduce((sum, a) => sum + a.analysisConfidence, 0) / storyEngineResult.analyses.length
-		: 0;
-	log('RESULTS', 'Panel Analysis', {
-		panelsAnalyzed: storyEngineResult.analyses.length,
-		averageConfidence: avgConfidence.toFixed(3),
-		charactersFound: [...new Set(storyEngineResult.analyses.flatMap(a => a.characters))].length,
-	});
-
-	// Narrative continuity
-	log('RESULTS', 'Narrative Continuity', {
-		beatsGenerated: storyEngineResult.sequence.beats.length,
-		readingOrder: chapter.readingOrder,
-	});
-
-	// Script generation
-	log('RESULTS', 'Script Generation', {
-		scenesCount: storyEngineResult.script.scenes.length,
-		totalDurationSec: storyEngineResult.script.totalEstimatedDurationSec,
-		title: storyEngineResult.script.title,
-		generatedBy: storyEngineResult.script.generatedBy,
-	});
-
-	// Gate G Initial (pre-humanize)
-	if (storyEngineResult.preHumanizeGateG) {
-		log('RESULTS', 'Gate G Initial (Pre-Humanize)', {
-			verdict: storyEngineResult.preHumanizeGateG.verdict,
-			reasons: storyEngineResult.preHumanizeGateG.reasons.length,
-			hints: storyEngineResult.preHumanizeGateG.hints.length,
-			metrics: storyEngineResult.preHumanizeGateG.metrics,
-		});
-	}
-
-	// Humanize result
-	if (storyEngineResult.humanizeResult) {
-		const hr = storyEngineResult.humanizeResult;
-		log('RESULTS', 'Humanize', {
-			agentId: hr.agentId,
-			model: hr.model,
-			skipped: hr.skipped,
-			diffsCount: hr.diffs.length,
-			revertedCount: hr.diffs.filter(d => d.reverted).length,
-			warnings: hr.warnings.length,
+			humanize: {
+				enabled: true,
+				style: 'narrative_recap',
+				maxDurationDeviation: 0.15,
+				port: textEnhancementPort,
+			},
 		});
 
-		// Print diffs summary
-		for (const diff of hr.diffs) {
-			log('DIFF', `Scene ${diff.sceneId}`, {
-				reverted: diff.reverted,
-				revertReason: diff.revertReason,
-				originalLength: diff.originalText.length,
-				humanizedLength: diff.humanizedText.length,
-			});
-		}
+		const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
+		const summary = {
+			elapsedSec: Number(totalSec),
+			panelsAnalyzed: result.analyses.length,
+			avgConfidence: Number(
+				(result.analyses.reduce((s, a) => s + a.analysisConfidence, 0) / Math.max(1, result.analyses.length)).toFixed(3),
+			),
+			preHumanizeGateG: result.preHumanizeGateG?.verdict ?? null,
+			finalGateG: result.gateGReport.verdict,
+			divergenceReport: result.divergenceReport ?? null,
+			researchSkipped: result.contextualResearchResult?.skipped ?? true,
+			researchSources: result.contextualResearchResult?.accepted.map((r) => ({ title: r.title, url: r.url })) ?? [],
+			humanizeAgent: result.humanizeResult?.agentId ?? 'none',
+			warnings: result.warnings,
+		};
 
-		// Gate G Final (post-humanize)
-		log('RESULTS', 'Gate G Final (Post-Humanize)', {
-			verdict: hr.postHumanizeGateG.verdict,
-			reasons: hr.postHumanizeGateG.reasons.length,
-			hints: hr.postHumanizeGateG.hints.length,
-			metrics: hr.postHumanizeGateG.metrics,
-		});
-	} else {
-		log('RESULTS', 'Humanize', { status: 'not executed' });
+		const reportPath = join(OUTPUT_DIR, 'phase224-e2e-report.json');
+		writeFileSync(reportPath, JSON.stringify({ summary, result }, null, 2), 'utf-8');
+		log('DONE', `Relatorio salvo em ${reportPath}`, summary);
+	} finally {
+		handle.close();
 	}
-
-	// Contextual research
-	if (storyEngineResult.contextualResearchResult) {
-		const cr = storyEngineResult.contextualResearchResult;
-		log('RESULTS', 'Contextual Research', {
-			skipped: cr.skipped,
-			accepted: cr.accepted.length,
-			rejected: cr.rejected.length,
-			agentId: cr.agentId,
-		});
-	} else {
-		log('RESULTS', 'Contextual Research', { status: 'disabled' });
-	}
-
-	// Warnings
-	if (storyEngineResult.warnings.length > 0) {
-		log('RESULTS', 'Warnings', storyEngineResult.warnings);
-	}
-
-	// ═══════════════════════════════════════════════════════════════════════════
-	// STAGE 6: Save Artifacts
-	// ═══════════════════════════════════════════════════════════════════════════
-	log('SAVE', 'Saving artifacts...');
-
-	// Save script JSON
-	const scriptPath = join(OUTPUT_DIR, chapter.chapterId, 'script.json');
-	writeFileSync(scriptPath, JSON.stringify(storyEngineResult.script, null, 2));
-	log('SAVE', `Script saved: ${scriptPath}`);
-
-	// Save Gate G report
-	const gateGPath = join(OUTPUT_DIR, chapter.chapterId, 'gate-g-final.json');
-	writeFileSync(gateGPath, JSON.stringify(storyEngineResult.gateGReport, null, 2));
-	log('SAVE', `Gate G report saved: ${gateGPath}`);
-
-	// Save humanize diffs if available
-	if (storyEngineResult.humanizeResult) {
-		const diffsPath = join(OUTPUT_DIR, chapter.chapterId, 'humanize-diffs.json');
-		writeFileSync(diffsPath, JSON.stringify(storyEngineResult.humanizeResult.diffs, null, 2));
-		log('SAVE', `Humanize diffs saved: ${diffsPath}`);
-	}
-
-	// Save full result
-	const resultPath = join(OUTPUT_DIR, chapter.chapterId, 'e2e-result.json');
-	writeFileSync(resultPath, JSON.stringify({
-		timestamp: new Date().toISOString(),
-		totalTimeSec: (Date.now() - totalStart) / 1000,
-		panelsAnalyzed: storyEngineResult.analyses.length,
-		averageConfidence: avgConfidence,
-		scenesCount: storyEngineResult.script.scenes.length,
-		gateGVerdict: storyEngineResult.gateGReport.verdict,
-		humanizeAgent: storyEngineResult.humanizeResult?.agentId ?? 'none',
-		warnings: storyEngineResult.warnings,
-	}, null, 2));
-	log('SAVE', `Full result saved: ${resultPath}`);
-
-	// Print narration samples
-	log('SAMPLES', '═══════════════════════════════════════════════════════════');
-	log('SAMPLES', 'Narration Samples (first 3 scenes)');
-	log('SAMPLES', '═══════════════════════════════════════════════════════════');
-	for (let i = 0; i < Math.min(3, storyEngineResult.script.scenes.length); i++) {
-		const scene = storyEngineResult.script.scenes[i]!;
-		log('SCENE', `${scene.sceneId}: ${scene.title}`, {
-			panelRefs: scene.panelReferences.length,
-			narration: scene.narrationText?.slice(0, 200) + (scene.narrationText?.length > 200 ? '...' : ''),
-		});
-	}
-
-	// Final summary
-	log('COMPLETE', '═══════════════════════════════════════════════════════════');
-	log('COMPLETE', `E2E Phase 2.2.4 finished in ${elapsed(totalStart)}`);
-	log('COMPLETE', '═══════════════════════════════════════════════════════════');
-	log('COMPLETE', 'Summary', {
-		cbzFile: basename(CBZ_PATH),
-		pagesImported: chapter.pageCount,
-		panelsExtracted: extractionResult.panels.length,
-		panelsAnalyzed: storyEngineResult.analyses.length,
-		averageConfidence: avgConfidence.toFixed(3),
-		beatsGenerated: storyEngineResult.sequence.beats.length,
-		scenesGenerated: storyEngineResult.script.scenes.length,
-		totalDurationSec: storyEngineResult.script.totalEstimatedDurationSec,
-		gateGInitialVerdict: storyEngineResult.preHumanizeGateG?.verdict ?? 'n/a',
-		gateGFinalVerdict: storyEngineResult.gateGReport.verdict,
-		humanizeAgent: storyEngineResult.humanizeResult?.agentId ?? 'none',
-		humanizeSkipped: storyEngineResult.humanizeResult?.skipped ?? true,
-		outputDir: OUTPUT_DIR,
-	});
-
-	// Cleanup
-	handle.close();
-	log('CLEANUP', `Database closed. Artifacts at: ${OUTPUT_DIR}`);
-	log('CLEANUP', 'To inspect results, keep the directory. To auto-clean, delete it manually.');
 }
 
 main().catch((err) => {
-	console.error('FATAL:', err);
-	if (err instanceof Error && err.stack) {
-		console.error(err.stack);
-	}
+	console.error('[FATAL]', err);
 	process.exit(1);
 });

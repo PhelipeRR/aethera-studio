@@ -6,6 +6,8 @@ import type {
 	GateGVerdict,
 	GateGFidelityHint,
 	ExtractedPanel,
+	GateGDivergenceReport,
+	HumanizeSceneDiff,
 } from './recap-types.js';
 
 export interface GateGInput {
@@ -237,5 +239,36 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 			minSceneConfidence,
 		},
 		hints,
+	};
+}
+
+
+/**
+ * Builds a structured divergence and evidence report comparing Gate G before
+ * and after humanization.
+ */
+export function buildGateGDivergenceReport(
+	pre: GateGReport,
+	post: GateGReport,
+	diffs: readonly HumanizeSceneDiff[],
+): GateGDivergenceReport {
+	const preHintKeys = new Set(pre.hints.map((h) => `${h.sceneId ?? ''}:${h.issueCode}:${h.detail}`));
+	const newHintsAfterHumanize = post.hints.filter(
+		(h) => !preHintKeys.has(`${h.sceneId ?? ''}:${h.issueCode}:${h.detail}`),
+	);
+	const revertReasons = diffs
+		.filter((d) => d.reverted)
+		.map((d) => ({ sceneId: d.sceneId, reason: d.revertReason ?? 'reverted' }));
+	const modifiedScenes = diffs.filter((d) => !d.reverted && d.humanizedText !== d.originalText).length;
+
+	return {
+		preVerdict: pre.verdict,
+		postVerdict: post.verdict,
+		totalScenes: Number(post.metrics['sceneCount'] ?? diffs.length),
+		modifiedScenes,
+		revertedScenes: revertReasons.length,
+		revertReasons,
+		newHintsAfterHumanize,
+		evidencePreserved: post.verdict !== 'fail' && newHintsAfterHumanize.length === 0,
 	};
 }

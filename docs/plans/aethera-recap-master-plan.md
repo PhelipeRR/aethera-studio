@@ -2,7 +2,7 @@
 
 Pipeline de transformação de mangá/manhwa/webtoon em roteiros narrativos validados para produção audiovisual.
 
-**Status atual:** Fase 2.1 concluída (integração multimodal real). Fase 2.2 planejada.
+**Status atual:** Fase 2.1 concluída. Fase 2.2 (2.2.1–2.2.3) implementada em código; Fase 2.2.4 com correções estruturais aplicadas e script E2E pronto, pendente execução ao vivo com agentes autenticados e suíte de testes.
 
 **⚠️ Correção arquitetural (2026-11-20):** O Aethera Recap **não está vinculado ao Claude CLI, ao modelo claude-opus-5-5 ou a qualquer provedor específico**. Claude/claude-opus-5-5 foi utilizado apenas como evidência histórica do primeiro teste E2E multimodal real da Fase 2.1. Em produção, o Recap utiliza descoberta dinâmica de agentes via VisionRouter + TaskEngine, com fallback automático entre todos os provedores disponíveis. Ver seção [Arquitetura Multiagente](#arquitetura-multiagente) abaixo.
 
@@ -242,19 +242,20 @@ Adicionar a skill YouTube Agent como recurso opcional de pesquisa contextual.
 
 **Decisão pendente:** As skills Humanize e YouTube Agent devem ser implementadas como módulos em `packages/orchestrator/src/` (compartilhados) ou como skills independentes em `.agents/skills/`? A recomendação é `packages/orchestrator/src/recap-enhancement/` para garantir type safety e integração direta com o TaskEngine.
 
-### 2.2.4 — Validação Editorial
+### 2.2.4 — Validação Editorial (Em andamento — código atualizado em 2026-11-20)
 
-**Verificações planejadas:**
-- Fidelidade narrativa aos painéis (Gate G pós-humanização).
-- Identidade dos personagens (consistência entre cenas).
-- Ordem dos acontecimentos (respeito à sequência original).
-- Consistência factual (sem invenção de eventos).
-- Duração planejada (orçamento de palavras preservado).
-- Preservação das referências (panelReferences intactas).
-- Diferenciação entre fatos, hipóteses e teorias.
-- Ausência de conteúdo inventado.
+**Implementações e correções aplicadas:**
+- Persistência e reutilização de `panelAnalyses` + `analysisCacheByHash` no checkpoint (`recap-types.ts`, `narrative-analyzer.ts`, `story-engine.ts`), evitando reprocessamento de painéis já analisados.
+- Concorrência limitada configurável (`analysisConcurrency` 1..4) preservando estritamente a ordem de leitura.
+- `createMultiAgentVideoResearchPortAdapter` (`contextual-research.ts`) com detecção dinâmica (`detect()`) e fallback real entre agentes compatíveis para `runVideoResearch()`.
+- Preservação de personagens nomeados no `narrative-humanizer.ts` e relatório comparativo `buildGateGDivergenceReport` (`gate-g-narrative-fidelity.ts`, `story-engine.ts`).
+- Correção do registry em `vision-providers.ts` incluindo capacidade `'analyze'` para `claude` e `codex`.
+- Script E2E dedicado: `scripts/e2e-recap-phase224.mts` para `tests/fixtures/real-manga/Nano-Machine-Capitulo-01.cbz` (24 páginas `.webp` validadas por CRC `testzip`).
+- Testes adicionados em `packages/cinema/test/recap/phase224-enhancements.test.ts`.
 
-**Comportamento em divergência:** Quando a humanização introduzir divergências detectadas pelo Gate G, reverter o trecho afetado ou encaminhar para revisão humana (status `needs_review`).
+**Pendências para encerramento da Fase 2.2.4:**
+- Executar `tsc --noEmit` e `vitest` no ambiente com `node_modules` instalados.
+- Executar `npx tsx scripts/e2e-recap-phase224.mts` com agente autenticado (Claude CLI / Claude Gateway / Codex) para coletar métricas reais de tempo, confiança média, roteiro original vs. humanizado e veredictos Gate G pré/pós-humanização.
 
 ### 2.2.5 — Testes Previstos
 
