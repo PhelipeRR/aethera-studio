@@ -7,11 +7,21 @@ import {
 	runStoryEngine,
 	saveCheckpoint,
 	loadCheckpoint,
+	computePanelCacheKey,
+	invalidateCheckpointCache,
+	RECAP_ANALYZER_VERSION,
+	createRecapVisionAdapter,
 	createMultiAgentVideoResearchPortAdapter,
 	buildGateGDivergenceReport,
 	runNarrativeHumanizer,
+	AgentCircuitBreaker,
+	AllVisionProvidersUnavailableError,
+	classifyVisionError,
+	detectProviderErrorInText,
+	sanitizeErrorMessage,
 	type ExtractedPanel,
 	type VisionAdapter,
+	type RecapVisualAnalysisPort,
 	type TextEnhancementPort,
 	type ResearchAgentAdapterPort,
 	type RecapScript,
@@ -40,106 +50,292 @@ function makePanel(id: string, pageNumber: number, imagePath: string, imageHash:
 	};
 }
 
-describe('Phase 2.2.4 Enhancements (Cache, Concurrency, Research Fallback, Humanize & Gate G)', () => {
-	it('reuses cached analyses by panelId and imageHash without re-calling VisionAdapter', async () => {
-		const dir = mkdtempSync(join(tmpdir(), 'recap-cache-test-'));
+function makeSuccessProvider(id: string, onCall?: () => void, delayMs = 0): RecapVisualAnalysisPort {
+	return {
+		id,
+		model: `${id}-model-v1`,
+		async detect() {
+			return { available: true };
+		},
+		async analyze({ frames }) {
+			onCall?.();
+			if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+			return {
+				nature: 'action',
+				natureConfidence: 0.9,
+				description: `Painel analisado por ${id} (${frames[0]?.path ?? ''})`,
+				frames: frames.map((f) => ({ atMs: f.atMs ?? 0, observed: 'Cena visível', visibleText: [] })),
+				entities: [{ name: 'Cheon Yeo-Woon', type: 'character', basis: 'observed', evidence: 'visível', confidence: 0.9 }],
+				actions: [{ description: 'Avança no pátio', basis: 'observed', confidence: 0.9 }],
+				environment: { description: 'Pátio', basis: 'observed', confidence: 0.9 },
+				overlays: { burnedText: false, burnedTextRegion: null, watermark: false, webcam: false },
+				limitations: [],
+				confidence: 0.88,
+			};
+		},
+	};
+}
+
+describe('Phase 2.2.4 Enhancements (Quota, Circuit Breaker, Vision Fallback, Durable Checkpoints, Gate G)', () => {
+	const REAL_CLAUDE_QUOTA_MSG =
+		"You've hit your weekly limit · resets Nov 22, 3pm (America/Sao_Paulo) · out of usage credits";
+
+	it('1. classifies Claude weekly limit / out of usage credits as QUOTA_EXCEEDED (never JSON parse error) and sanitizes secrets', () => {
+		const detected = detectProviderErrorInText(REAL_CLAUDE_QUOTA_MSG, 'claude');
+		expect(detected).not.toBeNull();
+		expect(detected?.code).toBe('QUOTA_EXCEEDED');
+		expect(detected?.retryable).toBe(false);
+		expect(detected?.resetAtText).toContain('Nov 22, 3pm');
+
+		const leaked = 'Authorization: Bearer sk-ant-secret1234567890 api_key=supersecret999';
+		const clean = sanitizeErrorMessage(leaked);
+		expect(clean).not.toContain('sk-ant-secret1234567890');
+		expect(clean).not.toContain('supersecret999');
+	});
+
+	it('2 & 3 & 4 & 5. trips circuit breaker on Claude QUOTA_EXCEEDED, stops sending new panels to Claude, falls back to next agent with zero loss/duplication and preserved narrative order', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'recap-failover-'));
+		try {
+			const panels: ExtractedPanel[] = [];
+			for (let i = 0; i < 6; i++) {
+				const img = join(dir, `p-${i}.png`);
+				writeFileSync(img, `panel-bytes-${i}`);
+				panels.push(makePanel(`p-${i}`, i, img, `hash-${i}`));
+			}
+
+			let claudeCalls = 0;
+			let codexCalls = 0;
+			const circuitBreaker = new AgentCircuitBreaker();
+
+			const claudeProvider: RecapVisualAnalysisPort = {
+				id: 'claude',
+				model: 'claude-sonnet',
+				async detect() {
+					return { available: true };
+				},
+				async analyze() {
+					claudeCalls++;
+					throw classifyVisionError(REAL_CLAUDE_QUOTA_MSG, 'claude');
+				},
+			};
+			const codexProvider = makeSuccessProvider('codex', () => {
+				codexCalls++;
+			});
+
+			const adapter = createRecapVisionAdapter({
+				root: dir,
+				providers: [claudeProvider, codexProvider],
+				circuitBreaker,
+				throwOnAllUnavailable: true,
+			});
+
+			const res = await runNarrativeAnalyzer({
+				panels,
+				visionAdapter: adapter,
+				analyzedBy: adapter.name,
+				concurrency: 1,
+			});
+
+			// 2. Claude called only once, then circuit breaker prevented all subsequent calls
+			expect(claudeCalls).toBe(1);
+			expect(circuitBreaker.isAvailable('claude')).toBe(false);
+			expect(circuitBreaker.getState('claude')?.code).toBe('QUOTA_EXCEEDED');
+			expect(circuitBreaker.getState('claude')?.resetAtText).toContain('Nov 22');
+
+			// 3. Codex assumed all 6 panels
+			expect(codexCalls).toBe(6);
+
+			// 4 & 5. Zero panels lost or duplicated, narrative order preserved
+			expect(res.analyses).toHaveLength(6);
+			expect(res.analyses.map((a) => a.panelId)).toEqual(['p-0', 'p-1', 'p-2', 'p-3', 'p-4', 'p-5']);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('6 & 7. durable checkpoint stores ONLY valid analyses (filters failures) and resume skips completed panels via composite hash+model+version cache', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'recap-durable-ckpt-'));
+		const ckptDir = join(dir, 'persistent-checkpoints');
 		try {
 			const img1 = join(dir, 'p1.png');
 			const img2 = join(dir, 'p2.png');
 			writeFileSync(img1, 'img1');
 			writeFileSync(img2, 'img2');
 
-			const panels = [
-				makePanel('p-1', 0, img1, 'hash-aaa'),
-				makePanel('p-2', 1, img2, 'hash-bbb'),
-				makePanel('p-3', 2, img1, 'hash-aaa'), // same imageHash as p-1
-			];
+			const panels = [makePanel('p-1', 0, img1, 'hash-1'), makePanel('p-2', 1, img2, 'hash-2')];
 
-			let visionCalls = 0;
+			// Attempt to save one valid and one zero-confidence failed analysis
+			saveCheckpoint(ckptDir, {
+				chapterId: 'ch-durable',
+				completedStages: ['import', 'extraction'],
+				lastUpdatedAtIso: new Date().toISOString(),
+				sourceHash: 'hash-1',
+				extractedPanels: panels,
+				panelAnalyses: [
+					{
+						panelId: 'p-1',
+						characters: ['Cheon Yeo-Woon'],
+						dialogues: [],
+						actions: [{ type: 'observation', description: 'Olha ao redor' }],
+						emotions: ['tension'],
+						evidence: [],
+						analysisConfidence: 0.85,
+						analyzedBy: 'test-vision',
+						analyzedAtIso: new Date().toISOString(),
+					},
+					{
+						panelId: 'p-2',
+						characters: [],
+						dialogues: [],
+						actions: [{ type: 'none', description: 'Failed' }],
+						emotions: ['unknown'],
+						evidence: [],
+						analysisConfidence: 0, // MUST BE FILTERED OUT
+						analyzedBy: 'test-vision',
+						analyzedAtIso: new Date().toISOString(),
+					},
+				],
+			});
+
+			const loaded = loadCheckpoint(ckptDir);
+			expect(loaded?.panelAnalyses).toHaveLength(1);
+			expect(loaded?.panelAnalyses?.[0]?.panelId).toBe('p-1');
+
+			// Resume: only p-2 should be analyzed fresh
+			let freshCalls = 0;
 			const visionAdapter: VisionAdapter = {
 				name: 'test-vision',
 				async analyze() {
-					visionCalls++;
+					freshCalls++;
 					return {
 						characters: ['Cheon Yeo-Woon'],
-						actions: [{ type: 'combat', description: 'Esquiva de ataque' }],
+						actions: [{ type: 'combat', description: 'Defende golpe' }],
 						emotions: ['determination'],
-						setting: 'Pátio de treinamento',
-						confidence: 0.85,
-					};
-				},
-			};
-
-			const first = await runNarrativeAnalyzer({
-				panels,
-				visionAdapter,
-				analyzedBy: 'test-vision',
-				concurrency: 2,
-			});
-
-			expect(first.analyses).toHaveLength(3);
-			expect(first.analyses.map((a) => a.panelId)).toEqual(['p-1', 'p-2', 'p-3']);
-			// p-3 shares hash-aaa with p-1 when analyzed sequentially or cached, at most 3 calls, at least 2
-			expect(visionCalls).toBeGreaterThanOrEqual(2);
-
-			// Resume from checkpoint: 0 fresh calls
-			const callsBeforeResume = visionCalls;
-			const second = await runNarrativeAnalyzer({
-				panels,
-				visionAdapter,
-				analyzedBy: 'test-vision',
-				cachedAnalyses: first.analyses,
-			});
-			expect(visionCalls).toBe(callsBeforeResume);
-			expect(second.cacheHits).toBe(3);
-			expect(second.analyzedFresh).toBe(0);
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	it('persists panelAnalyses and analysisCacheByHash in StoryEngine checkpoint', async () => {
-		const dir = mkdtempSync(join(tmpdir(), 'recap-ckpt-test-'));
-		try {
-			const img1 = join(dir, 'p1.png');
-			writeFileSync(img1, 'img1');
-			const panels = [makePanel('p-1', 0, img1, 'hash-111')];
-
-			let calls = 0;
-			const visionAdapter: VisionAdapter = {
-				name: 'test-vision',
-				async analyze() {
-					calls++;
-					return {
-						characters: ['Protagonista'],
-						actions: [{ type: 'observation', description: 'Observa o horizonte' }],
-						emotions: ['tension'],
-						setting: 'Montanha',
+						setting: 'Pátio',
 						confidence: 0.9,
 					};
 				},
 			};
 
 			await runStoryEngine({
-				chapterId: 'ch-ckpt',
+				chapterId: 'ch-durable',
 				panels,
-				outputDir: dir,
+				outputDir: join(dir, 'out'),
+				checkpointDir: ckptDir,
 				visionAdapter,
 			});
-			expect(calls).toBe(1);
+			expect(freshCalls).toBe(1);
 
-			const ckpt = loadCheckpoint(join(dir, 'ch-ckpt', 'checkpoints'));
-			expect(ckpt?.panelAnalyses).toHaveLength(1);
-			expect(ckpt?.analysisCacheByHash?.['hash-111']).toBeDefined();
-
-			// Second run resumes from checkpoint without calling visionAdapter again
+			// Second full run: 0 fresh calls because composite key (hash+model+version) hits cache
 			await runStoryEngine({
-				chapterId: 'ch-ckpt',
+				chapterId: 'ch-durable',
 				panels,
-				outputDir: dir,
+				outputDir: join(dir, 'out'),
+				checkpointDir: ckptDir,
 				visionAdapter,
 			});
-			expect(calls).toBe(1);
+			expect(freshCalls).toBe(1);
+
+			// Safe cache invalidation works without deleting extractedPanels
+			const key = computePanelCacheKey({ imageHash: 'hash-1', model: 'test-vision', analyzerVersion: RECAP_ANALYZER_VERSION });
+			expect(loadCheckpoint(ckptDir)?.analysisCacheByHash?.[key]).toBeDefined();
+			expect(invalidateCheckpointCache(ckptDir)).toBe(true);
+			expect(loadCheckpoint(ckptDir)?.panelAnalyses).toHaveLength(0);
+			expect(loadCheckpoint(ckptDir)?.extractedPanels).toHaveLength(2);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('8. throws structured AllVisionProvidersUnavailableError when all multimodal agents are unavailable or quota-exhausted', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'recap-all-down-'));
+		try {
+			const img = join(dir, 'p0.png');
+			writeFileSync(img, 'bytes');
+			const panels = [makePanel('p-0', 0, img, 'hash-0')];
+
+			const claudeQuota: RecapVisualAnalysisPort = {
+				id: 'claude',
+				model: 'claude-sonnet',
+				async detect() { return { available: true }; },
+				async analyze() { throw classifyVisionError(REAL_CLAUDE_QUOTA_MSG, 'claude'); },
+			};
+			const agyUnavailable: RecapVisualAnalysisPort = {
+				id: 'antigravity',
+				model: 'agy',
+				async detect() { return { available: false, reason: 'Antigravity CLI not installed' }; },
+				async analyze() { throw new Error('should not run'); },
+			};
+
+			const adapter = createRecapVisionAdapter({
+				root: dir,
+				providers: [claudeQuota, agyUnavailable],
+				throwOnAllUnavailable: true,
+			});
+
+			await expect(
+				runNarrativeAnalyzer({ panels, visionAdapter: adapter, analyzedBy: adapter.name }),
+			).rejects.toBeInstanceOf(AllVisionProvidersUnavailableError);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('9. distinguishes genuine JSON parsing failure (INVALID_MODEL_RESPONSE) from QUOTA_EXCEEDED', () => {
+		const malformedText = 'Aqui está a análise sem json válido: { quebrado';
+		expect(detectProviderErrorInText(malformedText, 'claude')).toBeNull();
+
+		const classified = classifyVisionError('Failed to parse JSON after 1200ms. Preview: { quebrado', 'claude');
+		expect(classified.code).toBe('INVALID_MODEL_RESPONSE');
+		expect(classified.code).not.toBe('QUOTA_EXCEEDED');
+	});
+
+	it('10. bounded concurrency respects circuit breaker and stops unstarted tasks without duplicating results', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'recap-conc-cb-'));
+		try {
+			const panels: ExtractedPanel[] = [];
+			for (let i = 0; i < 8; i++) {
+				const img = join(dir, `p-${i}.png`);
+				writeFileSync(img, `bytes-${i}`);
+				panels.push(makePanel(`p-${i}`, i, img, `hash-c-${i}`));
+			}
+
+			let claudeCalls = 0;
+			let codexCalls = 0;
+			const circuitBreaker = new AgentCircuitBreaker();
+
+			const claudeProvider: RecapVisualAnalysisPort = {
+				id: 'claude',
+				model: 'claude-sonnet',
+				async detect() { return { available: true }; },
+				async analyze() {
+					claudeCalls++;
+					await new Promise((r) => setTimeout(r, 10));
+					throw classifyVisionError(REAL_CLAUDE_QUOTA_MSG, 'claude');
+				},
+			};
+			const codexProvider = makeSuccessProvider('codex', () => { codexCalls++; }, 5);
+
+			const adapter = createRecapVisionAdapter({
+				root: dir,
+				providers: [claudeProvider, codexProvider],
+				circuitBreaker,
+				throwOnAllUnavailable: true,
+			});
+
+			const res = await runNarrativeAnalyzer({
+				panels,
+				visionAdapter: adapter,
+				analyzedBy: adapter.name,
+				concurrency: 2,
+			});
+
+			// At most concurrency (2) in-flight calls could hit Claude before circuit opened; never 8
+			expect(claudeCalls).toBeLessThanOrEqual(2);
+			expect(codexCalls).toBe(8);
+			expect(res.analyses).toHaveLength(8);
+			expect(new Set(res.analyses.map((a) => a.panelId)).size).toBe(8);
+			expect(res.analyses.map((a) => a.panelId)).toEqual(['p-0', 'p-1', 'p-2', 'p-3', 'p-4', 'p-5', 'p-6', 'p-7']);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -148,16 +344,12 @@ describe('Phase 2.2.4 Enhancements (Cache, Concurrency, Research Fallback, Human
 	it('falls back across compatible agents in createMultiAgentVideoResearchPortAdapter', async () => {
 		const codexAdapter: ResearchAgentAdapterPort = {
 			id: 'codex',
-			async detect() {
-				return { installed: true, authenticated: true, problems: [] };
-			},
+			async detect() { return { installed: true, authenticated: true, problems: [] }; },
 			async *run() {},
 		};
 		const claudeAdapter: ResearchAgentAdapterPort = {
 			id: 'claude',
-			async detect() {
-				return { installed: true, authenticated: true, problems: [] };
-			},
+			async detect() { return { installed: true, authenticated: true, problems: [] }; },
 			async *run() {},
 		};
 
@@ -165,9 +357,7 @@ describe('Phase 2.2.4 Enhancements (Cache, Concurrency, Research Fallback, Human
 			adapters: [codexAdapter, claudeAdapter],
 			cwd: '.',
 			async runVideoResearchFn(adapter) {
-				if (adapter.id === 'codex') {
-					throw new Error('Codex usage limit reached until 2026-11-23');
-				}
+				if (adapter.id === 'codex') throw new Error('Codex usage limit reached until 2026-11-23');
 				return {
 					references: [
 						{

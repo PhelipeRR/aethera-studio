@@ -20,7 +20,7 @@ import { runScriptGenerator } from './script-generator.js';
 import { runGateGNarrativeFidelity, buildGateGDivergenceReport } from './gate-g-narrative-fidelity.js';
 import { runNarrativeHumanizer } from './narrative-humanizer.js';
 import { runContextualResearch } from './contextual-research.js';
-import { saveCheckpoint, loadCheckpoint } from './checkpoint-persistence.js';
+import { saveCheckpoint, loadCheckpoint, computePanelCacheKey, RECAP_ANALYZER_VERSION } from './checkpoint-persistence.js';
 
 export interface StoryEngineResult {
 	script: RecapScript;
@@ -72,7 +72,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 	} = options;
 
 	const warnings: string[] = [];
-	const checkpointDir = join(outputDir, chapterId, 'checkpoints');
+	const checkpointDir = options.checkpointDir ?? join(outputDir, chapterId, 'checkpoints');
 	if (!existsSync(checkpointDir)) mkdirSync(checkpointDir, { recursive: true });
 
 	// Determine agent identifier for attribution
@@ -91,6 +91,11 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		warnings.push(`Resuming from checkpoint with ${cachedAnalyses.length} cached panel analyses and ${Object.keys(analysisCacheByHash).length} hash cache entries.`);
 	}
 
+	const incrementalMap = new Map<string, PanelAnalysis>();
+	for (const item of cachedAnalyses) {
+		if (item.analysisConfidence > 0) incrementalMap.set(item.panelId, item);
+	}
+
 	const analysisResult = await runNarrativeAnalyzer({
 		panels,
 		visionAdapter,
@@ -99,9 +104,24 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		concurrency: analysisConcurrency,
 		cachedAnalyses,
 		analysisCacheByHash,
+		cacheModel: analyzedBy,
+		analyzerVersion: RECAP_ANALYZER_VERSION,
 		onPanelAnalyzed: (analysis, panel) => {
 			if (analysis.analysisConfidence > 0) {
-				analysisCacheByHash[panel.imageHash] = analysis;
+				const key = computePanelCacheKey({ imageHash: panel.imageHash, model: analyzedBy, analyzerVersion: RECAP_ANALYZER_VERSION });
+				analysisCacheByHash[key] = analysis;
+				incrementalMap.set(analysis.panelId, analysis);
+				// Incremental atomic checkpoint save so interruptions preserve completed valid panels
+				saveCheckpoint(checkpointDir, {
+					chapterId,
+					completedStages: ['import', 'extraction'],
+					lastUpdatedAtIso: new Date().toISOString(),
+					sourceHash: panels[0]?.imageHash ?? 'unknown',
+					extractedPanels: panels,
+					panelAnalyses: [...incrementalMap.values()],
+					analysisCacheByHash,
+					warnings,
+				});
 			}
 		},
 	});
@@ -111,7 +131,8 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		const a = analyses[idx]!;
 		const p = panels.find((x) => x.panelId === a.panelId);
 		if (p && a.analysisConfidence > 0) {
-			analysisCacheByHash[p.imageHash] = a;
+			const key = computePanelCacheKey({ imageHash: p.imageHash, model: analyzedBy, analyzerVersion: RECAP_ANALYZER_VERSION });
+			analysisCacheByHash[key] = a;
 		}
 	}
 

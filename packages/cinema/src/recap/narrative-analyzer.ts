@@ -10,6 +10,8 @@ import type {
 	EvidenceKind,
 } from './recap-types.js';
 import { panelAnalysisSchema } from './recap-types.js';
+import { computePanelCacheKey, RECAP_ANALYZER_VERSION } from './checkpoint-persistence.js';
+import { AllVisionProvidersUnavailableError } from './vision-error-classifier.js';
 
 export interface NarrativeAnalyzerOptions {
 	panels: ExtractedPanel[];
@@ -25,7 +27,11 @@ export interface NarrativeAnalyzerOptions {
 	cachedAnalyses?: readonly PanelAnalysis[] | undefined;
 	/** Previously completed panel analyses keyed by imageHash. */
 	analysisCacheByHash?: Readonly<Record<string, PanelAnalysis>> | undefined;
-	/** Optional callback invoked after each fresh panel analysis for incremental checkpointing. */
+	/** Model identifier bound into the cache key. Defaults to analyzedBy. */
+	cacheModel?: string | undefined;
+	/** Analyzer version bound into the cache key. Defaults to RECAP_ANALYZER_VERSION. */
+	analyzerVersion?: string | undefined;
+	/** Optional callback invoked after each valid fresh panel analysis for incremental checkpointing. */
 	onPanelAnalyzed?: ((analysis: PanelAnalysis, panel: ExtractedPanel) => void) | undefined;
 }
 
@@ -177,6 +183,9 @@ async function analyzePanel(
  });
  }
  } catch (err) {
+ if (err instanceof AllVisionProvidersUnavailableError) {
+ throw err;
+ }
  const msg = err instanceof Error ? err.message : String(err);
  warnings.push(`Panel ${panel.panelId}: vision analysis failed — ${msg}`);
  }
@@ -263,7 +272,16 @@ async function analyzePanel(
 export async function runNarrativeAnalyzer(
 	options: NarrativeAnalyzerOptions,
 ): Promise<NarrativeAnalysisResult> {
-	const { panels, minConfidence = 0.5, concurrency = 1, cachedAnalyses, analysisCacheByHash, onPanelAnalyzed } = options;
+	const {
+		panels,
+		minConfidence = 0.5,
+		concurrency = 1,
+		cachedAnalyses,
+		analysisCacheByHash,
+		cacheModel = options.analyzedBy,
+		analyzerVersion = RECAP_ANALYZER_VERSION,
+		onPanelAnalyzed,
+	} = options;
 	const warnings: string[] = [];
 
 	// Build lookup caches for valid reusable analyses (never reuse zero-confidence failures)
@@ -276,12 +294,12 @@ export async function runNarrativeAnalyzer(
 			}
 		}
 	}
-	const cacheByHash = new Map<string, PanelAnalysis>();
+	const cacheByKey = new Map<string, PanelAnalysis>();
 	if (analysisCacheByHash) {
-		for (const [hash, entry] of Object.entries(analysisCacheByHash)) {
+		for (const [key, entry] of Object.entries(analysisCacheByHash)) {
 			const parsed = panelAnalysisSchema.safeParse(entry);
 			if (parsed.success && parsed.data.analysisConfidence > 0) {
-				cacheByHash.set(hash, parsed.data);
+				cacheByKey.set(key, parsed.data);
 			}
 		}
 	}
@@ -292,18 +310,25 @@ export async function runNarrativeAnalyzer(
 	const panelWarnings: string[][] = orderedPanels.map(() => []);
 	let cacheHits = 0;
 	let analyzedFresh = 0;
+	let fatalProviderError: AllVisionProvidersUnavailableError | null = null;
 
 	const maxWorkers = Math.max(1, Math.min(4, Math.floor(concurrency)));
 	let nextIndex = 0;
 
 	const worker = async () => {
 		while (true) {
+			if (fatalProviderError) break;
 			const idx = nextIndex++;
 			if (idx >= orderedPanels.length) break;
 			const panel = orderedPanels[idx]!;
+			const compositeKey = computePanelCacheKey({
+				imageHash: panel.imageHash,
+				model: cacheModel,
+				analyzerVersion,
+			});
 
-			// Check cache by panelId first, then by imageHash
-			const cached = cacheByPanelId.get(panel.panelId) ?? cacheByHash.get(panel.imageHash);
+			// Check cache by composite key (imageHash + model + version), then panelId, then legacy raw hash
+			const cached = cacheByKey.get(compositeKey) ?? cacheByPanelId.get(panel.panelId) ?? cacheByKey.get(panel.imageHash);
 			if (cached) {
 				const reused: PanelAnalysis = cached.panelId === panel.panelId
 					? cached
@@ -327,15 +352,20 @@ export async function runNarrativeAnalyzer(
 				results[idx] = analysis;
 				analyzedFresh++;
 				if (analysis.analysisConfidence > 0) {
-					cacheByHash.set(panel.imageHash, analysis);
+					cacheByKey.set(compositeKey, analysis);
+					cacheByKey.set(panel.imageHash, analysis);
+					onPanelAnalyzed?.(analysis, panel);
 				}
-				onPanelAnalyzed?.(analysis, panel);
 				if (analysis.analysisConfidence < minConfidence) {
 					panelWarnings[idx]!.push(
 						`Panel ${panel.panelId}: analysis confidence ${analysis.analysisConfidence.toFixed(2)} below threshold ${minConfidence}. Marked for review.`,
 					);
 				}
 			} catch (err) {
+				if (err instanceof AllVisionProvidersUnavailableError) {
+					if (!fatalProviderError) fatalProviderError = err;
+					break;
+				}
 				const msg = err instanceof Error ? err.message : String(err);
 				panelWarnings[idx]!.push(`Panel ${panel.panelId}: analysis failed — ${msg}`);
 			}
@@ -343,6 +373,10 @@ export async function runNarrativeAnalyzer(
 	};
 
 	await Promise.all(Array.from({ length: Math.min(maxWorkers, Math.max(1, orderedPanels.length)) }, () => worker()));
+
+	if (fatalProviderError) {
+		throw fatalProviderError;
+	}
 
 	const analyses: PanelAnalysis[] = [];
 	for (let i = 0; i < orderedPanels.length; i++) {

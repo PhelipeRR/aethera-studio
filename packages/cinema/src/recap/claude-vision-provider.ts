@@ -16,6 +16,7 @@
 
 import type { AgentAdapter } from '@neuralbridge/agents';
 import type { RecapVisualAnalysisPort } from './recap-vision-adapter.js';
+import { classifyVisionError, detectProviderErrorInText, RecapVisionError, sanitizeErrorMessage } from './vision-error-classifier.js';
 
 const VISION_SYSTEM_PROMPT = `Analise painéis de mangá/manhwa. Responda APENAS JSON válido sem markdown:
 {"nature":"dialogue|action|establishing|reaction|observation","description":"texto PT-BR","characters":["nome1"],"actions":["ação1"],"emotions":["emoção1"],"setting":"cenário","confidence":0.0-1.0}
@@ -24,6 +25,8 @@ Se não tiver certeza, use confidence baixo. NÃO invente.`;
 export interface ClaudeVisionProviderOptions {
 	adapter: AgentAdapter;
 	cwd: string;
+	/** Provider identifier (e.g. 'claude' or 'claude-gateway'). Defaults to adapter.id. */
+	providerId?: string;
 	model?: string;
 	timeoutMs?: number;
 }
@@ -109,19 +112,21 @@ function extractJsonFromResponse(text: string): LeanVisionResult | null {
 
 export function createClaudeVisionProvider(options: ClaudeVisionProviderOptions): RecapVisualAnalysisPort {
 	const { adapter, cwd, model, timeoutMs = 90_000 } = options;
+	const providerId = options.providerId ?? adapter.id ?? 'claude';
 
 	return {
-		id: 'claude',
+		id: providerId,
 		model: model ?? 'claude-sonnet-4-20250514',
 
 		async detect() {
 			try {
 				const status = await adapter.detect({ refresh: true });
-				if (!status.installed) return { available: false, reason: 'Claude CLI not installed.' };
-				if (status.authenticated === false) return { available: false, reason: 'Claude not authenticated.' };
+				if (!status.installed) return { available: false, reason: `${providerId} CLI not installed.` };
+				if (status.authenticated === false) return { available: false, reason: `${providerId} not authenticated.` };
+				if (status.problems.length > 0) return { available: false, reason: sanitizeErrorMessage(status.problems.join('; ')) };
 				return { available: true };
 			} catch (err) {
-				return { available: false, reason: err instanceof Error ? err.message : String(err) };
+				return { available: false, reason: sanitizeErrorMessage(err instanceof Error ? err.message : String(err)) };
 			}
 		},
 
@@ -135,6 +140,8 @@ export function createClaudeVisionProvider(options: ClaudeVisionProviderOptions)
 
 			try {
 				let resultText = '';
+				let errorText = '';
+				let runFailed = false;
 
 				for await (const event of adapter.run(
 					{
@@ -150,11 +157,33 @@ export function createClaudeVisionProvider(options: ClaudeVisionProviderOptions)
 				)) {
 					if (event.kind === 'result' && event.text) resultText = event.text;
 					else if (event.kind === 'text') resultText += event.text;
+					else if (event.kind === 'done') {
+						if (!event.ok) {
+							runFailed = true;
+							if (event.errorOutput) errorText = event.errorOutput;
+						}
+						if (!resultText && event.result) resultText = event.result;
+					}
+				}
+
+				// 1. Detect quota / rate-limit / auth errors BEFORE attempting JSON parsing
+				const combinedSignal = [errorText, resultText].filter(Boolean).join(' | ');
+				const detectedErr = detectProviderErrorInText(combinedSignal, providerId);
+				if (detectedErr) {
+					throw detectedErr;
+				}
+				if (runFailed) {
+					throw classifyVisionError(combinedSignal || 'Agent run failed', providerId, 'PROVIDER_UNAVAILABLE');
 				}
 
 				const parsed = extractJsonFromResponse(resultText);
 				if (!parsed) {
-					throw new Error(`Failed to parse JSON after ${Date.now() - startTime}ms. Preview: ${resultText.slice(0, 300)}`);
+					throw new RecapVisionError({
+						code: 'INVALID_MODEL_RESPONSE',
+						providerId,
+						message: `Failed to parse JSON after ${Date.now() - startTime}ms. Preview: ${sanitizeErrorMessage(resultText.slice(0, 300))}`,
+						retryable: false,
+					});
 				}
 
 				// Map lean format to RecapVisualAnalysisPort contract
@@ -191,9 +220,9 @@ export function createClaudeVisionProvider(options: ClaudeVisionProviderOptions)
 					confidence: parsed.confidence ?? 0.5,
 				};
 			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				console.error(`[ClaudeVisionProvider] Analysis failed after ${Date.now() - startTime}ms:`, msg);
-				throw err;
+				const classified = classifyVisionError(err, providerId);
+				console.error(`[ClaudeVisionProvider:${providerId}] ${classified.code} after ${Date.now() - startTime}ms:`, classified.message);
+				throw classified;
 			}
 		},
 	};

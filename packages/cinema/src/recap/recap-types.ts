@@ -154,6 +154,8 @@ export interface ImportChapterOptions {
 	chapterId: string;
 	archivePath: string;
 	outputDir: string;
+	/** Optional durable checkpoint directory (defaults to <outputDir>/<chapterId>/checkpoints). */
+	checkpointDir?: string;
 	readingOrder?: ReadingOrder;
 }
 

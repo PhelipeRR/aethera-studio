@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'no
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, relative } from 'node:path';
 import type { VisionAdapter, VisionAnalysisResult, ActionType, Emotion } from './recap-types.js';
+import { AllVisionProvidersUnavailableError, classifyVisionError, type VisionProviderDiagnostic } from './vision-error-classifier.js';
+import { AgentCircuitBreaker } from './vision-circuit-breaker.js';
 
 /**
  * Port interface matching the subset of VisualAnalysisProvider that Recap needs.
@@ -80,8 +82,10 @@ export interface RecapVisionRouterPort {
 export interface RecapVisionAdapterOptions {
 	/** Authorized root directory for image path validation. */
 	root: string;
-	/** Single provider (simple setup) or router (production with fallback). */
+	/** Single provider (simple setup), ordered multi-provider list, or router (production with fallback). */
 	provider?: RecapVisualAnalysisPort;
+	/** Ordered multimodal providers with circuit breaker and automatic fallback. */
+	providers?: readonly RecapVisualAnalysisPort[];
 	router?: RecapVisionRouterPort;
 	/** Vision policy chain for router mode. Defaults to a sensible recap chain. */
 	policyChain?: readonly string[];
@@ -89,6 +93,10 @@ export interface RecapVisionAdapterOptions {
 	maxLatencyMs?: number;
 	/** Budget ceiling in USD. Default: 0.50. */
 	budgetUsd?: number;
+	/** Optional shared circuit breaker across pipeline runs. */
+	circuitBreaker?: AgentCircuitBreaker;
+	/** When true, throws AllVisionProvidersUnavailableError instead of returning confidence 0 when no provider can serve the request. */
+	throwOnAllUnavailable?: boolean;
 }
 
 interface AnalysisTrace {
@@ -194,31 +202,159 @@ function validateImagePath(root: string, imagePath: string): string {
  * - Falls back gracefully when no provider is available (returns low-confidence inference marker).
  * - Rejects simulated/mock responses in production (only real provider calls produce confidence > 0).
  */
-export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): VisionAdapter & { getLastTrace(): AnalysisTrace | null } {
+export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): VisionAdapter & {
+	getLastTrace(): AnalysisTrace | null;
+	getCircuitBreaker(): AgentCircuitBreaker;
+} {
 	const {
 		root,
 		provider,
+		providers,
 		router,
-		policyChain = ['claude', 'codex', 'local-vlm', 'antigravity'],
+		policyChain = ['claude', 'claude-gateway', 'codex', 'local-vlm', 'antigravity'],
 		maxLatencyMs = 30_000,
 		budgetUsd = 0.5,
+		circuitBreaker = new AgentCircuitBreaker(),
+		throwOnAllUnavailable = Boolean(providers && providers.length > 0),
 	} = options;
 
-	if (!provider && !router) {
+	if (!provider && !router && (!providers || providers.length === 0)) {
 		throw new Error('RecapVisionAdapter requires either a provider or a router.');
 	}
 
 	const resolvedRoot = realpathSync(root);
 	let lastTrace: AnalysisTrace | null = null;
+	const detectionCache = new Map<string, { available: boolean; reason?: string }>();
 
 	const buildPolicy = () => ({
-		chain: policyChain,
+		chain: policyChain.filter((id) => circuitBreaker.isAvailable(id)),
 		scope: 'recap',
 		version: 'recap-v1',
 		budgetUsd,
 		maxLatencyMs,
 		thresholds: null as null,
 	});
+
+	const runSingleProvider = async (target: RecapVisualAnalysisPort, validatedPath: string, signal?: AbortSignal): Promise<VisionAnalysisResult> => {
+		const frames = [{ hash: 'recap-panel', path: validatedPath }];
+		if (target.analyze) {
+			const analyzeInput: Parameters<NonNullable<RecapVisualAnalysisPort['analyze']>>[0] = { frames, context: 'Manga panel visual analysis for narrative extraction.' };
+			if (signal) analyzeInput.signal = signal;
+			const result = await target.analyze(analyzeInput);
+			circuitBreaker.recordSuccess(target.id);
+			lastTrace = {
+				provider: target.id,
+				model: target.model,
+				reportedModel: null,
+				costUsd: 0,
+				attempts: [{ provider: target.id, outcome: 'ok' }],
+			};
+			const characters = result.entities
+				.filter((e) => e.type === 'person' || e.type === 'character')
+				.map((e) => e.name);
+			const primaryActionType = mapNatureToActionType(result.nature);
+			const actions = result.actions.map((a) => ({
+				type: mapNatureToActionType(a.description) !== 'none' ? mapNatureToActionType(a.description) : primaryActionType,
+				description: a.description,
+			}));
+			const emotions = extractEmotionsFromAnalysis(result.description, [], result.entities);
+			const setting = result.environment?.description;
+			return {
+				characters,
+				actions: actions.length > 0 ? actions : [{ type: primaryActionType, description: result.description || 'No detectable action' }],
+				emotions,
+				setting,
+				confidence: result.confidence,
+			};
+		}
+		if (target.describe) {
+			const describeInput: Parameters<NonNullable<RecapVisualAnalysisPort['describe']>>[0] = { frames };
+			if (signal) describeInput.signal = signal;
+			const result = await target.describe(describeInput);
+			circuitBreaker.recordSuccess(target.id);
+			lastTrace = {
+				provider: target.id,
+				model: target.model,
+				reportedModel: null,
+				costUsd: 0,
+				attempts: [{ provider: target.id, outcome: 'ok' }],
+			};
+			return {
+				characters: [],
+				actions: [{ type: 'none', description: result.description }],
+				emotions: extractEmotionsFromAnalysis(result.description, result.tags, []),
+				setting: undefined,
+				confidence: 0.5,
+			};
+		}
+		throw classifyVisionError(`Provider ${target.id} has no analyze or describe capability.`, target.id, 'PROVIDER_UNAVAILABLE');
+	};
+
+	const analyzeWithProviderChain = async (imagePath: string, signal?: AbortSignal): Promise<VisionAnalysisResult> => {
+		const list = providers ?? [];
+		const validatedPath = validateImagePath(resolvedRoot, imagePath);
+		const diagnostics: VisionProviderDiagnostic[] = [];
+		const attempts: Array<{ provider: string; outcome: string; detail?: string }> = [];
+
+		for (const candidate of list) {
+			if (!circuitBreaker.isAvailable(candidate.id)) {
+				const st = circuitBreaker.getState(candidate.id);
+				diagnostics.push({
+					providerId: candidate.id,
+					code: st?.code ?? 'PROVIDER_UNAVAILABLE',
+					message: st?.reason ?? 'Circuit open',
+					...(st?.resetAtText ? { resetAtText: st.resetAtText } : {}),
+				});
+				attempts.push({ provider: candidate.id, outcome: 'unavailable', detail: `circuit_open:${st?.code ?? 'PROVIDER_UNAVAILABLE'}` });
+				continue;
+			}
+
+			let det = detectionCache.get(candidate.id);
+			if (!det) {
+				const rawDet = await candidate.detect(signal);
+				det = rawDet.available ? { available: true } : { available: false, reason: rawDet.reason };
+				detectionCache.set(candidate.id, det);
+			}
+			if (!det.available) {
+				const detErr = classifyVisionError(det.reason ?? 'Provider unavailable', candidate.id, 'PROVIDER_UNAVAILABLE');
+				circuitBreaker.recordError(candidate.id, detErr);
+				diagnostics.push({ providerId: candidate.id, code: detErr.code, message: detErr.message });
+				attempts.push({ provider: candidate.id, outcome: 'unavailable', detail: detErr.message });
+				continue;
+			}
+
+			try {
+				const res = await runSingleProvider(candidate, validatedPath, signal);
+				lastTrace = {
+					provider: candidate.id,
+					model: candidate.model,
+					reportedModel: null,
+					costUsd: 0,
+					attempts: [...attempts, { provider: candidate.id, outcome: 'ok' }],
+				};
+				return res;
+			} catch (err) {
+				const classified = classifyVisionError(err, candidate.id);
+				circuitBreaker.recordError(candidate.id, classified);
+				diagnostics.push({
+					providerId: candidate.id,
+					code: classified.code,
+					message: classified.message,
+					...(classified.resetAtText ? { resetAtText: classified.resetAtText } : {}),
+				});
+				attempts.push({ provider: candidate.id, outcome: 'error', detail: `${classified.code}: ${classified.message}` });
+			}
+		}
+
+		lastTrace = {
+			provider: null,
+			model: null,
+			reportedModel: null,
+			costUsd: 0,
+			attempts,
+		};
+		throw new AllVisionProvidersUnavailableError(diagnostics);
+	};
 
 	const analyzeWithProvider = async (imagePath: string, signal?: AbortSignal): Promise<VisionAnalysisResult> => {
 		if (!provider) {
@@ -304,6 +440,14 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		if (signal) routerAnalyzeInput.signal = signal;
 		const analyzeResult = await router.analyze(routerAnalyzeInput);
 
+		for (const attempt of analyzeResult.attempts) {
+			if (attempt.outcome === 'error' && attempt.detail) {
+				const classified = classifyVisionError(attempt.detail, attempt.provider);
+				if (classified.code === 'QUOTA_EXCEEDED' || classified.code === 'AUTHENTICATION_FAILED') {
+					circuitBreaker.recordError(attempt.provider, classified);
+				}
+			}
+		}
 		lastTrace = {
 			provider: analyzeResult.provider,
 			model: analyzeResult.model,
@@ -356,7 +500,19 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 			};
 		}
 
-		// All providers failed — return zero confidence, never fabricate
+		// All providers failed — throw structured error when strict, or return zero confidence
+		if (throwOnAllUnavailable) {
+			const diagnostics: VisionProviderDiagnostic[] = analyzeResult.attempts.map((a) => {
+				const c = classifyVisionError(a.detail ?? a.outcome, a.provider, 'PROVIDER_UNAVAILABLE');
+				return {
+					providerId: a.provider,
+					code: c.code,
+					message: c.message,
+					...(c.resetAtText ? { resetAtText: c.resetAtText } : {}),
+				};
+			});
+			throw new AllVisionProvidersUnavailableError(diagnostics);
+		}
 		return {
 			characters: [],
 			actions: [{ type: 'none', description: 'Visual analysis unavailable' }],
@@ -366,8 +522,12 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		};
 	};
 
-	const adapter: VisionAdapter & { getLastTrace(): AnalysisTrace | null } = {
-		name: router ? 'recap-vision-router' : `recap-vision-${provider!.id}`,
+	const adapter: VisionAdapter & { getLastTrace(): AnalysisTrace | null; getCircuitBreaker(): AgentCircuitBreaker } = {
+		name: router
+			? 'recap-vision-router'
+			: providers && providers.length > 0
+				? `recap-vision-chain[${providers.map((p) => p.id).join(',')}]`
+				: `recap-vision-${provider!.id}`,
 
 		async analyze(imagePathOrBuffer: string | Buffer): Promise<VisionAnalysisResult> {
 			let resolvedPath: string;
@@ -387,8 +547,14 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 				if (router) {
 					return await analyzeWithRouter(resolvedPath);
 				}
+				if (providers && providers.length > 0) {
+					return await analyzeWithProviderChain(resolvedPath);
+				}
 				return await analyzeWithProvider(resolvedPath);
 			} catch (err) {
+				if (err instanceof AllVisionProvidersUnavailableError) {
+					throw err;
+				}
 				// Never fabricate — return zero confidence with error info
 				const msg = err instanceof Error ? err.message : String(err);
 				lastTrace = {
@@ -410,6 +576,10 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 
 		getLastTrace(): AnalysisTrace | null {
 			return lastTrace;
+		},
+
+		getCircuitBreaker(): AgentCircuitBreaker {
+			return circuitBreaker;
 		},
 	};
 
@@ -441,10 +611,14 @@ export function createRoutedRecapVisionAdapter(input: {
 	policyChain?: readonly string[];
 	maxLatencyMs?: number;
 	budgetUsd?: number;
-}): VisionAdapter & { getLastTrace(): AnalysisTrace | null } {
+	circuitBreaker?: AgentCircuitBreaker;
+	throwOnAllUnavailable?: boolean;
+}): VisionAdapter & { getLastTrace(): AnalysisTrace | null; getCircuitBreaker(): AgentCircuitBreaker } {
 	const opts: RecapVisionAdapterOptions = { root: input.root, router: input.router };
 	if (input.policyChain) opts.policyChain = input.policyChain;
 	if (input.maxLatencyMs !== undefined) opts.maxLatencyMs = input.maxLatencyMs;
 	if (input.budgetUsd !== undefined) opts.budgetUsd = input.budgetUsd;
+	if (input.circuitBreaker) opts.circuitBreaker = input.circuitBreaker;
+	if (input.throwOnAllUnavailable !== undefined) opts.throwOnAllUnavailable = input.throwOnAllUnavailable;
 	return createRecapVisionAdapter(opts);
 }

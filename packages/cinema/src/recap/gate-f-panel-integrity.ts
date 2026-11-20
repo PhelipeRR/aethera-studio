@@ -89,12 +89,18 @@ export function runGateFPanelIntegrity(input: GateFPanelIntegrityInput): GateFRe
  reasons.push(`${illegibleCount} painel(is) com texto ilegível (OCR abaixo de ${minOcrConfidence}).`);
  }
 
- // 3. Dialogue panels without OCR evidence
+ // 3. Dialogue panels without OCR evidence (distinguish OCR not run vs OCR ran empty)
  let missingTextEvidence = 0;
+ let ocrNotRunOnDialogueCount = 0;
+ let ocrEmptyOnDialogueCount = 0;
+ let dialoguePanelCount = 0;
+ let nonDialoguePanelCount = 0;
  for (const panel of panels) {
  if (panel.metadata.classification === 'dialogue') {
+ dialoguePanelCount++;
  if (panel.metadata.ocrStatus === 'not_run') {
  missingTextEvidence++;
+ ocrNotRunOnDialogueCount++;
  repairHints.push({
  panelId: panel.panelId,
  issueCode: 'ocr_not_run_on_dialogue',
@@ -105,12 +111,15 @@ export function runGateFPanelIntegrity(input: GateFPanelIntegrityInput): GateFRe
  (!panel.metadata.textContent || panel.metadata.textContent.trim().length === 0)
  ) {
  missingTextEvidence++;
+ ocrEmptyOnDialogueCount++;
  repairHints.push({
  panelId: panel.panelId,
  issueCode: 'missing_text_evidence',
  detail: `Panel classified as 'dialogue' with successful OCR but no text extracted.`,
  });
  }
+ } else {
+ nonDialoguePanelCount++;
  }
  }
  if (missingTextEvidence > 0) {
@@ -221,6 +230,10 @@ export function runGateFPanelIntegrity(input: GateFPanelIntegrityInput): GateFRe
  orderViolations,
  truncatedCount,
  missingTextEvidence,
+ ocrNotRunOnDialogueCount,
+ ocrEmptyOnDialogueCount,
+ dialoguePanelCount,
+ nonDialoguePanelCount,
  cropFailedCount,
  minOcrConfidence,
  expectedReadingOrder: input.expectedReadingOrder,

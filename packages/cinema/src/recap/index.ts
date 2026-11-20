@@ -52,7 +52,7 @@ export {
 } from './gate-f-panel-integrity.js';
 
 // ─── Checkpoint Persistence ──────────────────────────────────────────────────
-export { saveCheckpoint, loadCheckpoint } from './checkpoint-persistence.js';
+export { saveCheckpoint, loadCheckpoint, computePanelCacheKey, invalidateCheckpointCache, clearCheckpoint, RECAP_ANALYZER_VERSION } from './checkpoint-persistence.js';
 
 // ─── PDF Import Adapter ──────────────────────────────────────────────────────
 export { renderPdfToImages } from './pdf-import-adapter.js';
@@ -185,3 +185,21 @@ export {
 	type ContextualResearchResult,
 	type StoryEngineResearchOptions,
 } from './recap-types.js';
+
+// ─── Vision Error Classification & Circuit Breaker (Phase 2.2.4) ─────────────
+export {
+	VISION_ERROR_CODES,
+	type VisionErrorCode,
+	type VisionProviderDiagnostic,
+	RecapVisionError,
+	AllVisionProvidersUnavailableError,
+	classifyVisionError,
+	detectProviderErrorInText,
+	sanitizeErrorMessage,
+	extractResetInfo,
+} from './vision-error-classifier.js';
+
+export {
+	AgentCircuitBreaker,
+	type AgentCircuitState,
+} from './vision-circuit-breaker.js';

@@ -251,7 +251,12 @@ Adicionar a skill YouTube Agent como recurso opcional de pesquisa contextual.
 - Preservação de personagens nomeados no `narrative-humanizer.ts` e relatório comparativo `buildGateGDivergenceReport` (`gate-g-narrative-fidelity.ts`, `story-engine.ts`).
 - Correção do registry em `vision-providers.ts` incluindo capacidade `'analyze'` para `claude` e `codex`.
 - Script E2E dedicado: `scripts/e2e-recap-phase224.mts` para `tests/fixtures/real-manga/Nano-Machine-Capitulo-01.cbz` (24 páginas `.webp` validadas por CRC `testzip`).
-- Testes adicionados em `packages/cinema/test/recap/phase224-enhancements.test.ts`.
+- Classificação estruturada de erros (`vision-error-classifier.ts`: `QUOTA_EXCEEDED`, `RATE_LIMITED`, `AUTHENTICATION_FAILED`, `PROVIDER_UNAVAILABLE`, `TIMEOUT`, `INVALID_MODEL_RESPONSE`, `NETWORK_ERROR`) executada antes de qualquer parsing JSON e com sanitização de credenciais.
+- Circuit breaker por agente (`vision-circuit-breaker.ts`) integrado ao `RecapVisionAdapter`, `NarrativeAnalyzer` e `VisionRouter` (`isVisionQuotaError` ampliado para `weekly limit` / `out of usage credits`).
+- Fallback multimodal real no `scripts/e2e-recap-phase224.mts` usando `VisionRouter` (`claude` -> `claude-gateway` -> `codex` -> `antigravity`), com erro estruturado `AllVisionProvidersUnavailableError` se nenhum estiver operacional.
+- Checkpoints duráveis em `.aethera-recap-data/phase224/` com escrita atômica (`tmp` + `rename`), chave composta `imageHash::model::analyzerVersion`, persistência incremental por painel e filtragem estrita contra armazenamento de falhas (`confidence === 0`).
+- Diagnóstico detalhado no Gate F (`ocrNotRunOnDialogueCount`, `ocrEmptyOnDialogueCount`, `dialoguePanelCount`, `nonDialoguePanelCount`) sem mascarar `needs_review`.
+- Testes adicionados em `packages/cinema/test/recap/phase224-enhancements.test.ts` (incluindo os 10 cenários de quota, circuit breaker, failover, concorrência e checkpoint durável).
 
 **Pendências para encerramento da Fase 2.2.4:**
 - Executar `tsc --noEmit` e `vitest` no ambiente com `node_modules` instalados.

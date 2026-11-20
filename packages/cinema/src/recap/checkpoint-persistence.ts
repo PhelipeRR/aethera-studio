@@ -1,21 +1,70 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import type { RecapCheckpoint } from './recap-types.js';
-import { recapCheckpointSchema } from './recap-types.js';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { PanelAnalysis, RecapCheckpoint } from './recap-types.js';
+import { panelAnalysisSchema, recapCheckpointSchema } from './recap-types.js';
 
 const CHECKPOINT_FILENAME = 'recap-checkpoint.json';
+export const RECAP_ANALYZER_VERSION = '2.2.4';
 
 /**
- * Saves a checkpoint for the recap pipeline.
- * Creates the parent directory if it doesn't exist.
+ * Builds a deterministic cache key binding imageHash, model, and analyzer version.
+ */
+export function computePanelCacheKey(input: {
+	imageHash: string;
+	model?: string;
+	analyzerVersion?: string;
+}): string {
+	const model = (input.model ?? 'default').trim() || 'default';
+	const version = (input.analyzerVersion ?? RECAP_ANALYZER_VERSION).trim() || RECAP_ANALYZER_VERSION;
+	return `${input.imageHash}::${model}::${version}`;
+}
+
+/**
+ * Strips any failed or zero-confidence analyses so failures are never stored
+ * as successful cached results.
+ */
+function sanitizeCheckpointAnalyses(checkpoint: RecapCheckpoint): RecapCheckpoint {
+	const clean: RecapCheckpoint = { ...checkpoint };
+
+	if (Array.isArray(checkpoint.panelAnalyses)) {
+		const valid: PanelAnalysis[] = [];
+		for (const item of checkpoint.panelAnalyses) {
+			const parsed = panelAnalysisSchema.safeParse(item);
+			if (parsed.success && parsed.data.analysisConfidence > 0) {
+				valid.push(parsed.data);
+			}
+		}
+		clean.panelAnalyses = valid;
+	}
+
+	if (checkpoint.analysisCacheByHash && typeof checkpoint.analysisCacheByHash === 'object') {
+		const validCache: Record<string, PanelAnalysis> = {};
+		for (const [key, item] of Object.entries(checkpoint.analysisCacheByHash)) {
+			const parsed = panelAnalysisSchema.safeParse(item);
+			if (parsed.success && parsed.data.analysisConfidence > 0) {
+				validCache[key] = parsed.data;
+			}
+		}
+		clean.analysisCacheByHash = validCache;
+	}
+
+	return clean;
+}
+
+/**
+ * Saves a checkpoint atomically to disk (write temp file → rename).
+ * Creates the parent directory if it doesn't exist and never persists failed analyses.
  */
 export function saveCheckpoint(checkpointDir: string, checkpoint: RecapCheckpoint): void {
-  if (!existsSync(checkpointDir)) {
-    mkdirSync(checkpointDir, { recursive: true });
-  }
-  const filePath = join(checkpointDir, CHECKPOINT_FILENAME);
-  const validated = recapCheckpointSchema.parse(checkpoint);
-  writeFileSync(filePath, JSON.stringify(validated, null, 2), 'utf-8');
+	if (!existsSync(checkpointDir)) {
+		mkdirSync(checkpointDir, { recursive: true });
+	}
+	const sanitized = sanitizeCheckpointAnalyses(checkpoint);
+	const validated = recapCheckpointSchema.parse(sanitized);
+	const filePath = join(checkpointDir, CHECKPOINT_FILENAME);
+	const tmpPath = join(checkpointDir, `${CHECKPOINT_FILENAME}.tmp.${process.pid}.${Date.now()}`);
+	writeFileSync(tmpPath, JSON.stringify(validated, null, 2), 'utf-8');
+	renameSync(tmpPath, filePath);
 }
 
 /**
@@ -23,12 +72,39 @@ export function saveCheckpoint(checkpointDir: string, checkpoint: RecapCheckpoin
  * Never throws — callers should treat missing/invalid checkpoints as "start fresh".
  */
 export function loadCheckpoint(checkpointDir: string): RecapCheckpoint | null {
-  const filePath = join(checkpointDir, CHECKPOINT_FILENAME);
-  if (!existsSync(filePath)) return null;
-  try {
-    const raw = readFileSync(filePath, 'utf-8');
-    return recapCheckpointSchema.parse(JSON.parse(raw));
-  } catch {
-    return null;
-  }
+	const filePath = join(checkpointDir, CHECKPOINT_FILENAME);
+	if (!existsSync(filePath)) return null;
+	try {
+		const raw = readFileSync(filePath, 'utf-8');
+		const parsed = recapCheckpointSchema.parse(JSON.parse(raw));
+		return sanitizeCheckpointAnalyses(parsed);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Safely invalidates cached analyses in a checkpoint (e.g. when model/analyzer changes)
+ * while preserving extracted panels and chapter metadata.
+ */
+export function invalidateCheckpointCache(checkpointDir: string): boolean {
+	const existing = loadCheckpoint(checkpointDir);
+	if (!existing) return false;
+	saveCheckpoint(checkpointDir, {
+		...existing,
+		panelAnalyses: [],
+		analysisCacheByHash: {},
+		lastUpdatedAtIso: new Date().toISOString(),
+	});
+	return true;
+}
+
+/**
+ * Removes the checkpoint file entirely (for explicit full reset).
+ */
+export function clearCheckpoint(checkpointDir: string): void {
+	const filePath = join(checkpointDir, CHECKPOINT_FILENAME);
+	if (existsSync(filePath)) {
+		rmSync(filePath, { force: true });
+	}
 }
