@@ -35,8 +35,9 @@ function engine(claude: Turn[] | FakeAdapter, codex: Turn[] | FakeAdapter, extra
   const adapters = {
     claude: claude instanceof FakeAdapter ? claude : new FakeAdapter('claude', claude),
     codex: codex instanceof FakeAdapter ? codex : new FakeAdapter('codex', codex),
+    'claude-gateway': new FakeAdapter('claude-gateway', []),
   };
-  return { engine: new TaskEngine({ handle, adapters, availability: async () => ({ claude: true, codex: true }), ...extra }), ...adapters };
+  return { engine: new TaskEngine({ handle, adapters, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }), ...extra }), ...adapters };
 }
 
 const task = (id: string) => handle.db.select().from(tasks).where(eq(tasks.id, id)).get();
@@ -226,7 +227,7 @@ describe('single-agent tasks', () => {
     await failing.engine.idle();
     expect(task(id)).toMatchObject({ status: 'failed', error: expect.stringContaining('Codex CLI') });
 
-    const none = engine([], [], { availability: async () => ({ claude: false, codex: false }) });
+    const none = engine([], [], { availability: async () => ({ claude: false, codex: false, 'claude-gateway': false }) });
     const id2 = await none.engine.start({ prompt: 'Implemente o endpoint X', projectId: 'api', mode: 'auto' });
     await none.engine.idle();
     expect(task(id2)).toMatchObject({ status: 'failed', error: expect.stringContaining('Nenhum agente disponível') });

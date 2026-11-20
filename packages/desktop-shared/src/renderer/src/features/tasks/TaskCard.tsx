@@ -177,7 +177,7 @@ function ApprovalBox({ task, reasons }: { task: TaskDetail; reasons: string[] })
 const GUARDIAN_SEVERITY = { high: { label: 'Alto', tone: 'text-destructive' }, medium: { label: 'Médio', tone: 'text-warning' }, low: { label: 'Baixo', tone: 'text-muted-foreground' } } as const;
 
 /** Phase 28: the security review of what the task changed; a high risk waits for the user's decision. */
-const AGENT_NAME: Record<string, string> = { claude: 'Claude Code', codex: 'Codex CLI' };
+const AGENT_NAME: Record<string, string> = { claude: 'Claude Code', codex: 'Codex CLI', 'claude-gateway': 'Claude Gateway' };
 const CAPACITY_LABEL: Record<string, string> = { RATE_LIMITED: 'limite temporário', QUOTA_EXHAUSTED: 'limite de uso esgotado', AUTH_REQUIRED: 'precisa de login', UNAVAILABLE: 'indisponível', UNKNOWN: 'estado desconhecido' };
 
 /** A task parked until an agent has capacity. Shows a recovery time only when the provider gave one. */

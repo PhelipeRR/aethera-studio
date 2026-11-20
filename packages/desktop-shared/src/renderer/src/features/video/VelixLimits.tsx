@@ -6,7 +6,7 @@ import aiChip from '@/assets/aethera/ai-chip.webp';
 import { agentLine } from './agent-line';
 
 const LABELS: Record<string, string> = { five_hour: 'Sessão atual', seven_day: 'Esta semana' };
-const AGENT_NAME = { claude: 'Claude', codex: 'Codex' } as const;
+const AGENT_NAME = { claude: 'Claude', codex: 'Codex', 'claude-gateway': 'Claude Gateway' } as const;
 const WARN_PERCENT = 75;
 const HIGH_PERCENT = 90;
 

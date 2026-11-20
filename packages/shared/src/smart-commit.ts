@@ -24,7 +24,7 @@ export type SmartCommitProviderResult = z.infer<typeof smartCommitProviderSchema
 
 export const smartCommitReportSchema = z.strictObject({
   taskId: z.string().min(1).max(100),
-  agent: z.enum(['claude', 'codex']),
+  agent: z.enum(['claude', 'codex', 'claude-gateway']),
   generatedAt: z.string().datetime(),
   files: z.array(z.string().min(1).max(1_024)).max(500),
   truncated: z.boolean(),

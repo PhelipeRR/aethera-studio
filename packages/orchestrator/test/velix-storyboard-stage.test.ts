@@ -42,7 +42,7 @@ afterEach(() => handle.close());
 
 function setup(planSemanticEdit?: StoryboardDeps['planSemanticEdit']) {
   const dossie = { structured: { narracao: NARRATION, serie: 'Energia', cenas: [{ blocos: [{ tipo: 'texto', frase: 'Os painéis' }] }] } };
-  const engine = new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', () => dossie), codex: new FakeAdapter('codex', []) }, availability: async () => ({ claude: true, codex: true }) });
+  const engine = new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', () => dossie), codex: new FakeAdapter('codex', []), 'claude-gateway': new FakeAdapter('claude-gateway', []) }, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }) });
   const repository = new VelixProductionRepository(handle);
   const deps: StoryboardDeps = { storyboards: new VelixStoryboardRepository(handle), claims: new VelixClaimRepository(handle), mediaCandidates: () => media, ...(planSemanticEdit ? { planSemanticEdit } : {}) };
   const production = new ProductionRunService(repository, engine, [createScriptStageAdapter(), createStoryboardStageAdapter(deps)]);

@@ -44,7 +44,7 @@ import type { AutonomyMode, ContentAnalyticsSnapshot, ContentAsset, ContentChann
 import type { ContentBrief } from './content-brief.js';
 import type { ContentScript } from './content-script.js';
 import type { WorkflowDefinition, WorkflowRunSummary, WorkflowSummary } from './workflows.js';
-export interface ImportedConversationSummary { id: string; agent: 'claude' | 'codex'; externalId: string; title: string; projectId: string | null; projectPath: string | null; association: 'associated' | 'unassociated'; updatedAt: string | null; importedAt: string; }
+export interface ImportedConversationSummary { id: string; agent: 'claude' | 'codex' | 'claude-gateway'; externalId: string; title: string; projectId: string | null; projectPath: string | null; association: 'associated' | 'unassociated'; updatedAt: string | null; importedAt: string; }
 import type {
   BrainGraph,
   EvidenceCheck,
@@ -633,7 +633,7 @@ export interface AppStatus {
 /** A backup that can replace an unusable database. Only backups that pass an integrity check are restorable. */
 export interface DatabaseRecoveryBackup { name: string; createdAt: string; sizeBytes: number; kind: string; valid: boolean; problem: string | null }
 
-export type McpClientId = 'claude' | 'codex';
+export type McpClientId = 'claude' | 'codex' | 'claude-gateway';
 
 export interface SkillSummary {
   id: string; name: string; description: string; valid: boolean; root: string; path: string;
@@ -643,7 +643,7 @@ export interface SkillSummary {
 export interface SkillInstallPreview { skillId: string; destination: string; files: Array<{ path: string; size: number; overwrite: boolean }>; totalBytes: number; findings: Array<{ id: string; category: 'origin' | 'integrity' | 'structure' | 'permissions' | 'behavior' | 'compatibility' | 'limitations'; severity: 'info' | 'warning' | 'high' | 'critical'; status: 'verified' | 'attention' | 'risk' | 'not-verified' | 'blocked'; evidence: Array<{ kind: 'fact' | 'heuristic' | 'declared' | 'unavailable'; value: string; path?: string }>; relatedPath?: string; rule: string; result: string; limitation: string; recommendedAction: string }>; blockedBy: string[]; warnings: string[]; checks: Array<{ id: string; label: string; kind: 'automatic' | 'heuristic' | 'unverified'; severity: 'info' | 'warning' | 'high' | 'critical'; status: 'pass' | 'fail' | 'warning' | 'unknown'; detail: string }>; readOnly: true; assessmentFingerprint: string; }
 export interface SkillInstallPreparation { operationId: string; skillId: string; state: string; fingerprint: string; preview: SkillInstallPreview; }
 export interface SkillTransactionSummary { id: string; skillId: string; destination: string; operation: 'install' | 'update'; state: string; fingerprint: string; backupAvailable: boolean; error: string | null; updatedAt: string; }
-export interface SkillStudioMetadata { name: string; description: string; objective: string; triggers: string[]; agents: Array<'claude' | 'codex'>; dependencies: string[]; permissions: string[]; examples: string[]; }
+export interface SkillStudioMetadata { name: string; description: string; objective: string; triggers: string[]; agents: Array<'claude' | 'codex' | 'claude-gateway'>; dependencies: string[]; permissions: string[]; examples: string[]; }
 export interface SkillStudioDraftFile { path: string; content: string; }
 export interface SkillStudioDraft { id: string; skillId: string; metadata: SkillStudioMetadata; instructions: string; files: SkillStudioDraftFile[]; scope: 'global' | 'project'; projectId: string | null; sourcePath: string | null; baseFingerprint: string | null; revision: number; createdAt: string; updatedAt: string; }
 export interface SkillStudioTrustAssessment { skillId: string; evaluatedAt: string; ruleVersion: string; contentFingerprint: string; origin: { kind: 'local' | 'remote'; value: string; normalized: string; host: string | null; allowlisted: boolean | null }; scope: 'global' | 'project' | 'unknown'; inspectedFiles: Array<{ path: string; size: number; hash: string | null }>; findings: SkillInstallPreview['findings']; checks: SkillInstallPreview['checks']; decision: { allowed: boolean; requiresExplicitApproval: true; blockedBy: string[]; warnings: string[] }; valid: boolean; }
@@ -727,7 +727,7 @@ export interface NeuralBridgeApi {
     savePublicationPackage(input: { id: string; projectId: string; version: number; title: string; description?: string; tags: string[]; thumbnailAssetId?: string | null }): Promise<PublicationPackage>;
     saveBrief(input: { projectId: string; brief: ContentBrief }): Promise<ContentProject>;
     saveScript(input: { projectId: string; script: ContentScript }): Promise<ContentProject>;
-    generateScript(input: { projectId: string; agent?: 'claude' | 'codex' }): Promise<ContentProject>;
+    generateScript(input: { projectId: string; agent?: 'claude' | 'codex' | 'claude-gateway' }): Promise<ContentProject>;
     analytics(projectId: string): Promise<ContentAnalyticsSnapshot[]>;
     syncAnalytics(projectId: string): Promise<ContentAnalyticsSnapshot[]>;
     saveAnalyticsSnapshot(input: ContentAnalyticsSnapshot): Promise<ContentAnalyticsSnapshot>;
@@ -966,7 +966,7 @@ export interface NeuralBridgeApi {
     status(refresh?: boolean): Promise<AgentStatus[]>;
   };
   skills: {
-    recommend(input: { taskDescription: string; agent?: 'claude' | 'codex'; projectId?: string }): Promise<Array<{ skillId: string; name: string; reasons: string[]; relevance: number; conflictWarnings: string[] }>>;
+    recommend(input: { taskDescription: string; agent?: 'claude' | 'codex' | 'claude-gateway'; projectId?: string }): Promise<Array<{ skillId: string; name: string; reasons: string[]; relevance: number; conflictWarnings: string[] }>>;
     usage(): Promise<Array<{ skillId: string; used: number; loaded: number; failed: number; injected: number; lastAt: string }>>; list(): Promise<SkillSummary[]>; settings(): Promise<{ allowlistedHosts: string[]; preferences: Array<{ skillId: string; taskTypes: string[]; agents: Array<'claude' | 'codex'>; enabled: boolean }> }>; saveSettings(settings: { allowlistedHosts: string[]; preferences: Array<{ skillId: string; taskTypes: string[]; agents: Array<'claude' | 'codex'>; enabled: boolean }> }): Promise<unknown>; install(source: string, approved: boolean): Promise<{ path: string }>; update(source: string, approved: boolean): Promise<{ path: string }>; prepareInstall(input: { skillId: string; source: string; scope: 'global' | 'project'; agent?: 'claude' | 'codex' }): Promise<SkillInstallPreparation>; installPreview(operationId: string): Promise<SkillInstallPreview>; confirmInstall(operationId: string): Promise<SkillTransactionSummary>; installStatus(operationId: string): Promise<SkillTransactionSummary>; cancelInstall(operationId: string): Promise<SkillTransactionSummary>; rollbackInstall(operationId: string): Promise<SkillTransactionSummary>; installHistory(): Promise<SkillTransactionSummary[]>; installRecovery(): Promise<SkillTransactionSummary[]>; studio: { drafts(): Promise<SkillStudioDraftSummary[]>; create(input: { skillId: string; metadata: SkillStudioMetadata; instructions: string; files?: SkillStudioDraftFile[]; scope: 'global' | 'project'; projectId?: string | null }): Promise<SkillStudioEditorState>; open(input: { skillId: string; scope: 'global' | 'project'; projectId?: string | null }): Promise<SkillStudioEditorState>; get(draftId: string): Promise<SkillStudioEditorState>; save(input: { draftId: string; expectedRevision: number; metadata: SkillStudioMetadata; instructions: string; files: SkillStudioDraftFile[] }): Promise<SkillStudioEditorState>; validate(draftId: string): Promise<SkillStudioValidation>; publish(draftId: string): Promise<SkillStudioVersion>; versions(skillId: string): Promise<SkillStudioVersion[]>; compare(input: { skillId: string; fromVersionId: string; toVersionId: string }): Promise<SkillStudioChangeSet>; restore(input: { skillId: string; versionId: string; expectedFingerprint?: string | null }): Promise<SkillStudioVersion>; importPreview(sourcePath: string): Promise<SkillStudioImportPreview>; import(input: { sourcePath: string }): Promise<SkillStudioEditorState>; export(input: { skillId: string; versionId: string }): Promise<SkillStudioExportResult>; simulate(input: { draftId: string; taskDescription: string; projectId?: string; stack?: string[]; agent?: 'claude' | 'codex'; taskType?: string; workflowStep?: string; limit?: number }): Promise<SkillStudioSimulation>; } };
   historySync: { settings(): Promise<HistorySyncSettings>; saveSettings(settings: HistorySyncSettings): Promise<{ ok: true }>; status(): Promise<{ lastRun: string | null; sessions: number; proposals: number; errors: number; running: boolean }>; run(): Promise<{ lastRun: string | null; sessions: number; proposals: number; errors: number; running: boolean }> };
   importedConversations: { list(): Promise<ImportedConversationSummary[]> };
@@ -1039,8 +1039,8 @@ export interface NeuralBridgeApi {
   };
   video: {
     /** The project that holds every video; `rootPath` is null when none is chosen or its folder is gone. */
-    settings(): Promise<{ projectId: string | null; rootPath: string | null; agent: 'claude' | 'codex' }>;
-    saveSettings(projectId: string | null, agent?: 'claude' | 'codex'): Promise<{ projectId: string | null; rootPath: string | null; agent: 'claude' | 'codex' }>;
+    settings(): Promise<{ projectId: string | null; rootPath: string | null; agent: 'claude' | 'codex' | 'claude-gateway' }>;
+    saveSettings(projectId: string | null, agent?: 'claude' | 'codex' | 'claude-gateway'): Promise<{ projectId: string | null; rootPath: string | null; agent: 'claude' | 'codex' | 'claude-gateway' }>;
     /** Creates the folder of one video inside the Video project. */
     prepare(input: { name: string; kind: 'tema' | 'projeto' }): Promise<{ folder: string }>;
     /** Asks an agent, read-only, for video topics in a niche. */
@@ -1057,12 +1057,12 @@ export interface NeuralBridgeApi {
     removePrint(name: string, file: string): Promise<{ ok: true }>;
     /** Claude usage, from a minimal run; the answer is kept for a few minutes unless `refresh` is set. */
     /** Usage of an agent's CLI (Claude when omitted): what the Aethera's agent card shows and what gates Claude work. */
-    limits(refresh: boolean, agent?: 'claude' | 'codex'): Promise<VideoLimits>;
+    limits(refresh: boolean, agent?: 'claude' | 'codex' | 'claude-gateway'): Promise<VideoLimits>;
     studioList(): Promise<string[]>;
     studioLoad(name: string): Promise<VideoStudioState>;
     studioSave(input: { name: string; narration?: string; data?: string }): Promise<{ ok: true }>;
     /** An agent writes narration and scenes, read-only; the app saves them in the folder of the video. */
-    studioGenerate(input: { name: string; kind: 'tema' | 'projeto'; brief: string; seconds: number }): Promise<VideoStudioState & { generation: { agent: 'claude' | 'codex'; model: string | null; executionId: string | null; generatedAt: string } }>;
+    studioGenerate(input: { name: string; kind: 'tema' | 'projeto'; brief: string; seconds: number }): Promise<VideoStudioState & { generation: { agent: 'claude' | 'codex' | 'claude-gateway'; model: string | null; executionId: string | null; generatedAt: string } }>;
     /** Transcribes the voice and moves the scenes to the spoken words. */
     studioSync(name: string): Promise<{ missed: number }>;
     studioPreview(input: { name: string; data: string; time: number }): Promise<string>;
@@ -1075,13 +1075,13 @@ export interface NeuralBridgeApi {
     /** The MotionVelix kit installed on this machine, with the scenes the app can render directly. */
     kit(): Promise<{ installed: boolean; path: string; version: string | null; templates: Array<{ id: string; label: string; defaultData: string }>; downloaderVersion: string | null }>;
     /** Downloads one video into `imports/` under the root; the job shares renderStatus and renderCancel. */
-    importVideo(input: { root: string; url: string; quality: 1080 | 720 | 480 | 360 | 'mp3'; confirmed: true }): Promise<{ id: string; status: string; error: string | null; origin: 'studio' | 'chat'; agent: 'auto' | 'claude' | 'codex' | null; progress: number | null; output: string | null }>;
+    importVideo(input: { root: string; url: string; quality: 1080 | 720 | 480 | 360 | 'mp3'; confirmed: true }): Promise<{ id: string; status: string; error: string | null; origin: 'studio' | 'chat'; agent: 'auto' | 'claude' | 'codex' | 'claude-gateway' | null; progress: number | null; output: string | null }>;
     /** Stills of a scene as PNG data URLs. */
     frames(root: string, template: string, data: string): Promise<string[]>;
-    render(input: { root: string; outputPath: string; template: string; data: string; audioPath?: string; quality?: 'draft' | 'final'; origin?: 'studio' | 'chat'; agent?: 'auto' | 'claude' | 'codex' }): Promise<{ id: string; status: string; error: string | null; origin: 'studio' | 'chat'; agent: 'auto' | 'claude' | 'codex' | null; progress: number | null; output: string | null }>;
-    renderStatus(id: string): Promise<{ id: string; status: string; error: string | null; origin: 'studio' | 'chat'; agent: 'auto' | 'claude' | 'codex' | null; progress: number | null; output: string | null } | null>;
+    render(input: { root: string; outputPath: string; template: string; data: string; audioPath?: string; quality?: 'draft' | 'final'; origin?: 'studio' | 'chat'; agent?: 'auto' | 'claude' | 'codex' | 'claude-gateway' }): Promise<{ id: string; status: string; error: string | null; origin: 'studio' | 'chat'; agent: 'auto' | 'claude' | 'codex' | 'claude-gateway' | null; progress: number | null; output: string | null }>;
+    renderStatus(id: string): Promise<{ id: string; status: string; error: string | null; origin: 'studio' | 'chat'; agent: 'auto' | 'claude' | 'codex' | 'claude-gateway' | null; progress: number | null; output: string | null } | null>;
     renderCancel(id: string): Promise<{ id: string; status: string; error: string | null }>;
-    renderJobs(): Promise<Array<{ id: string; status: string; error: string | null; origin: 'studio' | 'chat'; agent: 'auto' | 'claude' | 'codex' | null; createdAt: string; updatedAt: string }>>;
+    renderJobs(): Promise<Array<{ id: string; status: string; error: string | null; origin: 'studio' | 'chat'; agent: 'auto' | 'claude' | 'codex' | 'claude-gateway' | null; createdAt: string; updatedAt: string }>>;
     preview(root: string, outputPath: string): Promise<string>;
     discoverySearch(input: { projectId: string; query: string; provider: 'youtube' | 'rss'; feedUrl?: string; pageToken?: string; filters?: VideoDiscoveryFilters }): Promise<{ status: string; reason: string | null; nextPageToken?: string | null; cached?: boolean; results: Array<{ id?: string; url: string; title: string; publisher: string; publishedAt: string | null; kind: string }> }>;
     discoveryCancel(projectId: string): Promise<{ cancelled: boolean }>;
@@ -1098,7 +1098,7 @@ export interface NeuralBridgeApi {
     motionRender(input: { projectId: string; scriptVersionId: string; audioRelativePath?: string }): Promise<{ id: string }>;
     motionStatus(id: string): Promise<{ id: string; status: string; progress: number; outputPath: string | null; error: string | null } | null>;
     motionCancel(id: string): Promise<{ cancelled: boolean }>;
-    motionSuggest(input: { projectId: string; scriptVersionId: string; agent: 'claude' | 'codex' }): Promise<{ scenes: MotionSceneV2[]; agent: string; model: string | null; executionId: string | null }>;
+    motionSuggest(input: { projectId: string; scriptVersionId: string; agent: 'claude' | 'codex' | 'claude-gateway' }): Promise<{ scenes: MotionSceneV2[]; agent: string; model: string | null; executionId: string | null }>;
     motionAlignCaptions(input: { projectId: string; audioRelativePath: string; captions: MotionProject['captions'] }): Promise<{ captions: MotionProject['captions']; missed: number }>;
     motionSyncNarration(input: { projectId: string; scriptVersionId: string; audioRelativePath: string; project: MotionProject }): Promise<{ project: MotionProject; missedCaptions: string[]; missedScenes: string[] }>;
     motionNarrationAssets(projectId: string): Promise<NarrationAsset[]>;
@@ -1137,9 +1137,9 @@ export interface NeuralBridgeApi {
     productionRunCancel(runId: string): Promise<ProductionState>;
     productionRunDecide(input: { stageId: string; decision: 'approved' | 'rejected'; note?: string }): Promise<ProductionState>;
     onProductionRunChanged(listener: (change: { runId: string }) => void): () => void;
-    productionRunScript(input: { runId: string; agent?: 'claude' | 'codex'; chapterWords?: number; lockedChapters?: number[] }): Promise<ProductionState>;
+    productionRunScript(input: { runId: string; agent?: 'claude' | 'codex' | 'claude-gateway'; chapterWords?: number; lockedChapters?: number[] }): Promise<ProductionState>;
     productionRunScriptRead(runId: string): Promise<ProductionScript | null>;
-    productionRunResearch(input: { runId: string; agent?: 'claude' | 'codex' }): Promise<ProductionState>;
+    productionRunResearch(input: { runId: string; agent?: 'claude' | 'codex' | 'claude-gateway' }): Promise<ProductionState>;
     /** AS-03: researches games by title or by release period (IGDB first, RAWG and the web to confirm). */
     productionRunGameResearch(input: { runId: string; titles?: string[]; period?: { from: string; to: string }; count?: number; web?: boolean }): Promise<ProductionState>;
     productionRunSubjects(runId: string): Promise<VerifiedSubject[]>;

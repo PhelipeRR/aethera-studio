@@ -70,7 +70,7 @@ import { CORE_TIMING } from '@neuralbridge/core/protocol';
 import { registerCoreIpcHandlers } from './handlers/core.js';
 import { currentUserId, DEFAULT_TASK_NAME, defaultSchtasks, launchStandaloneCore, LogonTask, readStandalone, STANDALONE_FLAG } from './core/standalone.js';
 import { CollageSecretStore } from './collage-secret-store.js';
-import { clientIdHint, igdbCredentialsSchema, rawgKeySchema, StudioSecretStore } from './studio-secret-store.js';
+import { clientIdHint, claudeGatewayConfigSchema, igdbCredentialsSchema, rawgKeySchema, StudioSecretStore } from './studio-secret-store.js';
 import { AzureDevOpsCredentialStore } from './azure-devops-credential-store.js';
 import { GeminiCollageProvider } from './gemini-collage-provider.js';
 import { registerExtensionIpcHandlers } from './handlers/extensions.js';
@@ -191,6 +191,8 @@ if (!app.requestSingleInstanceLock()) {
   // Aethera Studio game sources (AS-03): IGDB via a Twitch app, optional RAWG; encrypted, never sent to the renderer.
   const igdbSecretStore = new StudioSecretStore(join(app.getPath('userData'), 'aethera-igdb-credentials.bin'), safeStorage, igdbCredentialsSchema, 'as credenciais do IGDB');
   const rawgSecretStore = new StudioSecretStore(join(app.getPath('userData'), 'aethera-rawg-key.bin'), safeStorage, rawgKeySchema, 'a chave do RAWG');
+  // Claude Gateway (isolated from Claude CLI): encrypted config with baseUrl, authToken and model override.
+  const claudeGatewaySecretStore = new StudioSecretStore(join(app.getPath('userData'), 'aethera-claude-gateway-config.bin'), safeStorage, claudeGatewayConfigSchema, 'a configuração do Claude Gateway');
   const igdbClient = new IgdbClient({ credentials: () => igdbSecretStore.load() });
   const rawgClient = new RawgClient({ apiKey: () => rawgSecretStore.load()?.apiKey ?? null });
   const azureDevOpsRepository = database.handle ? new AzureDevOpsRepository(database.handle.db) : null;
@@ -879,6 +881,10 @@ if (!app.requestSingleInstanceLock()) {
   registerIpcHandler(ipcMain, IpcChannel.videoStudioRawgSave, async ({ apiKey }) => { rawgSecretStore.save({ apiKey }); return { ok: true as const }; }, isTrustedSender);
   registerIpcHandler(ipcMain, IpcChannel.videoStudioRawgStatus, async () => ({ configured: rawgSecretStore.load() !== null }), isTrustedSender);
   registerIpcHandler(ipcMain, IpcChannel.videoStudioRawgClear, async () => { rawgSecretStore.clear(); return { ok: true as const }; }, isTrustedSender);
+  // Claude Gateway: isolated config (baseUrl, authToken, model) encrypted via safeStorage, never exposed to renderer.
+  registerIpcHandler(ipcMain, IpcChannel.videoStudioClaudeGatewaySave, async (input) => { claudeGatewaySecretStore.save(input); return { ok: true as const }; }, isTrustedSender);
+  registerIpcHandler(ipcMain, IpcChannel.videoStudioClaudeGatewayStatus, async () => { const stored = claudeGatewaySecretStore.load(); return { enabled: stored?.enabled ?? false, configured: stored !== null, baseUrl: stored?.baseUrl ?? '', model: stored?.model ?? '' }; }, isTrustedSender);
+  registerIpcHandler(ipcMain, IpcChannel.videoStudioClaudeGatewayClear, async () => { claudeGatewaySecretStore.clear(); return { ok: true as const }; }, isTrustedSender);
   registerIpcHandler(ipcMain, IpcChannel.videoCollageCreate, async ({ projectId, prompt, durationSeconds, aspectRatio }) => {
     ensureVideoProject(projectId); requireCollageProviderConfigured(collageSecretStore.load() !== null); if (!database.handle) throw new Error('unavailable: banco de dados indisponível.');
     const apiKey = collageSecretStore.load(); if (!apiKey) throw new Error('unavailable: configure a chave Gemini para usar a Colagem editorial com IA.'); const request = validateCollageRequest({ projectId, prompt, durationSeconds, aspectRatio }); const cost = estimateCollageCost(request); const provider = new GeminiCollageProvider(apiKey, undefined, app.isPackaged ? undefined : process.env['NB_GEMINI_API_URL']); const metaphor = await provider.proposeMetaphor(request);
@@ -1291,7 +1297,23 @@ if (!app.requestSingleInstanceLock()) {
 
   const claude = new ClaudeCliAdapter();
   const codex = new CodexCliAdapter();
-  const agents = [claude, codex];
+  // Claude Gateway: isolated adapter using the same ClaudeCliAdapter class but with
+  // its own encrypted config (baseUrl, authToken, model). resolveEnv injects gateway
+  // credentials per-call without mutating global process.env, so Claude CLI and Gateway
+  // coexist independently. When no gateway config is stored, detect() returns unavailable.
+  const claudeGateway = new ClaudeCliAdapter({
+    id: 'claude-gateway',
+    resolveEnv: () => {
+      const config = claudeGatewaySecretStore.load();
+      if (!config || !config.enabled) return {};
+      return {
+        ANTHROPIC_BASE_URL: config.baseUrl,
+        ...(config.authToken ? { ANTHROPIC_AUTH_TOKEN: config.authToken } : {}),
+        ANTHROPIC_MODEL: config.model,
+      };
+    },
+  });
+  const agents = [claude, codex, claudeGateway];
 
   // Task engine (Phase 11), driven from the Chat and Executions screens.
   const taskHandle = database.handle;

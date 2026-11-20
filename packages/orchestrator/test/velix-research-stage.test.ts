@@ -48,7 +48,7 @@ const research: Turn = {
 
 function setup(turns: (prompt: string) => Turn) {
   const adapter = new FakeAdapter('claude', (request) => turns(request.prompt.slice(request.prompt.indexOf('<'))));
-  const engine = new TaskEngine({ handle, adapters: { claude: adapter, codex: new FakeAdapter('codex', []) }, availability: async () => ({ claude: true, codex: true }) });
+  const engine = new TaskEngine({ handle, adapters: { claude: adapter, codex: new FakeAdapter('codex', []), 'claude-gateway': new FakeAdapter('claude-gateway', []) }, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }) });
   const discovery = new VelixDiscoveryRepository(handle.db);
   const repository = new VelixProductionRepository(handle);
   const claims = new VelixClaimRepository(handle);

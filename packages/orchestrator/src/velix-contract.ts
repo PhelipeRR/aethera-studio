@@ -8,7 +8,7 @@ export type VelixFailure = 'provider_unavailable' | 'provider_failed' | 'provide
 export type VelixGeneration = { agent: AgentId; model: string | null; executionId: string | null; generatedAt: string };
 export type VelixRun = { structured: unknown; text: string; tools: string[]; generation: VelixGeneration };
 
-const LABELS: Record<AgentId, string> = { claude: 'Claude Code', codex: 'Codex' };
+const LABELS: Record<AgentId, string> = { claude: 'Claude Code', codex: 'Codex', 'claude-gateway': 'Claude Gateway' };
 const MAX_ISSUES = 6;
 
 /** Says which contract failed and why, by field path only: never the agent's content, which may hold private data. */

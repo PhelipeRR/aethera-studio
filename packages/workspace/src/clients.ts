@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
 
-export type McpClientId = 'claude' | 'codex';
+export type McpClientId = 'claude' | 'codex' | 'claude-gateway';
 
 /** How to start a CLI without a shell: executable plus fixed leading arguments. */
 export interface CommandSpec {
@@ -22,7 +22,7 @@ function findOnPath(env: Record<string, string | undefined>, file: string): stri
   return null;
 }
 
-const OVERRIDE_VAR: Record<McpClientId, string> = { claude: 'NB_CLAUDE_CLI', codex: 'NB_CODEX_CLI' };
+const OVERRIDE_VAR: Record<McpClientId, string> = { claude: 'NB_CLAUDE_CLI', codex: 'NB_CODEX_CLI', 'claude-gateway': 'NB_CLAUDE_CLI' };
 
 /**
  * NB_CLAUDE_CLI / NB_CODEX_CLI point at another build of a CLI: an absolute executable path, or a JSON
@@ -53,7 +53,8 @@ function overrideCli(client: McpClientId, env: Record<string, string | undefined
 export function findClientCli(client: McpClientId, env: Record<string, string | undefined> = process.env): CommandSpec | null {
   const override = overrideCli(client, env);
   if (override) return override;
-  if (client === 'claude') {
+  if (client === 'claude' || client === 'claude-gateway') {
+    // claude-gateway uses the same Claude CLI binary; only the auth/config differs.
     const exe = findOnPath(env, 'claude.exe') ?? findOnPath(env, 'claude');
     if (exe) return { command: exe, args: [] };
     const home = env['USERPROFILE'] ?? env['HOME'] ?? homedir();
@@ -77,6 +78,7 @@ export function findClientCli(client: McpClientId, env: Record<string, string | 
 
 /** The file each client writes MCP registrations to, honouring the official config-dir overrides. */
 export function clientConfigFile(client: McpClientId, env: Record<string, string | undefined> = process.env, home: string = homedir()): string {
-  if (client === 'claude') return join(env['CLAUDE_CONFIG_DIR'] ?? home, '.claude.json');
+  // claude-gateway shares the same Claude CLI binary and config file; only auth/config differs at runtime.
+  if (client === 'claude' || client === 'claude-gateway') return join(env['CLAUDE_CONFIG_DIR'] ?? home, '.claude.json');
   return join(env['CODEX_HOME'] ?? join(home, '.codex'), 'config.toml');
 }

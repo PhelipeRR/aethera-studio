@@ -55,13 +55,14 @@ export function claudeStdin(request: AgentRunRequest): string {
 }
 
 export class ClaudeCliAdapter implements AgentAdapter {
-  readonly id = 'claude' as const;
+  readonly id: import('@neuralbridge/shared').AgentId;
   private readonly detector;
 
   constructor(private readonly options: AdapterOptions = {}) {
+    this.id = options.id ?? 'claude';
     this.detector = createDetector(
       {
-        id: 'claude',
+        id: this.id === 'claude-gateway' ? 'claude' : this.id,
         label: 'Claude Code',
         testedVersion: CLAUDE_TESTED_VERSION,
         versionArgs: ['--version'],

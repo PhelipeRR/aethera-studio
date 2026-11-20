@@ -30,8 +30,8 @@ beforeEach(() => {
 afterEach(() => handle.close());
 
 function engine(claude: Turn[], codex: Turn[], extra: Partial<EngineOptions> = {}) {
-  const adapters = { claude: new FakeAdapter('claude', claude), codex: new FakeAdapter('codex', codex) };
-  return { engine: new TaskEngine({ handle, adapters, availability: async () => ({ claude: true, codex: true }), ...extra }), ...adapters };
+  const adapters = { claude: new FakeAdapter('claude', claude), codex: new FakeAdapter('codex', codex), 'claude-gateway': new FakeAdapter('claude-gateway', []) };
+  return { engine: new TaskEngine({ handle, adapters, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }), ...extra }), ...adapters };
 }
 const task = (id: string) => handle.db.select().from(tasks).where(eq(tasks.id, id)).get();
 const events = (id: string) => handle.db.select().from(taskEvents).where(eq(taskEvents.taskId, id)).all();

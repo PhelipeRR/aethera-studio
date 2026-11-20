@@ -38,8 +38,8 @@ function reviewEngine(turns: Turn[], contextProvider?: NonNullable<ConstructorPa
   const codex = new FakeAdapter('codex', []);
   const engine = new TaskEngine({
     handle,
-    adapters: { claude, codex },
-    availability: async () => ({ claude: true, codex: true }),
+    adapters: { claude, codex, 'claude-gateway': new FakeAdapter('claude-gateway', []) },
+    availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }),
     ...(contextProvider ? { contextProvider } : {}),
   });
   return { engine, claude };
@@ -73,7 +73,7 @@ describe('Git review through the existing TaskEngine', () => {
   it('accepts a Codex JSON answer delivered as final text and still validates it', async () => {
     const finding = { severity: 'medium', confidence: 'high', title: 'Boolean bypass', description: 'The guard is always true.', file: 'app.ts', startLine: 1, endLine: 1, evidence: 'answer = 42', suggestion: 'Restore the authorization check.', patch: null };
     const codex = new FakeAdapter('codex', [{ text: JSON.stringify({ summary: 'Codex review.', findings: [finding] }) }]);
-    const engine = new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', []), codex }, availability: async () => ({ claude: true, codex: true }) });
+    const engine = new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', []), codex, 'claude-gateway': new FakeAdapter('claude-gateway', []) }, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }) });
     const id = await engine.startGitReview({ projectId: 'review-project', agent: 'codex', scope: { kind: 'working-tree' } });
     await engine.idle();
     expect(handle.db.select().from(tasks).where(eq(tasks.id, id)).get()).toMatchObject({ status: 'completed' });

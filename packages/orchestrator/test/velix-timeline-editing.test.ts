@@ -51,7 +51,7 @@ function setup() {
   const calls = { tts: 0, asr: 0, motion: 0, asset: 0 };
   const scratch = mkdtempSync(join(tmpdir(), 'nb-timeline-tts-'));
   const dossie = { structured: { narracao: NARRATION, serie: 'Energia', cenas: [{ blocos: [{ tipo: 'texto', frase: 'Os painéis' }] }] } };
-  const engine = new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', () => dossie), codex: new FakeAdapter('codex', []) }, availability: async () => ({ claude: true, codex: true }) });
+  const engine = new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', () => dossie), codex: new FakeAdapter('codex', []), 'claude-gateway': new FakeAdapter('claude-gateway', []) }, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }) });
   const repository = new VelixProductionRepository(handle);
   const storyboards = new VelixStoryboardRepository(handle);
   const claims = new VelixClaimRepository(handle);

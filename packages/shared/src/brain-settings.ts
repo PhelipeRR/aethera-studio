@@ -40,7 +40,7 @@ export interface LearningCandidate {
   taskId: string | null;
   projectId: string | null;
   projectName: string | null;
-  agent: 'claude' | 'codex' | null;
+  agent: 'claude' | 'codex' | 'claude-gateway' | null;
   title: string;
   content: string;
   type: MemoryType;

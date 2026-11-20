@@ -29,7 +29,7 @@ afterEach(() => handle.close());
 
 function engine(codex: Turn[] | FakeAdapter, extra: Partial<EngineOptions> = {}) {
   const adapter = codex instanceof FakeAdapter ? codex : new FakeAdapter('codex', codex);
-  return { engine: new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', []), codex: adapter }, availability: async () => ({ claude: true, codex: true }), ...extra }), codex: adapter };
+  return { engine: new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', []), codex: adapter, 'claude-gateway': new FakeAdapter('claude-gateway', []) }, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }), ...extra }), codex: adapter };
 }
 const waitFor = async (check: () => boolean) => { for (let i = 0; i < 200 && !check(); i++) await new Promise((r) => setTimeout(r, 10)); };
 const status = (id: string) => handle.db.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, id)).get()?.status;
@@ -102,7 +102,7 @@ describe('execution contract', () => {
   });
 
   it('treats a missing agent CLI as a configuration problem that needs the user, not a blind retry', async () => {
-    const { engine: tasksEngine, codex } = engine([{ text: 'ok' }], { availability: async () => ({ claude: false, codex: false }) });
+    const { engine: tasksEngine, codex } = engine([{ text: 'ok' }], { availability: async () => ({ claude: false, codex: false, 'claude-gateway': false }) });
     const id = await tasksEngine.start({ prompt: 'Implemente algo', projectId: 'api', mode: 'codex' });
     await tasksEngine.idle();
     expect(codex.requests).toHaveLength(0);
@@ -138,7 +138,7 @@ describe('execution contract', () => {
     const before = first.executionSnapshot(id);
     if (!before) throw new Error('missing snapshot');
     // The process dies: a new engine over the same database sees the task still marked active.
-    const restarted = new TaskEngine({ handle: openDatabase(dbFile, { migrationsFolder: MIGRATIONS }), adapters: { claude: new FakeAdapter('claude', []), codex: new FakeAdapter('codex', []) }, availability: async () => ({ claude: true, codex: true }) });
+    const restarted = new TaskEngine({ handle: openDatabase(dbFile, { migrationsFolder: MIGRATIONS }), adapters: { claude: new FakeAdapter('claude', []), codex: new FakeAdapter('codex', []), 'claude-gateway': new FakeAdapter('claude-gateway', []) }, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }) });
     expect(restarted.recover()).toBe(1);
     expect(restarted.recover()).toBe(0);
     expect(restarted.executionSnapshot(id)).toMatchObject({ phase: 'failed', recoveryAction: 'resume', attempt: before.attempt, correlationId: before.correlationId, cancellation: 'none' });

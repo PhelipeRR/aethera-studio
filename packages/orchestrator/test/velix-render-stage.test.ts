@@ -51,7 +51,7 @@ function setup(gates = false, overrides: Partial<RenderStageDeps> = {}) {
   const motionProjects: MotionProject[] = [];
   const scratch = mkdtempSync(join(tmpdir(), 'nb-render-tts-'));
   const dossie = { structured: { narracao: NARRATION, serie: 'Energia', cenas: [{ blocos: [{ tipo: 'texto', frase: 'Os painéis' }] }] } };
-  const engine = new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', () => dossie), codex: new FakeAdapter('codex', []) }, availability: async () => ({ claude: true, codex: true }) });
+  const engine = new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', () => dossie), codex: new FakeAdapter('codex', []), 'claude-gateway': new FakeAdapter('claude-gateway', []) }, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }) });
   const repository = new VelixProductionRepository(handle);
   const storyboards = new VelixStoryboardRepository(handle);
   const claims = new VelixClaimRepository(handle);

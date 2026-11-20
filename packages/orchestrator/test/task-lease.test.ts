@@ -82,7 +82,7 @@ describe('task leases (CORE-04)', () => {
 });
 
 describe('TaskEngine with leases and external references (CORE-04)', () => {
-  const makeEngine = (codex: FakeAdapter, instanceId?: string) => new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', []), codex }, availability: async () => ({ claude: true, codex: true }), ...(instanceId ? { instanceId } : {}) });
+  const makeEngine = (codex: FakeAdapter, instanceId?: string) => new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', []), codex, 'claude-gateway': new FakeAdapter('claude-gateway', []) }, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }), ...(instanceId ? { instanceId } : {}) });
 
   it('holds the lease while running and clears it when the task ends', async () => {
     const codex = new FakeAdapter('codex', () => ({ delayMs: 150, text: 'ok' }));

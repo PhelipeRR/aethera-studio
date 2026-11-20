@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { assessRisk } from '../src/risk.js';
 import { classify, route, RoutingError, type RouteContext } from '../src/router.js';
 
-const both: RouteContext = { mode: 'auto', available: { claude: true, codex: true }, preferredAgent: 'auto' };
+const both: RouteContext = { mode: 'auto', available: { claude: true, codex: true, 'claude-gateway': false }, preferredAgent: 'auto' };
 
 describe('classify', () => {
   it.each([
@@ -82,11 +82,11 @@ describe('route', () => {
   });
 
   it('falls back to the agent that is available, and explains it', () => {
-    const noCodex: RouteContext = { ...both, available: { claude: true, codex: false } };
+    const noCodex: RouteContext = { ...both, available: { claude: true, codex: false, 'claude-gateway': false } };
     expect(route('Implemente o endpoint POST /pedidos', noCodex)).toMatchObject({ mode: 'claude', reasons: expect.arrayContaining([expect.stringContaining('Codex CLI indisponível')]) });
     expect(route('Analise o projeto e implemente melhorias de performance com testes', noCodex).mode).toBe('claude');
-    expect(route('Proponha a arquitetura', { ...both, mode: 'claude', available: { claude: false, codex: true } }).mode).toBe('codex');
-    expect(() => route('Qualquer coisa', { ...both, available: { claude: false, codex: false } })).toThrow(RoutingError);
+    expect(route('Proponha a arquitetura', { ...both, mode: 'claude', available: { claude: false, codex: true, 'claude-gateway': false } }).mode).toBe('codex');
+    expect(() => route('Qualquer coisa', { ...both, available: { claude: false, codex: false, 'claude-gateway': false } })).toThrow(RoutingError);
   });
 
   it('always says why', () => {

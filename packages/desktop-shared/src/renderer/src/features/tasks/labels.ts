@@ -1,7 +1,7 @@
 import type { AgentId, RunMode, TaskStatus } from '@neuralbridge/shared/domain';
 import type { StepKind, TaskTokens } from '@neuralbridge/shared/tasks';
 
-export const AGENT_LABEL: Record<AgentId, string> = { claude: 'Claude Code', codex: 'Codex CLI' };
+export const AGENT_LABEL: Record<AgentId, string> = { claude: 'Claude Code', codex: 'Codex CLI', 'claude-gateway': 'Claude Gateway' };
 
 export const MODE_LABEL: Record<RunMode, string> = { auto: 'Automático', claude: 'Claude Code', codex: 'Codex CLI', collab: 'Colaborativo' };
 

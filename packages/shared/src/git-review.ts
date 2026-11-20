@@ -42,7 +42,7 @@ export type GitReviewFinding = z.infer<typeof gitReviewFindingSchema>;
 export const gitReviewReportSchema = z.strictObject({
   taskId: z.string().min(1).max(100),
   scope: gitReviewScopeSchema,
-  agent: z.enum(['claude', 'codex']),
+  agent: z.enum(['claude', 'codex', 'claude-gateway']),
   generatedAt: z.string().datetime(),
   summary: z.string().min(1).max(4_000),
   findings: z.array(gitReviewFindingSchema).max(50),

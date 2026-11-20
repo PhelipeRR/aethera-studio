@@ -162,7 +162,9 @@ export function createWorkflowCoordinator(ports: WorkflowCoordinatorPorts) {
     const attempts = attemptsOf(run.id, step.id);
     const fallbackTo = attempts.findLast((attempt) => attempt.decision === 'fallback')?.provider;
     const agent = (fallbackTo as AgentStep['agent'] | null | undefined) ?? step.agent;
-    const mode = agent !== 'auto' ? agent : step.mode === 'collab' ? 'auto' : step.mode;
+    // claude-gateway is an agent, not a RunMode; map to 'claude' for task execution mode.
+ const effectiveAgent = agent === 'claude-gateway' ? 'claude' : agent;
+ const mode = effectiveAgent !== 'auto' ? effectiveAgent : step.mode === 'collab' ? 'auto' : step.mode;
     db.insert(workflowStepAttempts).values({ id: randomUUID(), runId: run.id, stepId: step.id, attempt: attempts.length + 1, provider: mode === 'auto' ? null : mode, decision: 'started', startedAt: now() }).run();
     const prompt = interpolate(step.prompt, { inputs: inputsOf(run), outputs: outputsOf(run.id) });
     const required = step.requiredSkillIds ?? [];

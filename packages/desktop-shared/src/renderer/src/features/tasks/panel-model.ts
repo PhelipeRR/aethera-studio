@@ -53,7 +53,7 @@ export interface SessionSkills {
 }
 
 /** Skill folders each agent reads, by the Skills Manager's source. */
-const SOURCES_FOR: Record<AgentId, ReadonlyArray<SkillSummary['source']>> = { claude: ['claude', 'plugin', 'agents'], codex: ['codex', 'agents'] };
+const SOURCES_FOR: Record<AgentId, ReadonlyArray<SkillSummary['source']>> = { claude: ['claude', 'plugin', 'agents'], codex: ['codex', 'agents'], 'claude-gateway': ['claude', 'plugin', 'agents'] };
 
 function findListing(name: string, installed: readonly SkillSummary[]): SkillSummary | null {
   const bare = name.includes(':') ? name.slice(name.lastIndexOf(':') + 1) : name;

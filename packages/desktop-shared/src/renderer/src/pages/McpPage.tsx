@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { cn } from '@/lib/utils';
 
-const LABELS: Record<McpClientId, string> = { claude: 'Claude Code', codex: 'Codex CLI' };
+const LABELS: Record<McpClientId, string> = { claude: 'Claude Code', codex: 'Codex CLI', 'claude-gateway': 'Claude Gateway' };
 
 type Pending = { client: McpClientStatus; action: 'register' | 'unregister' | 'register-alias' } | null;
 type Outcome = { kind: 'ok' | 'error'; text: string } | null;

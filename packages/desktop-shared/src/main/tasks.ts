@@ -38,9 +38,13 @@ export function createTaskEngine(options: TaskServiceOptions): TaskEngine {
     handle: options.handle,
     adapters: options.adapters,
     availability: async () => {
-      const [claude, codex] = await Promise.all([options.adapters.claude.detect(), options.adapters.codex.detect()]);
+      const [claude, codex, gateway] = await Promise.all([
+        options.adapters.claude.detect(),
+        options.adapters.codex.detect(),
+        options.adapters['claude-gateway'].detect(),
+      ]);
       const usable = (status: Awaited<ReturnType<AgentAdapter['detect']>>) => status.installed && status.problems.length === 0;
-      return { claude: usable(claude), codex: usable(codex) };
+      return { claude: usable(claude), codex: usable(codex), 'claude-gateway': usable(gateway) };
     },
     // Each run gets the NeuralBridge memory, scoped to the task's project, for that run only.
     mcp: (projectId) => ({
@@ -264,7 +268,7 @@ export function createTaskService({ handle, engine, notify, attachmentsDir }: { 
 
     /** Models seen in CLI sessions plus those requested before, per agent, sorted. */
     models(): KnownModels {
-      const known: Record<AgentId, Set<string>> = { claude: new Set(), codex: new Set() };
+      const known: Record<AgentId, Set<string>> = { claude: new Set(), codex: new Set(), 'claude-gateway': new Set() };
       for (const event of db
         .select({ agent: taskSteps.agent, data: taskEvents.data })
         .from(taskEvents)
@@ -281,7 +285,7 @@ export function createTaskService({ handle, engine, notify, attachmentsDir }: { 
       for (const task of db.select({ mode: tasks.mode, model: tasks.model }).from(tasks).where(isNotNull(tasks.model)).all()) {
         if ((task.mode === 'claude' || task.mode === 'codex') && task.model) known[task.mode].add(task.model);
       }
-      return { claude: [...known.claude].sort(), codex: [...known.codex].sort() };
+      return { claude: [...known.claude].sort(), codex: [...known.codex].sort(), 'claude-gateway': [...known['claude-gateway']].sort() };
     },
 
     async start(input: TaskStartInput): Promise<{ id: string }> {

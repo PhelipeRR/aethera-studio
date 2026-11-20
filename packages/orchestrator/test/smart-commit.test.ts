@@ -37,7 +37,7 @@ afterEach(() => handle.close());
 function smartEngine(turns: Turn[]) {
   const claude = new FakeAdapter('claude', turns);
   const codex = new FakeAdapter('codex', []);
-  const engine = new TaskEngine({ handle, adapters: { claude, codex }, availability: async () => ({ claude: true, codex: true }) });
+  const engine = new TaskEngine({ handle, adapters: { claude, codex, 'claude-gateway': new FakeAdapter('claude-gateway', []) }, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }) });
   return { engine, claude };
 }
 

@@ -45,6 +45,8 @@ export interface AdapterOptions {
   env?: Record<string, string | undefined>;
   /** Dynamic environment resolver evaluated on each detect/run call (e.g. gateway token toggle). */
   resolveEnv?: () => Record<string, string | undefined>;
+  /** Override the adapter id (e.g. to register the same CLI class as a separate provider like 'claude-gateway'). */
+  id?: AgentId;
 }
 
 export interface AgentAdapter {

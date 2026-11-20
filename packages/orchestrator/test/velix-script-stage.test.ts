@@ -65,8 +65,8 @@ function answer(prompt: string, options: { brokenChapter?: number } = {}): Turn 
 
 function engineWith(turn: (prompt: string) => Turn) {
   const fake = (id: 'claude' | 'codex') => new FakeAdapter(id, (request) => turn(request.prompt.slice(request.prompt.indexOf('<'))));
-  const adapters = { claude: fake('claude'), codex: fake('codex') };
-  return { engine: new TaskEngine({ handle, adapters, availability: async () => ({ claude: true, codex: true }) }), claude: adapters.claude };
+  const adapters = { claude: fake('claude'), codex: fake('codex'), 'claude-gateway': new FakeAdapter('claude-gateway', []) };
+  return { engine: new TaskEngine({ handle, adapters, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }) }), claude: adapters.claude };
 }
 const prompts = (adapter: FakeAdapter) => adapter.requests.map((request) => request.prompt.slice(request.prompt.indexOf('<')));
 const service = (port: ProductionTaskPort) => new ProductionRunService(new VelixProductionRepository(handle), port, [createScriptStageAdapter()]);

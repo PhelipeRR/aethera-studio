@@ -37,7 +37,7 @@ beforeEach(() => {
 });
 afterEach(() => handle.close());
 
-const engineWith = (turns: Turn[]) => new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', turns), codex: new FakeAdapter('codex', turns) }, availability: async () => ({ claude: true, codex: true }) });
+const engineWith = (turns: Turn[]) => new TaskEngine({ handle, adapters: { claude: new FakeAdapter('claude', turns), codex: new FakeAdapter('codex', turns), 'claude-gateway': new FakeAdapter('claude-gateway', []) }, availability: async () => ({ claude: true, codex: true, 'claude-gateway': false }) });
 function service(engine: TaskEngine) {
   const production = new ProductionRunService(new VelixProductionRepository(handle), engine);
   engine.on('task', (update) => production.onTaskUpdate(update));

@@ -1,6 +1,6 @@
 import type { AgentAdapter } from '@neuralbridge/agents';
 
-export type AetheraProviderId = 'claude' | 'codex' | 'antigravity';
+export type AetheraProviderId = 'claude' | 'codex' | 'antigravity' | 'claude-gateway';
 
 export type AetheraTaskCapability =
   | 'creative_direction'

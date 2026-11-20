@@ -53,7 +53,7 @@ export interface RouteContext {
 }
 
 export interface RouteDecision {
-  mode: 'claude' | 'codex' | 'collab';
+  mode: 'claude' | 'codex' | 'claude-gateway' | 'collab';
   taskType: TaskType;
   /** false: the agent only reads (analysis, planning, architecture). */
   edit: boolean;
@@ -66,7 +66,7 @@ export class RoutingError extends Error {
   override name = 'RoutingError';
 }
 
-const LABEL: Record<AgentId, string> = { claude: 'Claude Code', codex: 'Codex CLI' };
+const LABEL: Record<AgentId, string> = { claude: 'Claude Code', codex: 'Codex CLI', 'claude-gateway': 'Claude Gateway' };
 
 const WHY: Record<TaskType, string> = {
   trivial: 'Tarefa simples: um agente basta, sem delegação.',
@@ -122,7 +122,7 @@ export function route(prompt: string, context: RouteContext): RouteDecision {
   }
 
   const available = (agent: AgentId) => context.available[agent];
-  if (!available('claude') && !available('codex')) throw new RoutingError('Nenhum agente disponível: verifique Claude Code e Codex na página Agentes.');
+  if (!available('claude') && !available('codex') && !available('claude-gateway')) throw new RoutingError('Nenhum agente disponível: verifique Claude Code, Claude Gateway ou Codex na página Agentes.');
 
   const selected = (agent: AgentId) => context.skillPreferences?.filter((item) => item.enabled && item.agents.includes(agent) && (context.explicitSkillIds?.length ? context.explicitSkillIds.includes(item.skillId) : item.taskTypes.includes(type))).map((item) => item.skillId);
   const skillFields = (ids: string[] | undefined): Pick<RouteDecision, 'skillIds'> | Record<string, never> => ids?.length ? { skillIds: ids } : {};

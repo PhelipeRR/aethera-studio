@@ -199,7 +199,7 @@ export type SemanticEditOperation = z.infer<typeof semanticEditOperationSchema>;
 export const editPlanSchema = z.strictObject({
   schemaVersion: z.literal(1), command: z.string().trim().min(1).max(500), status: z.enum(['ready', 'needs_confirmation']),
   confirmation: z.strictObject({ required: z.boolean(), question: z.string().trim().min(1).nullable() }),
-  planner: z.strictObject({ mode: z.literal('read-only'), provider: z.enum(['claude', 'codex']), model: z.string().trim().min(1).max(200) }),
+  planner: z.strictObject({ mode: z.literal('read-only'), provider: z.enum(['claude', 'codex', 'claude-gateway']), model: z.string().trim().min(1).max(200) }),
   operations: z.array(semanticEditOperationSchema).max(100),
 }).superRefine((value, context) => {
   if (value.status === 'ready' && (value.confirmation.required || value.confirmation.question !== null || value.operations.length === 0)) context.addIssue({ code: z.ZodIssueCode.custom, path: ['confirmation'], message: 'Um plano pronto precisa ter operação e não pode pedir confirmação.' });

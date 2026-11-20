@@ -258,7 +258,7 @@ export async function composeDesktopDomain(context: DomainContext): Promise<Core
   const brainAdmin = createBrainAdmin({ handle, backupsDir: join(dataDir, 'backups', 'brain'), migrationsFolder: migrations, onMemoriesChanged: () => undefined });
   const engine = composeTaskEngine({
     handle,
-    adapters: { claude: new ClaudeCliAdapter(), codex: new CodexCliAdapter() },
+    adapters: { claude: new ClaudeCliAdapter(), codex: new CodexCliAdapter(), 'claude-gateway': new ClaudeCliAdapter({ id: 'claude-gateway' }) },
     appExecutable: process.execPath,
     serverScript: join(__dirname, 'mcp-server.js'),
     dataDir: process.env['NB_DATA_DIR'],

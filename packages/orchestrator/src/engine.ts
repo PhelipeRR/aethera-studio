@@ -179,7 +179,7 @@ class TaskStop extends Error {
   }
 }
 
-const LABEL: Record<AgentId, string> = { claude: 'Claude Code', codex: 'Codex CLI' };
+const LABEL: Record<AgentId, string> = { claude: 'Claude Code', codex: 'Codex CLI', 'claude-gateway': 'Claude Gateway' };
 const ACTIVE_STATUSES: TaskStatus[] = ['pending', 'planning', 'running', 'awaiting_approval', 'validating'];
 const EVENT_TEXT_LIMIT = 4000;
 const EVENTS_PER_TASK = 5000;
@@ -973,8 +973,12 @@ export class TaskEngine extends EventEmitter<{ task: [TaskUpdate] }> {
   /** Agents the router may pick now; if a limit took them all, it picks anyway and the wait below applies. */
   private async routableAgents(): Promise<Record<AgentId, boolean>> {
     const available = await this.options.availability();
-    const usable = { claude: available.claude && !this.isLimited('claude'), codex: available.codex && !this.isLimited('codex') };
-    return usable.claude || usable.codex ? usable : available;
+    const usable = {
+      claude: available.claude && !this.isLimited('claude'),
+      codex: available.codex && !this.isLimited('codex'),
+      'claude-gateway': available['claude-gateway'] && !this.isLimited('claude-gateway'),
+    };
+    return usable.claude || usable.codex || usable['claude-gateway'] ? usable : available;
   }
 
   private isLimited(agent: AgentId): boolean {

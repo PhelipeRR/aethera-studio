@@ -198,7 +198,9 @@ export function connectTaskEngineToCompanion(engine: CompanionTaskEventSource, r
   const onTask = (update: TaskUpdate): void => {
     try {
     if (update.kind === 'step') {
-      if (!update.background) stepAgents.set(update.stepId, update.agent);
+      // claude-gateway uses the same Claude CLI binary; map to 'claude' for Companion session tracking.
+      const companionAgent: CompanionAgentId = update.agent === 'claude-gateway' ? 'claude' : update.agent as CompanionAgentId;
+      if (!update.background) stepAgents.set(update.stepId, companionAgent);
       return;
     }
     if (update.kind !== 'event' || !update.event || !('kind' in update.event)) return;
