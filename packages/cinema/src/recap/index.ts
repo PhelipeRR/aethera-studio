@@ -158,6 +158,10 @@ export { runNarrativeHumanizer, type RunNarrativeHumanizerInput } from './narrat
 export {
 	runContextualResearch,
 	type RunContextualResearchInput,
+	type ResearchPort,
+	type ResearchPortRequest,
+	type ResearchPortResult,
+	type RawResearchReference,
 } from './contextual-research.js';
 
 export {
