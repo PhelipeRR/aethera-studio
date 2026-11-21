@@ -174,10 +174,13 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 			});
 		}
 
-		// Important extracted dialogues ignored in narration
-		const essentialDialogues = (scene.extractedDialogues ?? []).filter(
-			(d) => (d.kind ?? (d.isNarration ? 'narration' : 'dialogue')) !== 'sfx' && d.text.trim().length >= 8,
-		);
+		// Important extracted dialogues ignored in narration (ignore SFX and punctuation-only screams)
+		const essentialDialogues = (scene.extractedDialogues ?? []).filter((d) => {
+			const kind = d.kind ?? (d.isNarration ? 'narration' : 'dialogue');
+			if (kind === 'sfx') return false;
+			const alpha = (d.translatedText ?? d.text).replace(/[^A-Za-zÀ-ú0-9]/g, '');
+			return alpha.length >= 6 && d.text.trim().length >= 8;
+		});
 		if (essentialDialogues.length > 0 && !isReviewRequiredPlaceholder(narration)) {
 			const narrationTokens = new Set(extractSignificantTokens(narration));
 			const anyDialogueReflected = essentialDialogues.some((d) => {

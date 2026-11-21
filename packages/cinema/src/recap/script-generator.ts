@@ -81,38 +81,104 @@ function ensureSentenceEnding(text: string): string {
 	return `${trimmed}.`;
 }
 
-function formatDialogueSentence(entry: DialogueEntry, fallbackCharacters: readonly string[]): string {
+const VISUAL_ANALYSIS_NOISE_PATTERNS: readonly RegExp[] = [
+	/\b(em\s+)?plano\s+(geral|m[ée]dio|fechado|superfechado|detalhe)(\s+vertical|\s+frontal|\s+visto\s+de\s+cima)?(\s*\([^)]+\))?(\s+de\s+ambienta[çc][ãa]o\s+noturna)?(\s+mostrando)?[,:]?\s*/gi,
+	/\bem\s+um\s+painel(\s+vertical)?(\s+longo)?(\s+de\s+sequ[êe]ncia\s+de\s+movimento)?[,:]?\s*/gi,
+	/\b(o\s+painel\s+apresenta|a\s+imagem\s+(mostra|sugere|exibe)|[ée]\s+poss[íi]vel\s+observar|nota-se\s+que)\b[,:]?\s*/gi,
+	/n[ãa]o\s+h[áa]\s+personagens\s+nem\s+bal[õo]es\s+de\s+texto\s+vis[íi]veis\.?/gi,
+	/galhos\s+e\s+folhagens\s+escuras\s+em\s+silhueta\s+emolduram\s+toda\s+a\s+cena[^.]*\.?/gi,
+	/no\s+primeiro\s+plano\s+inferior[^.]*\.?/gi,
+	/a\s+express[ãa]o\s+de\s+[^.]+\s+refor[çc]a\s+o\s+clima\s+da\s+cena\.?/gi,
+	/\bno\s+canto\s+(superior|inferior)\s+(esquerdo|direito)[^.]*\./gi,
+	/\blinhas(\s+verticais)?\s+de\s+velocidade(\s+radiais)?[^,.]*/gi,
+];
+
+function toNaturalCharacterLabel(rawName: string): string {
+	const trimmed = rawName.trim();
+	// If it's a long visual placeholder descriptor rather than a real name, shorten naturally
+	if (trimmed.length > 26 || /\b(de cabelos|em t[úu]nica|com faixa|de manto|vestindo)\b/i.test(trimmed)) {
+		const lower = trimmed.toLowerCase();
+		if (lower.startsWith('jovem')) return 'o jovem';
+		if (lower.startsWith('homem')) return 'o homem';
+		if (lower.startsWith('mulher')) return 'a mulher';
+		if (lower.startsWith('garota') || lower.startsWith('menina')) return 'a garota';
+		if (lower.startsWith('garoto') || lower.startsWith('menino')) return 'o garoto';
+		if (lower.startsWith('guerreiro')) return 'o guerreiro';
+		if (lower.startsWith('mestre')) return 'o mestre';
+		if (lower.startsWith('advers[áa]rio') || lower.startsWith('inimigo')) return 'o adversário';
+		return trimmed.split(/\s+/).slice(0, 2).join(' ');
+	}
+	return trimmed;
+}
+
+function simplifyVisualForNaturalRecap(rawVisual: string): string {
+	let text = rawVisual.trim();
+	for (const re of VISUAL_ANALYSIS_NOISE_PATTERNS) {
+		text = text.replace(re, ' ');
+	}
+	text = text.replace(/\s+/g, ' ').replace(/\s+([.,!?])/g, '$1').trim();
+	// Keep at most the 2 most informative sentences to stay concise and natural
+	const sentences = text
+		.split(/(?<=[.!?])\s+/)
+		.map((s) => s.trim())
+		.filter((s) => s.length >= 12);
+	const picked = sentences.slice(0, 2).join(' ');
+	const finalStr = (picked || text).replace(/^[,;:\-\s]+/, '').trim();
+	if (!finalStr) return '';
+	return finalStr.charAt(0).toUpperCase() + finalStr.slice(1);
+}
+
+function isSubstantiveSpokenLine(entry: DialogueEntry): boolean {
+	const kind = entry.kind ?? (entry.isNarration ? 'narration' : 'dialogue');
+	if (kind === 'sfx') return false;
+	const clean = (entry.translatedText?.trim() || entry.text.trim()).replace(/^["“”]+|["“”]+$/g, '');
+	// Filter punctuation-only bubbles like "!!!" or "..." from being forced as spoken quotes
+	const alphaChars = clean.replace(/[^A-Za-zÀ-ú0-9]/g, '');
+	return alphaChars.length >= 3;
+}
+
+function formatDialogueSentence(entry: DialogueEntry, fallbackCharacters: readonly string[], naturalMode = false): string {
 	const quote = (entry.translatedText?.trim() || entry.text.trim()).replace(/^["“”]+|["“”]+$/g, '');
 	if (!quote) return '';
 	const kind = entry.kind ?? (entry.isNarration ? 'narration' : 'dialogue');
-	const speaker = entry.speaker?.trim();
+	if (kind === 'sfx') return '';
+	if (naturalMode && !isSubstantiveSpokenLine(entry)) return '';
 
-	if (kind === 'sfx') {
-		return '';
-	}
+	const rawSpeaker = entry.speaker?.trim();
+	const speaker = rawSpeaker ? (naturalMode ? toNaturalCharacterLabel(rawSpeaker) : rawSpeaker) : undefined;
+
 	if (kind === 'narration') {
 		return ensureSentenceEnding(quote);
 	}
 	if (kind === 'thought') {
 		if (speaker) {
-			return `${speaker} reflete consigo mesmo: "${quote}".`;
+			return naturalMode ? `${speaker.charAt(0).toUpperCase() + speaker.slice(1)} pensa: "${quote}".` : `${speaker} reflete consigo mesmo: "${quote}".`;
 		}
-		return `Em pensamento, surge a ideia: "${quote}".`;
+		return `Em pensamento: "${quote}".`;
 	}
-	// Dialogue speech bubble
 	const isQuestion = quote.endsWith('?');
 	const isExclamation = quote.endsWith('!');
-	const verb = isQuestion ? 'questiona' : isExclamation ? 'exclama' : 'diz';
+	const verb = isQuestion ? 'pergunta' : isExclamation ? 'grita' : 'diz';
 	if (speaker) {
-		return `${speaker} ${verb}: "${quote}".`;
+		const prefix = naturalMode ? `Nesse momento, ${speaker}` : speaker;
+		return `${prefix} ${verb}: "${quote}".`;
 	}
 	if (fallbackCharacters.length === 1) {
-		return `${fallbackCharacters[0]} ${verb}: "${quote}".`;
+		const fallback = naturalMode ? toNaturalCharacterLabel(fallbackCharacters[0]!) : fallbackCharacters[0]!;
+		const prefix = naturalMode ? `Nesse momento, ${fallback}` : fallback;
+		return `${prefix} ${verb}: "${quote}".`;
 	}
-	return `Na cena, ouve-se a fala: "${quote}".`;
+	return `Nesse momento, alguém ${verb}: "${quote}".`;
 }
 
 function selectTransitionConnector(beat: StoryBeat, beatIndex: number, style: ScriptStyle): string {
+	if (style === 'natural_recap') {
+		if (beatIndex === 0) return 'A história começa quando';
+		if (beat.actionType === 'combat') return 'Logo depois,';
+		if (beat.emotion === 'surprise' || beat.actionType === 'transformation') return 'Nesse momento,';
+		const naturalConnectors = ['Então,', 'Logo depois,', 'Em seguida,', 'Nesse momento,'];
+		return naturalConnectors[beatIndex % naturalConnectors.length]!;
+	}
 	if (beatIndex === 0) {
 		if (beat.setting) {
 			return style === 'documentary'
@@ -144,10 +210,10 @@ function hasSubstantiveBeatEvidence(beat: StoryBeat): boolean {
 		(d) => (d.kind ?? (d.isNarration ? 'narration' : 'dialogue')) !== 'sfx' && d.text.trim().length >= 2,
 	);
 	const hasDialogue = substantiveDialogues.length > 0;
+	const trimmedSummary = beat.summary.trim();
 	const hasSummary =
-		beat.summary.trim().length >= 12 &&
-		!/^sem descri[çc][ãa]o visual/i.test(beat.summary.trim()) &&
-		!/^em cena$/i.test(beat.summary.trim());
+		trimmedSummary.length >= 16 &&
+		!/^(sem descri[çc][ãa]o visual|em cena|em confronto|em movimento|em transforma[çc][ãa]o)/i.test(trimmedSummary);
 	return hasVisual || hasDialogue || hasSummary;
 }
 
@@ -175,24 +241,28 @@ function generateGroundedNarrationText(
 		};
 	}
 
+	const isNatural = style === 'natural_recap';
 	const parts: string[] = [];
 	const connector = selectTransitionConnector(beat, beatIndex, style);
 
-	// 1. Visual description + setting + characters + expressions
+	// 1. Visual description condensed into natural storytelling (no camera/frame analysis jargon in natural_recap)
 	const rawVisual = beat.visualSummary?.trim();
 	if (rawVisual) {
-		const visualSentence = ensureSentenceEnding(
-			connector
-				? `${connector} ${rawVisual.charAt(0).toLowerCase()}${rawVisual.slice(1)}`
-				: rawVisual,
-		);
-		parts.push(visualSentence);
+		const cleanedVisual = isNatural ? simplifyVisualForNaturalRecap(rawVisual) : rawVisual;
+		if (cleanedVisual) {
+			const visualSentence = ensureSentenceEnding(
+				connector
+					? `${connector} ${cleanedVisual.charAt(0).toLowerCase()}${cleanedVisual.slice(1)}`
+					: cleanedVisual,
+			);
+			parts.push(visualSentence);
+		}
 	} else {
-		// Dialogue/text-led beat without full visual description
 		const introParts: string[] = [];
 		if (connector) introParts.push(connector);
 		if (beat.characters.length > 0) {
-			introParts.push(`${beat.characters.join(' e ')} protagonizam este momento`);
+			const labels = isNatural ? beat.characters.map(toNaturalCharacterLabel) : beat.characters;
+			introParts.push(`${labels.join(' e ')} protagonizam este momento`);
 		} else if (beat.setting) {
 			introParts.push(`o foco recai sobre ${beat.setting}`);
 		}
@@ -201,8 +271,8 @@ function generateGroundedNarrationText(
 		}
 	}
 
-	// Add observable expressions or relevant objects if not already mentioned in visualSummary
-	if (beat.expressions && beat.expressions.length > 0) {
+	// Only add explicit expression note in non-natural styles (natural_recap avoids unnecessary visual detail)
+	if (!isNatural && beat.expressions && beat.expressions.length > 0) {
 		const primaryExpr = beat.expressions[0]!;
 		if (!parts.join(' ').toLowerCase().includes(primaryExpr.toLowerCase())) {
 			parts.push(`A expressão de ${primaryExpr} reforça o clima da cena.`);
@@ -210,12 +280,14 @@ function generateGroundedNarrationText(
 	}
 
 	// 2. Incorporate essential speech bubbles (dialogue, thought, narration) preserving reading order
-	const substantiveDialogues = (beat.dialogues ?? []).filter(
-		(d) => (d.kind ?? (d.isNarration ? 'narration' : 'dialogue')) !== 'sfx' && d.text.trim().length > 0,
+	const substantiveDialogues = (beat.dialogues ?? []).filter((d) =>
+		isNatural
+			? isSubstantiveSpokenLine(d)
+			: (d.kind ?? (d.isNarration ? 'narration' : 'dialogue')) !== 'sfx' && d.text.trim().length > 0,
 	);
-	const incorporated = substantiveDialogues.slice(0, 4);
+	const incorporated = substantiveDialogues.slice(0, isNatural ? 3 : 4);
 	for (const entry of incorporated) {
-		const sentence = formatDialogueSentence(entry, beat.characters);
+		const sentence = formatDialogueSentence(entry, beat.characters, isNatural);
 		if (sentence && !parts.join(' ').includes(entry.text.trim())) {
 			parts.push(sentence);
 		}
@@ -393,17 +465,20 @@ export function runScriptGenerator(options: ScriptGeneratorOptions): ScriptGener
 	return { script, warnings };
 }
 
-const LLM_SCRIPT_SYSTEM_PROMPT = `Você é um roteirista profissional de recap de mangá/manhwa em português brasileiro.
-Reescreva a narração da cena combinando fielmente:
-1) A descrição visual observada nos painéis (personagens, ações, cenário, expressões).
-2) Os diálogos, pensamentos e caixas de narração extraídos dos balões (mantendo o sentido original e distinguindo diálogo de narração).
-3) O contexto anterior e a transição para a próxima cena.
+const LLM_SCRIPT_SYSTEM_PROMPT = `Você é um criador de conteúdo brasileiro contando a história de um mangá/manhwa de forma simples, fluida, natural e cronológica.
+Transforme a análise visual e os diálogos da cena em uma narração enxuta e envolvente (1 a 3 frases curtas).
 
 REGRAS OBRIGATÓRIAS:
+- Conte o que ACONTECE, não descreva cada detalhe visual.
+- NÃO descreva roupas, cabelo, iluminação ou expressões sem necessidade narrativa.
+- NÃO use linguagem de análise visual ("o painel apresenta", "plano geral", "plano médio", "a imagem sugere", "é possível observar", "emoldura a cena").
+- NÃO repita o mesmo acontecimento com palavras diferentes.
+- Use nomes confirmados dos personagens quando disponíveis; se o nome ainda for desconhecido, use referências simples como "o jovem", "ele", "o homem".
+- Use conectivos naturais: "então", "mas", "nesse momento", "logo depois".
+- Incorpore diálogos reais relevantes entre aspas (ex.: Nesse momento, o homem pergunta: "...").
 - NUNCA invente ações, falas, pensamentos ou eventos de capítulos futuros.
-- NUNCA use frases genéricas ("A história avançou.", "A cena se desenrolou.", etc.).
-- Preserve TODOS os personagens identificados e incorpore os diálogos essenciais.
-- Nível de humor configurado: {humorVolume}%. Só use leveza/humor se NÃO distorcer o tom ou os fatos da história.
+- NUNCA use frases genéricas ("A história avançou.", "A cena se desenrolou.").
+- Nível de humor configurado: {humorVolume}%. Seja sutil e nunca distorça os fatos.
 - Responda APENAS JSON válido: {"narrationText": "..."}`;
 
 /**

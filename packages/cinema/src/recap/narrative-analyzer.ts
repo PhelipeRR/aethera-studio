@@ -24,6 +24,8 @@ export interface NarrativeAnalyzerOptions {
 	analyzedBy: string;
 	/** Optional work title for contextual grounding in visual analysis. */
 	workTitle?: string | undefined;
+	/** Optional known character names/descriptors loaded from Story Memory (prior chapters only). */
+	initialKnownCharacters?: readonly string[] | undefined;
 	/** Minimum confidence to consider an analysis reliable. Default: 0.5. */
 	minConfidence?: number | undefined;
 	/** Bounded concurrency for fresh vision calls (clamped 1..4). Default: 1. */
@@ -353,7 +355,7 @@ export async function runNarrativeAnalyzer(
 
 			try {
 				const prevAnalysis = idx > 0 ? results[idx - 1] : undefined;
-				const knownCharsSet = new Set<string>();
+				const knownCharsSet = new Set<string>(options.initialKnownCharacters ?? []);
 				for (let k = 0; k < idx; k++) {
 					for (const c of results[k]?.characters ?? []) knownCharsSet.add(c);
 				}

@@ -378,7 +378,7 @@ export type Scene = z.infer<typeof sceneSchema>;
 // ─── Recap Script (complete output of Story Engine) ──────────────────────────
 
 export const SCRIPT_STYLE_VALUES = [
-	'narrative_recap', 'cinematic_recap', 'mystery', 'suspense', 'documentary',
+	'natural_recap', 'narrative_recap', 'cinematic_recap', 'mystery', 'suspense', 'documentary',
 ] as const;
 export type ScriptStyle = (typeof SCRIPT_STYLE_VALUES)[number];
 
@@ -483,7 +483,7 @@ export interface TextEnhancementResult {
 // ─── Narrative Humanizer ─────────────────────────────────────────────────────
 
 export const HUMANIZE_STYLE_VALUES = [
-	'narrative_recap', 'cinematic_recap', 'mystery', 'suspense', 'documentary',
+	'natural_recap', 'narrative_recap', 'cinematic_recap', 'mystery', 'suspense', 'documentary',
 ] as const;
 export type HumanizeStyle = (typeof HUMANIZE_STYLE_VALUES)[number];
 
@@ -624,6 +624,13 @@ export interface StoryEngineOptions {
 	humanize?: HumanizeOptions & { port: TextEnhancementPort };
 	/** Phase 2.2.3: optional contextual research before script generation. */
 	research?: StoryEngineResearchOptions;
+	/** Story Memory: optional persistent cross-chapter series memory integration. */
+	storyMemory?: {
+		workspaceDir: string;
+		projectId: string;
+		chapterNumber: number;
+		autoConsolidate?: boolean;
+	};
 }
 
 // ─── Vision Adapter Interface (for panel visual analysis) ────────────────────

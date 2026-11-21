@@ -273,7 +273,7 @@ export async function runRecapProductionOrchestrator(
 			const resolvedStyle: ScriptStyle =
 				input.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(input.scriptStyle)
 					? (input.scriptStyle as ScriptStyle)
-					: 'narrative_recap';
+					: 'natural_recap';
 			const storyResult = await runStoryEngine({
 				chapterId: input.chapterId,
 				panels: input.panels,

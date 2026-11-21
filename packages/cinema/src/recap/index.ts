@@ -233,6 +233,9 @@ export {
 	type AgentCircuitState,
 } from './vision-circuit-breaker.js';
 
+// ─── Story Memory (Persistent Cross-Chapter Narrative Memory) ────────────────
+export * from './story-memory.js';
+
 // ─── Phase 3 — Audiovisual Production Exports ────────────────────────────────
 export * from './phase3/index.js';
 export * from './production-readiness.js';

@@ -21,6 +21,13 @@ import { runGateGNarrativeFidelity, buildGateGDivergenceReport } from './gate-g-
 import { runNarrativeHumanizer } from './narrative-humanizer.js';
 import { runContextualResearch } from './contextual-research.js';
 import { saveCheckpoint, loadCheckpoint, computePanelCacheKey, RECAP_ANALYZER_VERSION } from './checkpoint-persistence.js';
+import {
+	createOrLoadStoryMemoryProject,
+	getMemoryContextForChapter,
+	consolidateChapterIntoStoryMemory,
+	type ChapterMemoryContext,
+	type ConsolidateChapterResult,
+} from './story-memory.js';
 
 export interface StoryEngineResult {
 	script: RecapScript;
@@ -33,6 +40,8 @@ export interface StoryEngineResult {
 	humanizeResult?: HumanizeResult;
 	/** Contextual research result (Phase 2.2). Null when disabled/skipped. */
 	contextualResearchResult?: ContextualResearchResult;
+	/** Story Memory consolidation result when series memory is enabled. */
+	storyMemoryResult?: ConsolidateChapterResult;
 	sequence: NarrativeSequence;
 	analyses: PanelAnalysis[];
 	warnings: string[];
@@ -64,7 +73,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		panels,
 		outputDir,
 		visionAdapter,
-		scriptStyle = 'narrative_recap',
+		scriptStyle = 'natural_recap',
 		language = 'pt-BR',
 		humorVolume = 0,
 		workTitle,
@@ -73,11 +82,24 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		scriptPort,
 		humanize,
 		research,
+		storyMemory,
 	} = options;
 
 	const warnings: string[] = [];
 	const checkpointDir = options.checkpointDir ?? join(outputDir, chapterId, 'checkpoints');
 	if (!existsSync(checkpointDir)) mkdirSync(checkpointDir, { recursive: true });
+
+	// Load strict anti-spoiler Story Memory context (chapters < currentChapterNumber only)
+	let memoryContext: ChapterMemoryContext | undefined;
+	if (storyMemory) {
+		const memProject = createOrLoadStoryMemoryProject({
+			workspaceDir: storyMemory.workspaceDir,
+			projectId: storyMemory.projectId,
+			workTitle: workTitle ?? storyMemory.projectId,
+			defaultScriptStyle: scriptStyle,
+		});
+		memoryContext = getMemoryContextForChapter(memProject, storyMemory.chapterNumber);
+	}
 
 	// Determine agent identifier for attribution
 	const analyzedBy = visionAdapter?.name ?? 'text-only-fallback';
@@ -105,6 +127,9 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		visionAdapter,
 		analyzedBy,
 		...(workTitle ? { workTitle } : {}),
+		...(memoryContext && memoryContext.knownCharacters.length > 0
+			? { initialKnownCharacters: memoryContext.knownCharacters.map((c) => c.displayName) }
+			: {}),
 		minConfidence: minBeatConfidence,
 		concurrency: analysisConcurrency,
 		cachedAnalyses,
@@ -132,6 +157,29 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 	});
 	analyses = analysisResult.analyses;
 	warnings.push(...analysisResult.warnings);
+
+	// Resolve confirmed character names from prior-chapter Story Memory (preserves human overrides)
+	if (memoryContext && Object.keys(memoryContext.nameResolutionMap).length > 0) {
+		const resolveCharName = (raw: string): string => {
+			const lower = raw.trim().toLowerCase();
+			if (memoryContext!.nameResolutionMap[lower]) {
+				return memoryContext!.nameResolutionMap[lower]!;
+			}
+			for (const [aliasKey, confirmed] of Object.entries(memoryContext!.nameResolutionMap)) {
+				if (aliasKey.length >= 8 && (lower.includes(aliasKey) || aliasKey.includes(lower))) {
+					return confirmed;
+				}
+			}
+			return raw;
+		};
+		analyses = analyses.map((a) => ({
+			...a,
+			characters: [...new Set(a.characters.map(resolveCharName))],
+			dialogues: a.dialogues.map((d) =>
+				d.speaker ? { ...d, speaker: resolveCharName(d.speaker) } : d,
+			),
+		}));
+	}
 	for (let idx = 0; idx < analyses.length; idx++) {
 		const a = analyses[idx]!;
 		const p = panels.find((x) => x.panelId === a.panelId);
@@ -307,12 +355,27 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		warnings,
 	});
 
+	let storyMemoryResult: ConsolidateChapterResult | undefined;
+	if (storyMemory && finalGateG.verdict !== 'fail') {
+		storyMemoryResult = consolidateChapterIntoStoryMemory({
+			workspaceDir: storyMemory.workspaceDir,
+			projectId: storyMemory.projectId,
+			chapterNumber: storyMemory.chapterNumber,
+			chapterId,
+			analyses,
+			sequence: continuityResult.sequence,
+			script: finalScript,
+			...(storyMemory.autoConsolidate !== undefined ? { autoConsolidate: storyMemory.autoConsolidate } : {}),
+		});
+	}
+
 	const finalResult: StoryEngineResult = {
 		script: finalScript,
 		gateGReport: finalGateG,
 		sequence: continuityResult.sequence,
 		analyses,
 		warnings,
+		...(storyMemoryResult ? { storyMemoryResult } : {}),
 	};
 	if (humanize?.enabled && preHumanizeGateG) {
 		finalResult.preHumanizeGateG = preHumanizeGateG;

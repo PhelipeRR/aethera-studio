@@ -55,6 +55,26 @@ function dedupeStrings(items: readonly string[]): string[] {
 	return out;
 }
 
+function isIndistinctOrCloseupSetting(setting: string): boolean {
+	return /\b(close-up|desfocado|indistinto|linhas de velocidade|fundo escuro|plano fechado|plano detalhe)\b/i.test(setting);
+}
+
+function settingsShareEnvironment(a: string, b: string): boolean {
+	const norm = (s: string) =>
+		s
+			.toLowerCase()
+			.normalize('NFD')
+			.replace(/[\u0300-\u036f]/g, '')
+			.replace(/[^a-z0-9\s]/g, ' ')
+			.split(/\s+/)
+			.filter((w) => w.length >= 5);
+	const setA = new Set(norm(a));
+	for (const w of norm(b)) {
+		if (setA.has(w)) return true;
+	}
+	return false;
+}
+
 /**
  * Determines whether two consecutive panel analyses should be merged into the same beat.
  */
@@ -69,13 +89,14 @@ function shouldMergeBeats(
 	// Splash / transformation panels start a new narrative beat
 	if (curr.actions.some((a) => a.type === 'transformation')) return false;
 
-	// Distinct explicit settings indicate a scene change
+	// Only split on setting change when both settings are concrete and clearly unrelated
 	if (
 		prev.setting &&
 		curr.setting &&
+		!isIndistinctOrCloseupSetting(prev.setting) &&
+		!isIndistinctOrCloseupSetting(curr.setting) &&
 		prev.setting.trim().toLowerCase() !== curr.setting.trim().toLowerCase() &&
-		!prev.setting.toLowerCase().includes(curr.setting.toLowerCase()) &&
-		!curr.setting.toLowerCase().includes(prev.setting.toLowerCase())
+		!settingsShareEnvironment(prev.setting, curr.setting)
 	) {
 		return false;
 	}
@@ -90,15 +111,15 @@ function shouldMergeBeats(
 
 	if (!hasOverlap && prevChars.size > 0 && currChars.size > 0) return false;
 
-	// Check action compatibility
+	// Check action compatibility (allows continuous physical sequences like run -> trip -> shock -> fall)
 	const compatibleActions = new Map<ActionType, Set<ActionType>>([
-		['dialogue', new Set(['dialogue', 'reaction', 'observation'])],
-		['combat', new Set(['combat', 'movement', 'reaction'])],
-		['movement', new Set(['movement', 'combat', 'observation'])],
-		['observation', new Set(['observation', 'dialogue', 'none'])],
-		['reaction', new Set(['reaction', 'dialogue', 'observation'])],
+		['dialogue', new Set(['dialogue', 'reaction', 'observation', 'interaction'])],
+		['combat', new Set(['combat', 'movement', 'reaction', 'interaction'])],
+		['movement', new Set(['movement', 'combat', 'reaction', 'observation'])],
+		['observation', new Set(['observation', 'dialogue', 'movement', 'none'])],
+		['reaction', new Set(['reaction', 'dialogue', 'combat', 'movement', 'observation'])],
 		['interaction', new Set(['interaction', 'dialogue', 'reaction', 'observation'])],
-		['none', new Set(['none', 'observation', 'dialogue'])],
+		['none', new Set(['none', 'observation', 'dialogue', 'movement'])],
 	]);
 
 	const prevAction = prev.actions[0]?.type ?? 'none';
@@ -163,10 +184,13 @@ function buildBeatEvidence(
 		}
 	}
 
-	const visualFragments = dedupeStrings([
-		...analyses.map((a) => a.visualDescription).filter(isObservableDescription),
-		...analyses.flatMap((a) => a.actions.map((act) => act.description)).filter(isObservableDescription),
-	]);
+	const visualDescriptions = dedupeStrings(
+		analyses.map((a) => a.visualDescription).filter(isObservableDescription),
+	);
+	const actionDescriptions = dedupeStrings(
+		analyses.flatMap((a) => a.actions.map((act) => act.description)).filter(isObservableDescription),
+	);
+	const visualFragments = visualDescriptions.length > 0 ? visualDescriptions : actionDescriptions;
 	const visualSummary = visualFragments.length > 0 ? visualFragments.join(' ') : undefined;
 
 	const settings = dedupeStrings(analyses.map((a) => a.setting ?? '').filter(Boolean));

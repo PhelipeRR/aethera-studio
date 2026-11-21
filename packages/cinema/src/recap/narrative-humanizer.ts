@@ -30,24 +30,24 @@ import { isGenericNarration, isReviewRequiredPlaceholder, estimateNarrationDurat
 
 // ─── System Prompt Template ──────────────────────────────────────────────────
 
-const HUMANIZE_SYSTEM_PROMPT = `Você é um editor de narração em português brasileiro. Sua tarefa é melhorar a naturalidade e fluidez do texto de narração de um roteiro de recap de mangá/manhwa.
+const HUMANIZE_SYSTEM_PROMPT = `Você é um criador de conteúdo brasileiro narrando um recap de mangá/manhwa de forma simples, fluida, natural e cronológica.
 
 REGRAS OBRIGATÓRIAS:
-1. Preserve TODOS os personagens mencionados exatamente como estão.
-2. Preserve TODAS as ações e eventos descritos. Não invente nada novo.
-3. Preserve a ordem cronológica dos acontecimentos.
-4. Mantenha o estilo "${'{style}'}" (${getStyleDescription('{style}')}).
-5. O texto humanizado deve ter duração similar ao original (±${'{maxDeviationPct}'}%).
-6. Use linguagem natural, evitando repetições e construções robóticas.
-7. Melhore transições entre frases e parágrafos.
-8. NÃO altere IDs, referências a painéis ou metadados estruturais.
-9. Se não conseguir melhorar sem alterar fatos, retorne o texto original.
+1. Preserve TODOS os acontecimentos principais e nomes confirmados de personagens. Não invente nada novo.
+2. Preserve a ordem cronológica e os diálogos relevantes entre aspas.
+3. Mantenha o estilo "{style}" ({styleDescription}).
+4. NÃO aumente artificialmente a quantidade de palavras — seja conciso, direto e natural.
+5. Remova linguagem de análise visual ("o painel apresenta", "plano geral", "plano médio", "a imagem sugere", "é possível observar") e evite descrever roupas, cabelo ou expressões sem necessidade narrativa.
+6. Use conectivos naturais ("então", "mas", "nesse momento", "logo depois") sem repetir o mesmo acontecimento com palavras diferentes.
+7. NÃO altere IDs, referências a painéis ou metadados estruturais.
+8. Se não conseguir melhorar sem alterar fatos, retorne o texto original.
 
 Responda APENAS com JSON no formato: {"humanizedText": "..."}
 `;
 
 function getStyleDescription(style: string): string {
 	switch (style) {
+		case 'natural_recap': return 'narração natural, simples, fluida e concisa como um criador de conteúdo contando a história';
 		case 'narrative_recap': return 'narração descritiva e clara';
 		case 'cinematic_recap': return 'narração cinematográfica com ritmo visual';
 		case 'mystery': return 'narração com suspense e revelações graduais';
@@ -69,9 +69,16 @@ function isDurationWithinBudget(
 	originalDuration: number,
 	humanizedText: string,
 	maxDeviation: number,
+	allowConciseShortening = false,
 ): boolean {
 	const humanizedDuration = estimateDurationSec(humanizedText);
 	if (originalDuration <= 0) return true;
+	if (allowConciseShortening) {
+		// In natural_recap, shortening verbose descriptions is desired; only block artificial inflation or empty output
+		const wordCount = humanizedText.trim().split(/\s+/).filter(Boolean).length;
+		if (wordCount < 4) return false;
+		return humanizedDuration <= originalDuration * (1 + maxDeviation);
+	}
 	const deviation = Math.abs(humanizedDuration - originalDuration) / originalDuration;
 	return deviation <= maxDeviation;
 }
@@ -93,16 +100,21 @@ function extractFactualTokens(text: string): string[] {
 		.filter((t) => t.length >= 4);
 }
 
-function checkStructuralIntegrity(original: Scene, humanizedText: string): StructuralCheck {
+function isVisualDescriptorPlaceholder(name: string): boolean {
+	return name.trim().length > 26 || /\b(de cabelos|em t[úu]nica|com faixa|de manto|vestindo)\b/i.test(name);
+}
+
+function checkStructuralIntegrity(original: Scene, humanizedText: string, isNaturalStyle = false): StructuralCheck {
 	// Reject generic filler replacement
 	if (isGenericNarration(humanizedText)) {
 		return { ok: false, reason: 'Humanized text replaced scene narration with a generic filler phrase.' };
 	}
 
-	// Verify that named characters explicitly mentioned in the original narration are preserved
+	// Verify that confirmed named characters explicitly mentioned in the original narration are preserved
 	const originalLower = original.narrationText.toLowerCase();
 	const humanizedLower = humanizedText.toLowerCase();
 	for (const charName of original.characters) {
+		if (isNaturalStyle && isVisualDescriptorPlaceholder(charName)) continue;
 		const normalized = charName.trim().toLowerCase();
 		if (normalized.length >= 2 && originalLower.includes(normalized) && !humanizedLower.includes(normalized)) {
 			return { ok: false, reason: `Humanized text omitted character "${charName}" present in original narration.` };
@@ -115,9 +127,12 @@ function checkStructuralIntegrity(original: Scene, humanizedText: string): Struc
 	}
 
 	// Verify essential extracted dialogues were not dropped
-	const essentialDialogues = (original.extractedDialogues ?? []).filter(
-		(d) => (d.kind ?? (d.isNarration ? 'narration' : 'dialogue')) !== 'sfx' && d.text.trim().length >= 8,
-	);
+	const essentialDialogues = (original.extractedDialogues ?? []).filter((d) => {
+		const kind = d.kind ?? (d.isNarration ? 'narration' : 'dialogue');
+		if (kind === 'sfx') return false;
+		const alpha = (d.translatedText ?? d.text).replace(/[^A-Za-zÀ-ú0-9]/g, '');
+		return alpha.length >= 4 && d.text.trim().length >= 8;
+	});
 	if (essentialDialogues.length > 0) {
 		const humTokens = new Set(extractFactualTokens(humanizedText));
 		const origTokens = new Set(extractFactualTokens(original.narrationText));
@@ -131,19 +146,21 @@ function checkStructuralIntegrity(original: Scene, humanizedText: string): Struc
 		}
 	}
 
-	// Detect severe factual information loss on rich scenes
-	const originalWords = original.narrationText.trim().split(/\s+/).filter(Boolean).length;
-	if (originalWords >= 12) {
-		const origFactual = [...new Set(extractFactualTokens(original.narrationText))];
-		if (origFactual.length >= 5) {
-			const humFactual = new Set(extractFactualTokens(humanizedText));
-			const preservedCount = origFactual.filter((t) => humFactual.has(t)).length;
-			const preservationRatio = preservedCount / origFactual.length;
-			if (preservationRatio < 0.3) {
-				return {
-					ok: false,
-					reason: `Humanized text lost too much factual information (preservation ratio ${Math.round(preservationRatio * 100)}%).`,
-				};
+	// Detect severe factual information loss on non-natural verbose scenes
+	if (!isNaturalStyle) {
+		const originalWords = original.narrationText.trim().split(/\s+/).filter(Boolean).length;
+		if (originalWords >= 12) {
+			const origFactual = [...new Set(extractFactualTokens(original.narrationText))];
+			if (origFactual.length >= 5) {
+				const humFactual = new Set(extractFactualTokens(humanizedText));
+				const preservedCount = origFactual.filter((t) => humFactual.has(t)).length;
+				const preservationRatio = preservedCount / origFactual.length;
+				if (preservationRatio < 0.3) {
+					return {
+						ok: false,
+						reason: `Humanized text lost too much factual information (preservation ratio ${Math.round(preservationRatio * 100)}%).`,
+					};
+				}
 			}
 		}
 	}
@@ -220,9 +237,10 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 		}
 
 		try {
+			const isNaturalStyle = options.style === 'natural_recap';
 			const systemPrompt = HUMANIZE_SYSTEM_PROMPT
 				.replace('{style}', options.style)
-				.replace('{maxDeviationPct}', String(Math.round(maxDeviation * 100)));
+				.replace('{styleDescription}', getStyleDescription(options.style));
 
 			const enhanceInput: TextEnhancementRequest = {
 				text: originalText,
@@ -268,7 +286,7 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 			}
 
 			// Check structural integrity BEFORE duration to catch invented content first
-			const structuralCheck = checkStructuralIntegrity(scene, humanizedText);
+			const structuralCheck = checkStructuralIntegrity(scene, humanizedText, isNaturalStyle);
 			if (!structuralCheck.ok) {
 				warnings.push(`Scene ${scene.sceneId}: structural integrity violation — ${structuralCheck.reason}. Reverting.`);
 				const structDiff: HumanizeSceneDiff = { sceneId: scene.sceneId, originalText, humanizedText: originalText, reverted: true };
@@ -277,8 +295,8 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 				continue;
 			}
 
-			// Validate duration
-			if (!isDurationWithinBudget(scene.estimatedDurationSec, humanizedText, maxDeviation)) {
+			// Validate duration (natural_recap allows concise shortening without artificial inflation)
+			if (!isDurationWithinBudget(scene.estimatedDurationSec, humanizedText, maxDeviation, isNaturalStyle)) {
 				warnings.push(`Scene ${scene.sceneId}: humanized text exceeds duration budget (±${Math.round(maxDeviation * 100)}%). Reverting.`);
 				const durationDiff: HumanizeSceneDiff = { sceneId: scene.sceneId, originalText, humanizedText: originalText, reverted: true, revertReason: 'duration_budget_exceeded' };
 				diffs.push(durationDiff);
