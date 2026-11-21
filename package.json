@@ -1,7 +1,7 @@
 {
   "name": "neuralbridge",
   "private": true,
-  "version": "0.1.75",
+  "version": "0.1.76",
   "description": "NeuralBridge Monorepo — Aethera Studio Web & Desktop coexistence",
   "type": "module",
   "workspaces": [
