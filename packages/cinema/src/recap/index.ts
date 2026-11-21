@@ -249,6 +249,9 @@ export {
 // ─── Story Memory (Persistent Cross-Chapter Narrative Memory) ────────────────
 export * from './story-memory.js';
 
+// ─── Manga Vision Analyst Skill ──────────────────────────────────────────────
+export * from './manga-vision-analyst.js';
+
 // ─── Phase 3 — Audiovisual Production Exports ────────────────────────────────
 export * from './phase3/index.js';
 export * from './production-readiness.js';

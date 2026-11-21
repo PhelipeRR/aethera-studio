@@ -189,14 +189,26 @@ const EMOTION_KEYWORDS: Record<string, Emotion> = {
 
 function buildVisionContextString(context?: VisionAnalysisContext): string {
 	const parts: string[] = [
-		'Análise multimodal de painel de mangá/manhwa em PT-BR: identifique personagens visíveis, cenário, ações observáveis, expressões, objetos relevantes e TODOS os balões/textos visíveis em ordem de leitura.',
+		'Análise multimodal de painel de mangá/manhwa em PT-BR: identifique personagens visíveis, cenário, ações observáveis, expressões, objetos relevantes e TODOS os balões/textos visíveis em ordem de leitura. Não use jargões de câmera (plano geral, plongée, close-up) nem invente falas ou nomes.',
 	];
 	if (context?.workTitle) parts.push(`Obra: ${context.workTitle}.`);
 	if (context?.panelIndex !== undefined && context?.totalPanels !== undefined) {
 		parts.push(`Painel ${context.panelIndex + 1} de ${context.totalPanels}.`);
 	}
 	if (context?.readingOrder) parts.push(`Ordem de leitura: ${context.readingOrder}.`);
-	if (context?.knownCharacters && context.knownCharacters.length > 0) {
+	if (context?.storyMemoryContext) {
+		const mem = context.storyMemoryContext;
+		if (mem.characters.length > 0) {
+			const chars = mem.characters
+				.slice(0, 8)
+				.map((c) => `${c.displayName}${c.aliases.length > 0 ? ` (${c.aliases[0]})` : ''}`)
+				.join(', ');
+			parts.push(`Memória da história (cap. < ${mem.currentChapterNumber}): ${chars}.`);
+		}
+		if (mem.recentEvents.length > 0) {
+			parts.push(`Eventos anteriores: ${mem.recentEvents.slice(0, 3).join(' | ').slice(0, 200)}.`);
+		}
+	} else if (context?.knownCharacters && context.knownCharacters.length > 0) {
 		parts.push(`Personagens já observados: ${context.knownCharacters.slice(0, 8).join(', ')}.`);
 	}
 	if (context?.previousPanelSummary) {

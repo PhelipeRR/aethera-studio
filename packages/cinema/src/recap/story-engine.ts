@@ -28,6 +28,13 @@ import {
 	type ChapterMemoryContext,
 	type ConsolidateChapterResult,
 } from './story-memory.js';
+import {
+	consolidateMangaPanelSequence,
+	runMangaVisionQualityGate,
+	toStoryMemoryPromptContext,
+	type MangaSequenceGroup,
+	type MangaVisionQualityGateReport,
+} from './manga-vision-analyst.js';
 
 export interface StoryEngineResult {
 	script: RecapScript;
@@ -42,6 +49,10 @@ export interface StoryEngineResult {
 	contextualResearchResult?: ContextualResearchResult;
 	/** Story Memory consolidation result when series memory is enabled. */
 	storyMemoryResult?: ConsolidateChapterResult;
+	/** Manga Vision Analyst sequence groups when enabled. */
+	sequenceGroups?: MangaSequenceGroup[];
+	/** Manga Vision Analyst quality gate report when enabled. */
+	mangaQualityGateReport?: MangaVisionQualityGateReport;
 	sequence: NarrativeSequence;
 	analyses: PanelAnalysis[];
 	warnings: string[];
@@ -83,6 +94,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		humanize,
 		research,
 		storyMemory,
+		mangaVisionAnalyst,
 	} = options;
 
 	const warnings: string[] = [];
@@ -127,6 +139,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		visionAdapter,
 		analyzedBy,
 		...(workTitle ? { workTitle } : {}),
+		...(memoryContext ? { storyMemoryContext: toStoryMemoryPromptContext(memoryContext) } : {}),
 		...(memoryContext && memoryContext.knownCharacters.length > 0
 			? { initialKnownCharacters: memoryContext.knownCharacters.map((c) => c.displayName) }
 			: {}),
@@ -200,6 +213,38 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		analysisCacheByHash,
 		warnings,
 	});
+
+	// ─── Stage 1.5: Manga Vision Analyst Sequence Consolidation & Quality Gate ──
+	const useMangaAnalyst =
+		mangaVisionAnalyst?.enabled ?? (scriptStyle === 'natural_recap');
+	let sequenceGroups: MangaSequenceGroup[] | undefined;
+	let mangaQualityGateReport: MangaVisionQualityGateReport | undefined;
+
+	if (useMangaAnalyst) {
+		if (mangaVisionAnalyst?.consolidateSequences !== false) {
+			const consolidated = consolidateMangaPanelSequence(analyses, {
+				...(mangaVisionAnalyst?.maxPanelsPerSequence !== undefined
+					? { maxPanelsPerSequence: mangaVisionAnalyst.maxPanelsPerSequence }
+					: {}),
+			});
+			sequenceGroups = consolidated.groups;
+			analyses = consolidated.enrichedAnalyses;
+		}
+		if (mangaVisionAnalyst?.qualityGate !== false) {
+			mangaQualityGateReport = runMangaVisionQualityGate({
+				panels,
+				analyses,
+				minConfidence: mangaVisionAnalyst?.minConfidence ?? minBeatConfidence,
+			});
+			if (mangaQualityGateReport.verdict === 'needs_review') {
+				warnings.push(
+					`Manga Vision Quality Gate: ${mangaQualityGateReport.summary} (${mangaQualityGateReport.reviewItems.length} item(ns) para revisão pontual).`,
+				);
+			} else if (mangaQualityGateReport.verdict === 'fail') {
+				warnings.push(`Manga Vision Quality Gate FAILED: ${mangaQualityGateReport.summary}`);
+			}
+		}
+	}
 
 	// ─── Stage 2: Story Continuity ────────────────────────────────────────────
 	const readingOrder = panels[0]?.metadata.readingOrder ?? 'rtl';
@@ -376,6 +421,8 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		analyses,
 		warnings,
 		...(storyMemoryResult ? { storyMemoryResult } : {}),
+		...(sequenceGroups ? { sequenceGroups } : {}),
+		...(mangaQualityGateReport ? { mangaQualityGateReport } : {}),
 	};
 	if (humanize?.enabled && preHumanizeGateG) {
 		finalResult.preHumanizeGateG = preHumanizeGateG;

@@ -5,6 +5,7 @@ import type {
 	NarrativeEvidence,
 	VisionAdapter,
 	VisionAnalysisContext,
+	StoryMemoryPromptContext,
 	OcrAdapter,
 	Emotion,
 	ActionType,
@@ -26,6 +27,8 @@ export interface NarrativeAnalyzerOptions {
 	workTitle?: string | undefined;
 	/** Optional known character names/descriptors loaded from Story Memory (prior chapters only). */
 	initialKnownCharacters?: readonly string[] | undefined;
+	/** Optional structured Story Memory context (strictly chapters < currentChapterNumber). */
+	storyMemoryContext?: StoryMemoryPromptContext | undefined;
 	/** Minimum confidence to consider an analysis reliable. Default: 0.5. */
 	minConfidence?: number | undefined;
 	/** Bounded concurrency for fresh vision calls (clamped 1..4). Default: 1. */
@@ -364,6 +367,7 @@ export async function runNarrativeAnalyzer(
 					totalPanels: orderedPanels.length,
 					readingOrder: panel.metadata.readingOrder,
 					...(options.workTitle ? { workTitle: options.workTitle } : {}),
+					...(options.storyMemoryContext ? { storyMemoryContext: options.storyMemoryContext } : {}),
 					...(prevAnalysis?.visualDescription
 						? { previousPanelSummary: prevAnalysis.visualDescription }
 						: prevAnalysis?.actions[0]?.description && prevAnalysis.actions[0].description !== 'No detectable action'

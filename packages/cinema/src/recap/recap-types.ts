@@ -631,9 +631,31 @@ export interface StoryEngineOptions {
 		chapterNumber: number;
 		autoConsolidate?: boolean;
 	};
+	/** Manga Vision Analyst skill options for narrative comprehension, sequence consolidation & quality gate. */
+	mangaVisionAnalyst?: {
+		enabled?: boolean;
+		consolidateSequences?: boolean;
+		qualityGate?: boolean;
+		minConfidence?: number;
+		maxPanelsPerSequence?: number;
+	};
 }
 
 // ─── Vision Adapter Interface (for panel visual analysis) ────────────────────
+
+export interface StoryMemoryCharacterHint {
+	characterId: string;
+	displayName: string;
+	aliases: readonly string[];
+	visualTraits: readonly string[];
+	nameStatus: 'unknown' | 'probable' | 'confirmed';
+}
+
+export interface StoryMemoryPromptContext {
+	currentChapterNumber: number;
+	characters: readonly StoryMemoryCharacterHint[];
+	recentEvents: readonly string[];
+}
 
 export interface VisionAnalysisContext {
 	panelIndex?: number;
@@ -642,6 +664,7 @@ export interface VisionAnalysisContext {
 	workTitle?: string;
 	previousPanelSummary?: string;
 	knownCharacters?: readonly string[];
+	storyMemoryContext?: StoryMemoryPromptContext;
 	ocrHint?: string;
 }
 
