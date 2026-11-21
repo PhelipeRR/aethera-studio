@@ -383,20 +383,24 @@ export async function runRecapProductionOrchestrator(
 	completedSteps.add('audiovisual_preview');
 
 	// Propagate real TTS measured durations back onto the script scenes (Phase 7)
-	if (previewResult.plan.narrationSegments.length > 0) {
-		const measuredByScene = new Map<string, number>();
-		for (const seg of previewResult.plan.narrationSegments) {
-			if (!seg.isFallback && seg.durationMs > 0) {
-				measuredByScene.set(seg.sceneId, Math.round((seg.durationMs / 1000) * 10) / 10);
+	if (previewResult.plan.shots.length > 0) {
+		const measuredMsByScene = new Map<string, number>();
+		for (const shot of previewResult.plan.shots) {
+			if (shot.durationMs > 0) {
+				measuredMsByScene.set(shot.sceneId, (measuredMsByScene.get(shot.sceneId) ?? 0) + shot.durationMs);
 			}
 		}
-		if (measuredByScene.size > 0) {
+		if (measuredMsByScene.size > 0) {
 			script = {
 				...script,
 				scenes: script.scenes.map((sc) => {
-					const measured = measuredByScene.get(sc.sceneId);
-					return measured !== undefined
-						? { ...sc, measuredDurationSec: measured, durationSource: 'tts_measured' as const }
+					const measuredMs = measuredMsByScene.get(sc.sceneId);
+					return measuredMs !== undefined
+						? {
+								...sc,
+								measuredDurationSec: Math.round((measuredMs / 1000) * 10) / 10,
+								durationSource: 'tts_measured' as const,
+							}
 						: sc;
 				}),
 			};
