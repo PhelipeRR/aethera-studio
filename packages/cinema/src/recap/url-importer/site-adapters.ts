@@ -1,16 +1,28 @@
 /**
- * Modular Site Adapter Registry & Asura Scans Adapter
+ * Modular Site Adapter Registry, Specialized Adapters (Asura Scans, Official WEBTOON)
+ * & Fallback to Universal Structural Chapter Adapter.
  *
  * No hardcoded CDN URLs, no fixed page counts, no fixed version query params,
  * and NO CAPTCHA / paywall / authentication bypass.
  */
 
 import { sanitizeStorageSlug } from './url-security.js';
+import {
+	analyzeUniversalReaderHtml,
+	detectExtractionPolicy,
+	universalChapterAdapter,
+	webtoonOfficialAdapter,
+	type UniversalAcquisitionMethod,
+} from './universal-chapter-adapter.js';
 
 export interface DiscoveredPage {
 	pageNumber: number;
 	imageUrl: string;
 	alt?: string;
+	width?: number;
+	height?: number;
+	isVerticalStrip?: boolean;
+	aspectRatio?: number;
 }
 
 export interface DiscoveredChapterLink {
@@ -36,8 +48,8 @@ export interface ChapterSiteAdapter {
 	extractPagesFromHtml(html: string, baseUrl: URL): DiscoveredPage[];
 	/** Extracts available chapter links from HTML when exposed by the page. */
 	extractAvailableChaptersFromHtml?(html: string, baseUrl: URL): DiscoveredChapterLink[];
-	/** Detects CAPTCHA / paywall / access block without attempting any bypass. */
-	detectAccessRestriction?(html: string): string | null;
+	/** Detects CAPTCHA / paywall / extraction policy block without attempting any bypass. */
+	detectAccessRestriction?(html: string, url?: URL): string | null;
 }
 
 function titleFromSlug(slug: string): string {
@@ -75,7 +87,7 @@ function extractAttr(tag: string, attrName: string): string | undefined {
  * removes duplicate image URLs, and preserves original page order.
  */
 export function extractOrderedDataPageImagesFromHtml(html: string, baseUrl: URL): DiscoveredPage[] {
-	const items: Array<{ pageOrder: number; domIndex: number; url: string; alt?: string }> = [];
+	const items: Array<{ pageOrder: number; domIndex: number; url: string; alt?: string; width?: number; height?: number }> = [];
 
 	// Match containers or img tags bearing data-page="..."
 	const containerPattern = /<([a-z0-9]+)\b[^>]*\bdata-page\s*=\s*(?:"(\d+)"|'(\d+)'|(\d+))[^>]*>([\s\S]*?)<\/\1>|<img\b[^>]*\bdata-page\s*=\s*(?:"(\d+)"|'(\d+)'|(\d+))[^>]*\/?>/gi;
@@ -100,7 +112,16 @@ export function extractOrderedDataPageImagesFromHtml(html: string, baseUrl: URL)
 		if (!resolvedUrl) continue;
 
 		const alt = extractAttr(imgTag, 'alt');
-		items.push({ pageOrder, domIndex, url: resolvedUrl, ...(alt ? { alt } : {}) });
+		const width = Number.parseInt(extractAttr(imgTag, 'width') ?? '0', 10) || undefined;
+		const height = Number.parseInt(extractAttr(imgTag, 'height') ?? '0', 10) || undefined;
+		items.push({
+			pageOrder,
+			domIndex,
+			url: resolvedUrl,
+			...(alt ? { alt } : {}),
+			...(width ? { width } : {}),
+			...(height ? { height } : {}),
+		});
 	}
 
 	// Numeric sort matching: [...document.querySelectorAll('[data-page]')].sort((a,b) => Number(a.dataset.page) - Number(b.dataset.page))
@@ -112,10 +133,17 @@ export function extractOrderedDataPageImagesFromHtml(html: string, baseUrl: URL)
 	for (const item of items) {
 		if (seen.has(item.url)) continue;
 		seen.add(item.url);
+		const aspectRatio = item.width && item.height ? Number((item.height / item.width).toFixed(3)) : undefined;
+		const isVerticalStrip =
+			aspectRatio !== undefined ? aspectRatio >= 1.8 || (item.height! >= 1500 && aspectRatio >= 1.35) : undefined;
 		deduped.push({
 			pageNumber: deduped.length + 1,
 			imageUrl: item.url,
 			...(item.alt ? { alt: item.alt } : {}),
+			...(item.width ? { width: item.width } : {}),
+			...(item.height ? { height: item.height } : {}),
+			...(aspectRatio !== undefined ? { aspectRatio } : {}),
+			...(isVerticalStrip !== undefined ? { isVerticalStrip } : {}),
 		});
 	}
 	return deduped;
@@ -150,7 +178,16 @@ export const asuraScansAdapter: ChapterSiteAdapter = {
 		};
 	},
 
-	detectAccessRestriction(html: string): string | null {
+	detectAccessRestriction(html: string, url?: URL): string | null {
+		if (url) {
+			const policy = detectExtractionPolicy(html, url);
+			if (!policy.permitted) return policy.reason ?? '[import_not_permitted] Importação não permitida.';
+		}
+		// Content-first: if actual chapter images are already in the HTML, do not false-positive on comment/navbar scripts
+		const base = url ?? new URL('https://asurascans.com/');
+		const dataPages = extractOrderedDataPageImagesFromHtml(html, base);
+		if (dataPages.length > 0) return null;
+
 		for (const re of ACCESS_RESTRICTION_PATTERNS) {
 			if (re.test(html)) {
 				return 'Acesso restrito pelo site (CAPTCHA, Cloudflare ou paywall). O Aethera não realiza bypass de proteções.';
@@ -160,7 +197,9 @@ export const asuraScansAdapter: ChapterSiteAdapter = {
 	},
 
 	extractPagesFromHtml(html: string, baseUrl: URL): DiscoveredPage[] {
-		return extractOrderedDataPageImagesFromHtml(html, baseUrl);
+		const explicit = extractOrderedDataPageImagesFromHtml(html, baseUrl);
+		if (explicit.length > 0) return explicit;
+		return analyzeUniversalReaderHtml(html, baseUrl).pages;
 	},
 
 	extractAvailableChaptersFromHtml(html: string, baseUrl: URL): DiscoveredChapterLink[] {
@@ -185,7 +224,7 @@ export const asuraScansAdapter: ChapterSiteAdapter = {
 export class SiteAdapterRegistry {
 	private readonly adapters: ChapterSiteAdapter[] = [];
 
-	constructor(initial: readonly ChapterSiteAdapter[] = [asuraScansAdapter]) {
+	constructor(initial: readonly ChapterSiteAdapter[] = [asuraScansAdapter, webtoonOfficialAdapter]) {
 		this.adapters.push(...initial);
 	}
 
@@ -195,12 +234,46 @@ export class SiteAdapterRegistry {
 		}
 	}
 
+	/**
+	 * Resolves a specialized adapter registered for the given URL, or null if none matches.
+	 */
 	resolveForUrl(url: URL): ChapterSiteAdapter | null {
-		return this.adapters.find((a) => a.matchesUrl(url)) ?? null;
+		return this.adapters.find((a) => a.id !== 'universal' && a.matchesUrl(url)) ?? null;
+	}
+
+	/**
+	 * Resolves a specialized adapter when available (Priority 1), or falls back to the
+	 * Universal Structural Chapter Importer (Priority 2) so unknown domains are never rejected upfront.
+	 */
+	resolveAdapterOrUniversal(url: URL): {
+		adapter: ChapterSiteAdapter;
+		isSpecialized: boolean;
+		acquisitionMethod: UniversalAcquisitionMethod;
+	} {
+		const specialized = this.resolveForUrl(url);
+		if (specialized) {
+			return {
+				adapter: specialized,
+				isSpecialized: true,
+				acquisitionMethod: 'specialized_adapter',
+			};
+		}
+		return {
+			adapter: universalChapterAdapter,
+			isSpecialized: false,
+			acquisitionMethod: 'universal_importer',
+		};
 	}
 
 	listSupportedDomains(): Array<{ id: string; displayName: string; hosts: readonly string[] }> {
-		return this.adapters.map((a) => ({ id: a.id, displayName: a.displayName, hosts: a.supportedHosts }));
+		return [
+			...this.adapters.map((a) => ({ id: a.id, displayName: a.displayName, hosts: a.supportedHosts })),
+			{
+				id: universalChapterAdapter.id,
+				displayName: universalChapterAdapter.displayName,
+				hosts: universalChapterAdapter.supportedHosts,
+			},
+		];
 	}
 }
 

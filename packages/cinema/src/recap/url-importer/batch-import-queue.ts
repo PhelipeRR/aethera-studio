@@ -15,7 +15,16 @@ import {
 	type PageDiscoveryPort,
 	type RecapLibraryEntry,
 } from './url-chapter-importer.js';
-import type { SiteAdapterRegistry } from './site-adapters.js';
+import {
+	defaultSiteAdapterRegistry,
+	type SiteAdapterRegistry,
+} from './site-adapters.js';
+import {
+	UNIVERSAL_ACQUISITION_METHOD_LABELS,
+	UNIVERSAL_IMPORT_STATE_LABELS,
+	type UniversalAcquisitionMethod,
+	type UniversalImportState,
+} from './universal-chapter-adapter.js';
 import {
 	saveImportCheckpoint,
 	removeImportCheckpoint,
@@ -41,6 +50,16 @@ export interface RecapImportChapterItem {
 	error?: string;
 	/** True when Cloudflare / CAPTCHA / HTTP 403 stopped automated attempts for this domain. */
 	blockedByProtection?: boolean;
+	/** Universal structural import state (Requirement 5). */
+	universalState?: UniversalImportState;
+	universalStateLabel?: string;
+	/** Acquisition method used for this item. */
+	acquisitionMethod?: UniversalAcquisitionMethod;
+	acquisitionMethodLabel?: string;
+	adapterName?: string;
+	formatHint?: 'webtoon_vertical' | 'manga_paged' | 'unknown';
+	importNotPermitted?: boolean;
+	contentNotRecognized?: boolean;
 }
 
 export interface RecapImportJob {
@@ -320,7 +339,23 @@ export class RecapImportJobManager {
 				}
 
 				try {
+					const reg = this.options.registry ?? defaultSiteAdapterRegistry;
+					try {
+						const parsedForSource = new URL(item.url);
+						const resolved = reg.resolveAdapterOrUniversal(parsedForSource);
+						item.adapterName = resolved.adapter.displayName;
+						item.acquisitionMethod = resolved.acquisitionMethod;
+						item.acquisitionMethodLabel = UNIVERSAL_ACQUISITION_METHOD_LABELS[resolved.acquisitionMethod];
+						item.universalState = 'source_recognized';
+						item.universalStateLabel = UNIVERSAL_IMPORT_STATE_LABELS.source_recognized;
+						this.emit(job);
+					} catch {
+						// URL validation handled by analyzeChapterUrl
+					}
+
 					item.status = 'analyzing';
+					item.universalState = 'analyzing_page';
+					item.universalStateLabel = UNIVERSAL_IMPORT_STATE_LABELS.analyzing_page;
 					this.emit(job);
 
 					const analyzed = await analyzeChapterUrl({
@@ -334,7 +369,22 @@ export class RecapImportJobManager {
 
 					item.chapterNumber = analyzed.meta.chapterNumber;
 					item.pagesTotal = analyzed.pages.length;
+					item.adapterName = analyzed.adapterName;
+					if (analyzed.acquisitionMethod) {
+						item.acquisitionMethod = analyzed.acquisitionMethod;
+						item.acquisitionMethodLabel =
+							analyzed.acquisitionMethodLabel ?? UNIVERSAL_ACQUISITION_METHOD_LABELS[analyzed.acquisitionMethod];
+					}
+					if (analyzed.formatHint) {
+						item.formatHint = analyzed.formatHint;
+					}
+					item.universalState = 'chapter_identified';
+					item.universalStateLabel = UNIVERSAL_IMPORT_STATE_LABELS.chapter_identified;
+					this.emit(job);
+
 					item.status = 'downloading';
+					item.universalState = 'verifying_images';
+					item.universalStateLabel = UNIVERSAL_IMPORT_STATE_LABELS.verifying_images;
 					this.emit(job);
 
 					const downloaded = await downloadChapterPages({
@@ -348,11 +398,15 @@ export class RecapImportJobManager {
 						onProgress: (done, total) => {
 							item.pagesDone = done;
 							item.pagesTotal = total;
+							item.universalState = 'importing';
+							item.universalStateLabel = UNIVERSAL_IMPORT_STATE_LABELS.importing;
 							this.emit(job);
 						},
 					});
 
 					item.status = 'packing_cbz';
+					item.universalState = 'importing';
+					item.universalStateLabel = UNIVERSAL_IMPORT_STATE_LABELS.importing;
 					this.emit(job);
 
 					const entry = buildAndRegisterChapterCbz({
@@ -374,7 +428,15 @@ export class RecapImportJobManager {
 					item.status = 'failed';
 					const errMsg = err instanceof Error ? err.message : String(err);
 					item.error = errMsg;
-					if (isAccessProtectionError(errMsg)) {
+					if (/import_not_permitted|importa[çc][ãa]o.*n[ãa]o permitida/i.test(errMsg)) {
+						item.universalState = 'import_not_permitted';
+						item.universalStateLabel = UNIVERSAL_IMPORT_STATE_LABELS.import_not_permitted;
+						item.importNotPermitted = true;
+					} else if (/content_not_recognized|conte[úu]do n[ãa]o reconhecido|no_pages_found|nenhuma p[áa]gina/i.test(errMsg)) {
+						item.universalState = 'content_not_recognized';
+						item.universalStateLabel = UNIVERSAL_IMPORT_STATE_LABELS.content_not_recognized;
+						item.contentNotRecognized = true;
+					} else if (isAccessProtectionError(errMsg)) {
 						item.blockedByProtection = true;
 						job.blockedByProtection = true;
 						if (!job.blockedUrl) job.blockedUrl = item.url;

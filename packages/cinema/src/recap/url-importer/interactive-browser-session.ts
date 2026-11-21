@@ -27,6 +27,12 @@ import {
 	type SiteAdapterRegistry,
 } from './site-adapters.js';
 import {
+	analyzeUniversalReaderHtml,
+	classifyCandidateImageForChapter,
+	detectExtractionPolicy,
+	inspectImageDimensionsFromBuffer,
+} from './universal-chapter-adapter.js';
+import {
 	resolveSafeStoragePath,
 	sanitizeStorageSlug,
 	validateExternalChapterUrl,
@@ -316,8 +322,20 @@ export function classifyPageState(input: {
 	title: string;
 	adapter: ChapterSiteAdapter;
 	discoveredChapterImagesCount?: number;
-}): 'accessible' | 'needs_login' | 'needs_challenge' | 'access_denied' | 'hydrating' {
+}): 'accessible' | 'needs_login' | 'needs_challenge' | 'access_denied' | 'import_not_permitted' | 'hydrating' {
 	const hasChapterImages = (input.discoveredChapterImagesCount ?? 0) > 0;
+
+	// 0. Check explicit extraction policy (e.g. official WEBTOON or DRM/prohibited markers)
+	// Never presume that images visible in the browser may be automatically downloaded or redistributed.
+	try {
+		const u = new URL(input.currentUrl);
+		const policy = detectExtractionPolicy(input.html, u);
+		if (!policy.permitted) {
+			return 'import_not_permitted';
+		}
+	} catch {
+		// ignore invalid currentUrl
+	}
 
 	// 1. Dedicated login route or HTTP 401 always requires authentication
 	if (input.statusCode === 401) return 'needs_login';
@@ -347,6 +365,7 @@ export function classifyPageState(input: {
 
 	const adapterRestriction = input.adapter.detectAccessRestriction?.(input.html);
 	if (adapterRestriction) {
+		if (/import_not_permitted/i.test(adapterRestriction)) return 'import_not_permitted';
 		return /login|assinatura|paywall|auth/i.test(adapterRestriction) ? 'needs_login' : 'access_denied';
 	}
 
@@ -363,33 +382,9 @@ function extractPagesFromAuthorizedHtml(
 		const adapterPages = adapter.extractPagesFromHtml(html, pageUrl);
 		if (adapterPages.length > 0) return adapterPages;
 	}
-
-	// Fallback generic <img> extraction for permitted sources without [data-page]
-	const pages: DiscoveredPage[] = [];
-	const seen = new Set<string>();
-	const imgRe = /<img\b[^>]*>/gi;
-	let m: RegExpExecArray | null;
-	while ((m = imgRe.exec(html)) !== null) {
-		const tag = m[0];
-		const getAttr = (name: string) => {
-			const am = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i').exec(tag);
-			return am?.[1] ?? am?.[2] ?? '';
-		};
-		const src = (getAttr('data-current-src') || getAttr('data-src') || getAttr('data-lazy-src') || getAttr('src')).trim();
-		const alt = getAttr('alt').trim();
-		if (!src || src.startsWith('data:') || src.startsWith('blob:')) continue;
-		try {
-			const resolved = new URL(src, pageUrl);
-			if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') continue;
-			const abs = resolved.toString();
-			if (seen.has(abs) || isLikelyNonChapterAsset(abs, alt)) continue;
-			seen.add(abs);
-			pages.push({ pageNumber: pages.length + 1, imageUrl: abs, ...(alt ? { alt } : {}) });
-		} catch {
-			// skip invalid
-		}
-	}
-	return pages;
+	const universal = analyzeUniversalReaderHtml(html, pageUrl);
+	if (!universal.isPermitted) return [];
+	return universal.pages;
 }
 
 /**
@@ -735,20 +730,7 @@ export class InteractiveRecapBrowserSessionManager {
 
 			const page = context.pages()[0] ?? (await context.newPage());
 			const firstUrlObj = new URL(urls[0]!);
-			const firstAdapter =
-				registry.resolveForUrl(firstUrlObj) ??
-				({
-					id: 'generic_interactive',
-					displayName: firstUrlObj.hostname,
-					supportedHosts: [firstUrlObj.hostname],
-					matchesUrl: () => true,
-					parseChapterMetadata: (u: URL) => ({
-						workSlug: sanitizeStorageSlug(workTitleOverride || u.hostname),
-						workTitle: workTitleOverride || u.hostname,
-						chapterNumber: /chapter\/([0-9.]+)/i.exec(u.pathname)?.[1] ?? '1',
-					}),
-					extractPagesFromHtml: (html: string, u: URL) => extractPagesFromAuthorizedHtml(html, u, undefined as never),
-				} as ChapterSiteAdapter);
+			const { adapter: firstAdapter } = registry.resolveAdapterOrUniversal(firstUrlObj);
 
 			const resp = await page.goto(firstUrlObj.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
 			let statusCode = resp ? resp.status() : 200;
@@ -865,16 +847,20 @@ export class InteractiveRecapBrowserSessionManager {
 
 			if (this.cancelFlags.has(sessionId)) return;
 
-			// Explicit denial or unresolved block -> stop immediately, NEVER attempt bypass
+			// Explicit denial, extraction policy prohibition, or unresolved block -> stop immediately, NEVER attempt bypass
 			if (pageState !== 'accessible') {
+				const policyCheck = detectExtractionPolicy(html, firstUrlObj);
 				const reason =
-					pageState === 'access_denied'
-						? 'O site retornou acesso negado (HTTP 403) mesmo na sessão interativa. Nenhum contorno é realizado — utilize a Importação Assistida por arquivos (WEBP/PNG/JPG/ZIP/CBZ/PDF).'
-						: pageState === 'needs_challenge'
-							? 'A verificação do site não foi concluída ou o acesso automatizado continua bloqueado. Utilize a Importação Assistida por arquivos.'
-							: pageState === 'hydrating'
-								? 'A página abriu, mas nenhuma imagem de capítulo foi encontrada no DOM. Utilize a Importação Assistida por arquivos.'
-								: 'A autenticação não foi concluída dentro do tempo limite.';
+					pageState === 'import_not_permitted' || !policyCheck.permitted
+						? (policyCheck.reason ??
+							'[import_not_permitted] Importação não permitida: esta fonte proíbe extração ou redistribuição automatizada. Utilize a Importação Assistida por arquivos apenas para obras com autorização legítima.')
+						: pageState === 'access_denied'
+							? 'O site retornou acesso negado (HTTP 403) mesmo na sessão interativa. Nenhum contorno é realizado — utilize a Importação Assistida por arquivos (WEBP/PNG/JPG/ZIP/CBZ/PDF).'
+							: pageState === 'needs_challenge'
+								? 'A verificação do site não foi concluída ou o acesso automatizado continua bloqueado. Utilize a Importação Assistida por arquivos.'
+								: pageState === 'hydrating'
+									? 'A página abriu, mas nenhuma imagem de capítulo foi encontrada no DOM. Utilize a Importação Assistida por arquivos.'
+									: 'A autenticação não foi concluída dentro do tempo limite.';
 				this.update(sessionId, {
 					state: pageState === 'needs_login' ? 'session_expired' : 'access_denied',
 					statusMessage: reason,
@@ -898,7 +884,7 @@ export class InteractiveRecapBrowserSessionManager {
 					allowLocalhost: this.options.allowLocalhostForTests ?? false,
 					allowHttpForTests: this.options.allowLocalhostForTests ?? false,
 				});
-				const adapter = registry.resolveForUrl(targetUrl) ?? firstAdapter;
+				const { adapter } = registry.resolveAdapterOrUniversal(targetUrl);
 
 				this.update(sessionId, {
 					state: 'importing_chapters',
@@ -965,10 +951,22 @@ export class InteractiveRecapBrowserSessionManager {
 
 				const seenHashes = new Set<string>();
 				const validImages: Array<{ ext: string; buffer: Buffer }> = [];
+				let brokenChapterPageError: string | null = null;
 
 				for (let pIdx = 0; pIdx < discoveredPages.length; pIdx++) {
 					if (this.cancelFlags.has(sessionId)) return;
 					const pg = discoveredPages[pIdx]!;
+
+					const urlVerdict = classifyCandidateImageForChapter({
+						url: pg.imageUrl,
+						...(pg.alt ? { alt: pg.alt } : {}),
+						...(pg.width ? { widthAttr: pg.width } : {}),
+						...(pg.height ? { heightAttr: pg.height } : {}),
+					});
+					if (!urlVerdict.accepted) {
+						continue;
+					}
+
 					// Fetch image strictly inside the authorized browser context (NEVER exporting cookies externally)
 					const imgResp = await page.request.get(pg.imageUrl, {
 						headers: { Referer: targetUrl.toString() },
@@ -995,14 +993,23 @@ export class InteractiveRecapBrowserSessionManager {
 						return;
 					}
 					if (!imgResp.ok()) {
-						warnings.push(`Falha HTTP ${imgResp.status()} na página ${pIdx + 1}.`);
-						continue;
+						brokenChapterPageError = `Capítulo ${chIdx + 1} incompleto: falha HTTP ${imgResp.status()} na página ${pIdx + 1}. O Aethera não gera CBZ incompleto.`;
+						warnings.push(brokenChapterPageError);
+						break;
 					}
 					const buf = await imgResp.body();
 					const magic = validateImageMagicBytes(buf);
 					if (!magic.valid || !magic.ext) {
-						warnings.push(`Página ${pIdx + 1} descartada (imagem inválida).`);
-						continue;
+						brokenChapterPageError = `Capítulo ${chIdx + 1} incompleto: página ${pIdx + 1} inválida ou corrompida. O Aethera não gera CBZ incompleto.`;
+						warnings.push(brokenChapterPageError);
+						break;
+					}
+					const dims = inspectImageDimensionsFromBuffer(buf);
+					if (dims) {
+						// Filter out tiny icons (< 120x120) or horizontal ad banners (width/height > 3.5 and height <= 220)
+						if (dims.width < 120 || dims.height < 120 || (dims.width / dims.height > 3.5 && dims.height <= 220)) {
+							continue;
+						}
 					}
 					const hash = createHash('sha256').update(buf).digest('hex');
 					if (seenHashes.has(hash)) continue;
@@ -1012,6 +1019,17 @@ export class InteractiveRecapBrowserSessionManager {
 					this.update(sessionId, {
 						currentChapterPagesDone: pIdx + 1,
 					});
+				}
+
+				if (brokenChapterPageError) {
+					this.update(sessionId, {
+						state: 'access_denied',
+						statusMessage: brokenChapterPageError,
+						error: brokenChapterPageError,
+						importedEntries,
+						warnings,
+					});
+					return;
 				}
 
 				if (validImages.length === 0) {

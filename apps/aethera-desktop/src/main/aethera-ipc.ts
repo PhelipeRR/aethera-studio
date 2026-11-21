@@ -5713,10 +5713,12 @@ productionConsole,
   });
   const recapDirectFetchProvider = createDirectFetchAcquisitionProvider();
   const recapAcquisitionRouter = new AcquisitionRouter({
-    providerPriority: ['firecrawl-self-hosted', 'direct-fetch'],
+    config: {
+      providerPriority: ['direct-fetch', 'firecrawl-self-hosted'],
+    },
   });
-  recapAcquisitionRouter.registerProvider(recapFirecrawlProvider);
   recapAcquisitionRouter.registerProvider(recapDirectFetchProvider);
+  recapAcquisitionRouter.registerProvider(recapFirecrawlProvider);
 
   const recapImportJobs = new RecapImportJobManager({
     libraryDir: recapLibraryDir,

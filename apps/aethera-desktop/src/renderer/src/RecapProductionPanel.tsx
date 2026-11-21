@@ -213,9 +213,25 @@ interface RecapBridge {
   recapSelectArchives?: () => Promise<{ canceled: boolean; files: SelectedArchiveFile[] }>;
   recapImportAnalyze?: (input: { url: string }) => Promise<{
     sourceUrl: string;
+    adapterId?: string;
     adapterName: string;
+    isSpecializedAdapter?: boolean;
+    acquisitionMethod?: string;
+    acquisitionMethodLabel?: string;
+    importState?: string;
+    importStateLabel?: string;
+    formatHint?: 'webtoon_vertical' | 'manga_paged' | 'unknown';
+    verticalStripCount?: number;
     meta: { workTitle: string; chapterNumber: string };
-    pages: Array<{ pageNumber: number; imageUrl: string }>;
+    pages: Array<{
+      pageNumber: number;
+      imageUrl: string;
+      alt?: string;
+      width?: number;
+      height?: number;
+      isVerticalStrip?: boolean;
+      aspectRatio?: number;
+    }>;
     availableChapters: Array<{ chapterNumber: string; title: string; url: string }>;
     alreadyImported: { cbzPath: string } | null;
   }>;
@@ -224,14 +240,46 @@ interface RecapBridge {
     status: string;
     blockedByProtection?: boolean;
     blockedUrl?: string;
-    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string; blockedByProtection?: boolean }>;
+    items: Array<{
+      url: string;
+      status: string;
+      pagesDone: number;
+      pagesTotal: number;
+      libraryEntry?: { cbzPath: string };
+      error?: string;
+      blockedByProtection?: boolean;
+      universalState?: string;
+      universalStateLabel?: string;
+      acquisitionMethod?: string;
+      acquisitionMethodLabel?: string;
+      adapterName?: string;
+      formatHint?: string;
+      importNotPermitted?: boolean;
+      contentNotRecognized?: boolean;
+    }>;
   }>;
   recapImportGetJob?: (id: string) => Promise<{
     id: string;
     status: string;
     blockedByProtection?: boolean;
     blockedUrl?: string;
-    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string; blockedByProtection?: boolean }>;
+    items: Array<{
+      url: string;
+      status: string;
+      pagesDone: number;
+      pagesTotal: number;
+      libraryEntry?: { cbzPath: string };
+      error?: string;
+      blockedByProtection?: boolean;
+      universalState?: string;
+      universalStateLabel?: string;
+      acquisitionMethod?: string;
+      acquisitionMethodLabel?: string;
+      adapterName?: string;
+      formatHint?: string;
+      importNotPermitted?: boolean;
+      contentNotRecognized?: boolean;
+    }>;
   } | null>;
   recapImportCancelJob?: (id: string) => Promise<unknown>;
   recapImportRetryJob?: (id: string) => Promise<unknown>;
@@ -1207,9 +1255,55 @@ export function RecapProductionPanel() {
     status: string;
     blockedByProtection?: boolean;
     blockedUrl?: string;
-    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string; blockedByProtection?: boolean }>;
+    items: Array<{
+      url: string;
+      status: string;
+      pagesDone: number;
+      pagesTotal: number;
+      libraryEntry?: { cbzPath: string };
+      error?: string;
+      blockedByProtection?: boolean;
+      universalState?: string;
+      universalStateLabel?: string;
+      acquisitionMethod?: string;
+      acquisitionMethodLabel?: string;
+      adapterName?: string;
+      formatHint?: string;
+      importNotPermitted?: boolean;
+      contentNotRecognized?: boolean;
+    }>;
   } | null>(null);
   const [linkImportedCbz, setLinkImportedCbz] = useState<{ cbzPath: string; label: string } | null>(null);
+  const [universalAnalyzeState, setUniversalAnalyzeState] = useState<
+    | 'idle'
+    | 'source_recognized'
+    | 'analyzing_page'
+    | 'chapter_identified'
+    | 'verifying_images'
+    | 'importing'
+    | 'import_not_permitted'
+    | 'content_not_recognized'
+  >('idle');
+  const [analyzedChapterPreview, setAnalyzedChapterPreview] = useState<{
+    sourceUrl: string;
+    adapterId?: string;
+    adapterName: string;
+    acquisitionMethodLabel: string;
+    formatHint: 'webtoon_vertical' | 'manga_paged' | 'unknown';
+    verticalStripCount: number;
+    workTitle: string;
+    chapterNumber: string;
+    pages: Array<{
+      pageNumber: number;
+      imageUrl: string;
+      alt?: string;
+      width?: number;
+      height?: number;
+      isVerticalStrip?: boolean;
+      aspectRatio?: number;
+      included: boolean;
+    }>;
+  } | null>(null);
   const [assistedUrl, setAssistedUrl] = useState('');
   const [assistedImporting, setAssistedImporting] = useState(false);
   const [assistedResult, setAssistedResult] = useState<{
@@ -1883,6 +1977,91 @@ export function RecapProductionPanel() {
       setImportError(err instanceof Error ? err.message : String(err));
     } finally {
       setAssistedImporting(false);
+    }
+  };
+
+  const handleAnalyzeAndReviewUrl = async () => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapImportAnalyze) {
+      setImportError('Análise estrutural de capítulo indisponível neste build.');
+      return;
+    }
+    const targetUrl = linkInputs.map((u) => u.trim()).find(Boolean) ?? '';
+    if (!targetUrl) {
+      setImportError('Informe uma URL de capítulo para analisar e revisar as imagens.');
+      return;
+    }
+    setImportError(null);
+    setAnalyzedChapterPreview(null);
+    setUniversalAnalyzeState('source_recognized');
+    await new Promise((r) => setTimeout(r, 80));
+    setUniversalAnalyzeState('analyzing_page');
+
+    try {
+      const res = await bridge.recapImportAnalyze({ url: targetUrl });
+      setUniversalAnalyzeState('chapter_identified');
+      setAnalyzedChapterPreview({
+        sourceUrl: res.sourceUrl,
+        ...(res.adapterId ? { adapterId: res.adapterId } : {}),
+        adapterName: res.adapterName || 'Importador Universal Estrutural',
+        acquisitionMethodLabel: res.acquisitionMethodLabel || (res.isSpecializedAdapter ? 'Adaptador especializado' : 'Importador universal'),
+        formatHint: res.formatHint ?? 'manga_paged',
+        verticalStripCount: res.verticalStripCount ?? res.pages.filter((p) => p.isVerticalStrip).length,
+        workTitle: res.meta.workTitle,
+        chapterNumber: res.meta.chapterNumber,
+        pages: res.pages.map((p) => ({
+          ...p,
+          included: true,
+        })),
+      });
+      if (!workTitle.trim() && res.meta.workTitle) {
+        setWorkTitle(res.meta.workTitle);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/import_not_permitted|importa[çc][ãa]o.*n[ãa]o permitida/i.test(msg)) {
+        setUniversalAnalyzeState('import_not_permitted');
+      } else if (/content_not_recognized|conte[úu]do n[ãa]o reconhecido|no_pages_found|nenhuma p[áa]gina/i.test(msg)) {
+        setUniversalAnalyzeState('content_not_recognized');
+      } else {
+        setUniversalAnalyzeState('idle');
+      }
+      setImportError(msg);
+    }
+  };
+
+  const handleConfirmReviewedPagesToCbz = async () => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapImportCdnDirect || !analyzedChapterPreview) return;
+    const selectedUrls = analyzedChapterPreview.pages.filter((p) => p.included).map((p) => p.imageUrl);
+    if (selectedUrls.length === 0) {
+      setImportError('Selecione pelo menos uma imagem válida para gerar o CBZ.');
+      return;
+    }
+    setImportError(null);
+    setLinkImporting(true);
+    setUniversalAnalyzeState('verifying_images');
+    try {
+      await new Promise((r) => setTimeout(r, 80));
+      setUniversalAnalyzeState('importing');
+      const res = await bridge.recapImportCdnDirect({
+        imageUrls: selectedUrls,
+        chapterPageUrl: analyzedChapterPreview.sourceUrl,
+        workTitle: workTitle.trim() || analyzedChapterPreview.workTitle,
+        chapterNumber: analyzedChapterPreview.chapterNumber,
+      });
+      setLinkImportedCbz({
+        cbzPath: res.cbzPath,
+        label: `${res.pageCount} páginas revisadas (${analyzedChapterPreview.acquisitionMethodLabel})`,
+      });
+      setStatusNote(
+        `CBZ criado após revisão de imagens: ${res.workTitle} Cap. ${res.chapterNumber} (${res.pageCount} páginas).`,
+      );
+      setUniversalAnalyzeState('chapter_identified');
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLinkImporting(false);
     }
   };
 
@@ -2800,7 +2979,7 @@ export function RecapProductionPanel() {
                 <button type="button" onClick={() => setLinkInputs([...linkInputs, ''])} style={btnGhost}>
                   <Plus style={{ width: 14, height: 14 }} /> Adicionar outro link
                 </button>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   {linkImporting && linkImportJob && (
                     <button
                       type="button"
@@ -2822,13 +3001,217 @@ export function RecapProductionPanel() {
                   <button
                     type="button"
                     disabled={linkImporting}
+                    onClick={() => void handleAnalyzeAndReviewUrl()}
+                    style={{ ...btnSecondary, opacity: linkImporting ? 0.6 : 1 }}
+                  >
+                    Analisar e Revisar Imagens
+                  </button>
+                  <button
+                    type="button"
+                    disabled={linkImporting}
                     onClick={() => void handleImportLinkChapters()}
                     style={{ ...btnPrimary, opacity: linkImporting ? 0.6 : 1 }}
                   >
-                    {linkImporting ? 'Baixando capítulos…' : 'Baixar e Preparar CBZ'}
+                    {linkImporting ? 'Importando…' : 'Baixar e Preparar CBZ'}
                   </button>
                 </div>
               </div>
+
+              {/* Universal Importer 7-State Status Strip */}
+              <div
+                aria-label="Estados do Importador Universal"
+                style={{
+                  marginTop: 12,
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 6,
+                }}
+              >
+                {(
+                  [
+                    ['source_recognized', 'Fonte reconhecida'],
+                    ['analyzing_page', 'Analisando página'],
+                    ['chapter_identified', 'Capítulo identificado'],
+                    ['verifying_images', 'Verificando imagens'],
+                    ['importing', 'Importando'],
+                    ['import_not_permitted', 'Importação não permitida'],
+                    ['content_not_recognized', 'Conteúdo não reconhecido'],
+                  ] as const
+                ).map(([stKey, stLabel]) => {
+                  const firstJobItemState = linkImportJob?.items?.[0]?.universalState;
+                  const activeState =
+                    universalAnalyzeState !== 'idle' ? universalAnalyzeState : (firstJobItemState ?? 'idle');
+                  const isActive = activeState === stKey;
+                  const isNegative = stKey === 'import_not_permitted' || stKey === 'content_not_recognized';
+                  return (
+                    <span
+                      key={stKey}
+                      style={{
+                        fontSize: 11,
+                        fontWeight: isActive ? 700 : 500,
+                        padding: '4px 10px',
+                        borderRadius: T.radiusFull,
+                        border: `1px solid ${
+                          isActive
+                            ? isNegative
+                              ? T.errorBorder
+                              : T.accent
+                            : T.border
+                        }`,
+                        background: isActive
+                          ? isNegative
+                            ? T.errorBg
+                            : T.accentSoft
+                          : T.surfaceSubtle,
+                        color: isActive
+                          ? isNegative
+                            ? T.error
+                            : T.accentInk
+                          : T.inkMuted,
+                      }}
+                    >
+                      {stLabel}
+                    </span>
+                  );
+                })}
+              </div>
+
+              {/* Pre-CBZ Image Review Panel (Requirement 5: Exibir o método utilizado e permitir revisar as imagens identificadas antes de criar o CBZ) */}
+              {analyzedChapterPreview && (
+                <div
+                  role="region"
+                  aria-label="Revisão de imagens identificadas"
+                  style={{
+                    marginTop: 12,
+                    padding: '14px 16px',
+                    borderRadius: T.radiusInner,
+                    background: T.surfaceSubtle,
+                    border: `1px solid ${T.borderStrong}`,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: T.ink }}>
+                        Capítulo identificado: {analyzedChapterPreview.workTitle} · Cap. {analyzedChapterPreview.chapterNumber}
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4, fontSize: 11, color: T.inkMuted }}>
+                        <span style={{ fontWeight: 600, color: T.accentInk }}>
+                          Método utilizado: {analyzedChapterPreview.acquisitionMethodLabel} ({analyzedChapterPreview.adapterName})
+                        </span>
+                        <span>
+                          · Formato:{' '}
+                          {analyzedChapterPreview.formatHint === 'webtoon_vertical'
+                            ? `Webtoon / Tira Vertical (${analyzedChapterPreview.verticalStripCount} longas)`
+                            : 'Mangá / Manhwa Paginado'}
+                        </span>
+                        <span>
+                          · {analyzedChapterPreview.pages.filter((p) => p.included).length}/{analyzedChapterPreview.pages.length} imagens selecionadas
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        type="button"
+                        onClick={() => setAnalyzedChapterPreview(null)}
+                        style={btnGhost}
+                      >
+                        Fechar revisão
+                      </button>
+                      <button
+                        type="button"
+                        disabled={linkImporting || analyzedChapterPreview.pages.every((p) => !p.included)}
+                        onClick={() => void handleConfirmReviewedPagesToCbz()}
+                        style={btnPrimary}
+                      >
+                        <CheckCircle2 style={{ width: 14, height: 14 }} /> Confirmar e Gerar CBZ (
+                        {analyzedChapterPreview.pages.filter((p) => p.included).length} págs)
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      maxHeight: 220,
+                      overflowY: 'auto',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 5,
+                      paddingRight: 4,
+                    }}
+                  >
+                    {analyzedChapterPreview.pages.map((pg, idx) => (
+                      <label
+                        key={`${pg.imageUrl}-${idx}`}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '6px 10px',
+                          borderRadius: 8,
+                          background: pg.included ? T.surface : T.surfaceSubtle,
+                          border: `1px solid ${pg.included ? T.border : 'transparent'}`,
+                          cursor: 'pointer',
+                          fontSize: 12,
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={pg.included}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setAnalyzedChapterPreview((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    pages: prev.pages.map((p, i) => (i === idx ? { ...p, included: checked } : p)),
+                                  }
+                                : null,
+                            );
+                          }}
+                        />
+                        <span style={{ fontFamily: T.mono, fontWeight: 700, minWidth: 52 }}>
+                          Pág. {String(pg.pageNumber).padStart(2, '0')}
+                        </span>
+                        <span
+                          style={{
+                            flex: 1,
+                            fontFamily: T.mono,
+                            fontSize: 11,
+                            color: T.inkMuted,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {pg.imageUrl}
+                        </span>
+                        {pg.isVerticalStrip && (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              padding: '2px 7px',
+                              borderRadius: T.radiusFull,
+                              background: T.accentSoft,
+                              color: T.accentInk,
+                            }}
+                          >
+                            Vertical Longa
+                          </span>
+                        )}
+                        {pg.width && pg.height ? (
+                          <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkSubtle }}>
+                            {pg.width}×{pg.height}
+                          </span>
+                        ) : null}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
               {linkImportJob && linkImportJob.items.length > 0 && (
                 <div
                   style={{
@@ -2851,19 +3234,21 @@ export function RecapProductionPanel() {
                     const isSelected = Boolean(cbzPath && linkImportedCbz?.cbzPath === cbzPath);
                     const pct = item.pagesTotal > 0 ? Math.min(100, Math.round((item.pagesDone / item.pagesTotal) * 100)) : item.status === 'completed' || item.status === 'skipped' ? 100 : 0;
                     const statusLabel =
-                      item.status === 'completed'
-                        ? `Pronto (${item.pagesDone}/${item.pagesTotal} págs)`
-                        : item.status === 'skipped'
-                          ? 'Já importado'
-                          : item.status === 'downloading'
-                            ? `Baixando ${item.pagesDone}/${item.pagesTotal || '?'}`
-                            : item.status === 'analyzing'
-                              ? 'Analisando página…'
-                              : item.status === 'failed'
-                                ? 'Falhou'
-                                : item.status === 'cancelled'
-                                  ? 'Cancelado'
-                                  : 'Na fila';
+                      item.universalStateLabel && (item.status === 'failed' || item.status === 'analyzing' || item.status === 'downloading')
+                        ? item.universalStateLabel
+                        : item.status === 'completed'
+                          ? `Pronto (${item.pagesDone}/${item.pagesTotal} págs)`
+                          : item.status === 'skipped'
+                            ? 'Já importado'
+                            : item.status === 'downloading'
+                              ? `Importando ${item.pagesDone}/${item.pagesTotal || '?'}`
+                              : item.status === 'analyzing'
+                                ? 'Analisando página'
+                                : item.status === 'failed'
+                                  ? 'Falhou'
+                                  : item.status === 'cancelled'
+                                    ? 'Cancelado'
+                                    : 'Fonte reconhecida';
                     return (
                       <div
                         key={`${item.url}-${idx}`}
@@ -2881,6 +3266,22 @@ export function RecapProductionPanel() {
                           <span style={{ fontSize: 12, color: T.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                             {idx + 1}. {item.url}
                           </span>
+                          {item.acquisitionMethodLabel && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 600,
+                                padding: '2px 8px',
+                                borderRadius: T.radiusFull,
+                                background: T.surfaceSubtle,
+                                border: `1px solid ${T.border}`,
+                                color: T.inkMuted,
+                                flexShrink: 0,
+                              }}
+                            >
+                              {item.acquisitionMethodLabel}
+                            </span>
+                          )}
                           <span style={{ fontSize: 11, fontWeight: 600, color: item.error ? T.error : cbzPath ? T.success : T.inkMuted, flexShrink: 0 }}>
                             {statusLabel}
                           </span>

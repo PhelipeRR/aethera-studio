@@ -27,6 +27,10 @@ import type { ChapterSiteAdapter } from './site-adapters.js';
 import type { DiscoveredPage, DiscoveredChapterLink } from './site-adapters.js';
 import { validateExternalChapterUrl } from './url-security.js';
 import { createPlaywrightPageDiscoveryPort } from './url-chapter-importer.js';
+import {
+	analyzeUniversalReaderHtml,
+	classifyCandidateImageForChapter,
+} from './universal-chapter-adapter.js';
 
 export interface FirecrawlProviderOptions {
 	/** Override the API URL. Defaults to env FIRECRAWL_API_URL or http://127.0.0.1:3002. */
@@ -130,6 +134,8 @@ function extractImagesFromMarkdown(markdown: string, baseUrl: URL): DiscoveredPa
 			if (resolved.protocol !== 'https:' && resolved.protocol !== 'http:') continue;
 			const urlStr = resolved.toString();
 			if (seen.has(urlStr)) continue;
+			const verdict = classifyCandidateImageForChapter({ url: urlStr, ...(alt ? { alt } : {}) });
+			if (!verdict.accepted) continue;
 			seen.add(urlStr);
 			pageNumber++;
 			pages.push({
@@ -177,6 +183,8 @@ function extractImagesFromHtml(html: string, baseUrl: URL): DiscoveredPage[] {
 			if (resolved.protocol !== 'https:' && resolved.protocol !== 'http:') continue;
 			const urlStr = resolved.toString();
 			if (seen.has(urlStr)) continue;
+			const verdict = classifyCandidateImageForChapter({ url: urlStr, ...(alt ? { alt } : {}) });
+			if (!verdict.accepted) continue;
 			seen.add(urlStr);
 			pageNumber++;
 			const alt = extractAttr(tag, 'alt')?.trim();
@@ -449,8 +457,11 @@ export class FirecrawlSelfHostedProvider implements AcquisitionProvider {
 			if (cfRestriction) {
 				throw new AcquisitionError('captcha_detected', cfRestriction, this.id, false);
 			}
-			const adapterRestriction = input.adapter.detectAccessRestriction?.(htmlContent);
+			const adapterRestriction = input.adapter.detectAccessRestriction?.(htmlContent, input.url);
 			if (adapterRestriction) {
+				if (/import_not_permitted/i.test(adapterRestriction)) {
+					throw new AcquisitionError('import_not_permitted', adapterRestriction, this.id, false);
+				}
 				throw new AcquisitionError('captcha_detected', adapterRestriction, this.id, false);
 			}
 
@@ -462,13 +473,13 @@ export class FirecrawlSelfHostedProvider implements AcquisitionProvider {
 				throw new AcquisitionError('access_denied_403', 'Fonte retornou acesso negado (HTTP 403) ao Firecrawl.', this.id, false);
 			}
 
-			// 3. Extract pages: prefer site adapter HTML parser FIRST (preserves [data-page] numeric order & filters noise)
+			// 3. Extract pages: prefer site adapter HTML parser FIRST, then universal structural analyzer (filtering ads/icons)
 			let pages: DiscoveredPage[] = [];
 			if (htmlContent) {
 				pages = input.adapter.extractPagesFromHtml(htmlContent, input.url);
 			}
 			if (pages.length === 0 && htmlContent) {
-				pages = extractImagesFromHtml(htmlContent, input.url);
+				pages = analyzeUniversalReaderHtml(htmlContent, input.url).pages;
 			}
 			if (pages.length === 0 && markdownContent) {
 				pages = extractImagesFromMarkdown(markdownContent, input.url);

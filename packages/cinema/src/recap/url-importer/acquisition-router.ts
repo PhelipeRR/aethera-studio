@@ -62,6 +62,8 @@ export interface AcquisitionProvider extends PageDiscoveryPort {
 export const ACQUISITION_ERROR_CODES = [
 	'ssrf_blocked',
 	'access_denied_403',
+	'import_not_permitted',
+	'content_not_recognized',
 	'rate_limited_429',
 	'timeout',
 	'network_error',
@@ -80,6 +82,8 @@ export type AcquisitionErrorCode = (typeof ACQUISITION_ERROR_CODES)[number];
 export const ERROR_RETRYABILITY: Record<AcquisitionErrorCode, boolean> = {
 	ssrf_blocked: false,
 	access_denied_403: false,
+	import_not_permitted: false,
+	content_not_recognized: false,
 	rate_limited_429: true,
 	timeout: true,
 	network_error: true,
@@ -116,6 +120,12 @@ export function classifyAcquisitionError(err: unknown, providerId?: AcquisitionP
 
 	if (/ssrf|private.*ip|localhost|internal/i.test(lower)) {
 		return new AcquisitionError('ssrf_blocked', msg, providerId, false, err);
+	}
+	if (/import_not_permitted|importa[çc][ãa]o.*n[ãa]o permitida|extra[çc][ãa]o.*proibida/i.test(lower)) {
+		return new AcquisitionError('import_not_permitted', msg, providerId, false, err);
+	}
+	if (/content_not_recognized|conte[úu]do n[ãa]o reconhecido/i.test(lower)) {
+		return new AcquisitionError('content_not_recognized', msg, providerId, false, err);
 	}
 	if (/captcha|challenge-platform|just a moment|hcaptcha|recaptcha/i.test(lower)) {
 		return new AcquisitionError('captcha_detected', msg, providerId, false, err);
@@ -424,7 +434,7 @@ export class AcquisitionRouter implements PageDiscoveryPort {
 					continue;
 				}
 
-				return result;
+				return { ...result, providerId };
 			} catch (rawErr) {
 				const durationMs = Date.now() - attemptStart;
 				const classified = classifyAcquisitionError(rawErr, providerId);
@@ -455,6 +465,7 @@ export class AcquisitionRouter implements PageDiscoveryPort {
 				if (
 					classified.code === 'cancelled' ||
 					classified.code === 'ssrf_blocked' ||
+					classified.code === 'import_not_permitted' ||
 					classified.code === 'captcha_detected' ||
 					classified.code === 'paywall_detected'
 				) {
@@ -478,8 +489,8 @@ export class AcquisitionRouter implements PageDiscoveryPort {
 
 		// Return the most informative error
 		const priorityOrder: AcquisitionErrorCode[] = [
-			'access_denied_403', 'captcha_detected', 'paywall_detected',
-			'no_pages_found', 'timeout', 'network_error', 'rate_limited_429',
+			'import_not_permitted', 'access_denied_403', 'captcha_detected', 'paywall_detected',
+			'content_not_recognized', 'no_pages_found', 'timeout', 'network_error', 'rate_limited_429',
 			'circuit_breaker_open', 'provider_unavailable', 'unknown',
 		];
 

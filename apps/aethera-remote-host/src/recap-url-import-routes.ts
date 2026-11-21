@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { isAbsolute, join, relative, resolve } from 'node:path';
+import { defaultSiteAdapterRegistry } from '@neuralbridge/cinema/recap';
 
 interface RemoteImportItem {
   url: string;
@@ -172,15 +173,16 @@ export function registerRecapUrlImportRoutes(input: {
           item.status = 'analyzing';
           emit(job);
           const u = validateSsrfUrl(item.url);
-          if (!isSupportedHost(u.hostname)) throw new Error(`Domínio não suportado: ${u.hostname}`);
+          const { adapter } = defaultSiteAdapterRegistry.resolveAdapterOrUniversal(u);
           const pageRes = await safeFetch(u.toString(), undefined, ctrl.signal);
           if (!pageRes.ok) throw new Error(`HTTP ${pageRes.status} ao carregar capítulo.`);
           const html = await pageRes.text();
-          if (/cf-challenge|challenge-platform|just a moment|captcha|paywall/i.test(html)) {
-            throw new Error('Bloqueio Cloudflare/CAPTCHA detectado. Nenhum bypass é realizado; use a Importação Assistida pelo Navegador.');
+          const restricted = adapter.detectAccessRestriction?.(html, u);
+          if (restricted) {
+            throw new Error(restricted);
           }
-          const pages = extractPagesFromHtml(html, u);
-          if (pages.length === 0) throw new Error('Nenhuma imagem [data-page] detectada no capítulo.');
+          const pages = adapter.extractPagesFromHtml(html, u);
+          if (pages.length === 0) throw new Error('[content_not_recognized] Conteúdo não reconhecido: nenhuma sequência de imagens de capítulo detectada.');
 
           item.pagesTotal = pages.length;
           item.status = 'downloading';
@@ -232,22 +234,31 @@ export function registerRecapUrlImportRoutes(input: {
     try {
       const rawUrl = String((req.body as { url?: string })?.url ?? '');
       const u = validateSsrfUrl(rawUrl);
-      if (!isSupportedHost(u.hostname)) {
-        res.status(400).json({ error: `Domínio "${u.hostname}" ainda não possui adaptador suportado.` });
-        return;
-      }
+      const { adapter, acquisitionMethod } = defaultSiteAdapterRegistry.resolveAdapterOrUniversal(u);
       const pageRes = await safeFetch(u.toString());
       if (!pageRes.ok) {
         res.status(502).json({ error: `Erro ao consultar página (HTTP ${pageRes.status}).` });
         return;
       }
       const html = await pageRes.text();
-      if (/cf-challenge|captcha|paywall/i.test(html)) {
-        res.status(403).json({ error: 'Acesso restrito pelo site (CAPTCHA/paywall). Nenhum bypass é realizado.' });
+      const restricted = adapter.detectAccessRestriction?.(html, u);
+      if (restricted) {
+        res.status(403).json({ error: restricted });
         return;
       }
-      const pages = extractPagesFromHtml(html, u);
-      res.json({ sourceUrl: u.toString(), adapterId: 'asurascans', pageCount: pages.length, pages });
+      const pages = adapter.extractPagesFromHtml(html, u);
+      if (pages.length === 0) {
+        res.status(422).json({ error: '[content_not_recognized] Conteúdo não reconhecido: nenhuma sequência de imagens de capítulo encontrada.' });
+        return;
+      }
+      res.json({
+        sourceUrl: u.toString(),
+        adapterId: adapter.id,
+        adapterName: adapter.displayName,
+        acquisitionMethod,
+        pageCount: pages.length,
+        pages,
+      });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
