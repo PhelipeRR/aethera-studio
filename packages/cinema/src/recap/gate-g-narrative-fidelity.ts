@@ -1,7 +1,6 @@
 import { existsSync } from 'node:fs';
 import type {
 	RecapScript,
-	Scene,
 	GateGReport,
 	GateGVerdict,
 	GateGFidelityHint,
@@ -9,6 +8,7 @@ import type {
 	GateGDivergenceReport,
 	HumanizeSceneDiff,
 } from './recap-types.js';
+import { isGenericNarration, isReviewRequiredPlaceholder, estimateNarrationDurationSec } from './script-generator.js';
 
 export interface GateGInput {
 	script: RecapScript;
@@ -17,16 +17,34 @@ export interface GateGInput {
 	minSceneConfidence?: number;
 }
 
+const FUTURE_SPOILER_PATTERNS: readonly RegExp[] = [
+	/\bno pr[óo]ximo cap[íi]tulo\b/i,
+	/\bcap[íi]tulos? futuros?\b/i,
+	/\bmais tarde na obra\b/i,
+	/\bno final do mang[áa]\b/i,
+	/\bno final do manhwa\b/i,
+];
+
+function extractSignificantTokens(text: string): string[] {
+	return text
+		.toLowerCase()
+		.normalize('NFD')
+		.replace(/[\u0300-\u036f]/g, '')
+		.replace(/[^a-z0-9\s]/g, ' ')
+		.split(/\s+/)
+		.filter((t) => t.length >= 4);
+}
+
 /**
- * Gate G — Narrative Fidelity (Phase 2)
+ * Gate G — Narrative Fidelity (Phases 2 & 8)
  *
- * Validates that the generated RecapScript is faithful to the source panels:
- * - Every scene references at least one valid panel with accessible cropped image.
- * - Character identity is consistent across consecutive scenes.
- * - Scene order matches panel reading order (no temporal inversions).
- * - No invented events: narration must be grounded in panel evidence.
- * - Low-confidence scenes are flagged for review, never auto-approved.
- * - Ambiguities and gaps are explicitly recorded, not silently ignored.
+ * Validates that the generated RecapScript is genuinely faithful to the source panels:
+ * - Blocks generic / repeated filler phrases ("A história avançou.", etc.).
+ * - Blocks scenes without verifiable narrative content or panel grounding.
+ * - Flags ignored important dialogues from extracted speech bubbles.
+ * - Detects character inconsistencies, order violations, future-chapter spoilers,
+ *   and narration-vs-duration mismatches.
+ * - Sends low-confidence / uncertain scenes to human review with panel IDs & uncertainties.
  *
  * Verdicts: pass | needs_review | fail
  */
@@ -46,7 +64,6 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 		};
 	}
 
-	// Build panel lookup map
 	const panelMap = new Map<string, ExtractedPanel>();
 	for (const panel of panels) {
 		panelMap.set(panel.panelId, panel);
@@ -62,7 +79,7 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 			hints.push({
 				sceneId: scene.sceneId,
 				issueCode: 'missing_panel_reference',
-				detail: `Scene has no panel references. Narration cannot be verified against source material.`,
+				detail: 'Scene has no panel references. Narration cannot be verified against source material.',
 			});
 			continue;
 		}
@@ -94,22 +111,157 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 		reasons.push(`${invalidImagePaths} caminho(s) de imagem recortada inválido(s) ou inacessível(is).`);
 	}
 
-	// ─── 2. Character consistency across consecutive scenes ───────────────────
+	// ─── 2. Generic / repeated narration & absence of narrative content ───────
+	let genericNarrationScenes = 0;
+	let insufficientContentScenes = 0;
+	let ungroundedScenes = 0;
+	let ignoredDialogueScenes = 0;
+	let hallucinationHints = 0;
+	let durationMismatchScenes = 0;
+
+	const normalizedNarrationMap = new Map<string, Array<{ sceneId: string; panelSignature: string }>>();
+
+	for (const scene of script.scenes) {
+		const narration = scene.narrationText.trim();
+		const normKey = narration.toLowerCase().replace(/\s+/g, ' ');
+		const panelSignature = [...scene.panelIds].sort().join(',');
+		const list = normalizedNarrationMap.get(normKey) ?? [];
+		list.push({ sceneId: scene.sceneId, panelSignature });
+		normalizedNarrationMap.set(normKey, list);
+
+		if (isGenericNarration(narration)) {
+			genericNarrationScenes++;
+			hints.push({
+				sceneId: scene.sceneId,
+				issueCode: 'generic_narration',
+				detail: `Narração genérica bloqueada ("${narration.slice(0, 80)}"). O roteiro deve descrever os acontecimentos reais dos painéis.`,
+			});
+		} else if (isReviewRequiredPlaceholder(narration)) {
+			insufficientContentScenes++;
+			hints.push({
+				sceneId: scene.sceneId,
+				issueCode: 'insufficient_narrative_content',
+				detail: `Cena sem evidência visual/OCR suficiente nos painéis [${scene.panelIds.join(', ')}]. Enviada para revisão humana.`,
+			});
+		}
+
+		// Ungrounded description: zero confidence with no extracted visual/dialogue evidence yet affirmative text
+		const hasAnyVisualOrDialogue =
+			Boolean(scene.visualSummary && scene.visualSummary.trim().length > 0) ||
+			Boolean(scene.extractedDialogues && scene.extractedDialogues.length > 0) ||
+			scene.characters.length > 0;
+		if (
+			scene.confidence === 0 &&
+			!hasAnyVisualOrDialogue &&
+			!isReviewRequiredPlaceholder(narration) &&
+			!isGenericNarration(narration)
+		) {
+			ungroundedScenes++;
+			hints.push({
+				sceneId: scene.sceneId,
+				issueCode: 'ungrounded_description',
+				detail: `Cena com confiança 0 e sem evidência visual/textual nos painéis [${scene.panelIds.join(', ')}], mas com narração afirmativa.`,
+			});
+		}
+
+		// Future-chapter spoiler / detectable hallucination check
+		if (FUTURE_SPOILER_PATTERNS.some((re) => re.test(narration))) {
+			hallucinationHints++;
+			hints.push({
+				sceneId: scene.sceneId,
+				issueCode: 'invented_event',
+				detail: 'Narração antecipa acontecimentos fora do capítulo atual.',
+			});
+		}
+
+		// Important extracted dialogues ignored in narration
+		const essentialDialogues = (scene.extractedDialogues ?? []).filter(
+			(d) => (d.kind ?? (d.isNarration ? 'narration' : 'dialogue')) !== 'sfx' && d.text.trim().length >= 8,
+		);
+		if (essentialDialogues.length > 0 && !isReviewRequiredPlaceholder(narration)) {
+			const narrationTokens = new Set(extractSignificantTokens(narration));
+			const anyDialogueReflected = essentialDialogues.some((d) => {
+				const dTokens = extractSignificantTokens(d.translatedText ?? d.text);
+				if (dTokens.length === 0) return true;
+				return dTokens.some((t) => narrationTokens.has(t));
+			});
+			if (!anyDialogueReflected) {
+				ignoredDialogueScenes++;
+				hints.push({
+					sceneId: scene.sceneId,
+					issueCode: 'ignored_dialogue',
+					detail: `Diálogo(s) extraído(s) dos balões (${essentialDialogues.map((d) => `"${d.text.slice(0, 40)}"`).join(', ')}) não refletido(s) na narração.`,
+				});
+			}
+		}
+
+		// Duration incompatible with speech length (e.g. fixed 1s for multi-sentence narration)
+		if (!isReviewRequiredPlaceholder(narration)) {
+			const expectedSec = estimateNarrationDurationSec(narration);
+			const effectiveDuration = scene.measuredDurationSec ?? scene.estimatedDurationSec;
+			const wordCount = narration.split(/\s+/).filter(Boolean).length;
+			if (wordCount >= 10 && (effectiveDuration < expectedSec * 0.35 || effectiveDuration > expectedSec * 3.5)) {
+				durationMismatchScenes++;
+				hints.push({
+					sceneId: scene.sceneId,
+					issueCode: 'duration_speech_mismatch',
+					detail: `Duração (${effectiveDuration}s) incompatível com o texto narrado (${wordCount} palavras, esperado ~${expectedSec}s).`,
+				});
+			}
+		}
+	}
+
+	// Detect exact duplicate narrations across scenes referencing distinct panels
+	let duplicatedNarrationScenes = 0;
+	for (const [textKey, entries] of normalizedNarrationMap) {
+		const distinctPanels = new Set(entries.map((e) => e.panelSignature));
+		if (entries.length > 1 && distinctPanels.size > 1 && !textKey.startsWith('[revisão necessária]')) {
+			duplicatedNarrationScenes += entries.length;
+			for (const entry of entries) {
+				hints.push({
+					sceneId: entry.sceneId,
+					issueCode: 'generic_narration',
+					detail: `Narração repetida de forma idêntica em ${entries.length} cenas com painéis distintos ("${textKey.slice(0, 60)}").`,
+				});
+			}
+		}
+	}
+
+	if (genericNarrationScenes > 0) {
+		reasons.push(`${genericNarrationScenes} cena(s) com narração genérica bloqueada.`);
+	}
+	if (duplicatedNarrationScenes > 0) {
+		reasons.push(`${duplicatedNarrationScenes} cena(s) com narração idêntica repetida.`);
+	}
+	if (insufficientContentScenes > 0) {
+		reasons.push(`${insufficientContentScenes} cena(s) sem conteúdo narrativo verificável (revisão humana necessária).`);
+	}
+	if (ungroundedScenes > 0) {
+		reasons.push(`${ungroundedScenes} cena(s) com descrição sem relação comprovada com os painéis.`);
+	}
+	if (hallucinationHints > 0) {
+		reasons.push(`${hallucinationHints} indício(s) de antecipação ou evento inventado fora do capítulo.`);
+	}
+	if (ignoredDialogueScenes > 0) {
+		reasons.push(`${ignoredDialogueScenes} cena(s) com diálogos importantes dos balões não incorporados na narração.`);
+	}
+	if (durationMismatchScenes > 0) {
+		reasons.push(`${durationMismatchScenes} cena(s) com duração incompatível com a fala.`);
+	}
+
+	// ─── 3. Character consistency across consecutive scenes ───────────────────
 	let characterInconsistencies = 0;
 
 	for (let i = 1; i < script.scenes.length; i++) {
 		const prev = script.scenes[i - 1]!;
 		const curr = script.scenes[i]!;
 
-		// Skip if either scene has no characters (establishing/transition scenes)
 		if (prev.characters.length === 0 || curr.characters.length === 0) continue;
 
 		const prevChars = new Set(prev.characters.map((c) => c.toLowerCase()));
 		const currChars = new Set(curr.characters.map((c) => c.toLowerCase()));
 		const hasShared = [...prevChars].some((c) => currChars.has(c));
 
-		// Flag when consecutive scenes have completely disjoint character sets
-		// AND both have multiple characters (single-character transitions are normal)
 		if (!hasShared && prevChars.size > 1 && currChars.size > 1) {
 			characterInconsistencies++;
 			hints.push({
@@ -124,14 +276,13 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 		reasons.push(`${characterInconsistencies} inconsistência(s) de personagem entre cenas consecutivas.`);
 	}
 
-	// ─── 3. Scene order vs panel reading order ────────────────────────────────
+	// ─── 4. Scene order vs panel reading order ────────────────────────────────
 	let orderViolations = 0;
 
 	for (let i = 1; i < script.scenes.length; i++) {
 		const prev = script.scenes[i - 1]!;
 		const curr = script.scenes[i]!;
 
-		// Get the minimum page number from each scene's panels
 		const prevMinPage = Math.min(
 			...prev.panelIds.map((pid) => {
 				const p = panelMap.get(pid);
@@ -159,7 +310,7 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 		reasons.push(`${orderViolations} violação(ões) na ordem das cenas em relação à ordem de leitura.`);
 	}
 
-	// ─── 4. Low confidence scenes ─────────────────────────────────────────────
+	// ─── 5. Low confidence scenes ─────────────────────────────────────────────
 	let lowConfidenceScenes = 0;
 
 	for (const scene of script.scenes) {
@@ -177,7 +328,7 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 		reasons.push(`${lowConfidenceScenes} cena(s) com confiança abaixo do limiar (${minSceneConfidence}).`);
 	}
 
-	// ─── 5. Unresolved ambiguities (scenes marked needs_review) ───────────────
+	// ─── 6. Unresolved ambiguities (scenes marked needs_review) ───────────────
 	let unresolvedAmbiguities = 0;
 
 	for (const scene of script.scenes) {
@@ -195,7 +346,7 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 		reasons.push(`${unresolvedAmbiguities} cena(s) marcada(s) para revisão humana.`);
 	}
 
-	// ─── 6. Narrative gaps (from script warnings) ─────────────────────────────
+	// ─── 7. Narrative gaps (from script warnings) ─────────────────────────────
 	const narrativeGaps = (script.warnings ?? []).filter((w) =>
 		w.toLowerCase().includes('gap') || w.toLowerCase().includes('lacuna'),
 	).length;
@@ -205,9 +356,21 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 	}
 
 	// ─── Determine verdict ────────────────────────────────────────────────────
-	const hasCriticalIssues = missingPanelRefs > 0 || orderViolations > 0;
+	const allScenesInsufficient = insufficientContentScenes === script.scenes.length;
+	const hasCriticalIssues =
+		missingPanelRefs > 0 ||
+		orderViolations > 0 ||
+		genericNarrationScenes > 0 ||
+		duplicatedNarrationScenes > 0 ||
+		allScenesInsufficient ||
+		ungroundedScenes > 0 ||
+		hallucinationHints > 0 ||
+		durationMismatchScenes > 0;
+
 	const hasReviewIssues =
 		invalidImagePaths > 0 ||
+		insufficientContentScenes > 0 ||
+		ignoredDialogueScenes > 0 ||
 		characterInconsistencies > 0 ||
 		lowConfidenceScenes > 0 ||
 		unresolvedAmbiguities > 0 ||
@@ -231,6 +394,13 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 			sceneCount: script.scenes.length,
 			missingPanelRefs,
 			invalidImagePaths,
+			genericNarrationScenes,
+			duplicatedNarrationScenes,
+			insufficientContentScenes,
+			ungroundedScenes,
+			ignoredDialogueScenes,
+			hallucinationHints,
+			durationMismatchScenes,
 			characterInconsistencies,
 			orderViolations,
 			lowConfidenceScenes,
@@ -241,7 +411,6 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 		hints,
 	};
 }
-
 
 /**
  * Builds a structured divergence and evidence report comparing Gate G before

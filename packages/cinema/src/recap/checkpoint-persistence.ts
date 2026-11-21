@@ -4,7 +4,7 @@ import type { PanelAnalysis, RecapCheckpoint } from './recap-types.js';
 import { panelAnalysisSchema, recapCheckpointSchema } from './recap-types.js';
 
 const CHECKPOINT_FILENAME = 'recap-checkpoint.json';
-export const RECAP_ANALYZER_VERSION = '2.2.4';
+export const RECAP_ANALYZER_VERSION = '2.3.0';
 
 /**
  * Builds a deterministic cache key binding imageHash, model, and analyzer version.

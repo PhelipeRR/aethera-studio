@@ -26,6 +26,7 @@ import type {
 	ExtractedPanel,
 } from './recap-types.js';
 import { runGateGNarrativeFidelity } from './gate-g-narrative-fidelity.js';
+import { isGenericNarration, isReviewRequiredPlaceholder, estimateNarrationDurationSec } from './script-generator.js';
 
 // ─── System Prompt Template ──────────────────────────────────────────────────
 
@@ -82,7 +83,22 @@ interface StructuralCheck {
 	reason?: string;
 }
 
+function extractFactualTokens(text: string): string[] {
+	return text
+		.toLowerCase()
+		.normalize('NFD')
+		.replace(/[\u0300-\u036f]/g, '')
+		.replace(/[^a-z0-9\s]/g, ' ')
+		.split(/\s+/)
+		.filter((t) => t.length >= 4);
+}
+
 function checkStructuralIntegrity(original: Scene, humanizedText: string): StructuralCheck {
+	// Reject generic filler replacement
+	if (isGenericNarration(humanizedText)) {
+		return { ok: false, reason: 'Humanized text replaced scene narration with a generic filler phrase.' };
+	}
+
 	// Verify that named characters explicitly mentioned in the original narration are preserved
 	const originalLower = original.narrationText.toLowerCase();
 	const humanizedLower = humanizedText.toLowerCase();
@@ -96,6 +112,40 @@ function checkStructuralIntegrity(original: Scene, humanizedText: string): Struc
 	// Check for hallucinated dialogue markers
 	if (humanizedText.includes('"') && !original.narrationText.includes('"')) {
 		return { ok: false, reason: 'Humanized text introduced dialogue quotes not present in original.' };
+	}
+
+	// Verify essential extracted dialogues were not dropped
+	const essentialDialogues = (original.extractedDialogues ?? []).filter(
+		(d) => (d.kind ?? (d.isNarration ? 'narration' : 'dialogue')) !== 'sfx' && d.text.trim().length >= 8,
+	);
+	if (essentialDialogues.length > 0) {
+		const humTokens = new Set(extractFactualTokens(humanizedText));
+		const origTokens = new Set(extractFactualTokens(original.narrationText));
+		for (const d of essentialDialogues) {
+			const dTokens = extractFactualTokens(d.translatedText ?? d.text);
+			const wasInOriginal = dTokens.some((t) => origTokens.has(t));
+			const stillInHumanized = dTokens.some((t) => humTokens.has(t));
+			if (wasInOriginal && !stillInHumanized) {
+				return { ok: false, reason: `Humanized text omitted essential dialogue "${d.text.slice(0, 50)}".` };
+			}
+		}
+	}
+
+	// Detect severe factual information loss on rich scenes
+	const originalWords = original.narrationText.trim().split(/\s+/).filter(Boolean).length;
+	if (originalWords >= 12) {
+		const origFactual = [...new Set(extractFactualTokens(original.narrationText))];
+		if (origFactual.length >= 5) {
+			const humFactual = new Set(extractFactualTokens(humanizedText));
+			const preservedCount = origFactual.filter((t) => humFactual.has(t)).length;
+			const preservationRatio = preservedCount / origFactual.length;
+			if (preservationRatio < 0.3) {
+				return {
+					ok: false,
+					reason: `Humanized text lost too much factual information (preservation ratio ${Math.round(preservationRatio * 100)}%).`,
+				};
+			}
+		}
 	}
 
 	return { ok: true };
@@ -150,6 +200,19 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 	for (let i = 0; i < humanizedScenes.length; i++) {
 		const scene = humanizedScenes[i]!;
 		const originalText = scene.narrationText;
+
+		// Only humanize scenes that already have a valid factual narration
+		if (isReviewRequiredPlaceholder(originalText) || isGenericNarration(originalText)) {
+			warnings.push(`Scene ${scene.sceneId}: skipped humanization because scene lacks valid factual narration.`);
+			diffs.push({
+				sceneId: scene.sceneId,
+				originalText,
+				humanizedText: originalText,
+				reverted: true,
+				revertReason: 'no_valid_factual_narration',
+			});
+			continue;
+		}
 
 		if (options.signal?.aborted) {
 			warnings.push(`Humanize aborted at scene ${i + 1}/${humanizedScenes.length}.`);
@@ -222,8 +285,14 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 				continue;
 			}
 
-			// Apply humanized text
-			humanizedScenes[i] = { ...scene, narrationText: humanizedText };
+			// Apply humanized text and update estimated duration
+			const updatedDuration = estimateNarrationDurationSec(humanizedText);
+			humanizedScenes[i] = {
+				...scene,
+				narrationText: humanizedText,
+				estimatedDurationSec: updatedDuration,
+				durationSource: 'estimated',
+			};
 			anySucceeded = true;
 			diffs.push({ sceneId: scene.sceneId, originalText, humanizedText, reverted: false });
 		} catch (err) {

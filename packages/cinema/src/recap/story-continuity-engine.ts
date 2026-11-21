@@ -5,8 +5,12 @@ import type {
 	ReadingOrder,
 	Emotion,
 	ActionType,
+	DialogueEntry,
+	StoryContinuityState,
+	ContinuityCharacter,
+	ContinuityRelationship,
 } from './recap-types.js';
-import { storyBeatSchema, narrativeSequenceSchema } from './recap-types.js';
+import { storyBeatSchema, narrativeSequenceSchema, storyContinuityStateSchema } from './recap-types.js';
 
 export interface ContinityEngineOptions {
 	chapterId: string;
@@ -23,13 +27,36 @@ export interface ContinuityResult {
 	warnings: string[];
 }
 
+const NON_OBSERVABLE_ACTION_PATTERNS: readonly RegExp[] = [
+	/^no detectable action$/i,
+	/^inferred .+ from panel classification$/i,
+	/^visual analysis unavailable$/i,
+	/^analysis failed:/i,
+];
+
+function isObservableDescription(text: string | undefined): text is string {
+	if (!text) return false;
+	const trimmed = text.trim();
+	if (trimmed.length < 4) return false;
+	return !NON_OBSERVABLE_ACTION_PATTERNS.some((re) => re.test(trimmed));
+}
+
+function dedupeStrings(items: readonly string[]): string[] {
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const raw of items) {
+		const trimmed = raw.trim();
+		if (!trimmed) continue;
+		const key = trimmed.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(trimmed);
+	}
+	return out;
+}
+
 /**
  * Determines whether two consecutive panel analyses should be merged into the same beat.
- * Merging criteria:
- * - Same characters (or overlapping character sets)
- * - Compatible action types (e.g., dialogue→dialogue, combat→combat)
- * - Confidence above threshold
- * - Not crossing page boundaries for splash/establishing panels
  */
 function shouldMergeBeats(
 	prev: PanelAnalysis,
@@ -39,26 +66,40 @@ function shouldMergeBeats(
 ): boolean {
 	if (maxPanelsInCurrentBeat >= maxPanelsPerBeat) return false;
 
-	// Splash and establishing panels always start a new beat
+	// Splash / transformation panels start a new narrative beat
 	if (curr.actions.some((a) => a.type === 'transformation')) return false;
+
+	// Distinct explicit settings indicate a scene change
+	if (
+		prev.setting &&
+		curr.setting &&
+		prev.setting.trim().toLowerCase() !== curr.setting.trim().toLowerCase() &&
+		!prev.setting.toLowerCase().includes(curr.setting.toLowerCase()) &&
+		!curr.setting.toLowerCase().includes(prev.setting.toLowerCase())
+	) {
+		return false;
+	}
 
 	// Check character overlap
 	const prevChars = new Set(prev.characters.map((c) => c.toLowerCase()));
 	const currChars = new Set(curr.characters.map((c) => c.toLowerCase()));
-	const hasOverlap = prevChars.size === 0 || currChars.size === 0 ||
- [...prevChars].some((c) => currChars.has(c));
+	const hasOverlap =
+		prevChars.size === 0 ||
+		currChars.size === 0 ||
+		[...prevChars].some((c) => currChars.has(c));
 
 	if (!hasOverlap && prevChars.size > 0 && currChars.size > 0) return false;
 
 	// Check action compatibility
 	const compatibleActions = new Map<ActionType, Set<ActionType>>([
- ['dialogue', new Set(['dialogue', 'reaction', 'observation'])],
- ['combat', new Set(['combat', 'movement', 'reaction'])],
- ['movement', new Set(['movement', 'combat', 'observation'])],
- ['observation', new Set(['observation', 'dialogue', 'none'])],
- ['reaction', new Set(['reaction', 'dialogue', 'observation'])],
- ['none', new Set(['none', 'observation', 'dialogue'])],
- ]);
+		['dialogue', new Set(['dialogue', 'reaction', 'observation'])],
+		['combat', new Set(['combat', 'movement', 'reaction'])],
+		['movement', new Set(['movement', 'combat', 'observation'])],
+		['observation', new Set(['observation', 'dialogue', 'none'])],
+		['reaction', new Set(['reaction', 'dialogue', 'observation'])],
+		['interaction', new Set(['interaction', 'dialogue', 'reaction', 'observation'])],
+		['none', new Set(['none', 'observation', 'dialogue'])],
+	]);
 
 	const prevAction = prev.actions[0]?.type ?? 'none';
 	const currAction = curr.actions[0]?.type ?? 'none';
@@ -69,216 +110,380 @@ function shouldMergeBeats(
 }
 
 /**
- * Aggregates evidence from multiple panel analyses into a single beat summary.
- * Only includes information supported by evidence — never fabricates.
+ * Aggregates rich visual and textual evidence from a beat's panels.
  */
-function buildBeatSummary(
+function buildBeatEvidence(
 	analyses: PanelAnalysis[],
-	beatIndex: number,
-): { summary: string; characters: string[]; emotion: Emotion; actionType: ActionType } {
-	// Collect all unique characters across panels
-	const charSet = new Set<string>();
-	for (const a of analyses) {
- for (const c of a.characters) charSet.add(c);
-	}
-	const characters = [...charSet];
+	inheritedLocation?: string,
+): {
+	summary: string;
+	visualSummary?: string;
+	setting?: string;
+	dialogues: DialogueEntry[];
+	relevantObjects: string[];
+	expressions: string[];
+	uncertainties: string[];
+	characters: string[];
+	emotion: Emotion;
+	actionType: ActionType;
+} {
+	const characters = dedupeStrings(analyses.flatMap((a) => a.characters));
 
-	// Determine dominant emotion (most frequent non-unknown)
+	// Dominant non-unknown emotion
 	const emotionCounts = new Map<Emotion, number>();
 	for (const a of analyses) {
- for (const e of a.emotions) {
- if (e !== 'unknown') {
- emotionCounts.set(e, (emotionCounts.get(e) ?? 0) + 1);
- }
- }
+		for (const e of a.emotions) {
+			if (e !== 'unknown') {
+				emotionCounts.set(e, (emotionCounts.get(e) ?? 0) + 1);
+			}
+		}
 	}
 	let emotion: Emotion = 'unknown';
 	let maxCount = 0;
 	for (const [e, count] of emotionCounts) {
- if (count > maxCount) { emotion = e; maxCount = count; }
+		if (count > maxCount) {
+			emotion = e;
+			maxCount = count;
+		}
 	}
 
-	// Determine primary action type
+	// Primary action type
 	const actionCounts = new Map<ActionType, number>();
 	for (const a of analyses) {
- for (const act of a.actions) {
- actionCounts.set(act.type, (actionCounts.get(act.type) ?? 0) + 1);
- }
+		for (const act of a.actions) {
+			actionCounts.set(act.type, (actionCounts.get(act.type) ?? 0) + 1);
+		}
 	}
 	let actionType: ActionType = 'none';
 	let maxActCount = 0;
 	for (const [at, count] of actionCounts) {
- if (count > maxActCount) { actionType = at; maxActCount = count; }
+		if (count > maxActCount) {
+			actionType = at;
+			maxActCount = count;
+		}
 	}
 
-	// Build summary from verified evidence only
-	const parts: string[] = [];
-	const dialogues = analyses.flatMap((a) => a.dialogues.filter((d) => !d.isNarration));
-	const narrations = analyses.flatMap((a) => a.dialogues.filter((d) => d.isNarration));
+	const visualFragments = dedupeStrings([
+		...analyses.map((a) => a.visualDescription).filter(isObservableDescription),
+		...analyses.flatMap((a) => a.actions.map((act) => act.description)).filter(isObservableDescription),
+	]);
+	const visualSummary = visualFragments.length > 0 ? visualFragments.join(' ') : undefined;
 
-	if (characters.length > 0) {
- parts.push(characters.join(', '));
+	const settings = dedupeStrings(analyses.map((a) => a.setting ?? '').filter(Boolean));
+	const setting = settings[0] ?? inheritedLocation;
+
+	const dialogues: DialogueEntry[] = [];
+	for (const a of analyses) {
+		for (const d of a.dialogues) {
+			if (d.text.trim().length > 0) {
+				dialogues.push(d);
+			}
+		}
 	}
 
-	if (actionType === 'dialogue' && dialogues.length > 0) {
- const sampleDialogue = dialogues[0]!.text.slice(0, 80);
- parts.push(`em diálogo${dialogues.length > 1 ? ` (${dialogues.length} falas)` : ''}`);
- if (sampleDialogue) parts.push(`"${sampleDialogue}${dialogues[0]!.text.length > 80 ? '...' : ''}"`);
-	} else if (actionType === 'combat') {
- parts.push('em confronto');
-	} else if (actionType === 'movement') {
- parts.push('em movimento');
-	} else if (actionType === 'transformation') {
- parts.push('em transformação');
-	} else if (narrations.length > 0) {
- parts.push(`com narração${narrations.length > 1 ? ` (${narrations.length} trechos)` : ''}`);
+	const relevantObjects = dedupeStrings(analyses.flatMap((a) => a.relevantObjects ?? []));
+	const expressions = dedupeStrings([
+		...analyses.flatMap((a) => a.expressions ?? []),
+		...analyses.flatMap((a) => (a.characterDetails ?? []).map((cd) => cd.expression ?? '')),
+	]);
+	const uncertainties = dedupeStrings([
+		...analyses.flatMap((a) => a.uncertainties ?? []),
+		...dialogues.map((d) => d.uncertainty ?? ''),
+	]);
+
+	// Build concrete summary grounded in visual description and dialogues
+	const summaryParts: string[] = [];
+	if (visualSummary) {
+		summaryParts.push(visualSummary);
 	} else {
- parts.push('em cena');
+		if (characters.length > 0) summaryParts.push(characters.join(', '));
+		const speechDialogues = dialogues.filter((d) => d.kind !== 'narration' && d.kind !== 'sfx' && !d.isNarration);
+		const narrations = dialogues.filter((d) => d.kind === 'narration' || d.isNarration);
+		if (speechDialogues.length > 0) {
+			const sample = speechDialogues[0]!.text.slice(0, 90);
+			summaryParts.push(`em diálogo${speechDialogues.length > 1 ? ` (${speechDialogues.length} falas)` : ''}: "${sample}${speechDialogues[0]!.text.length > 90 ? '...' : ''}"`);
+		} else if (narrations.length > 0) {
+			const sample = narrations[0]!.text.slice(0, 90);
+			summaryParts.push(`com narração: "${sample}${narrations[0]!.text.length > 90 ? '...' : ''}"`);
+		} else if (actionType === 'combat') {
+			summaryParts.push('em confronto');
+		} else if (actionType === 'movement') {
+			summaryParts.push('em movimento');
+		} else if (actionType === 'transformation') {
+			summaryParts.push('em transformação');
+		} else {
+			summaryParts.push('sem descrição visual ou textual suficiente');
+		}
 	}
 
-	const summary = parts.join(' ');
+	const summary = summaryParts.join(' ').trim();
 
-	return { summary, characters, emotion, actionType };
+	return {
+		summary,
+		...(visualSummary ? { visualSummary } : {}),
+		...(setting ? { setting } : {}),
+		dialogues,
+		relevantObjects,
+		expressions,
+		uncertainties,
+		characters,
+		emotion,
+		actionType,
+	};
+}
+
+function updateContinuityState(
+	state: StoryContinuityState,
+	beatPanels: PanelAnalysis[],
+	beatInfo: ReturnType<typeof buildBeatEvidence>,
+): void {
+	const firstPanelId = beatPanels[0]!.panelId;
+	const lastPanelId = beatPanels[beatPanels.length - 1]!.panelId;
+
+	// Track characters consistently across panels
+	for (const charName of beatInfo.characters) {
+		const lower = charName.toLowerCase();
+		const existing = state.characters.find(
+			(c) => c.name.toLowerCase() === lower || c.aliases.some((a) => a.toLowerCase() === lower),
+		);
+		const detail = beatPanels
+			.flatMap((p) => p.characterDetails ?? [])
+			.find((cd) => cd.id.toLowerCase() === lower);
+		const latestStatus = detail?.expression ?? detail?.poseOrAction;
+		if (existing) {
+			existing.lastSeenPanelId = lastPanelId;
+			if (latestStatus) existing.status = latestStatus;
+		} else {
+			const newChar: ContinuityCharacter = {
+				name: charName,
+				aliases: [],
+				firstSeenPanelId: firstPanelId,
+				lastSeenPanelId: lastPanelId,
+				...(latestStatus ? { status: latestStatus } : {}),
+			};
+			state.characters.push(newChar);
+		}
+	}
+
+	// Track observed relationships between co-occurring characters
+	if (beatInfo.characters.length >= 2) {
+		const primary = beatInfo.characters[0]!;
+		const secondary = beatInfo.characters[1]!;
+		const relLabel =
+			beatInfo.actionType === 'combat'
+				? 'confronto'
+				: beatInfo.dialogues.length > 0
+					? 'interação em diálogo'
+					: 'presentes na mesma cena';
+		const alreadyRecorded = state.relationships.some(
+			(r) =>
+				((r.from.toLowerCase() === primary.toLowerCase() && r.to.toLowerCase() === secondary.toLowerCase()) ||
+					(r.from.toLowerCase() === secondary.toLowerCase() && r.to.toLowerCase() === primary.toLowerCase())) &&
+				r.relation === relLabel,
+		);
+		if (!alreadyRecorded) {
+			const rel: ContinuityRelationship = {
+				from: primary,
+				to: secondary,
+				relation: relLabel,
+				evidencePanelId: firstPanelId,
+			};
+			state.relationships.push(rel);
+		}
+	}
+
+	// Update current location
+	if (beatInfo.setting) {
+		state.currentLocation = beatInfo.setting;
+	}
+
+	// Track concrete events
+	if (beatInfo.visualSummary) {
+		state.previousEvents.push(beatInfo.visualSummary.slice(0, 180));
+	}
+
+	// Track ongoing conflict
+	if (beatInfo.actionType === 'combat' || beatInfo.emotion === 'tension' || beatInfo.emotion === 'anger' || beatInfo.emotion === 'fear') {
+		state.ongoingConflict = beatInfo.summary.slice(0, 180);
+	}
+
+	// Track revealed facts (narration boxes & declarative statements) and open questions
+	for (const d of beatInfo.dialogues) {
+		const text = d.text.trim();
+		if (!text) continue;
+		if (text.includes('?')) {
+			if (!state.openQuestions.includes(text)) {
+				state.openQuestions.push(text);
+			}
+		} else if (d.kind === 'narration' || d.isNarration) {
+			if (!state.revealedFacts.includes(text)) {
+				state.revealedFacts.push(text);
+			}
+		}
+	}
 }
 
 /**
- * Story Continuity Engine — Phase 2 component.
+ * Story Continuity Engine — Phase 2/4 component.
  *
- * Groups ordered panel analyses into coherent narrative beats, maintaining
- * character consistency, action continuity, and explicit ambiguity tracking.
- *
- * KEY GUARANTEES:
- * - Beats are formed from consecutive panels with verified continuity.
- * - Low-confidence analyses produce beats marked needs_review.
- * - Character identity is tracked across beats for inconsistency detection.
- * - No narrative gaps are silently ignored — each gap produces a warning.
- * - Output is a validated NarrativeSequence with full traceability to panel IDs.
+ * Processes the complete sequence of panels maintaining chapter-wide continuity state
+ * (characters, relationships, location, prior events, ongoing conflict, revealed facts,
+ * open questions) and links every beat to both its prior context and next-beat transition.
  */
 export function runStoryContinuityEngine(options: ContinityEngineOptions): ContinuityResult {
 	const {
- chapterId,
- analyses,
- readingOrder,
- minBeatConfidence = 0.5,
- maxPanelsPerBeat = 4,
+		chapterId,
+		analyses,
+		readingOrder,
+		minBeatConfidence = 0.5,
+		maxPanelsPerBeat = 4,
 	} = options;
 	const warnings: string[] = [];
 
+	const continuityState: StoryContinuityState = {
+		characters: [],
+		relationships: [],
+		previousEvents: [],
+		revealedFacts: [],
+		openQuestions: [],
+	};
+
 	if (analyses.length === 0) {
- return {
- sequence: narrativeSequenceSchema.parse({
- chapterId,
- beats: [],
- readingOrder,
- generatedAtIso: new Date().toISOString(),
- warnings: ['No panel analyses provided.'],
- }),
- warnings: ['No panel analyses provided.'],
- };
+		return {
+			sequence: narrativeSequenceSchema.parse({
+				chapterId,
+				beats: [],
+				readingOrder,
+				continuityState: storyContinuityStateSchema.parse(continuityState),
+				generatedAtIso: new Date().toISOString(),
+				warnings: ['No panel analyses provided.'],
+			}),
+			warnings: ['No panel analyses provided.'],
+		};
 	}
 
-	// Group analyses into beats
-	const beats: StoryBeat[] = [];
-	let currentBeatAnalyses: PanelAnalysis[] = [analyses[0]!];
-	let beatIndex = 0;
+	// Group analyses into coherent beats
+	const beatGroups: PanelAnalysis[][] = [];
+	let currentGroup: PanelAnalysis[] = [analyses[0]!];
 
 	for (let i = 1; i < analyses.length; i++) {
- const curr = analyses[i]!;
- const prev = analyses[i - 1]!;
-
- const canMerge = shouldMergeBeats(prev, curr, currentBeatAnalyses.length, maxPanelsPerBeat);
-
- if (canMerge) {
- currentBeatAnalyses.push(curr);
- } else {
- // Finalize current beat
- const { summary, characters, emotion, actionType } = buildBeatSummary(currentBeatAnalyses, beatIndex);
- const avgConfidence = currentBeatAnalyses.reduce((s, a) => s + a.analysisConfidence, 0) / currentBeatAnalyses.length;
- const needsReview = avgConfidence < minBeatConfidence;
-
- let reviewReason: string | undefined;
- if (needsReview) {
- reviewReason = `Average analysis confidence ${avgConfidence.toFixed(2)} below threshold ${minBeatConfidence}`;
- }
-
- // Check for character inconsistency within beat
- const allChars = currentBeatAnalyses.flatMap((a) => a.characters);
- const uniqueChars = new Set(allChars.map((c) => c.toLowerCase()));
- if (uniqueChars.size > 3) {
- warnings.push(`Beat ${beatIndex}: ${uniqueChars.size} distinct characters detected in single beat — possible merge error.`);
- if (!reviewReason) reviewReason = 'Too many distinct characters in single beat';
- }
-
- const beat = storyBeatSchema.parse({
- beatId: `${chapterId}_beat_${String(beatIndex).padStart(4, '0')}`,
- panelIds: currentBeatAnalyses.map((a) => a.panelId),
- summary,
- characters,
- emotion,
- actionType,
- pageNumber: currentBeatAnalyses[0]!.panelId.includes('_p')
- ? parseInt(currentBeatAnalyses[0]!.panelId.split('_p')[1]?.split('_')[0] ?? '0', 10)
- : 0,
- confidence: avgConfidence,
- needsReview: needsReview || !!reviewReason,
- reviewReason,
- });
-
- beats.push(beat);
- beatIndex++;
- currentBeatAnalyses = [curr];
- }
+		const curr = analyses[i]!;
+		const prev = analyses[i - 1]!;
+		if (shouldMergeBeats(prev, curr, currentGroup.length, maxPanelsPerBeat)) {
+			currentGroup.push(curr);
+		} else {
+			beatGroups.push(currentGroup);
+			currentGroup = [curr];
+		}
+	}
+	if (currentGroup.length > 0) {
+		beatGroups.push(currentGroup);
 	}
 
-	// Finalize last beat
-	if (currentBeatAnalyses.length > 0) {
- const { summary, characters, emotion, actionType } = buildBeatSummary(currentBeatAnalyses, beatIndex);
- const avgConfidence = currentBeatAnalyses.reduce((s, a) => s + a.analysisConfidence, 0) / currentBeatAnalyses.length;
- const needsReview = avgConfidence < minBeatConfidence;
+	// First pass: build beats & update chapter-wide continuity state
+	const rawBeats: Array<{
+		beatId: string;
+		panelIds: string[];
+		info: ReturnType<typeof buildBeatEvidence>;
+		pageNumber: number;
+		confidence: number;
+		needsReview: boolean;
+		reviewReason?: string;
+		previousContext?: string;
+	}> = [];
 
- let reviewReason: string | undefined;
- if (needsReview) {
- reviewReason = `Average analysis confidence ${avgConfidence.toFixed(2)} below threshold ${minBeatConfidence}`;
- }
+	for (let beatIndex = 0; beatIndex < beatGroups.length; beatIndex++) {
+		const group = beatGroups[beatIndex]!;
+		const previousEvent = continuityState.previousEvents[continuityState.previousEvents.length - 1];
+		const info = buildBeatEvidence(group, continuityState.currentLocation);
 
- const beat = storyBeatSchema.parse({
- beatId: `${chapterId}_beat_${String(beatIndex).padStart(4, '0')}`,
- panelIds: currentBeatAnalyses.map((a) => a.panelId),
- summary,
- characters,
- emotion,
- actionType,
- pageNumber: currentBeatAnalyses[0]!.panelId.includes('_p')
- ? parseInt(currentBeatAnalyses[0]!.panelId.split('_p')[1]?.split('_')[0] ?? '0', 10)
- : 0,
- confidence: avgConfidence,
- needsReview: needsReview || !!reviewReason,
- reviewReason,
- });
+		const avgConfidence = group.reduce((s, a) => s + a.analysisConfidence, 0) / group.length;
+		const needsReview = avgConfidence < minBeatConfidence;
+		let reviewReason: string | undefined;
+		if (needsReview) {
+			reviewReason = `Confiança média da análise (${avgConfidence.toFixed(2)}) abaixo do limiar (${minBeatConfidence}).`;
+		}
 
- beats.push(beat);
+		const uniqueChars = new Set(group.flatMap((a) => a.characters.map((c) => c.toLowerCase())));
+		if (uniqueChars.size > 4) {
+			warnings.push(`Beat ${beatIndex}: ${uniqueChars.size} distinct characters detected in single beat — possible merge error.`);
+			if (!reviewReason) reviewReason = 'Muitos personagens distintos em um único beat.';
+		}
+
+		if (info.uncertainties.length > 0 && !reviewReason && avgConfidence < 0.7) {
+			reviewReason = info.uncertainties[0];
+		}
+
+		const explicitPrevRelation = group.map((a) => a.relationToPrevious).find((r) => r && r.trim().length > 0);
+		const previousContext = explicitPrevRelation ?? previousEvent;
+
+		updateContinuityState(continuityState, group, info);
+
+		rawBeats.push({
+			beatId: `${chapterId}_beat_${String(beatIndex).padStart(4, '0')}`,
+			panelIds: group.map((a) => a.panelId),
+			info,
+			pageNumber: group[0]!.panelId.includes('_p')
+				? parseInt(group[0]!.panelId.split('_p')[1]?.split('_')[0] ?? '0', 10)
+				: 0,
+			confidence: avgConfidence,
+			needsReview: needsReview || !!reviewReason,
+			...(reviewReason ? { reviewReason } : {}),
+			...(previousContext ? { previousContext } : {}),
+		});
 	}
 
-	// Detect narrative gaps: consecutive beats with no shared characters and no transition
+	// Second pass: attach nextContext (consequence / transition into the following beat)
+	const beats: StoryBeat[] = rawBeats.map((raw, idx) => {
+		const nextRaw = rawBeats[idx + 1];
+		const explicitNextRelation = beatGroups[idx]!
+			.map((a) => a.relationToNext)
+			.find((r) => r && r.trim().length > 0);
+		const nextContext = explicitNextRelation ?? nextRaw?.info.visualSummary ?? nextRaw?.info.summary;
+
+		return storyBeatSchema.parse({
+			beatId: raw.beatId,
+			panelIds: raw.panelIds,
+			summary: raw.info.summary,
+			...(raw.info.visualSummary ? { visualSummary: raw.info.visualSummary } : {}),
+			...(raw.info.setting ? { setting: raw.info.setting } : {}),
+			...(raw.info.dialogues.length > 0 ? { dialogues: raw.info.dialogues } : {}),
+			...(raw.info.relevantObjects.length > 0 ? { relevantObjects: raw.info.relevantObjects } : {}),
+			...(raw.info.expressions.length > 0 ? { expressions: raw.info.expressions } : {}),
+			...(raw.info.uncertainties.length > 0 ? { uncertainties: raw.info.uncertainties } : {}),
+			...(raw.previousContext ? { previousContext: raw.previousContext } : {}),
+			...(nextContext ? { nextContext } : {}),
+			characters: raw.info.characters,
+			emotion: raw.info.emotion,
+			actionType: raw.info.actionType,
+			pageNumber: raw.pageNumber,
+			confidence: raw.confidence,
+			needsReview: raw.needsReview,
+			...(raw.reviewReason ? { reviewReason: raw.reviewReason } : {}),
+		});
+	});
+
+	// Detect narrative gaps between consecutive beats
 	for (let i = 1; i < beats.length; i++) {
- const prev = beats[i - 1]!;
- const curr = beats[i]!;
- const prevChars = new Set(prev.characters.map((c) => c.toLowerCase()));
- const currChars = new Set(curr.characters.map((c) => c.toLowerCase()));
- const hasSharedChar = [...prevChars].some((c) => currChars.has(c));
+		const prev = beats[i - 1]!;
+		const curr = beats[i]!;
+		const prevChars = new Set(prev.characters.map((c) => c.toLowerCase()));
+		const currChars = new Set(curr.characters.map((c) => c.toLowerCase()));
+		const hasSharedChar = [...prevChars].some((c) => currChars.has(c));
 
- if (!hasSharedChar && prevChars.size > 0 && currChars.size > 0) {
- const gapWarning = `Narrative gap between beat ${i - 1} (${prev.beatId}) and beat ${i} (${curr.beatId}): no shared characters. Possible scene transition or missing panel.`;
- warnings.push(gapWarning);
- }
+		if (!hasSharedChar && prevChars.size > 0 && currChars.size > 0) {
+			const gapWarning = `Narrative gap between beat ${i - 1} (${prev.beatId}) and beat ${i} (${curr.beatId}): no shared characters. Possible scene transition or missing panel.`;
+			warnings.push(gapWarning);
+		}
 	}
 
 	const sequence = narrativeSequenceSchema.parse({
- chapterId,
- beats,
- readingOrder,
- generatedAtIso: new Date().toISOString(),
- warnings: warnings.length > 0 ? warnings : undefined,
+		chapterId,
+		beats,
+		readingOrder,
+		continuityState: storyContinuityStateSchema.parse(continuityState),
+		generatedAtIso: new Date().toISOString(),
+		warnings: warnings.length > 0 ? warnings : undefined,
 	});
 
 	return { sequence, warnings };

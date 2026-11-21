@@ -9,7 +9,16 @@
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import type { ExtractedPanel, GateGReport, RecapScript, VisionAdapter } from '../recap-types.js';
+import type {
+	ExtractedPanel,
+	GateGReport,
+	HumanizeOptions,
+	RecapScript,
+	ScriptStyle,
+	TextEnhancementPort,
+	VisionAdapter,
+} from '../recap-types.js';
+import { SCRIPT_STYLE_VALUES } from '../recap-types.js';
 import type { GateFReport } from '../gate-f-panel-integrity.js';
 import type { GateHReport, RecapAudiovisualPlan, RecapTtsSynthesisPort, RecapVisualPlannerOptions } from '../phase3/recap-audiovisual-types.js';
 import { renderRecapVideo } from '../phase3/recap-mp4-renderer.js';
@@ -115,6 +124,10 @@ export interface RunRecapProductionOrchestratorInput {
 	providers: readonly ReadinessProviderProbe[];
 	circuitBreaker?: AgentCircuitBreaker;
 	visionAdapter?: VisionAdapter;
+	/** Optional LLM port for rich narrative script generation. */
+	scriptPort?: TextEnhancementPort;
+	/** Optional humanization pass after valid factual script generation. */
+	humanize?: HumanizeOptions & { port: TextEnhancementPort };
 	/** Optional pre-approved script (allows running Phase 3 directly without LLM agents). */
 	existingScript?: RecapScript;
 	ttsPort?: RecapTtsSynthesisPort;
@@ -257,12 +270,22 @@ export async function runRecapProductionOrchestrator(
 		// ─── Step 2: Story Engine (resumes checkpoint idempotently) ───────────
 		persist('story_engine', 'vision', 'Analisando painéis, continuidade e gerando roteiro…', { readiness });
 		try {
+			const resolvedStyle: ScriptStyle =
+				input.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(input.scriptStyle)
+					? (input.scriptStyle as ScriptStyle)
+					: 'narrative_recap';
 			const storyResult = await runStoryEngine({
 				chapterId: input.chapterId,
 				panels: input.panels,
 				outputDir: join(input.workspaceDir, 'story'),
 				checkpointDir,
+				scriptStyle: resolvedStyle,
+				workTitle: input.workTitle,
+				...(input.language ? { language: input.language } : {}),
+				...(input.humorVolume !== undefined ? { humorVolume: input.humorVolume } : {}),
 				...(input.visionAdapter ? { visionAdapter: input.visionAdapter } : {}),
+				...(input.scriptPort ? { scriptPort: input.scriptPort } : {}),
+				...(input.humanize ? { humanize: input.humanize } : {}),
 			});
 			script = storyResult.script;
 			gateGReport = storyResult.gateGReport;
@@ -358,6 +381,27 @@ export async function runRecapProductionOrchestrator(
 
 	completedSteps.add('motion');
 	completedSteps.add('audiovisual_preview');
+
+	// Propagate real TTS measured durations back onto the script scenes (Phase 7)
+	if (previewResult.plan.narrationSegments.length > 0) {
+		const measuredByScene = new Map<string, number>();
+		for (const seg of previewResult.plan.narrationSegments) {
+			if (!seg.isFallback && seg.durationMs > 0) {
+				measuredByScene.set(seg.sceneId, Math.round((seg.durationMs / 1000) * 10) / 10);
+			}
+		}
+		if (measuredByScene.size > 0) {
+			script = {
+				...script,
+				scenes: script.scenes.map((sc) => {
+					const measured = measuredByScene.get(sc.sceneId);
+					return measured !== undefined
+						? { ...sc, measuredDurationSec: measured, durationSource: 'tts_measured' as const }
+						: sc;
+				}),
+			};
+		}
+	}
 
 	if (previewResult.gateHReport.verdict === 'fail') {
 		const errMsg = `Gate H falhou na prévia: ${previewResult.gateHReport.reasons.join('; ')}`;

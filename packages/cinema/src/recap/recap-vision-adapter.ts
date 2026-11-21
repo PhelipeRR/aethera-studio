@@ -1,7 +1,16 @@
 import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, relative } from 'node:path';
-import type { VisionAdapter, VisionAnalysisResult, ActionType, Emotion } from './recap-types.js';
+import type {
+	VisionAdapter,
+	VisionAnalysisContext,
+	VisionAnalysisResult,
+	ActionType,
+	Emotion,
+	DialogueEntry,
+	CharacterDetail,
+} from './recap-types.js';
+import { classifyBubbleKind } from './dialogue-extractor.js';
 import { AllVisionProvidersUnavailableError, classifyVisionError, type VisionProviderDiagnostic } from './vision-error-classifier.js';
 import { AgentCircuitBreaker } from './vision-circuit-breaker.js';
 
@@ -10,6 +19,26 @@ import { AgentCircuitBreaker } from './vision-circuit-breaker.js';
  * This decouples the Cinema package from the Orchestrator's full vision-router types,
  * allowing the adapter to work with any provider that implements this contract.
  */
+export interface StructuredVisionPayload {
+	nature: string;
+	natureConfidence: number;
+	description: string;
+	frames: readonly { atMs: number; observed: string; visibleText: readonly { text: string; region: string }[] }[];
+	entities: readonly { name: string; type: string; basis: string; evidence: string; confidence: number }[];
+	actions: readonly { description: string; basis: string; confidence: number }[];
+	environment: { description: string; basis: string; confidence: number } | null;
+	overlays: { burnedText: boolean; burnedTextRegion: string | null; watermark: boolean; webcam: boolean };
+	limitations: readonly string[];
+	confidence: number;
+	speechBubbles?: readonly DialogueEntry[];
+	expressions?: readonly string[];
+	relevantObjects?: readonly string[];
+	characterDetails?: readonly CharacterDetail[];
+	readingOrderHint?: string;
+	relationToPrevious?: string;
+	relationToNext?: string;
+}
+
 export interface RecapVisualAnalysisPort {
 	readonly id: string;
 	readonly model: string;
@@ -21,18 +50,7 @@ export interface RecapVisualAnalysisPort {
 		frames: readonly { hash: string; path: string; atMs?: number }[];
 		context?: string;
 		signal?: AbortSignal;
-	}): Promise<{
-		nature: string;
-		natureConfidence: number;
-		description: string;
-		frames: readonly { atMs: number; observed: string; visibleText: readonly { text: string; region: string }[] }[];
-		entities: readonly { name: string; type: string; basis: string; evidence: string; confidence: number }[];
-		actions: readonly { description: string; basis: string; confidence: number }[];
-		environment: { description: string; basis: string; confidence: number } | null;
-		overlays: { burnedText: boolean; burnedTextRegion: string | null; watermark: boolean; webcam: boolean };
-		limitations: readonly string[];
-		confidence: number;
-	}>;
+	}): Promise<StructuredVisionPayload>;
 	detect(signal?: AbortSignal): Promise<{ available: true } | { available: false; reason: string }>;
 }
 
@@ -59,18 +77,7 @@ export interface RecapVisionRouterPort {
 		policy: { chain: readonly string[]; scope: string; version: string; budgetUsd: number; maxLatencyMs: number; thresholds: null };
 		signal?: AbortSignal;
 	}): Promise<{
-		value: {
-			nature: string;
-			natureConfidence: number;
-			description: string;
-			frames: readonly { atMs: number; observed: string; visibleText: readonly { text: string; region: string }[] }[];
-			entities: readonly { name: string; type: string; basis: string; evidence: string; confidence: number }[];
-			actions: readonly { description: string; basis: string; confidence: number }[];
-			environment: { description: string; basis: string; confidence: number } | null;
-			overlays: { burnedText: boolean; burnedTextRegion: string | null; watermark: boolean; webcam: boolean };
-			limitations: readonly string[];
-			confidence: number;
-		} | null;
+		value: StructuredVisionPayload | null;
 		provider: string | null;
 		model: string | null;
 		costUsd: number;
@@ -135,23 +142,147 @@ const EMOTION_KEYWORDS: Record<string, Emotion> = {
 	joy: 'joy',
 	happy: 'joy',
 	smile: 'joy',
+	alegria: 'joy',
+	feliz: 'joy',
+	sorriso: 'joy',
 	sad: 'sadness',
 	cry: 'sadness',
+	tristeza: 'sadness',
+	triste: 'sadness',
+	choro: 'sadness',
 	anger: 'anger',
 	angry: 'anger',
+	raiva: 'anger',
+	furia: 'anger',
+	fúria: 'anger',
+	ira: 'anger',
 	fear: 'fear',
 	scared: 'fear',
+	medo: 'fear',
+	pavor: 'fear',
+	assustado: 'fear',
 	surprise: 'surprise',
 	shocked: 'surprise',
+	surpresa: 'surprise',
+	choque: 'surprise',
+	chocado: 'surprise',
 	determination: 'determination',
 	determined: 'determination',
+	determinacao: 'determination',
+	determinação: 'determination',
+	determinado: 'determination',
 	tension: 'tension',
 	tense: 'tension',
+	tensao: 'tension',
+	tensão: 'tension',
+	tenso: 'tension',
 	relief: 'relief',
 	relieved: 'relief',
+	alivio: 'relief',
+	alívio: 'relief',
 	confusion: 'confusion',
 	confused: 'confusion',
+	confusao: 'confusion',
+	confusão: 'confusion',
+	confuso: 'confusion',
 };
+
+function buildVisionContextString(context?: VisionAnalysisContext): string {
+	const parts: string[] = [
+		'Análise multimodal de painel de mangá/manhwa em PT-BR: identifique personagens visíveis, cenário, ações observáveis, expressões, objetos relevantes e TODOS os balões/textos visíveis em ordem de leitura.',
+	];
+	if (context?.workTitle) parts.push(`Obra: ${context.workTitle}.`);
+	if (context?.panelIndex !== undefined && context?.totalPanels !== undefined) {
+		parts.push(`Painel ${context.panelIndex + 1} de ${context.totalPanels}.`);
+	}
+	if (context?.readingOrder) parts.push(`Ordem de leitura: ${context.readingOrder}.`);
+	if (context?.knownCharacters && context.knownCharacters.length > 0) {
+		parts.push(`Personagens já observados: ${context.knownCharacters.slice(0, 8).join(', ')}.`);
+	}
+	if (context?.previousPanelSummary) {
+		parts.push(`Contexto do painel anterior: ${context.previousPanelSummary.slice(0, 220)}.`);
+	}
+	if (context?.ocrHint) {
+		parts.push(`Texto OCR auxiliar (pode conter ruído): ${context.ocrHint.slice(0, 220)}.`);
+	}
+	return parts.join(' ');
+}
+
+function mapStructuredVisionResult(result: StructuredVisionPayload): VisionAnalysisResult {
+	const characters = result.entities
+		.filter((e) => e.type === 'person' || e.type === 'character')
+		.map((e) => e.name.trim())
+		.filter((n) => n.length > 0);
+	const objectEntities = result.entities
+		.filter((e) => e.type === 'object' || e.type === 'vehicle' || e.type === 'creature')
+		.map((e) => e.name.trim())
+		.filter((n) => n.length > 0);
+	const relevantObjects = [...new Set([...(result.relevantObjects ?? []), ...objectEntities])];
+
+	const primaryActionType = mapNatureToActionType(result.nature);
+	const actions = result.actions
+		.filter((a) => a.description.trim().length > 0)
+		.map((a) => ({
+			type: mapNatureToActionType(a.description) !== 'none' ? mapNatureToActionType(a.description) : primaryActionType,
+			description: a.description.trim(),
+		}));
+
+	const visualDescription = result.description?.trim() || undefined;
+	const emotions = extractEmotionsFromAnalysis(
+		[result.description, ...(result.expressions ?? [])].join(' '),
+		[],
+		result.entities,
+	);
+	const setting = result.environment?.description?.trim() || undefined;
+
+	// Extract speech bubbles from explicit speechBubbles OR fallback to frames[].visibleText
+	let speechBubbles: DialogueEntry[] = [];
+	if (result.speechBubbles && result.speechBubbles.length > 0) {
+		speechBubbles = result.speechBubbles.map((b, idx) => ({
+			...b,
+			readingOrder: b.readingOrder ?? idx,
+		}));
+	} else {
+		const rawTexts = result.frames.flatMap((f) => f.visibleText ?? []);
+		speechBubbles = rawTexts
+			.map((vt, idx) => {
+				const text = vt.text.trim();
+				if (!text) return null;
+				const kind = classifyBubbleKind(text, undefined, vt.region === 'overlay');
+				return {
+					text,
+					originalText: text,
+					kind,
+					isNarration: kind === 'narration',
+					readingOrder: idx,
+				} as DialogueEntry;
+			})
+			.filter((b): b is DialogueEntry => b !== null);
+	}
+
+	const uncertainties = [...(result.limitations ?? [])].map((u) => u.trim()).filter(Boolean);
+
+	return {
+		...(visualDescription ? { visualDescription } : {}),
+		characters,
+		...(result.characterDetails && result.characterDetails.length > 0 ? { characterDetails: [...result.characterDetails] } : {}),
+		actions: actions.length > 0
+			? actions
+			: visualDescription
+				? [{ type: primaryActionType, description: visualDescription }]
+				: [],
+		emotions,
+		...(result.expressions && result.expressions.length > 0 ? { expressions: [...result.expressions] } : {}),
+		...(relevantObjects.length > 0 ? { relevantObjects } : {}),
+		...(speechBubbles.length > 0 ? { speechBubbles } : {}),
+		setting,
+		...(result.readingOrderHint ? { readingOrderHint: result.readingOrderHint } : {}),
+		...(result.relationToPrevious ? { relationToPrevious: result.relationToPrevious } : {}),
+		...(result.relationToNext ? { relationToNext: result.relationToNext } : {}),
+		...(uncertainties.length > 0 ? { uncertainties } : {}),
+		confidence: result.confidence,
+	};
+}
 
 function mapNatureToActionType(nature: string): ActionType {
 	const mapped = ACTION_TYPE_MAP[nature.toLowerCase()];
@@ -162,7 +293,9 @@ function extractEmotionsFromText(text: string): Emotion[] {
 	const lower = text.toLowerCase();
 	const emotions: Emotion[] = [];
 	for (const [keyword, emotion] of Object.entries(EMOTION_KEYWORDS)) {
-		if (lower.includes(keyword) && !emotions.includes(emotion)) {
+		const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		const re = new RegExp(`(^|[^a-zà-ú])${escaped}($|[^a-zà-ú])`, 'i');
+		if (re.test(lower) && !emotions.includes(emotion)) {
 			emotions.push(emotion);
 		}
 	}
@@ -235,10 +368,18 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		thresholds: null as null,
 	});
 
-	const runSingleProvider = async (target: RecapVisualAnalysisPort, validatedPath: string, signal?: AbortSignal): Promise<VisionAnalysisResult> => {
+	const runSingleProvider = async (
+		target: RecapVisualAnalysisPort,
+		validatedPath: string,
+		context?: VisionAnalysisContext,
+		signal?: AbortSignal,
+	): Promise<VisionAnalysisResult> => {
 		const frames = [{ hash: 'recap-panel', path: validatedPath }];
 		if (target.analyze) {
-			const analyzeInput: Parameters<NonNullable<RecapVisualAnalysisPort['analyze']>>[0] = { frames, context: 'Manga panel visual analysis for narrative extraction.' };
+			const analyzeInput: Parameters<NonNullable<RecapVisualAnalysisPort['analyze']>>[0] = {
+				frames,
+				context: buildVisionContextString(context),
+			};
 			if (signal) analyzeInput.signal = signal;
 			const result = await target.analyze(analyzeInput);
 			circuitBreaker.recordSuccess(target.id);
@@ -249,23 +390,7 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 				costUsd: 0,
 				attempts: [{ provider: target.id, outcome: 'ok' }],
 			};
-			const characters = result.entities
-				.filter((e) => e.type === 'person' || e.type === 'character')
-				.map((e) => e.name);
-			const primaryActionType = mapNatureToActionType(result.nature);
-			const actions = result.actions.map((a) => ({
-				type: mapNatureToActionType(a.description) !== 'none' ? mapNatureToActionType(a.description) : primaryActionType,
-				description: a.description,
-			}));
-			const emotions = extractEmotionsFromAnalysis(result.description, [], result.entities);
-			const setting = result.environment?.description;
-			return {
-				characters,
-				actions: actions.length > 0 ? actions : [{ type: primaryActionType, description: result.description || 'No detectable action' }],
-				emotions,
-				setting,
-				confidence: result.confidence,
-			};
+			return mapStructuredVisionResult(result);
 		}
 		if (target.describe) {
 			const describeInput: Parameters<NonNullable<RecapVisualAnalysisPort['describe']>>[0] = { frames };
@@ -280,17 +405,23 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 				attempts: [{ provider: target.id, outcome: 'ok' }],
 			};
 			return {
+				visualDescription: result.description,
 				characters: [],
 				actions: [{ type: 'none', description: result.description }],
 				emotions: extractEmotionsFromAnalysis(result.description, result.tags, []),
 				setting: undefined,
+				uncertainties: ['Análise obtida em modo describe-only (sem extração estruturada de balões/entidades).'],
 				confidence: 0.5,
 			};
 		}
 		throw classifyVisionError(`Provider ${target.id} has no analyze or describe capability.`, target.id, 'PROVIDER_UNAVAILABLE');
 	};
 
-	const analyzeWithProviderChain = async (imagePath: string, signal?: AbortSignal): Promise<VisionAnalysisResult> => {
+	const analyzeWithProviderChain = async (
+		imagePath: string,
+		context?: VisionAnalysisContext,
+		signal?: AbortSignal,
+	): Promise<VisionAnalysisResult> => {
 		const list = providers ?? [];
 		const validatedPath = validateImagePath(resolvedRoot, imagePath);
 		const diagnostics: VisionProviderDiagnostic[] = [];
@@ -324,7 +455,7 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 			}
 
 			try {
-				const res = await runSingleProvider(candidate, validatedPath, signal);
+				const res = await runSingleProvider(candidate, validatedPath, context, signal);
 				lastTrace = {
 					provider: candidate.id,
 					model: candidate.model,
@@ -356,7 +487,11 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		throw new AllVisionProvidersUnavailableError(diagnostics);
 	};
 
-	const analyzeWithProvider = async (imagePath: string, signal?: AbortSignal): Promise<VisionAnalysisResult> => {
+	const analyzeWithProvider = async (
+		imagePath: string,
+		context?: VisionAnalysisContext,
+		signal?: AbortSignal,
+	): Promise<VisionAnalysisResult> => {
 		if (!provider) {
 			throw new Error('No provider configured for direct analysis.');
 		}
@@ -366,7 +501,10 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 
 		// Prefer structured analyze if available
 		if (provider.analyze) {
-			const analyzeInput: Parameters<NonNullable<RecapVisualAnalysisPort['analyze']>>[0] = { frames, context: 'Manga panel visual analysis for narrative extraction.' };
+			const analyzeInput: Parameters<NonNullable<RecapVisualAnalysisPort['analyze']>>[0] = {
+				frames,
+				context: buildVisionContextString(context),
+			};
 			if (signal) analyzeInput.signal = signal;
 			const result = await provider.analyze(analyzeInput);
 			lastTrace = {
@@ -376,25 +514,7 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 				costUsd: 0,
 				attempts: [{ provider: provider.id, outcome: 'ok' }],
 			};
-
-			const characters = result.entities
-				.filter((e) => e.type === 'person' || e.type === 'character')
-				.map((e) => e.name);
-			const primaryActionType = mapNatureToActionType(result.nature);
-			const actions = result.actions.map((a) => ({
-				type: mapNatureToActionType(a.description) !== 'none' ? mapNatureToActionType(a.description) : primaryActionType,
-				description: a.description,
-			}));
-			const emotions = extractEmotionsFromAnalysis(result.description, [], result.entities);
-			const setting = result.environment?.description;
-
-			return {
-				characters,
-				actions: actions.length > 0 ? actions : [{ type: primaryActionType, description: result.description || 'No detectable action' }],
-				emotions,
-				setting,
-				confidence: result.confidence,
-			};
+			return mapStructuredVisionResult(result);
 		}
 
 		// Fallback to describe
@@ -411,10 +531,12 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 			};
 
 			return {
+				visualDescription: result.description,
 				characters: [],
 				actions: [{ type: 'none', description: result.description }],
 				emotions: extractEmotionsFromAnalysis(result.description, result.tags, []),
 				setting: undefined,
+				uncertainties: ['Análise obtida em modo describe-only (sem extração estruturada de balões/entidades).'],
 				confidence: 0.5, // describe-only is less reliable
 			};
 		}
@@ -422,7 +544,11 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		throw new Error(`Provider ${provider.id} has no analyze or describe capability.`);
 	};
 
-	const analyzeWithRouter = async (imagePath: string, signal?: AbortSignal): Promise<VisionAnalysisResult> => {
+	const analyzeWithRouter = async (
+		imagePath: string,
+		context?: VisionAnalysisContext,
+		signal?: AbortSignal,
+	): Promise<VisionAnalysisResult> => {
 		if (!router) {
 			throw new Error('No router configured.');
 		}
@@ -434,7 +560,7 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		// Prefer structured analyze
 		const routerAnalyzeInput: Parameters<RecapVisionRouterPort['analyze']>[0] = {
 			frames,
-			context: 'Manga panel visual analysis for narrative extraction.',
+			context: buildVisionContextString(context),
 			policy,
 		};
 		if (signal) routerAnalyzeInput.signal = signal;
@@ -462,25 +588,7 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		};
 
 		if (analyzeResult.value) {
-			const result = analyzeResult.value;
-			const characters = result.entities
-				.filter((e) => e.type === 'person' || e.type === 'character')
-				.map((e) => e.name);
-			const primaryActionType = mapNatureToActionType(result.nature);
-			const actions = result.actions.map((a) => ({
-				type: mapNatureToActionType(a.description) !== 'none' ? mapNatureToActionType(a.description) : primaryActionType,
-				description: a.description,
-			}));
-			const emotions = extractEmotionsFromAnalysis(result.description, [], result.entities);
-			const setting = result.environment?.description;
-
-			return {
-				characters,
-				actions: actions.length > 0 ? actions : [{ type: primaryActionType, description: result.description || 'No detectable action' }],
-				emotions,
-				setting,
-				confidence: result.confidence,
-			};
+			return mapStructuredVisionResult(analyzeResult.value);
 		}
 
 		// Router returned no value — try describe fallback
@@ -497,10 +605,12 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 
 		if (describeResult.value) {
 			return {
+				visualDescription: describeResult.value.description,
 				characters: [],
 				actions: [{ type: 'none', description: describeResult.value.description }],
 				emotions: extractEmotionsFromAnalysis(describeResult.value.description, describeResult.value.tags, []),
 				setting: undefined,
+				uncertainties: ['Análise obtida via describe fallback (sem extração estruturada de balões/entidades).'],
 				confidence: 0.4, // describe-only via router is lower confidence
 			};
 		}
@@ -522,9 +632,10 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		}
 		return {
 			characters: [],
-			actions: [{ type: 'none', description: 'Visual analysis unavailable' }],
+			actions: [],
 			emotions: ['unknown'],
 			setting: undefined,
+			uncertainties: ['Análise visual indisponível em todos os provedores configurados.'],
 			confidence: 0,
 		};
 	};
@@ -536,7 +647,7 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 				? `recap-vision-chain[${providers.map((p) => p.id).join(',')}]`
 				: `recap-vision-${provider!.id}`,
 
-		async analyze(imagePathOrBuffer: string | Buffer): Promise<VisionAnalysisResult> {
+		async analyze(imagePathOrBuffer: string | Buffer, context?: VisionAnalysisContext): Promise<VisionAnalysisResult> {
 			let resolvedPath: string;
 
 			if (Buffer.isBuffer(imagePathOrBuffer)) {
@@ -552,12 +663,12 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 
 			try {
 				if (router) {
-					return await analyzeWithRouter(resolvedPath);
+					return await analyzeWithRouter(resolvedPath, context);
 				}
 				if (providers && providers.length > 0) {
-					return await analyzeWithProviderChain(resolvedPath);
+					return await analyzeWithProviderChain(resolvedPath, context);
 				}
-				return await analyzeWithProvider(resolvedPath);
+				return await analyzeWithProvider(resolvedPath, context);
 			} catch (err) {
 				if (err instanceof AllVisionProvidersUnavailableError) {
 					throw err;
@@ -576,6 +687,7 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 					actions: [{ type: 'none', description: `Analysis failed: ${msg}` }],
 					emotions: ['unknown'],
 					setting: undefined,
+					uncertainties: [`Falha na análise visual: ${msg}`],
 					confidence: 0,
 				};
 			}

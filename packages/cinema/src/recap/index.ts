@@ -67,12 +67,19 @@ export {
 	EVIDENCE_KIND_VALUES,
 	EMOTION_VALUES,
 	ACTION_TYPE_VALUES,
+	DIALOGUE_KIND_VALUES,
+	DURATION_SOURCE_VALUES,
 	NARRATIVE_INTENT_VALUES,
 	REVIEW_STATUS_VALUES,
 	SCRIPT_STYLE_VALUES,
 	// Zod schemas
 	narrativeEvidenceSchema,
+	dialogueEntrySchema,
+	characterDetailSchema,
 	panelAnalysisSchema,
+	continuityCharacterSchema,
+	continuityRelationshipSchema,
+	storyContinuityStateSchema,
 	storyBeatSchema,
 	narrativeSequenceSchema,
 	sceneSchema,
@@ -81,11 +88,18 @@ export {
 	type EvidenceKind,
 	type Emotion,
 	type ActionType,
+	type DialogueKind,
+	type DurationSource,
+	type DialogueEntry,
+	type CharacterDetail,
 	type NarrativeIntent,
 	type ReviewStatus,
 	type ScriptStyle,
 	type NarrativeEvidence,
 	type PanelAnalysis,
+	type ContinuityCharacter,
+	type ContinuityRelationship,
+	type StoryContinuityState,
 	type StoryBeat,
 	type NarrativeSequence,
 	type Scene,
@@ -94,10 +108,18 @@ export {
 	type GateGFidelityHint,
 	type GateGReport,
 	type GateGDivergenceReport,
+	type VisionAnalysisContext,
 	type VisionAnalysisResult,
 	type VisionAdapter,
 	type StoryEngineOptions,
 } from './recap-types.js';
+
+// ─── Dialogue Extractor ──────────────────────────────────────────────────────
+export {
+	classifyBubbleKind,
+	extractStructuredOcrDialogues,
+	mergeVisionAndOcrDialogues,
+} from './dialogue-extractor.js';
 
 // ─── Narrative Analyzer ──────────────────────────────────────────────────────
 export {
@@ -116,6 +138,11 @@ export {
 // ─── Script Generator & Scene Mapper ─────────────────────────────────────────
 export {
 	runScriptGenerator,
+	refineScriptWithPort,
+	isGenericNarration,
+	isReviewRequiredPlaceholder,
+	estimateNarrationDurationSec,
+	REVIEW_REQUIRED_PREFIX,
 	type ScriptGeneratorOptions,
 	type ScriptGenerationResult,
 } from './script-generator.js';

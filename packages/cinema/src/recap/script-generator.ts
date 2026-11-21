@@ -9,6 +9,8 @@ import type {
 	NarrativeIntent,
 	ReviewStatus,
 	ExtractedPanel,
+	DialogueEntry,
+	TextEnhancementPort,
 } from './recap-types.js';
 import { sceneSchema, recapScriptSchema } from './recap-types.js';
 
@@ -17,9 +19,11 @@ export interface ScriptGeneratorOptions {
 	panels: ExtractedPanel[];
 	style: ScriptStyle;
 	language?: string;
+	/** Humor level configured in UI (0..100). Never distorts narrative fidelity. */
+	humorVolume?: number;
 	/** Agent/model identifier recorded in the script. */
 	generatedBy: string;
-	/** Words per second for duration estimation. Default: 2.5 (Portuguese narration pace). */
+	/** Words per second for duration estimation. Default: 2.4 (natural PT-BR narration pace). */
 	wordsPerSecond?: number;
 }
 
@@ -28,220 +32,476 @@ export interface ScriptGenerationResult {
 	warnings: string[];
 }
 
+export const GENERIC_NARRATION_PATTERNS: readonly RegExp[] = [
+	/^a hist[óo]ria avan[çc]ou\.?$/i,
+	/^a cena se desenrolou\.?$/i,
+	/^a sequ[êe]ncia de eventos continuou\.?$/i,
+	/^a situa[çc][ãa]o ficou mais complexa\.?$/i,
+	/^os acontecimentos ganharam for[çc]a\.?$/i,
+	/^cena sem narra[çc][ãa]o gerada\.?$/i,
+	/^algo inesperado aconteceu\.?$/i,
+	/^nada seria como antes\.?$/i,
+	/^[\p{L}\s,]+ (apareceram em cena|conversaram|lutaram)\.?$/iu,
+];
+
+export const REVIEW_REQUIRED_PREFIX = '[REVISÃO NECESSÁRIA]';
+
 /**
- * Maps emotion to narrative intent for scene classification.
+ * Returns true if the narration is an empty/generic placeholder phrase
+ * that lacks concrete narrative content grounded in the panels.
+ */
+export function isGenericNarration(text: string): boolean {
+	const trimmed = text.trim();
+	if (!trimmed) return true;
+	if (trimmed.startsWith(REVIEW_REQUIRED_PREFIX)) return false;
+	return GENERIC_NARRATION_PATTERNS.some((re) => re.test(trimmed));
+}
+
+export function isReviewRequiredPlaceholder(text: string): boolean {
+	return text.trim().startsWith(REVIEW_REQUIRED_PREFIX);
+}
+
+/**
+ * Maps emotion and action to narrative intent for scene classification.
  */
 function emotionToIntent(emotion: Emotion, actionType: string, beatIndex: number, totalBeats: number): NarrativeIntent {
 	if (actionType === 'transformation') return 'climax';
 	if (beatIndex === 0) return 'exposition';
-	if (beatIndex >= totalBeats - 2) return 'resolution';
+	if (beatIndex >= totalBeats - 1 && totalBeats > 2) return 'resolution';
 	if (emotion === 'tension' || emotion === 'fear' || emotion === 'anger') return 'rising_action';
 	if (emotion === 'joy' || emotion === 'relief') return 'character_moment';
 	if (actionType === 'observation' || actionType === 'none') return 'world_building';
 	return 'rising_action';
 }
 
+function ensureSentenceEnding(text: string): string {
+	const trimmed = text.trim();
+	if (!trimmed) return '';
+	if (/[.!?…"]$/.test(trimmed)) return trimmed;
+	return `${trimmed}.`;
+}
+
+function formatDialogueSentence(entry: DialogueEntry, fallbackCharacters: readonly string[]): string {
+	const quote = (entry.translatedText?.trim() || entry.text.trim()).replace(/^["“”]+|["“”]+$/g, '');
+	if (!quote) return '';
+	const kind = entry.kind ?? (entry.isNarration ? 'narration' : 'dialogue');
+	const speaker = entry.speaker?.trim();
+
+	if (kind === 'sfx') {
+		return '';
+	}
+	if (kind === 'narration') {
+		return ensureSentenceEnding(quote);
+	}
+	if (kind === 'thought') {
+		if (speaker) {
+			return `${speaker} reflete consigo mesmo: "${quote}".`;
+		}
+		return `Em pensamento, surge a ideia: "${quote}".`;
+	}
+	// Dialogue speech bubble
+	const isQuestion = quote.endsWith('?');
+	const isExclamation = quote.endsWith('!');
+	const verb = isQuestion ? 'questiona' : isExclamation ? 'exclama' : 'diz';
+	if (speaker) {
+		return `${speaker} ${verb}: "${quote}".`;
+	}
+	if (fallbackCharacters.length === 1) {
+		return `${fallbackCharacters[0]} ${verb}: "${quote}".`;
+	}
+	return `Na cena, ouve-se a fala: "${quote}".`;
+}
+
+function selectTransitionConnector(beat: StoryBeat, beatIndex: number, style: ScriptStyle): string {
+	if (beatIndex === 0) {
+		if (beat.setting) {
+			return style === 'documentary'
+				? `A sequência começa em ${beat.setting}:`
+				: `Em ${beat.setting},`;
+		}
+		return '';
+	}
+	if (beat.actionType === 'combat') {
+		return style === 'suspense' || style === 'cinematic_recap' ? 'Logo em seguida, o embate se intensifica:' : 'Em seguida,';
+	}
+	if (beat.emotion === 'surprise' || beat.actionType === 'transformation') {
+		return 'De repente,';
+	}
+	if (beat.setting && beat.previousContext && !beat.previousContext.toLowerCase().includes(beat.setting.toLowerCase())) {
+		return `Já em ${beat.setting},`;
+	}
+	const connectors = ['Na sequência,', 'Logo depois,', 'Enquanto isso,', 'Continuando a cena,'];
+	return connectors[beatIndex % connectors.length]!;
+}
+
 /**
- * Generates natural narration text from a story beat.
- * Adapts tone and structure based on script style.
- * NEVER invents events, characters, or dialogue not present in the beat's evidence.
+ * Checks whether a beat has enough concrete visual or textual evidence
+ * to produce a faithful narration without inventing events.
  */
-function generateNarrationText(beat: StoryBeat, style: ScriptStyle): string {
-	const parts: string[] = [];
-	const hasCharacters = beat.characters.length > 0;
-	const hasDialogue = beat.summary.includes('diálogo');
-	const hasCombat = beat.actionType === 'combat';
-	const hasTransformation = beat.actionType === 'transformation';
+function hasSubstantiveBeatEvidence(beat: StoryBeat): boolean {
+	const hasVisual = Boolean(beat.visualSummary && beat.visualSummary.trim().length >= 8);
+	const substantiveDialogues = (beat.dialogues ?? []).filter(
+		(d) => (d.kind ?? (d.isNarration ? 'narration' : 'dialogue')) !== 'sfx' && d.text.trim().length >= 2,
+	);
+	const hasDialogue = substantiveDialogues.length > 0;
+	const hasSummary =
+		beat.summary.trim().length >= 12 &&
+		!/^sem descri[çc][ãa]o visual/i.test(beat.summary.trim()) &&
+		!/^em cena$/i.test(beat.summary.trim());
+	return hasVisual || hasDialogue || hasSummary;
+}
 
-	switch (style) {
- case 'cinematic_recap':
- if (hasCharacters) parts.push(beat.characters.join(' e '));
- if (hasCombat) parts.push('entraram em confronto direto.');
- else if (hasTransformation) parts.push('algo inesperado aconteceu.');
- else if (hasDialogue) parts.push('tiveram uma conversa importante.');
- else parts.push('a cena se desenrolou.');
- break;
-
- case 'mystery':
- if (hasCharacters) parts.push(`Algo envolvendo ${beat.characters.join(' e ')} chamou atenção.`);
- else parts.push('A situação ficou mais complexa.');
- if (beat.emotion === 'fear' || beat.emotion === 'tension') {
- parts.push('A tensão era palpável.');
- }
- break;
-
- case 'suspense':
- if (hasCharacters) parts.push(`${beat.characters.join(' e ')} estavam no centro da ação.`);
- if (hasCombat) parts.push('O confronto foi intenso.');
- else if (beat.emotion === 'tension') parts.push('Nada seria como antes.');
- else parts.push('Os acontecimentos ganharam força.');
- break;
-
- case 'documentary':
- if (hasCharacters) parts.push(`Neste momento, ${beat.characters.join(' e ')} ${hasDialogue ? 'dialogaram' : 'agiram'}.`);
- else parts.push('A sequência de eventos continuou.');
- break;
-
- case 'narrative_recap':
- default:
- if (hasCharacters && hasDialogue) {
- parts.push(`${beat.characters.join(' e ')} conversaram.`);
- } else if (hasCharacters && hasCombat) {
- parts.push(`${beat.characters.join(' e ')} lutaram.`);
- } else if (hasCharacters) {
- parts.push(`${beat.characters.join(' e ')} apareceram em cena.`);
- } else {
- parts.push('A história avançou.');
- }
- break;
+/**
+ * Generates faithful, detailed PT-BR narration combining all 4 sources:
+ * 1. Visual content (characters, expressions, actions, setting, objects)
+ * 2. Speech bubbles & text (dialogues, thoughts, narration boxes)
+ * 3. Prior narrative context (continuity transition)
+ * 4. Following context (narrative flow without spoiling future chapters)
+ *
+ * NEVER outputs generic filler like "A história avançou." and NEVER invents facts.
+ */
+function generateGroundedNarrationText(
+	beat: StoryBeat,
+	beatIndex: number,
+	totalBeats: number,
+	style: ScriptStyle,
+): { text: string; needsManualReview: boolean; reviewNote?: string } {
+	if (!hasSubstantiveBeatEvidence(beat)) {
+		const uncertaintyDetail = beat.uncertainties?.slice(0, 2).join(' | ') || 'análise visual e OCR sem conteúdo suficiente';
+		return {
+			text: `${REVIEW_REQUIRED_PREFIX} Painéis ${beat.panelIds.join(', ')} não puderam ser interpretados com evidência suficiente (${uncertaintyDetail}). Revise os painéis originais antes da produção.`,
+			needsManualReview: true,
+			reviewNote: `Evidência visual/textual insuficiente para narrar sem inventar: ${uncertaintyDetail}`,
+		};
 	}
 
-	return parts.join(' ').trim() || 'Cena sem narração gerada.';
+	const parts: string[] = [];
+	const connector = selectTransitionConnector(beat, beatIndex, style);
+
+	// 1. Visual description + setting + characters + expressions
+	const rawVisual = beat.visualSummary?.trim();
+	if (rawVisual) {
+		const visualSentence = ensureSentenceEnding(
+			connector
+				? `${connector} ${rawVisual.charAt(0).toLowerCase()}${rawVisual.slice(1)}`
+				: rawVisual,
+		);
+		parts.push(visualSentence);
+	} else {
+		// Dialogue/text-led beat without full visual description
+		const introParts: string[] = [];
+		if (connector) introParts.push(connector);
+		if (beat.characters.length > 0) {
+			introParts.push(`${beat.characters.join(' e ')} protagonizam este momento`);
+		} else if (beat.setting) {
+			introParts.push(`o foco recai sobre ${beat.setting}`);
+		}
+		if (introParts.length > 0) {
+			parts.push(ensureSentenceEnding(introParts.join(' ')));
+		}
+	}
+
+	// Add observable expressions or relevant objects if not already mentioned in visualSummary
+	if (beat.expressions && beat.expressions.length > 0) {
+		const primaryExpr = beat.expressions[0]!;
+		if (!parts.join(' ').toLowerCase().includes(primaryExpr.toLowerCase())) {
+			parts.push(`A expressão de ${primaryExpr} reforça o clima da cena.`);
+		}
+	}
+
+	// 2. Incorporate essential speech bubbles (dialogue, thought, narration) preserving reading order
+	const substantiveDialogues = (beat.dialogues ?? []).filter(
+		(d) => (d.kind ?? (d.isNarration ? 'narration' : 'dialogue')) !== 'sfx' && d.text.trim().length > 0,
+	);
+	const incorporated = substantiveDialogues.slice(0, 4);
+	for (const entry of incorporated) {
+		const sentence = formatDialogueSentence(entry, beat.characters);
+		if (sentence && !parts.join(' ').includes(entry.text.trim())) {
+			parts.push(sentence);
+		}
+	}
+
+	// 3. Style-appropriate factual nuance (never inventing events)
+	if (style === 'mystery' && beat.emotion === 'tension' && parts.length === 1) {
+		parts.push('O momento mantém o mistério em aberto.');
+	} else if (style === 'suspense' && (beat.emotion === 'fear' || beat.emotion === 'tension') && beatIndex < totalBeats - 1 && parts.length === 1) {
+		parts.push('A tensão cresce antes do próximo desdobramento.');
+	}
+
+	const combined = parts.join(' ').replace(/\s+/g, ' ').trim();
+	if (!combined || isGenericNarration(combined)) {
+		return {
+			text: `${REVIEW_REQUIRED_PREFIX} Não foi possível compor narração específica para os painéis ${beat.panelIds.join(', ')}.`,
+			needsManualReview: true,
+			reviewNote: 'Narração resultante foi classificada como genérica ou vazia.',
+		};
+	}
+
+	return { text: combined, needsManualReview: false };
 }
 
 /**
- * Estimates narration duration in seconds based on word count and language pace.
+ * Estimates realistic PT-BR narration duration in seconds based on word count
+ * and punctuation pauses. Marked as an estimate until real TTS measures the audio.
  */
-function estimateDuration(text: string, wordsPerSecond: number): number {
-	const wordCount = text.split(/\s+/).filter((w) => w.length > 0).length;
-	return Math.max(1, Math.round(wordCount / wordsPerSecond));
+export function estimateNarrationDurationSec(text: string, wordsPerSecond = 2.4): number {
+	const cleaned = text.trim();
+	if (!cleaned) return 1;
+	const wordCount = cleaned.split(/\s+/).filter((w) => w.length > 0).length;
+	const sentencePauses = (cleaned.match(/[.!?…]+/g) ?? []).length * 0.35;
+	const commaPauses = (cleaned.match(/[,;:]+/g) ?? []).length * 0.15;
+	const rawSeconds = wordCount / wordsPerSecond + sentencePauses + commaPauses;
+	return Math.max(1, Math.round(rawSeconds * 10) / 10);
 }
 
 /**
- * Determines review status for a scene based on beat confidence and panel references.
+ * Determines review status for a scene based on beat confidence, panel references,
+ * and narration grounding.
  */
 function determineReviewStatus(
 	beat: StoryBeat,
 	panelMap: Map<string, ExtractedPanel>,
+	narrationNeedsReview: boolean,
+	narrationReviewNote?: string,
 ): { status: ReviewStatus; notes?: string } {
 	const notes: string[] = [];
 
-	// Check beat confidence
-	if (beat.needsReview) {
- notes.push(beat.reviewReason ?? 'Low confidence beat');
+	if (narrationNeedsReview && narrationReviewNote) {
+		notes.push(narrationReviewNote);
 	}
 
-	// Verify all panel references exist and have valid cropped images
+	if (beat.needsReview) {
+		notes.push(beat.reviewReason ?? 'Beat com baixa confiança na análise.');
+	}
+
+	if (beat.uncertainties && beat.uncertainties.length > 0 && beat.confidence < 0.7) {
+		notes.push(`Incertezas: ${beat.uncertainties.slice(0, 2).join('; ')}`);
+	}
+
 	let missingPanels = 0;
 	let missingCrops = 0;
 	for (const panelId of beat.panelIds) {
- const panel = panelMap.get(panelId);
- if (!panel) {
- missingPanels++;
- } else if (!panel.croppedImagePath || !existsSync(panel.croppedImagePath)) {
- missingCrops++;
- }
+		const panel = panelMap.get(panelId);
+		if (!panel) {
+			missingPanels++;
+		} else if (!panel.croppedImagePath || !existsSync(panel.croppedImagePath)) {
+			missingCrops++;
+		}
 	}
 
 	if (missingPanels > 0) {
- notes.push(`${missingPanels} panel reference(s) not found`);
+		notes.push(`${missingPanels} panel reference(s) not found`);
 	}
 	if (missingCrops > 0) {
- notes.push(`${missingCrops} cropped image(s) missing or inaccessible`);
+		notes.push(`${missingCrops} cropped image(s) missing or inaccessible`);
 	}
 
 	if (notes.length > 0) {
- return { status: 'needs_review', notes: notes.join('; ') };
+		return { status: 'needs_review', notes: notes.join('; ') };
 	}
 
 	if (beat.confidence < 0.3) {
- return { status: 'needs_review', notes: `Very low confidence (${beat.confidence.toFixed(2)})` };
+		return { status: 'needs_review', notes: `Very low confidence (${beat.confidence.toFixed(2)})` };
 	}
 
 	return { status: 'approved' };
 }
 
 /**
- * Script Generator & Scene Mapper — Phase 2 components.
- *
- * Transforms a NarrativeSequence into a complete RecapScript with validated scenes.
- * Each scene contains narration text, character references, panel IDs, cropped image
- * paths, estimated duration, emotion, narrative intent, and review status.
- *
- * KEY GUARANTEES:
- * - Narration is generated ONLY from verified beat evidence — never invented.
- * - Every scene references at least one valid panel with accessible cropped image.
- * - Scenes without valid panel references are marked needs_review.
- * - Duration is estimated from narration word count, not forced.
- * - Multiple script styles supported (narrative, cinematic, mystery, suspense, documentary).
- * - Full traceability: scene → beat → panel → cropped image.
+ * Script Generator & Scene Mapper — Phase 2/5/7 component.
  */
 export function runScriptGenerator(options: ScriptGeneratorOptions): ScriptGenerationResult {
 	const {
- sequence,
- panels,
- style,
- generatedBy,
- wordsPerSecond = 2.5,
+		sequence,
+		panels,
+		style,
+		generatedBy,
+		wordsPerSecond = 2.4,
 	} = options;
 	const warnings: string[] = [...(sequence.warnings ?? [])];
 
-	// Build panel lookup map
 	const panelMap = new Map<string, ExtractedPanel>();
 	for (const panel of panels) {
- panelMap.set(panel.panelId, panel);
+		panelMap.set(panel.panelId, panel);
 	}
 
 	const scenes: Scene[] = [];
 	let totalDuration = 0;
 
 	for (let i = 0; i < sequence.beats.length; i++) {
- const beat = sequence.beats[i]!;
+		const beat = sequence.beats[i]!;
+		const generated = generateGroundedNarrationText(beat, i, sequence.beats.length, style);
 
- // Generate narration text from beat evidence only
- const narrationText = generateNarrationText(beat, style);
+		const croppedImagePaths: string[] = [];
+		for (const panelId of beat.panelIds) {
+			const panel = panelMap.get(panelId);
+			if (panel?.croppedImagePath && existsSync(panel.croppedImagePath)) {
+				croppedImagePaths.push(panel.croppedImagePath);
+			}
+		}
 
- // Collect cropped image paths for referenced panels
- const croppedImagePaths: string[] = [];
- for (const panelId of beat.panelIds) {
- const panel = panelMap.get(panelId);
- if (panel?.croppedImagePath && existsSync(panel.croppedImagePath)) {
- croppedImagePaths.push(panel.croppedImagePath);
- }
- }
+		const { status, notes } = determineReviewStatus(
+			beat,
+			panelMap,
+			generated.needsManualReview,
+			generated.reviewNote,
+		);
 
- // Determine review status
- const { status, notes } = determineReviewStatus(beat, panelMap);
+		const durationSec = estimateNarrationDurationSec(generated.text, wordsPerSecond);
+		totalDuration += durationSec;
 
- // Estimate duration
-	const durationSec = estimateDuration(narrationText, wordsPerSecond);
-	totalDuration += durationSec;
+		const intent = emotionToIntent(beat.emotion, beat.actionType, i, sequence.beats.length);
 
- // Map emotion to narrative intent
-	const intent = emotionToIntent(beat.emotion, beat.actionType, i, sequence.beats.length);
+		const scene = sceneSchema.parse({
+			sceneId: `${sequence.chapterId}_scene_${String(i).padStart(4, '0')}`,
+			narrationText: generated.text,
+			characters: beat.characters,
+			eventDescription: beat.summary,
+			...(beat.visualSummary ? { visualSummary: beat.visualSummary } : {}),
+			...(beat.setting ? { setting: beat.setting } : {}),
+			...(beat.dialogues && beat.dialogues.length > 0 ? { extractedDialogues: beat.dialogues } : {}),
+			...(beat.uncertainties && beat.uncertainties.length > 0 ? { uncertainties: beat.uncertainties } : {}),
+			panelIds: beat.panelIds,
+			croppedImagePaths,
+			estimatedDurationSec: durationSec,
+			durationSource: 'estimated',
+			emotion: beat.emotion,
+			narrativeIntent: intent,
+			confidence: beat.confidence,
+			reviewStatus: status,
+			...(notes ? { reviewNotes: notes } : {}),
+		});
 
- const scene = sceneSchema.parse({
- sceneId: `${sequence.chapterId}_scene_${String(i).padStart(4, '0')}`,
- narrationText,
- characters: beat.characters,
- eventDescription: beat.summary,
- panelIds: beat.panelIds,
- croppedImagePaths,
- estimatedDurationSec: durationSec,
- emotion: beat.emotion,
- narrativeIntent: intent,
- confidence: beat.confidence,
- reviewStatus: status,
- reviewNotes: notes,
- });
+		scenes.push(scene);
 
- scenes.push(scene);
-
- if (status === 'needs_review') {
- warnings.push(`Scene ${scene.sceneId}: marked for review — ${notes}`);
- }
+		if (status === 'needs_review') {
+			warnings.push(`Scene ${scene.sceneId}: marked for review — ${notes}`);
+		}
 	}
 
 	const script = recapScriptSchema.parse({
- chapterId: sequence.chapterId,
- title: `Recap — ${sequence.chapterId}`,
- style,
- scenes,
- totalEstimatedDurationSec: totalDuration,
- generatedAtIso: new Date().toISOString(),
- generatedBy,
- warnings: warnings.length > 0 ? warnings : undefined,
+		chapterId: sequence.chapterId,
+		title: `Recap — ${sequence.chapterId}`,
+		style,
+		scenes,
+		totalEstimatedDurationSec: Math.max(1, Math.round(totalDuration * 10) / 10),
+		generatedAtIso: new Date().toISOString(),
+		generatedBy,
+		warnings: warnings.length > 0 ? warnings : undefined,
 	});
 
 	return { script, warnings };
+}
+
+const LLM_SCRIPT_SYSTEM_PROMPT = `Você é um roteirista profissional de recap de mangá/manhwa em português brasileiro.
+Reescreva a narração da cena combinando fielmente:
+1) A descrição visual observada nos painéis (personagens, ações, cenário, expressões).
+2) Os diálogos, pensamentos e caixas de narração extraídos dos balões (mantendo o sentido original e distinguindo diálogo de narração).
+3) O contexto anterior e a transição para a próxima cena.
+
+REGRAS OBRIGATÓRIAS:
+- NUNCA invente ações, falas, pensamentos ou eventos de capítulos futuros.
+- NUNCA use frases genéricas ("A história avançou.", "A cena se desenrolou.", etc.).
+- Preserve TODOS os personagens identificados e incorpore os diálogos essenciais.
+- Nível de humor configurado: {humorVolume}%. Só use leveza/humor se NÃO distorcer o tom ou os fatos da história.
+- Responda APENAS JSON válido: {"narrationText": "..."}`;
+
+/**
+ * Optional LLM-assisted script refinement over grounded beats + continuity state.
+ * Falls back cleanly to the deterministic grounded narration if the LLM is unavailable
+ * or produces generic/unfaithful text.
+ */
+export async function refineScriptWithPort(input: {
+	script: RecapScript;
+	sequence: NarrativeSequence;
+	port: TextEnhancementPort;
+	humorVolume?: number;
+	wordsPerSecond?: number;
+	signal?: AbortSignal;
+}): Promise<{ script: RecapScript; warnings: string[] }> {
+	const { script, sequence, port, humorVolume = 0, wordsPerSecond = 2.4, signal } = input;
+	const warnings: string[] = [];
+	const beatByIndex = sequence.beats;
+	const updatedScenes: Scene[] = [];
+	let totalDuration = 0;
+
+	for (let i = 0; i < script.scenes.length; i++) {
+		const scene = script.scenes[i]!;
+		const beat = beatByIndex[i];
+
+		// Never ask LLM to "fill in" a scene that lacks visual/OCR evidence
+		if (isReviewRequiredPlaceholder(scene.narrationText) || !beat) {
+			updatedScenes.push(scene);
+			totalDuration += scene.estimatedDurationSec;
+			continue;
+		}
+
+		try {
+			const res = await port.enhance({
+				text: scene.narrationText,
+				context: {
+					sceneId: scene.sceneId,
+					style: script.style,
+					humorVolume,
+					characters: beat.characters,
+					setting: beat.setting,
+					visualSummary: beat.visualSummary,
+					dialogues: beat.dialogues ?? [],
+					previousContext: beat.previousContext,
+					nextContext: beat.nextContext,
+					continuityState: sequence.continuityState,
+				},
+				systemPrompt: LLM_SCRIPT_SYSTEM_PROMPT.replace('{humorVolume}', String(Math.max(0, Math.min(100, humorVolume)))),
+				outputSchema: {
+					type: 'object',
+					properties: { narrationText: { type: 'string' } },
+					required: ['narrationText'],
+					additionalProperties: false,
+				},
+				...(signal ? { signal } : {}),
+			});
+
+			let candidate = scene.narrationText;
+			if (res.ok && res.text.trim().length > 0) {
+				try {
+					const parsed = JSON.parse(res.text) as { narrationText?: string };
+					if (typeof parsed.narrationText === 'string' && parsed.narrationText.trim().length > 0) {
+						candidate = parsed.narrationText.trim();
+					}
+				} catch {
+					candidate = res.text.trim();
+				}
+			}
+
+			if (isGenericNarration(candidate) || isReviewRequiredPlaceholder(candidate)) {
+				warnings.push(`Scene ${scene.sceneId}: LLM script candidate rejected as generic; keeping grounded narration.`);
+				candidate = scene.narrationText;
+			}
+
+			const durationSec = estimateNarrationDurationSec(candidate, wordsPerSecond);
+			totalDuration += durationSec;
+			updatedScenes.push({
+				...scene,
+				narrationText: candidate,
+				estimatedDurationSec: durationSec,
+				durationSource: 'estimated',
+			});
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			warnings.push(`Scene ${scene.sceneId}: LLM script refinement failed (${msg}); keeping grounded narration.`);
+			updatedScenes.push(scene);
+			totalDuration += scene.estimatedDurationSec;
+		}
+	}
+
+	return {
+		script: {
+			...script,
+			scenes: updatedScenes,
+			totalEstimatedDurationSec: Math.max(1, Math.round(totalDuration * 10) / 10),
+			generatedBy: `${script.generatedBy}+${port.name}`,
+			warnings: [...(script.warnings ?? []), ...warnings],
+		},
+		warnings,
+	};
 }

@@ -16,7 +16,7 @@ import type {
 } from './recap-types.js';
 import { runNarrativeAnalyzer } from './narrative-analyzer.js';
 import { runStoryContinuityEngine } from './story-continuity-engine.js';
-import { runScriptGenerator } from './script-generator.js';
+import { runScriptGenerator, refineScriptWithPort } from './script-generator.js';
 import { runGateGNarrativeFidelity, buildGateGDivergenceReport } from './gate-g-narrative-fidelity.js';
 import { runNarrativeHumanizer } from './narrative-humanizer.js';
 import { runContextualResearch } from './contextual-research.js';
@@ -65,8 +65,12 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		outputDir,
 		visionAdapter,
 		scriptStyle = 'narrative_recap',
+		language = 'pt-BR',
+		humorVolume = 0,
+		workTitle,
 		minBeatConfidence = 0.5,
 		analysisConcurrency = 1,
+		scriptPort,
 		humanize,
 		research,
 	} = options;
@@ -100,6 +104,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		panels,
 		visionAdapter,
 		analyzedBy,
+		...(workTitle ? { workTitle } : {}),
 		minConfidence: minBeatConfidence,
 		concurrency: analysisConcurrency,
 		cachedAnalyses,
@@ -199,30 +204,46 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		sequence: continuityResult.sequence,
 		panels,
 		style: scriptStyle,
+		language,
+		humorVolume,
 		generatedBy,
 	});
 	warnings.push(...scriptResult.warnings);
 
+	let workingScript = scriptResult.script;
+	if (scriptPort) {
+		const refined = await refineScriptWithPort({
+			script: workingScript,
+			sequence: continuityResult.sequence,
+			port: scriptPort,
+			humorVolume,
+		});
+		workingScript = refined.script;
+		warnings.push(...refined.warnings);
+	}
+
 	// ─── Stage 5: Gate G Initial — Narrative Fidelity ─────────────────────────
 	const preHumanizeGateG = runGateGNarrativeFidelity({
-		script: scriptResult.script,
+		script: workingScript,
 		panels,
 		minSceneConfidence: minBeatConfidence * 0.8,
 	});
 
-	// If initial Gate G fails and no humanize is configured, return early with failure
-	if (preHumanizeGateG.verdict === 'fail' && !humanize?.enabled) {
-		warnings.push('Gate G FAILED on initial script. No humanization configured to attempt recovery.');
+	// Apply Humanize ONLY after a valid factual script exists (never humanize a failed/empty script)
+	if (preHumanizeGateG.verdict === 'fail') {
+		warnings.push('Gate G FAILED on initial script. Humanization skipped because no valid factual script exists yet.');
 		saveCheckpoint(checkpointDir, {
 			chapterId,
 			completedStages: ['import', 'extraction', 'narrative', 'fidelity'],
 			lastUpdatedAtIso: new Date().toISOString(),
 			sourceHash: panels[0]?.imageHash ?? 'unknown',
 			extractedPanels: panels,
+			panelAnalyses: analyses,
+			analysisCacheByHash,
 			warnings,
 		});
 		const earlyResult: StoryEngineResult = {
-			script: scriptResult.script,
+			script: workingScript,
 			gateGReport: preHumanizeGateG,
 			sequence: continuityResult.sequence,
 			analyses,
@@ -235,24 +256,24 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 
 	// ─── Stage 6: Humanize (optional) ─────────────────────────────────────────
 	let humanizeResult: HumanizeResult | undefined;
-	let finalScript = scriptResult.script;
+	let finalScript = workingScript;
 	let finalGateG = preHumanizeGateG;
 
 	if (humanize?.enabled && humanize.port) {
 		try {
 			const humanizeOpts: import('./recap-types.js').HumanizeOptions & { port: import('./recap-types.js').TextEnhancementPort } = {
-					enabled: humanize.enabled,
-					style: humanize.style,
-					port: humanize.port,
-				};
-				if (humanize.maxDurationDeviation !== undefined) humanizeOpts.maxDurationDeviation = humanize.maxDurationDeviation;
-				if (humanize.wordBudgetPerScene !== undefined) humanizeOpts.wordBudgetPerScene = humanize.wordBudgetPerScene;
-				if (humanize.signal !== undefined) humanizeOpts.signal = humanize.signal;
-				humanizeResult = await runNarrativeHumanizer({
-					script: scriptResult.script,
-					panels,
-					options: humanizeOpts,
-				});
+				enabled: humanize.enabled,
+				style: humanize.style,
+				port: humanize.port,
+			};
+			if (humanize.maxDurationDeviation !== undefined) humanizeOpts.maxDurationDeviation = humanize.maxDurationDeviation;
+			if (humanize.wordBudgetPerScene !== undefined) humanizeOpts.wordBudgetPerScene = humanize.wordBudgetPerScene;
+			if (humanize.signal !== undefined) humanizeOpts.signal = humanize.signal;
+			humanizeResult = await runNarrativeHumanizer({
+				script: workingScript,
+				panels,
+				options: humanizeOpts,
+			});
 			warnings.push(...humanizeResult.warnings);
 			finalScript = humanizeResult.script;
 			finalGateG = humanizeResult.postHumanizeGateG;

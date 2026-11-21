@@ -198,20 +198,54 @@ export const ACTION_TYPE_VALUES = [
 ] as const;
 export type ActionType = (typeof ACTION_TYPE_VALUES)[number];
 
+export const DIALOGUE_KIND_VALUES = ['dialogue', 'thought', 'narration', 'sfx'] as const;
+export type DialogueKind = (typeof DIALOGUE_KIND_VALUES)[number];
+
+export const dialogueEntrySchema = z.object({
+	speaker: z.string().optional(),
+	/** Primary display text (PT-BR translation when translated, otherwise original). */
+	text: z.string(),
+	/** Original text extracted from the speech bubble / caption box before translation. */
+	originalText: z.string().optional(),
+	/** Portuguese (PT-BR) translation preserving original meaning when source is another language. */
+	translatedText: z.string().optional(),
+	/** Bubble classification: speech, thought, narration box, or sound effect (onomatopoeia). */
+	kind: z.enum(DIALOGUE_KIND_VALUES).optional(),
+	isNarration: z.boolean().default(false),
+	/** 0-based reading order index within the panel. */
+	readingOrder: z.number().int().min(0).optional(),
+	/** Recorded uncertainty when text is partially illegible or speaker is ambiguous. */
+	uncertainty: z.string().optional(),
+});
+export type DialogueEntry = z.infer<typeof dialogueEntrySchema>;
+
+export const characterDetailSchema = z.object({
+	id: z.string().min(1),
+	appearance: z.string().optional(),
+	expression: z.string().optional(),
+	poseOrAction: z.string().optional(),
+});
+export type CharacterDetail = z.infer<typeof characterDetailSchema>;
+
 export const panelAnalysisSchema = z.object({
 	panelId: z.string().min(1),
+	/** Rich observable visual description of the panel in PT-BR. */
+	visualDescription: z.string().optional(),
 	characters: z.array(z.string()),
-	dialogues: z.array(z.object({
-		speaker: z.string().optional(),
-		text: z.string(),
-		isNarration: z.boolean().default(false),
-	})),
+	characterDetails: z.array(characterDetailSchema).optional(),
+	dialogues: z.array(dialogueEntrySchema),
 	actions: z.array(z.object({
 		type: z.enum(ACTION_TYPE_VALUES),
 		description: z.string(),
 	})),
 	emotions: z.array(z.enum(EMOTION_VALUES)),
+	expressions: z.array(z.string()).optional(),
+	relevantObjects: z.array(z.string()).optional(),
 	setting: z.string().optional(),
+	readingOrderHint: z.string().optional(),
+	relationToPrevious: z.string().optional(),
+	relationToNext: z.string().optional(),
+	uncertainties: z.array(z.string()).optional(),
 	evidence: z.array(narrativeEvidenceSchema),
 	/** Overall confidence in this analysis. Below threshold → needs_review. */
 	analysisConfidence: z.number().min(0).max(1),
@@ -222,12 +256,58 @@ export const panelAnalysisSchema = z.object({
 });
 export type PanelAnalysis = z.infer<typeof panelAnalysisSchema>;
 
+// ─── Story Continuity State (chapter-wide narrative memory) ──────────────────
+
+export const continuityCharacterSchema = z.object({
+	name: z.string().min(1),
+	aliases: z.array(z.string()).default([]),
+	firstSeenPanelId: z.string().min(1),
+	lastSeenPanelId: z.string().min(1),
+	status: z.string().optional(),
+});
+export type ContinuityCharacter = z.infer<typeof continuityCharacterSchema>;
+
+export const continuityRelationshipSchema = z.object({
+	from: z.string().min(1),
+	to: z.string().min(1),
+	relation: z.string().min(1),
+	evidencePanelId: z.string().min(1),
+});
+export type ContinuityRelationship = z.infer<typeof continuityRelationshipSchema>;
+
+export const storyContinuityStateSchema = z.object({
+	characters: z.array(continuityCharacterSchema),
+	relationships: z.array(continuityRelationshipSchema),
+	currentLocation: z.string().optional(),
+	previousEvents: z.array(z.string()),
+	ongoingConflict: z.string().optional(),
+	revealedFacts: z.array(z.string()),
+	openQuestions: z.array(z.string()),
+});
+export type StoryContinuityState = z.infer<typeof storyContinuityStateSchema>;
+
 // ─── Story Beat (atomic narrative unit) ──────────────────────────────────────
 
 export const storyBeatSchema = z.object({
 	beatId: z.string().min(1),
 	panelIds: z.array(z.string().min(1)).min(1),
 	summary: z.string().min(1),
+	/** Observable visual description aggregated across the beat's panels. */
+	visualSummary: z.string().optional(),
+	/** Setting / location for this beat. */
+	setting: z.string().optional(),
+	/** Ordered dialogues/thoughts/narrations/SFX extracted from this beat's panels. */
+	dialogues: z.array(dialogueEntrySchema).optional(),
+	/** Relevant objects observed in this beat's panels. */
+	relevantObjects: z.array(z.string()).optional(),
+	/** Observable expressions across characters in this beat. */
+	expressions: z.array(z.string()).optional(),
+	/** Uncertainties / illegible text warnings carried from panel analyses. */
+	uncertainties: z.array(z.string()).optional(),
+	/** Summary of prior narrative context leading into this beat. */
+	previousContext: z.string().optional(),
+	/** Consequence / narrative transition into the next beat. */
+	nextContext: z.string().optional(),
 	characters: z.array(z.string()),
 	emotion: z.enum(EMOTION_VALUES),
 	actionType: z.enum(ACTION_TYPE_VALUES),
@@ -246,6 +326,8 @@ export const narrativeSequenceSchema = z.object({
 	chapterId: z.string().min(1),
 	beats: z.array(storyBeatSchema),
 	readingOrder: z.enum(READING_ORDER_VALUES),
+	/** Chapter-wide continuity state built across all panels in reading order. */
+	continuityState: storyContinuityStateSchema.optional(),
 	generatedAtIso: z.string().datetime(),
 	warnings: z.array(z.string()).optional(),
 });
@@ -262,14 +344,29 @@ export type NarrativeIntent = (typeof NARRATIVE_INTENT_VALUES)[number];
 export const REVIEW_STATUS_VALUES = ['approved', 'needs_review', 'rejected'] as const;
 export type ReviewStatus = (typeof REVIEW_STATUS_VALUES)[number];
 
+export const DURATION_SOURCE_VALUES = ['estimated', 'tts_measured'] as const;
+export type DurationSource = (typeof DURATION_SOURCE_VALUES)[number];
+
 export const sceneSchema = z.object({
 	sceneId: z.string().min(1),
 	narrationText: z.string().min(1),
 	characters: z.array(z.string()),
 	eventDescription: z.string().min(1),
+	/** Rich visual summary observed in the source panels for side-by-side review. */
+	visualSummary: z.string().optional(),
+	/** Setting / location observed in the scene's panels. */
+	setting: z.string().optional(),
+	/** Extracted speech bubbles / narration boxes / thoughts from the scene's panels. */
+	extractedDialogues: z.array(dialogueEntrySchema).optional(),
+	/** Uncertainties / illegible text warnings surfaced for human review. */
+	uncertainties: z.array(z.string()).optional(),
 	panelIds: z.array(z.string().min(1)).min(1),
 	croppedImagePaths: z.array(z.string()),
 	estimatedDurationSec: z.number().positive(),
+	/** Measured audio duration in seconds once real TTS has synthesized this scene. */
+	measuredDurationSec: z.number().positive().optional(),
+	/** Indicates whether scene duration is a text-based estimate or real TTS measurement. */
+	durationSource: z.enum(DURATION_SOURCE_VALUES).optional(),
 	emotion: z.enum(EMOTION_VALUES),
 	narrativeIntent: z.enum(NARRATIVE_INTENT_VALUES),
 	confidence: z.number().min(0).max(1),
@@ -312,7 +409,13 @@ export interface GateGFidelityHint {
 		| 'narrative_gap'
 		| 'order_violation'
 		| 'low_confidence'
-		| 'unresolved_ambiguity';
+		| 'unresolved_ambiguity'
+		| 'generic_narration'
+		| 'insufficient_narrative_content'
+		| 'ungrounded_description'
+		| 'ignored_dialogue'
+		| 'scene_contradiction'
+		| 'duration_speech_mismatch';
 	detail: string;
 }
 
@@ -507,10 +610,16 @@ export interface StoryEngineOptions {
 	ocrAdapter?: OcrAdapter;
 	scriptStyle?: ScriptStyle;
 	language?: string;
+	/** Humor level configured in UI (0..100). Must never distort story fidelity. */
+	humorVolume?: number;
+	/** Optional work/manga title for contextual grounding in visual analysis. */
+	workTitle?: string;
 	/** Minimum confidence to auto-approve a beat. Below → needs_review. */
 	minBeatConfidence?: number;
 	/** Optional bounded concurrency (1..4) for fresh panel visual analysis. Default: 1. */
 	analysisConcurrency?: number;
+	/** Optional LLM port for rich narrative script generation from verified beats + continuity. */
+	scriptPort?: TextEnhancementPort;
 	/** Phase 2.2: optional humanization after script generation. */
 	humanize?: HumanizeOptions & { port: TextEnhancementPort };
 	/** Phase 2.2.3: optional contextual research before script generation. */
@@ -519,11 +628,32 @@ export interface StoryEngineOptions {
 
 // ─── Vision Adapter Interface (for panel visual analysis) ────────────────────
 
+export interface VisionAnalysisContext {
+	panelIndex?: number;
+	totalPanels?: number;
+	readingOrder?: ReadingOrder;
+	workTitle?: string;
+	previousPanelSummary?: string;
+	knownCharacters?: readonly string[];
+	ocrHint?: string;
+}
+
 export interface VisionAnalysisResult {
+	/** Rich observable description of the panel in PT-BR. */
+	visualDescription?: string;
 	characters: string[];
+	characterDetails?: CharacterDetail[];
 	actions: Array<{ type: ActionType; description: string }>;
 	emotions: Emotion[];
+	expressions?: string[];
+	relevantObjects?: string[];
+	/** Speech bubbles, thoughts, narration boxes and SFX read directly by multimodal vision. */
+	speechBubbles?: DialogueEntry[];
 	setting: string | undefined;
+	readingOrderHint?: string;
+	relationToPrevious?: string;
+	relationToNext?: string;
+	uncertainties?: string[];
 	confidence: number;
 }
 
@@ -534,6 +664,6 @@ export interface VisionAnalysisResult {
  */
 export interface VisionAdapter {
 	readonly name: string;
-	analyze(imagePathOrBuffer: string | Buffer): Promise<VisionAnalysisResult>;
+	analyze(imagePathOrBuffer: string | Buffer, context?: VisionAnalysisContext): Promise<VisionAnalysisResult>;
 }
 
