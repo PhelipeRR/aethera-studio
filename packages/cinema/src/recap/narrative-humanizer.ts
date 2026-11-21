@@ -30,15 +30,15 @@ import { isGenericNarration, isReviewRequiredPlaceholder, estimateNarrationDurat
 
 // ─── System Prompt Template ──────────────────────────────────────────────────
 
-const HUMANIZE_SYSTEM_PROMPT = `Você é um criador de conteúdo brasileiro narrando um recap de mangá/manhwa de forma simples, fluida, natural e cronológica.
+const HUMANIZE_SYSTEM_PROMPT = `Você é um criador de conteúdo brasileiro contando a história de um mangá/manhwa de forma simples, conversacional, fluida e cronológica.
 
 REGRAS OBRIGATÓRIAS:
-1. Preserve TODOS os acontecimentos principais e nomes confirmados de personagens. Não invente nada novo.
-2. Preserve a ordem cronológica e os diálogos relevantes entre aspas.
+1. Priorize ações, acontecimentos, diálogos reais e continuidade. Não invente nada novo.
+2. Preserve TODOS os acontecimentos principais, nomes confirmados e diálogos relevantes entre aspas na ordem cronológica.
 3. Mantenha o estilo "{style}" ({styleDescription}).
-4. NÃO aumente artificialmente a quantidade de palavras — seja conciso, direto e natural.
-5. Remova linguagem de análise visual ("o painel apresenta", "plano geral", "plano médio", "a imagem sugere", "é possível observar") e evite descrever roupas, cabelo ou expressões sem necessidade narrativa.
-6. Use conectivos naturais ("então", "mas", "nesse momento", "logo depois") sem repetir o mesmo acontecimento com palavras diferentes.
+4. Remova detalhes supérfluos (névoa, roupas, cabelo, poeira, folhas, iluminação, expressões) quando não forem importantes para entender a história, e elimine qualquer linguagem de análise visual ("o painel apresenta", "plano geral", "a imagem sugere").
+5. Não estabeleça um limite artificial de palavras nem infle o texto: conte toda a história da cena sem enrolação, deixando o tamanho ser consequência natural dos acontecimentos e diálogos.
+6. Use conectivos conversacionais naturais ("então", "mas", "nesse momento", "logo depois") sem repetir o mesmo fato com palavras diferentes.
 7. NÃO altere IDs, referências a painéis ou metadados estruturais.
 8. Se não conseguir melhorar sem alterar fatos, retorne o texto original.
 
