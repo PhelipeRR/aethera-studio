@@ -159,6 +159,7 @@ export function App() {
 
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: 'produce', label: 'Produção por Prompt' },
+    { id: 'recap', label: 'Recap' },
     { id: 'creative', label: 'Creative Studio' },
     { id: 'runs', label: 'Produções & Pipeline' },
     { id: 'review', label: 'Revisão por Prompt' },
