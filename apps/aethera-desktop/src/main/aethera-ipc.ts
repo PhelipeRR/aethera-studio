@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, createChainedRecapTtsPort, createClaudeVisionProvider, createElevenLabsRecapTtsPort, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importChapter, importChapterFromCdnUrls, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, loadCheckpoint, loadRecapProjectDetail, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
+import { AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createElevenLabsRecapTtsPort, createOrLoadStoryMemoryProject, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importChapter, importChapterFromCdnUrls, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -5154,6 +5154,8 @@ productionConsole,
         enableOcr?: boolean;
         resumeCheckpoint?: boolean;
         masterApproved?: boolean;
+        seriesProjectId?: string;
+        chapterNumber?: number;
       },
     ) => {
       ensureTrusted(event.senderFrame);
@@ -5255,7 +5257,7 @@ productionConsole,
         const resolvedStyle: ScriptStyle =
           input.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(input.scriptStyle)
             ? (input.scriptStyle as ScriptStyle)
-            : 'narrative_recap';
+            : 'natural_recap';
 
         const result = await runRecapProductionOrchestrator({
           runId,
@@ -5265,6 +5267,8 @@ productionConsole,
           workspaceDir: recapWorkspace,
           circuitBreaker: recapCircuitBreaker,
           visionAdapter: recapVisionAdapter,
+          ...(input.seriesProjectId ? { seriesProjectId: input.seriesProjectId } : {}),
+          ...(input.chapterNumber ? { chapterNumber: input.chapterNumber } : {}),
           ...(recapHumanizePort
             ? {
                 humanize: {
@@ -5599,6 +5603,93 @@ productionConsole,
       } catch (err) {
         return { ok: false, message: err instanceof Error ? err.message : String(err) };
       }
+    },
+  );
+
+  // ─── Story Memory IPCs (Universo da História — Persistent Series Memory) ──
+  ipcMain.handle('recap:memory-list-projects', async (event) => {
+    ensureTrusted(event.senderFrame);
+    return listStoryMemoryProjects(recapWorkspace);
+  });
+
+  ipcMain.handle(
+    'recap:memory-create-project',
+    async (
+      event,
+      input: {
+        workTitle: string;
+        projectId?: string;
+        originalLanguage?: string;
+        narrationLanguage?: string;
+        defaultScriptStyle?: ScriptStyle;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      return createOrLoadStoryMemoryProject({
+        workspaceDir: recapWorkspace,
+        workTitle: input.workTitle,
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+        ...(input.originalLanguage ? { originalLanguage: input.originalLanguage } : {}),
+        ...(input.narrationLanguage ? { narrationLanguage: input.narrationLanguage } : {}),
+        ...(input.defaultScriptStyle ? { defaultScriptStyle: input.defaultScriptStyle } : {}),
+      });
+    },
+  );
+
+  ipcMain.handle('recap:memory-load-project', async (event, projectId: string) => {
+    ensureTrusted(event.senderFrame);
+    return loadStoryMemoryProject(recapWorkspace, projectId);
+  });
+
+  ipcMain.handle(
+    'recap:memory-correct-character',
+    async (
+      event,
+      input: {
+        projectId: string;
+        characterId: string;
+        primaryName: string;
+        nameStatus?: 'unknown' | 'probable' | 'confirmed';
+        addAliases?: string[];
+        reason?: string;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      return correctCharacterIdentity({
+        workspaceDir: recapWorkspace,
+        projectId: input.projectId,
+        characterId: input.characterId,
+        primaryName: input.primaryName,
+        ...(input.nameStatus ? { nameStatus: input.nameStatus } : {}),
+        ...(input.addAliases ? { addAliases: input.addAliases } : {}),
+        ...(input.reason ? { reason: input.reason } : {}),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    'recap:memory-merge-characters',
+    async (event, input: { projectId: string; primaryCharacterId: string; secondaryCharacterId: string }) => {
+      ensureTrusted(event.senderFrame);
+      return mergeStoryMemoryCharacters({
+        workspaceDir: recapWorkspace,
+        projectId: input.projectId,
+        primaryCharacterId: input.primaryCharacterId,
+        secondaryCharacterId: input.secondaryCharacterId,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    'recap:memory-resolve-update',
+    async (event, input: { projectId: string; updateId: string; decision: 'approved' | 'rejected' }) => {
+      ensureTrusted(event.senderFrame);
+      return resolveStoryMemoryPendingUpdate({
+        workspaceDir: recapWorkspace,
+        projectId: input.projectId,
+        updateId: input.updateId,
+        decision: input.decision,
+      });
     },
   );
 

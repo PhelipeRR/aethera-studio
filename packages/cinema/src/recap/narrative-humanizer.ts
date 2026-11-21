@@ -126,12 +126,16 @@ function checkStructuralIntegrity(original: Scene, humanizedText: string, isNatu
 		return { ok: false, reason: 'Humanized text introduced dialogue quotes not present in original.' };
 	}
 
-	// Verify essential extracted dialogues were not dropped
+	// Verify essential extracted dialogues were not dropped (ignore SFX & non-verbal screams)
 	const essentialDialogues = (original.extractedDialogues ?? []).filter((d) => {
 		const kind = d.kind ?? (d.isNarration ? 'narration' : 'dialogue');
 		if (kind === 'sfx') return false;
-		const alpha = (d.translatedText ?? d.text).replace(/[^A-Za-zÀ-ú0-9]/g, '');
-		return alpha.length >= 4 && d.text.trim().length >= 8;
+		const clean = (d.translatedText ?? d.text).trim();
+		const alpha = clean.replace(/[^A-Za-zÀ-ú0-9]/g, '');
+		if (alpha.length < 4 || clean.length < 8) return false;
+		const words = clean.split(/\s+/).filter(Boolean);
+		if (words.length === 1 && /^[aeioughrkc!?.…~\-\s]+$/i.test(clean)) return false;
+		return true;
 	});
 	if (essentialDialogues.length > 0) {
 		const humTokens = new Set(extractFactualTokens(humanizedText));

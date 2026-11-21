@@ -136,6 +136,9 @@ export interface RunRecapProductionOrchestratorInput {
 	/** Set to true after reviewing preview to authorize master export. */
 	masterApproved?: boolean;
 	dryRunRender?: boolean;
+	/** Optional Story Memory series project ID and chapter number for cross-chapter continuity. */
+	seriesProjectId?: string;
+	chapterNumber?: number;
 	/** Project metadata persisted for recent projects listing & resume. */
 	archivePath?: string;
 	language?: string;
@@ -286,6 +289,15 @@ export async function runRecapProductionOrchestrator(
 				...(input.visionAdapter ? { visionAdapter: input.visionAdapter } : {}),
 				...(input.scriptPort ? { scriptPort: input.scriptPort } : {}),
 				...(input.humanize ? { humanize: input.humanize } : {}),
+				...(input.seriesProjectId && input.chapterNumber
+					? {
+							storyMemory: {
+								workspaceDir: input.workspaceDir,
+								projectId: input.seriesProjectId,
+								chapterNumber: input.chapterNumber,
+							},
+						}
+					: {}),
 			});
 			script = storyResult.script;
 			gateGReport = storyResult.gateGReport;

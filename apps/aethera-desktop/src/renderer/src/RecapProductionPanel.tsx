@@ -149,6 +149,58 @@ interface RecapProductionResponse {
   exportBundleDir?: string;
 }
 
+interface StoryMemoryCharacterView {
+  characterId: string;
+  primaryName?: string;
+  aliases: string[];
+  nameStatus: 'unknown' | 'probable' | 'confirmed';
+  visualTraits: string[];
+  firstAppearance: { chapterNumber: number; panelId: string };
+  appearedInChapters: number[];
+  confidence: number;
+  lockedByHuman: boolean;
+}
+
+interface StoryMemoryChapterView {
+  chapterNumber: number;
+  chapterId: string;
+  summary: string;
+  events: Array<{ eventId: string; summary: string; location?: string }>;
+  locations: string[];
+  ongoingConflicts: string[];
+  openQuestions: string[];
+  processedAtIso: string;
+}
+
+interface StoryMemoryUpdateView {
+  updateId: string;
+  chapterNumber: number;
+  kind: string;
+  status: string;
+  summary: string;
+  confidence: number;
+}
+
+interface StoryMemoryProjectView {
+  projectId: string;
+  workTitle: string;
+  originalLanguage: string;
+  narrationLanguage: string;
+  defaultScriptStyle: string;
+  importedChapters: number[];
+  producedChapters: number[];
+  characters: StoryMemoryCharacterView[];
+  chapters: StoryMemoryChapterView[];
+  narrativeState: {
+    currentLocation?: string;
+    ongoingConflicts: string[];
+    openQuestions: string[];
+    revealedFacts: string[];
+  };
+  pendingUpdates: StoryMemoryUpdateView[];
+  updatedAtIso: string;
+}
+
 interface RecapBridge {
   recapGetReadiness?: (input?: { chapterId?: string }) => Promise<RecapReadinessView>;
   recapGetMotionVelixStatus?: () => Promise<MotionVelixKitStatusView>;
@@ -192,6 +244,8 @@ interface RecapBridge {
     humorVolume: number;
     enableOcr: boolean;
     resumeCheckpoint: boolean;
+    seriesProjectId?: string;
+    chapterNumber?: number;
   }) => Promise<RecapProductionResponse>;
   recapApprovePreview?: (input: { runId: string }) => Promise<RecapProductionResponse>;
   recapSaveSceneEdit?: (input: { runId: string; sceneId: string; narrationText: string }) => Promise<{
@@ -215,6 +269,12 @@ interface RecapBridge {
     gateGReport?: RecapGateReportView | null;
     record?: RecapProjectRecordView;
   }>;
+  recapMemoryListProjects?: () => Promise<StoryMemoryProjectView[]>;
+  recapMemoryCreateProject?: (input: { workTitle: string; projectId?: string; originalLanguage?: string; narrationLanguage?: string; defaultScriptStyle?: string }) => Promise<StoryMemoryProjectView>;
+  recapMemoryLoadProject?: (projectId: string) => Promise<StoryMemoryProjectView | null>;
+  recapMemoryCorrectCharacter?: (input: { projectId: string; characterId: string; primaryName: string; nameStatus?: string; addAliases?: string[]; reason?: string }) => Promise<StoryMemoryProjectView>;
+  recapMemoryMergeCharacters?: (input: { projectId: string; primaryCharacterId: string; secondaryCharacterId: string }) => Promise<StoryMemoryProjectView>;
+  recapMemoryResolveUpdate?: (input: { projectId: string; updateId: string; decision: 'approved' | 'rejected' }) => Promise<StoryMemoryProjectView>;
   recapListProjects?: () => Promise<RecapProjectRecordView[]>;
   recapLoadProject?: (runId: string) => Promise<RecapProjectDetailResponse | null>;
   recapDeleteProject?: (runId: string) => Promise<{ ok: boolean; deleted?: string; removedPaths?: string[]; error?: string }>;
@@ -1038,7 +1098,7 @@ function MetricScore({ score, label }: { score: number | null; label: string }) 
 
 // ─── Main Component ─────────────────────────────────────────────────────────
 
-type SubTab = 'import' | 'produce' | 'preview';
+type SubTab = 'import' | 'produce' | 'preview' | 'universe';
 
 export function RecapProductionPanel() {
   const [subTab, setSubTab] = useState<SubTab>('import');
@@ -1078,7 +1138,14 @@ export function RecapProductionPanel() {
   const [workTitle, setWorkTitle] = useState('');
   const [language, setLanguage] = useState<'pt-BR' | 'en-US' | 'es-ES'>('pt-BR');
   const [humorVolume, setHumorVolume] = useState(35);
-  const [scriptStyle, setScriptStyle] = useState('cinematic_recap');
+  const [scriptStyle, setScriptStyle] = useState('natural_recap');
+  const [seriesProjects, setSeriesProjects] = useState<StoryMemoryProjectView[]>([]);
+  const [activeSeries, setActiveSeries] = useState<StoryMemoryProjectView | null>(null);
+  const [newSeriesTitle, setNewSeriesTitle] = useState('');
+  const [chapterNumber, setChapterNumber] = useState<number>(1);
+  const [editingCharId, setEditingCharId] = useState<string | null>(null);
+  const [editingCharName, setEditingCharName] = useState('');
+  const [editingCharAliases, setEditingCharAliases] = useState('');
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
   const [ttsProvider, setTtsProvider] = useState('voicestudio_tts');
   const [enableOcr, setEnableOcr] = useState(false);
@@ -1230,13 +1297,95 @@ export function RecapProductionPanel() {
     [refreshReadiness],
   );
 
-  // Initial load: projects, MotionVelix kit, readiness
+  const refreshStoryMemory = useCallback(async () => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapMemoryListProjects) return;
+    try {
+      const list = await bridge.recapMemoryListProjects();
+      setSeriesProjects(Array.isArray(list) ? list : []);
+      if (activeSeries) {
+        const updated = list.find((p) => p.projectId === activeSeries.projectId);
+        if (updated) setActiveSeries(updated);
+      } else if (list.length > 0) {
+        setActiveSeries(list[0]!);
+        const nextCh = (list[0]!.producedChapters[list[0]!.producedChapters.length - 1] ?? 0) + 1;
+        setChapterNumber(nextCh);
+      }
+    } catch {
+      // ignore
+    }
+  }, [activeSeries]);
+
+  const handleCreateSeriesProject = async () => {
+    const title = newSeriesTitle.trim();
+    if (!title) return;
+    const bridge = getRecapBridge();
+    if (!bridge?.recapMemoryCreateProject) return;
+    try {
+      const created = await bridge.recapMemoryCreateProject({
+        workTitle: title,
+        defaultScriptStyle: 'natural_recap',
+      });
+      setNewSeriesTitle('');
+      setActiveSeries(created);
+      setWorkTitle(created.workTitle);
+      setChapterNumber((created.producedChapters[created.producedChapters.length - 1] ?? 0) + 1);
+      await refreshStoryMemory();
+      setStatusNote(`Projeto de memória "${created.workTitle}" criado/carregado.`);
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleSaveCharacterCorrection = async (characterId: string) => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapMemoryCorrectCharacter || !activeSeries || !editingCharName.trim()) return;
+    try {
+      const aliases = editingCharAliases
+        .split(',')
+        .map((a) => a.trim())
+        .filter(Boolean);
+      const updated = await bridge.recapMemoryCorrectCharacter({
+        projectId: activeSeries.projectId,
+        characterId,
+        primaryName: editingCharName.trim(),
+        nameStatus: 'confirmed',
+        addAliases: aliases,
+        reason: 'Correção manual na aba Universo da História',
+      });
+      setActiveSeries(updated);
+      setSeriesProjects((prev) => prev.map((p) => (p.projectId === updated.projectId ? updated : p)));
+      setEditingCharId(null);
+      setStatusNote(`Identidade de ${characterId} atualizada para "${editingCharName.trim()}" e protegida para futuros capítulos.`);
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleResolveMemoryUpdate = async (updateId: string, decision: 'approved' | 'rejected') => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapMemoryResolveUpdate || !activeSeries) return;
+    try {
+      const updated = await bridge.recapMemoryResolveUpdate({
+        projectId: activeSeries.projectId,
+        updateId,
+        decision,
+      });
+      setActiveSeries(updated);
+      setSeriesProjects((prev) => prev.map((p) => (p.projectId === updated.projectId ? updated : p)));
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  // Initial load: projects, MotionVelix kit, readiness, Story Memory
   useEffect(() => {
     void (async () => {
       const [list] = await Promise.all([
         refreshProjects(),
         refreshMotionVelixStatus(),
         refreshReadiness(),
+        refreshStoryMemory(),
       ]);
       if (list.length > 0 && !activeProject) {
         await openProjectDetail(list[0]!, false);
@@ -1459,6 +1608,7 @@ export function RecapProductionPanel() {
         humorVolume,
         enableOcr,
         resumeCheckpoint,
+        ...(activeSeries ? { seriesProjectId: activeSeries.projectId, chapterNumber } : {}),
       });
 
       setStatusNote(res.message);
@@ -1977,6 +2127,7 @@ export function RecapProductionPanel() {
             ['import', '1. Importar', Download],
             ['produce', '2. Produzir & Timeline', Sparkles],
             ['preview', '3. Preview & Revisão', Film],
+            ['universe', '4. Universo da História', BookOpen],
           ] as const
         ).map(([id, label, Icon]) => {
           const active = subTab === id;
@@ -2309,9 +2460,12 @@ export function RecapProductionPanel() {
               <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 Estilo de roteiro
                 <select value={scriptStyle} onChange={(e) => setScriptStyle(e.target.value)} style={inputStyle}>
+                  <option value="natural_recap">Narração Natural (Padrão)</option>
+                  <option value="narrative_recap">Recap Narrativo Detalhado</option>
                   <option value="cinematic_recap">Recap Cinematográfico</option>
-                  <option value="narrative_summary">Resumo Narrativo</option>
-                  <option value="dramatic_retelling">Retelling Dramático</option>
+                  <option value="mystery">Mistério</option>
+                  <option value="suspense">Suspense</option>
+                  <option value="documentary">Documentário</option>
                 </select>
               </label>
 
@@ -3073,6 +3227,317 @@ export function RecapProductionPanel() {
               </BentoBlock>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ─── TAB 4: STORY MEMORY — UNIVERSO DA HISTÓRIA (PHASE 8) ───────── */}
+      {subTab === 'universe' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <BentoBlock>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+              <div>
+                <SectionLabel>Universo da História · Story Memory</SectionLabel>
+                <p style={{ margin: '4px 0 0', fontSize: 12, color: T.inkMuted }}>
+                  Memória narrativa persistente entre capítulos. Personagens, nomes confirmados e acontecimentos são preservados sem vazar spoilers de capítulos futuros.
+                </p>
+              </div>
+              {activeSeries && (
+                <span
+                  style={{
+                    padding: '4px 10px',
+                    borderRadius: T.radiusFull,
+                    background: T.successBg,
+                    color: T.success,
+                    border: `1px solid ${T.successBorder}`,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    fontFamily: T.mono,
+                  }}
+                >
+                  Memória carregada · {activeSeries.workTitle}
+                </span>
+              )}
+            </div>
+
+            <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)' }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                Selecionar projeto existente
+                <select
+                  value={activeSeries?.projectId ?? ''}
+                  onChange={(e) => {
+                    const found = seriesProjects.find((p) => p.projectId === e.target.value) ?? null;
+                    setActiveSeries(found);
+                    if (found) {
+                      setWorkTitle(found.workTitle);
+                      setChapterNumber((found.producedChapters[found.producedChapters.length - 1] ?? 0) + 1);
+                    }
+                  }}
+                  style={inputStyle}
+                >
+                  <option value="">— Nenhum projeto de memória selecionado —</option>
+                  {seriesProjects.map((p) => (
+                    <option key={p.projectId} value={p.projectId}>
+                      {p.workTitle} ({p.producedChapters.length} caps · {p.characters.length} personagens)
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted }}>Criar novo projeto de obra</span>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    value={newSeriesTitle}
+                    onChange={(e) => setNewSeriesTitle(e.target.value)}
+                    placeholder="Ex: Nano Machine"
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <button type="button" onClick={() => void handleCreateSeriesProject()} style={btnPrimary}>
+                    <Plus style={{ width: 14, height: 14 }} /> Criar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </BentoBlock>
+
+          {activeSeries ? (
+            <>
+              <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'minmax(0, 1fr) 340px', alignItems: 'start' }}>
+                <BentoBlock>
+                  <SectionLabel>{activeSeries.workTitle} — Resumo da Memória</SectionLabel>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginTop: 12 }}>
+                    <div style={{ padding: 14, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
+                      <div style={{ fontSize: 26, fontWeight: 800, fontFamily: T.mono, color: T.ink }}>
+                        {String(activeSeries.producedChapters.length).padStart(2, '0')}
+                      </div>
+                      <div style={{ fontSize: 12, color: T.inkMuted }}>Capítulos</div>
+                    </div>
+                    <div style={{ padding: 14, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
+                      <div style={{ fontSize: 26, fontWeight: 800, fontFamily: T.mono, color: T.ink }}>
+                        {String(activeSeries.characters.length).padStart(2, '0')}
+                      </div>
+                      <div style={{ fontSize: 12, color: T.inkMuted }}>Personagens</div>
+                    </div>
+                    <div style={{ padding: 14, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
+                      <div style={{ fontSize: 26, fontWeight: 800, fontFamily: T.mono, color: T.ink }}>
+                        {String(activeSeries.chapters.reduce((s, c) => s + c.events.length, 0)).padStart(2, '0')}
+                      </div>
+                      <div style={{ fontSize: 12, color: T.inkMuted }}>Eventos</div>
+                    </div>
+                  </div>
+                </BentoBlock>
+
+                <BentoBlock>
+                  <SectionLabel>Produzir novo capítulo</SectionLabel>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      Número do capítulo
+                      <input
+                        type="number"
+                        min={1}
+                        value={chapterNumber}
+                        onChange={(e) => setChapterNumber(Math.max(1, Number(e.target.value) || 1))}
+                        style={inputStyle}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWorkTitle(`${activeSeries.workTitle} Cap. ${chapterNumber}`);
+                        setScriptStyle('natural_recap');
+                        setSubTab('import');
+                        setStatusNote(`Continuando "${activeSeries.workTitle}" no Capítulo ${chapterNumber} com memória narrativa carregada.`);
+                      }}
+                      style={btnLime}
+                    >
+                      <Play style={{ width: 14, height: 14 }} />
+                      Continuar {activeSeries.workTitle} (Cap. {chapterNumber})
+                    </button>
+                  </div>
+                </BentoBlock>
+              </div>
+
+              {activeSeries.pendingUpdates.length > 0 && (
+                <BentoBlock>
+                  <SectionLabel>Revisão de Atualizações da Memória ({activeSeries.pendingUpdates.length})</SectionLabel>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                    {activeSeries.pendingUpdates.map((upd) => (
+                      <div
+                        key={upd.updateId}
+                        style={{
+                          padding: 10,
+                          borderRadius: T.radiusSm,
+                          background: T.warningBg,
+                          border: `1px solid ${T.warningBorder}`,
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          gap: 10,
+                        }}
+                      >
+                        <div style={{ fontSize: 12, color: T.ink }}>
+                          <strong style={{ fontFamily: T.mono, marginRight: 6 }}>Cap. {upd.chapterNumber}</strong>
+                          <span>{upd.summary}</span>
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                          <button
+                            type="button"
+                            onClick={() => void handleResolveMemoryUpdate(upd.updateId, 'approved')}
+                            style={{ ...btnPrimary, padding: '4px 10px', fontSize: 11 }}
+                          >
+                            Aprovar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleResolveMemoryUpdate(upd.updateId, 'rejected')}
+                            style={{ ...btnSecondary, padding: '4px 10px', fontSize: 11 }}
+                          >
+                            Rejeitar
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </BentoBlock>
+              )}
+
+              <BentoBlock>
+                <SectionLabel>Biblioteca de Personagens ({activeSeries.characters.length})</SectionLabel>
+                {activeSeries.characters.length === 0 ? (
+                  <p style={{ margin: '10px 0 0', fontSize: 12, color: T.inkMuted }}>
+                    Nenhum personagem registrado ainda. Produza o primeiro capítulo deste projeto para popular automaticamente o registro.
+                  </p>
+                ) : (
+                  <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', marginTop: 12 }}>
+                    {activeSeries.characters.map((ch) => {
+                      const isEditing = editingCharId === ch.characterId;
+                      return (
+                        <div
+                          key={ch.characterId}
+                          style={{
+                            padding: 12,
+                            borderRadius: T.radiusInner,
+                            border: `1px solid ${T.border}`,
+                            background: T.surface,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                            <strong style={{ fontSize: 13, color: T.ink }}>
+                              {ch.primaryName || `Personagem #${ch.characterId.replace('char_', '')}`}
+                            </strong>
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontFamily: T.mono,
+                                padding: '2px 7px',
+                                borderRadius: T.radiusFull,
+                                background: ch.nameStatus === 'confirmed' ? T.successBg : T.warningBg,
+                                color: ch.nameStatus === 'confirmed' ? T.success : T.warning,
+                                border: `1px solid ${ch.nameStatus === 'confirmed' ? T.successBorder : T.warningBorder}`,
+                              }}
+                            >
+                              {ch.nameStatus === 'confirmed' ? 'Confirmado' : ch.nameStatus === 'probable' ? 'Provável' : 'Desconhecido'}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 11, fontFamily: T.mono, color: T.inkSubtle }}>
+                            ID: {ch.characterId} · Caps: {ch.appearedInChapters.join(', ')} · Conf.: {Math.round(ch.confidence * 100)}%
+                            {ch.lockedByHuman ? ' · Protegido (manual)' : ''}
+                          </div>
+                          {ch.visualTraits.length > 0 && (
+                            <div style={{ fontSize: 12, color: T.inkMuted, lineHeight: 1.4 }}>
+                              {ch.visualTraits.slice(0, 2).join(' · ')}
+                            </div>
+                          )}
+                          {isEditing ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                              <input
+                                value={editingCharName}
+                                onChange={(e) => setEditingCharName(e.target.value)}
+                                placeholder="Nome confirmado"
+                                style={inputStyle}
+                              />
+                              <input
+                                value={editingCharAliases}
+                                onChange={(e) => setEditingCharAliases(e.target.value)}
+                                placeholder="Apelidos (separados por vírgula)"
+                                style={inputStyle}
+                              />
+                              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                                <button type="button" onClick={() => setEditingCharId(null)} style={{ ...btnSecondary, padding: '4px 9px', fontSize: 11 }}>
+                                  Cancelar
+                                </button>
+                                <button type="button" onClick={() => void handleSaveCharacterCorrection(ch.characterId)} style={{ ...btnPrimary, padding: '4px 9px', fontSize: 11 }}>
+                                  Salvar
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingCharId(ch.characterId);
+                                setEditingCharName(ch.primaryName ?? '');
+                                setEditingCharAliases(ch.aliases.join(', '));
+                              }}
+                              style={{ ...btnSecondary, padding: '4px 10px', fontSize: 11, alignSelf: 'flex-start' }}
+                            >
+                              Corrigir identidade / nome
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </BentoBlock>
+
+              <BentoBlock>
+                <SectionLabel>Histórico da História ({activeSeries.chapters.length} capítulos)</SectionLabel>
+                {activeSeries.chapters.length === 0 ? (
+                  <p style={{ margin: '10px 0 0', fontSize: 12, color: T.inkMuted }}>
+                    Nenhum capítulo consolidado na memória ainda.
+                  </p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
+                    {activeSeries.chapters.map((ch) => (
+                      <div
+                        key={ch.chapterNumber}
+                        style={{
+                          padding: 12,
+                          borderRadius: T.radiusInner,
+                          border: `1px solid ${T.border}`,
+                          background: T.surfaceSubtle,
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                          <strong style={{ fontSize: 13, color: T.ink }}>Capítulo {ch.chapterNumber}</strong>
+                          <span style={{ fontSize: 11, fontFamily: T.mono, color: T.inkMuted }}>
+                            {ch.events.length} evento(s) · {ch.locations.slice(0, 2).join(', ') || 'local não informado'}
+                          </span>
+                        </div>
+                        <p style={{ margin: 0, fontSize: 12, color: T.inkMuted, lineHeight: 1.5 }}>{ch.summary}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </BentoBlock>
+            </>
+          ) : (
+            <BentoBlock>
+              <div style={{ textAlign: 'center', padding: '28px 16px' }}>
+                <BookOpen style={{ width: 28, height: 28, color: T.inkSubtle, margin: '0 auto 8px' }} />
+                <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: T.ink }}>
+                  Crie ou selecione um projeto de obra para ativar o Story Memory
+                </p>
+                <p style={{ margin: '6px 0 0', fontSize: 12, color: T.inkMuted }}>
+                  Assim o Aethera manterá personagens, nomes confirmados, relações e eventos entre capítulos automaticamente.
+                </p>
+              </div>
+            </BentoBlock>
+          )}
         </div>
       )}
 

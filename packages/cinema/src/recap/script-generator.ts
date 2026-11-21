@@ -122,19 +122,28 @@ function simplifyVisualForNaturalRecap(rawVisual: string): string {
 		.split(/(?<=[.!?])\s+/)
 		.map((s) => s.trim())
 		.filter((s) => s.length >= 12);
-	const picked = sentences.slice(0, 2).join(' ');
+	// Keep first sentence + last major action sentence if beat spans multiple panels
+	const picked =
+		sentences.length <= 2
+			? sentences.join(' ')
+			: `${sentences[0]} ${sentences[sentences.length - 1]}`;
 	const finalStr = (picked || text).replace(/^[,;:\-\s]+/, '').trim();
 	if (!finalStr) return '';
 	return finalStr.charAt(0).toUpperCase() + finalStr.slice(1);
 }
 
+const NON_VERBAL_SCREAM_PATTERN = /^[aeioughrkc!?.…~\-\s]+$/i;
+
 function isSubstantiveSpokenLine(entry: DialogueEntry): boolean {
 	const kind = entry.kind ?? (entry.isNarration ? 'narration' : 'dialogue');
 	if (kind === 'sfx') return false;
 	const clean = (entry.translatedText?.trim() || entry.text.trim()).replace(/^["“”]+|["“”]+$/g, '');
-	// Filter punctuation-only bubbles like "!!!" or "..." from being forced as spoken quotes
 	const alphaChars = clean.replace(/[^A-Za-zÀ-ú0-9]/g, '');
-	return alphaChars.length >= 3;
+	if (alphaChars.length < 3) return false;
+	// Filter non-verbal pain/effort screams like "AAARGH...!!", "ARGH!!!", "EUAACK!!"
+	const words = clean.split(/\s+/).filter(Boolean);
+	if (words.length === 1 && NON_VERBAL_SCREAM_PATTERN.test(clean)) return false;
+	return true;
 }
 
 function formatDialogueSentence(entry: DialogueEntry, fallbackCharacters: readonly string[], naturalMode = false): string {
