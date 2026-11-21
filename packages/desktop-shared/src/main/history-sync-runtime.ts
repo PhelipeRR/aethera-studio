@@ -1,7 +1,10 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { discoverHistorySources, type HistoryCheckpoint, type HistorySource } from '@neuralbridge/brain';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const __dirnameCompat = typeof __dirname !== 'undefined' ? __dirname : dirname(new URL((import.meta as any).url).pathname);
 
 type State = { checkpoints: Record<string, HistoryCheckpoint>; lastRun: string | null; sessions: number; proposals: number; errors: number };
 const empty: State = { checkpoints: {}, lastRun: null, sessions: 0, proposals: 0, errors: 0 };
@@ -22,7 +25,7 @@ export function createHistorySyncRuntime(options: { home: string; stateFile: str
     controller = new AbortController();
     try {
     const sources = discoverHistorySources(options.home);
-    const worker = new Worker(new URL('./history-sync-worker.js', import.meta.url));
+    const worker = new Worker(join(__dirnameCompat, 'history-sync-worker.js'));
     const batches = await new Promise<Array<{ source: HistorySource; checkpoint: HistoryCheckpoint; records: Array<{ id: string; agent: 'claude' | 'codex'; projectId: string | null; proposals: unknown[] }> }>>((resolve, reject) => {
       worker.once('message', resolve); worker.once('error', reject); worker.postMessage({ home: options.home, sources, checkpoints: state.checkpoints, maxRecords: 100 });
       controller?.signal.addEventListener('abort', () => { void worker.terminate(); reject(new Error('history_sync_cancelled')); }, { once: true });

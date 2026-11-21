@@ -2,7 +2,7 @@
   "name": "@neuralbridge/aethera-desktop",
   "private": true,
   "version": "0.1.74",
-  "description": "Aethera Studio — standalone autonomous AI video studio & channel manager",
+  "description": "Aethera Studio â€” standalone autonomous AI video studio & channel manager",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -38,3 +38,4 @@
     "@img/sharp-libvips-win32-x64": "1.3.4"
   }
 }
+

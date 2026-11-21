@@ -1,5 +1,23 @@
+import { createRequire } from 'node:module';
 import { createWorker, type Worker } from 'tesseract.js';
 import type { OcrAdapter, OcrResult } from './recap-types.js';
+
+const require = createRequire(import.meta.url);
+
+// Resolve the worker script path at runtime so it works both in dev and inside app.asar.
+// tesseract.js is externalized from the bundle, so require.resolve hits the real node_modules.
+let resolvedWorkerPath: string | undefined;
+try {
+	resolvedWorkerPath = require.resolve('tesseract.js/src/worker-script/node/index.js');
+} catch {
+	// Fallback: if the subpath isn't directly resolvable, try the package root heuristic
+	try {
+		const pkgDir = require.resolve('tesseract.js/package.json').replace(/[/\\]package\.json$/, '');
+		resolvedWorkerPath = require('node:path').join(pkgDir, 'src', 'worker-script', 'node', 'index.js');
+	} catch {
+		// Leave undefined — createWorker will use its own default (works in dev)
+	}
+}
 
 export interface TesseractOcrOptions {
 	/** Language(s) for OCR. Default: 'por+eng'. Use 'jpn' for Japanese, 'kor' for Korean. */
@@ -17,7 +35,9 @@ export function createTesseractOcrAdapter(options: TesseractOcrOptions = {}): Oc
 
 	async function getWorker(): Promise<Worker> {
 		if (!worker) {
-			worker = await createWorker(languages);
+			worker = await createWorker(languages, 1, {
+				...(resolvedWorkerPath ? { workerPath: resolvedWorkerPath } : {}),
+			});
 		}
 		return worker;
 	}

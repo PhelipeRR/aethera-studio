@@ -16,6 +16,12 @@ import {
 	type RecapLibraryEntry,
 } from './url-chapter-importer.js';
 import type { SiteAdapterRegistry } from './site-adapters.js';
+import {
+	saveImportCheckpoint,
+	removeImportCheckpoint,
+	restoreIncompleteJobs,
+	type ImportCheckpointRecord,
+} from './import-checkpoint-store.js';
 
 export type RecapImportJobStatus =
 	| 'queued'
@@ -98,6 +104,60 @@ export class RecapImportJobManager {
 				}
 			}
 		}
+		// Persist checkpoint on every state change for crash recovery (Fases 5 & 6)
+		try {
+			if (job.status === 'completed' || job.status === 'cancelled') {
+				removeImportCheckpoint(this.options.libraryDir, job.id);
+			} else {
+				saveImportCheckpoint(this.options.libraryDir, job);
+			}
+		} catch { /* best-effort persistence — don't block import on disk errors */ }
+	}
+
+	/**
+	 * Restores incomplete jobs from persisted checkpoints on app startup.
+	 * Jobs in 'running' state are reset to 'queued' since the process restarted.
+	 * Call this once during initialization to resume interrupted imports.
+	 */
+	restoreJobsFromCheckpoints(): RecapImportJob[] {
+		const records = restoreIncompleteJobs(this.options.libraryDir);
+		const restored: RecapImportJob[] = [];
+
+		for (const record of records) {
+			// Skip if job already exists in memory (shouldn't happen on fresh start)
+			if (this.jobs.has(record.jobId)) continue;
+
+			const job: RecapImportJob = {
+				id: record.jobId,
+				status: record.status === 'running' ? 'queued' : record.status,
+				items: record.items.map((item) => {
+					const mapped: RecapImportJob['items'][number] = {
+						url: item.url,
+						status: item.status,
+						pagesDone: item.pagesDone,
+						pagesTotal: item.pagesTotal,
+					};
+					if (item.chapterNumber !== undefined) mapped.chapterNumber = item.chapterNumber;
+					if (item.error !== undefined) mapped.error = item.error;
+					return mapped;
+				}),
+				completedChapters: record.completedChapters,
+				totalChapters: record.totalChapters,
+				createdAtIso: record.createdAtIso,
+				updatedAtIso: record.updatedAtIso,
+			};
+			if (record.error !== undefined) job.error = record.error;
+
+			this.jobs.set(job.id, job);
+			restored.push(structuredClone(job));
+
+			// Auto-resume queued/paused jobs
+			if (job.status === 'queued' || job.status === 'paused') {
+				void this.runJobLoop(job.id, false);
+			}
+		}
+
+		return restored;
 	}
 
 	createJob(input: { urls: readonly string[]; forceReimport?: boolean }): RecapImportJob {

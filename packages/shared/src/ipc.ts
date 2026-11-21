@@ -1139,6 +1139,16 @@ export const ipcContract = {
   [IpcChannel.skillsStudioImport]: { input: z.strictObject({ sourcePath: z.string().trim().min(1).max(4_096), confirmed: z.literal(true) }), output: skillStudioEditorStateSchema },
   [IpcChannel.skillsStudioExport]: { input: z.strictObject({ skillId: z.string().trim().min(1).max(120), versionId: z.string().uuid() }), output: skillStudioExportResultSchema },
   [IpcChannel.skillsStudioSimulate]: { input: z.strictObject({ draftId: z.string().uuid(), taskDescription: z.string().max(4_000), projectId: z.string().max(200).optional(), stack: z.array(z.string().max(100)).max(30).optional(), agent: z.enum(['claude', 'codex']).optional(), taskType: z.string().max(200).optional(), workflowStep: z.string().max(200).optional(), limit: z.number().int().min(0).max(50).optional() }), output: skillStudioSimulationSchema },
+  // Aethera Recap — Acquisition Engine IPC (Fase 3)
+  [IpcChannel.recapImportCreateJob]: { input: z.strictObject({ urls: z.array(z.string().url()).min(1).max(100), forceReimport: z.boolean().optional() }), output: z.any() },
+  [IpcChannel.recapImportGetJob]: { input: z.strictObject({ jobId: z.string().min(1) }), output: z.any().nullable() },
+  [IpcChannel.recapImportListJobs]: { input: noInput, output: z.array(z.any()) },
+  [IpcChannel.recapImportPauseJob]: { input: z.strictObject({ jobId: z.string().min(1) }), output: z.any().nullable() },
+  [IpcChannel.recapImportResumeJob]: { input: z.strictObject({ jobId: z.string().min(1) }), output: z.any().nullable() },
+  [IpcChannel.recapImportCancelJob]: { input: z.strictObject({ jobId: z.string().min(1) }), output: z.any().nullable() },
+  [IpcChannel.recapImportRetryJob]: { input: z.strictObject({ jobId: z.string().min(1) }), output: z.any().nullable() },
+  [IpcChannel.recapImportProviderHealth]: { input: noInput, output: z.array(z.any()) },
+  [IpcChannel.recapImportSelectLocalFiles]: { input: noInput, output: z.strictObject({ filePaths: z.array(z.string()), canceled: z.boolean() }) },
 } satisfies Record<IpcChannelName, { input: z.ZodType; output: z.ZodType }>;
 
 export type IpcContract = typeof ipcContract;

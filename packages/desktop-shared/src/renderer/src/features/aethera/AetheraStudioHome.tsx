@@ -216,6 +216,8 @@ export function AetheraStudioHome() {
         </Link>
       </div>
 
+      {/* Aethera Recap — Acquisition Engine integrado em apps/aethera-desktop/src/renderer/src/RecapProductionPanel.tsx (Fase 4.1) */}
+
       <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)]">
         {/* Pra aprovar */}
         <Block aria-labelledby="home-approvals" className="xl:row-span-2">

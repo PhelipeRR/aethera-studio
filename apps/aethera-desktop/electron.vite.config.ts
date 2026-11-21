@@ -82,11 +82,12 @@ export default defineConfig({
     build: {
       externalizeDeps: { exclude: WORKSPACE_PACKAGES },
       rollupOptions: {
-        external: ['playwright', 'playwright-core', 'chromium-bidi'],
+        external: ['playwright', 'playwright-core', 'chromium-bidi', 'tesseract.js'],
         input: {
           index: resolve('src/main/index.ts'),
           'mcp-server': resolve('../../packages/mcp-server/src/cli.ts'),
           core: resolve('../../packages/desktop-shared/src/core-host/main.ts'),
+          'history-sync-worker': resolve('../../packages/desktop-shared/src/main/history-sync-worker.ts'),
         },
       },
     },

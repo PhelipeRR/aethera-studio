@@ -2,3 +2,8 @@ export * from './url-security.js';
 export * from './site-adapters.js';
 export * from './url-chapter-importer.js';
 export * from './batch-import-queue.js';
+export * from './cdn-direct-importer.js';
+export * from './acquisition-router.js';
+export * from './electron-playwright-provider.js';
+export * from './firecrawl-provider.js';
+export * from './import-checkpoint-store.js';

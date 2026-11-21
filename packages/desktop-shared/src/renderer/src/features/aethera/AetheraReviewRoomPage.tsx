@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
+  BookOpen,
   CheckCircle2,
+  ChevronRight,
   Film,
   MessageSquarePlus,
   Play,
@@ -11,9 +13,9 @@ import {
   Wrench,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 
-type ReviewTab = 'overview' | 'scenes' | 'checklist' | 'comments' | 'compare' | 'report';
+type ReviewTab = 'overview' | 'scenes' | 'checklist' | 'comments' | 'compare' | 'report' | 'recap';
 
 interface TimestampComment {
   id: string;
@@ -296,6 +298,7 @@ export function AetheraReviewRoomPage() {
             ['comments', `Comentários (${comments.length})`],
             ['compare', 'Comparativos'],
             ['report', 'Relatório'],
+            ['recap', 'Mangá Recap'],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -429,6 +432,96 @@ export function AetheraReviewRoomPage() {
             <pre className="max-h-48 overflow-auto rounded-xl border border-border bg-card p-3 text-[11px] text-muted-foreground">
               {JSON.stringify({ scorecard: pkg.scorecard, releaseGates: pkg.releaseGates }, null, 2)}
             </pre>
+          )}
+
+          {tab === 'recap' && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 rounded-2xl border border-purple-500/30 bg-purple-500/10 p-4">
+                <BookOpen className="size-6 text-purple-400" />
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">Mangá Recap — Preview & Revisão</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Acompanhe o progresso da produção, visualize o preview e revise a qualidade antes de publicar.
+                  </p>
+                </div>
+              </div>
+
+              {/* Pipeline Progress */}
+              <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Pipeline de Produção</h4>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { label: 'Importação', done: true },
+                    { label: 'Integridade', done: true },
+                    { label: 'Visão Multimodal', done: true },
+                    { label: 'Continuidade', done: false },
+                    { label: 'Roteiro', done: false },
+                    { label: 'Humanização', done: false },
+                    { label: 'Motion & Áudio', done: false },
+                    { label: 'Qualidade Final', done: false },
+                  ].map((stage) => (
+                    <span
+                      key={stage.label}
+                      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium ${
+                        stage.done
+                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                          : 'bg-secondary text-muted-foreground border border-border'
+                      }`}
+                    >
+                      {stage.done && <CheckCircle2 className="size-3" />}
+                      {stage.label}
+                    </span>
+                  ))}
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                  <div className="h-full rounded-full bg-purple-500 transition-all duration-500" style={{ width: '37%' }} />
+                </div>
+                <p className="text-[11px] text-muted-foreground">3 de 8 etapas concluídas · 37%</p>
+              </div>
+
+              {/* Preview Placeholder */}
+              <div className="aspect-video w-full overflow-hidden rounded-2xl border border-border bg-black/90 flex items-center justify-center">
+                <div className="text-center">
+                  <Film className="mx-auto size-10 text-white/30" />
+                  <p className="mt-3 text-sm font-medium text-white/50">Preview disponível após produção</p>
+                </div>
+              </div>
+
+              {/* Quality Scorecard */}
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: 'Técnica', score: 85, color: 'emerald' },
+                  { label: 'Narrativa', score: 72, color: 'amber' },
+                  { label: 'Áudio', score: 90, color: 'emerald' },
+                ].map((item) => (
+                  <div key={item.label} className="rounded-xl border border-border bg-card p-3 text-center">
+                    <p className="text-2xl font-bold text-foreground">{item.score}</p>
+                    <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{item.label}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Schedule & Publish */}
+              <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Publicação</h4>
+                <div className="flex gap-3">
+                  <button type="button" className="flex-1 rounded-full border border-primary/60 bg-primary/20 px-4 py-2 text-xs font-semibold text-foreground transition hover:bg-primary/30">
+                    Agendar no Calendário
+                  </button>
+                  <button type="button" className="flex-1 rounded-full border border-border bg-card px-4 py-2 text-xs font-semibold text-muted-foreground transition hover:text-foreground">
+                    Publicar Agora
+                  </button>
+                </div>
+              </div>
+
+              {/* Link to full Recap page */}
+              <Link
+                to="/aethera/recap"
+                className="inline-flex items-center gap-2 text-xs font-medium text-purple-400 underline-offset-4 hover:underline"
+              >
+                Abrir Mangá Recap completo <ChevronRight className="size-3" />
+              </Link>
+            </div>
           )}
         </section>
 

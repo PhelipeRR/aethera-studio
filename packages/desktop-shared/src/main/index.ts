@@ -92,6 +92,7 @@ import { registerThemeIpcHandlers } from './handlers/theme.js';
 import { createMonitoring, registerMonitoringIpcHandlers } from './handlers/monitoring.js';
 import { registerSkillsCatalogIpcHandlers } from './handlers/skills-catalog.js';
 import { registerSkillsIntelligenceIpcHandlers } from './handlers/skills-intelligence.js';
+import { registerRecapImportIpcHandlers } from './handlers/recap-import.js';
 
 type ClipJob = { id: string; status: 'running' | 'completed' | 'failed' | 'cancelled'; progress: number; error: string | null; analysis: unknown; controller: AbortController };
 const clipJobs = new Map<string, ClipJob>();
@@ -2454,6 +2455,27 @@ if (!app.requestSingleInstanceLock()) {
   registerIpcHandler(ipcMain, IpcChannel.skillsUpdate, ({ source, approved }) => remoteSkillOperation(source, approved), isTrustedSender);
 
   registerThemeIpcHandlers(ipcMain, { preferencesFile, setNativeTheme: (source) => { nativeTheme.themeSource = source; } }, isTrustedSender);
+  // Aethera Recap — Acquisition Engine IPC (Fase 3)
+  const recapLibraryDir = join(app.getPath('userData'), 'aethera-recap-library');
+  registerRecapImportIpcHandlers(ipcMain, {
+    libraryDir: recapLibraryDir,
+    showOpenDialog: async () => {
+      const win = BrowserWindow.getFocusedWindow() ?? mainWindow;
+      if (!win || win.isDestroyed()) return { filePaths: [], canceled: true };
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Selecionar arquivos CBZ ou PDF',
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'Arquivos de Capítulo', extensions: ['cbz', 'pdf', 'zip'] }],
+      });
+      return { filePaths: result.filePaths, canceled: result.canceled };
+    },
+    sendToRenderer: (channel, ...args) => {
+      const win = mainWindow;
+      if (win && !win.isDestroyed()) {
+        try { win.webContents.send(channel, ...args); } catch { /* window may be destroyed */ }
+      }
+    },
+  }, isTrustedSender);
   // Lote 50.08: real-time performance monitoring. Collection starts on the first request and pauses when idle.
   const monitoring = createMonitoring({
     preferencesFile,

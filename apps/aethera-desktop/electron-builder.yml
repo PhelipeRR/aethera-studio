@@ -30,8 +30,6 @@ asarUnpack:
 extraResources:
   - from: ../../packages/database/migrations
     to: migrations
-extraMetadata:
-  main: out/main/index.js
 win:
   target:
     - target: nsis

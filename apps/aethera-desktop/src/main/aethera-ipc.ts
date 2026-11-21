@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AgentCircuitBreaker, analyzeChapterUrl, checkRecapProductionReadiness, createTesseractOcrAdapter, extractPanels, importChapter, listRecapLibrary, planRecapRevisionImpact, RecapImportJobManager, runRecapProductionOrchestrator, type RecapScript } from '@neuralbridge/cinema';
+import { AgentCircuitBreaker, analyzeChapterUrl, checkRecapProductionReadiness, createTesseractOcrAdapter, extractPanels, importChapter, importChapterFromCdnUrls, listRecapLibrary, planRecapRevisionImpact, RecapImportJobManager, runRecapProductionOrchestrator, type RecapScript } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -5138,9 +5138,90 @@ productionConsole,
     return recapImportJobs.retryJob(id);
   });
 
+  ipcMain.handle('recap:import-cdn-direct', async (event, input: {
+    imageUrls: string[];
+    chapterPageUrl: string;
+    workTitle?: string;
+    chapterNumber?: string;
+  }) => {
+    ensureTrusted(event.senderFrame);
+    return importChapterFromCdnUrls({
+      imageUrls: input.imageUrls,
+      chapterPageUrl: input.chapterPageUrl,
+      workTitle: input.workTitle,
+      chapterNumber: input.chapterNumber,
+      libraryDir: recapLibraryDir,
+    });
+  });
+
   ipcMain.handle('recap:library-list', async (event) => {
     ensureTrusted(event.senderFrame);
     return listRecapLibrary(recapLibraryDir);
+  });
+
+  // ─── Recap Project Persistence (list & delete orchestrator states) ─────────
+  ipcMain.handle('recap:list-projects', async (event) => {
+    ensureTrusted(event.senderFrame);
+    const stateRoot = join(userDataDir, 'recap-checkpoints');
+    if (!existsSync(stateRoot)) return [];
+    const entries = readdirSync(stateRoot, { withFileTypes: true });
+    const projects: Array<{
+      runId: string;
+      chapterId: string;
+      workTitle: string;
+      state: string;
+      completedSteps: string[];
+      previewMp4Path?: string | null;
+      updatedAtIso: string;
+    }> = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const stateFile = join(stateRoot, entry.name, 'recap-orchestrator-state.json');
+      if (!existsSync(stateFile)) continue;
+      try {
+        const raw = JSON.parse(readFileSync(stateFile, 'utf-8'));
+        if (raw && typeof raw === 'object' && raw.schemaVersion === 1) {
+          projects.push({
+            runId: raw.runId ?? entry.name,
+            chapterId: raw.chapterId ?? entry.name,
+            workTitle: raw.workTitle ?? entry.name,
+            state: raw.state ?? 'idle',
+            completedSteps: Array.isArray(raw.completedSteps) ? raw.completedSteps : [],
+            previewMp4Path: raw.previewMp4Path ?? null,
+            updatedAtIso: raw.updatedAtIso ?? new Date().toISOString(),
+          });
+        }
+      } catch {
+        // Skip corrupted state files
+      }
+    }
+    // Sort by most recently updated first
+    projects.sort((a, b) => b.updatedAtIso.localeCompare(a.updatedAtIso));
+    return projects;
+  });
+
+  ipcMain.handle('recap:delete-project', async (event, runId: string) => {
+    ensureTrusted(event.senderFrame);
+    if (!runId || typeof runId !== 'string') return { ok: false, error: 'Invalid runId' };
+    const stateRoot = join(userDataDir, 'recap-checkpoints');
+    // Find the directory containing this runId's state file
+    if (!existsSync(stateRoot)) return { ok: false, error: 'No projects directory' };
+    const entries = readdirSync(stateRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const stateFile = join(stateRoot, entry.name, 'recap-orchestrator-state.json');
+      if (!existsSync(stateFile)) continue;
+      try {
+        const raw = JSON.parse(readFileSync(stateFile, 'utf-8'));
+        if (raw?.runId === runId || entry.name === runId) {
+          rmSync(join(stateRoot, entry.name), { recursive: true, force: true });
+          return { ok: true, deleted: entry.name };
+        }
+      } catch {
+        // Skip unreadable state files
+      }
+    }
+    return { ok: false, error: 'Project not found' };
   });
 
   // Keep unused imports referenced for proxy/agent orchestration readiness

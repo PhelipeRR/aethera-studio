@@ -241,5 +241,8 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   recapImportGetJob: (id: string) => ipcRenderer.invoke('recap:import-get-job', id),
   recapImportCancelJob: (id: string) => ipcRenderer.invoke('recap:import-cancel-job', id),
   recapImportRetryJob: (id: string) => ipcRenderer.invoke('recap:import-retry-job', id),
+  recapImportCdnDirect: (input: { imageUrls: string[]; chapterPageUrl: string; workTitle?: string; chapterNumber?: string }) => ipcRenderer.invoke('recap:import-cdn-direct', input),
   recapLibraryList: () => ipcRenderer.invoke('recap:library-list'),
+  recapListProjects: () => ipcRenderer.invoke('recap:list-projects'),
+  recapDeleteProject: (runId: string) => ipcRenderer.invoke('recap:delete-project', runId),
 });

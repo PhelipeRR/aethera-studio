@@ -11,7 +11,17 @@ import { hardenApp } from '../../../../packages/desktop-shared/src/main/security
 import type { AppLocation } from '../../../../packages/desktop-shared/src/main/security/navigation.js';
 import { registerAetheraDomainIpc } from './aethera-ipc.js';
 import { startAetheraRuntime, type AetheraRuntimeHandle } from './runtime.js';
+import { appendFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
+const diagnosticLog = join(tmpdir(), 'aethera-worker-error.log');
+
+process.on('uncaughtException', (error) => {
+  appendFileSync(
+    diagnosticLog,
+    `[${new Date().toISOString()}]\n${error.stack ?? error.message}\n\n`
+  );
+});
 app.setName('Aethera Studio');
 app.setPath('userData', join(app.getPath('appData'), 'AetheraStudio'));
 
