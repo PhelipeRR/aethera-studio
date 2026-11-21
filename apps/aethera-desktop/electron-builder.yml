@@ -32,6 +32,8 @@ asarUnpack:
 extraResources:
   - from: ../../packages/database/migrations
     to: migrations
+  - from: ../../services/firecrawl-local/node_modules/playwright-core
+    to: playwright-core
 win:
   icon: build/icon.ico
   target:
