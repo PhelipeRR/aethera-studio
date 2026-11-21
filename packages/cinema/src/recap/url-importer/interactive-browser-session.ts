@@ -35,6 +35,25 @@ import {
 import { registerLibraryEntry, type RecapLibraryEntry } from './url-chapter-importer.js';
 import { detectCloudflareOrChallengeContent } from './firecrawl-provider.js';
 
+export type InteractiveBrowserErrorCode =
+	| 'PLAYWRIGHT_MODULE_MISSING'
+	| 'PLAYWRIGHT_MODULE_LOAD_FAILED'
+	| 'BROWSER_EXECUTABLE_NOT_FOUND'
+	| 'BROWSER_LAUNCH_FAILED'
+	| 'BROWSER_PROFILE_LOCKED'
+	| 'BROWSER_PERMISSION_DENIED';
+
+export class InteractiveBrowserError extends Error {
+	constructor(
+		public readonly code: InteractiveBrowserErrorCode,
+		message: string,
+		public readonly diagnosticDetail?: string,
+	) {
+		super(message);
+		this.name = 'InteractiveBrowserError';
+	}
+}
+
 export type InteractiveImportState =
 	| 'idle'
 	| 'opening_browser'
@@ -61,6 +80,8 @@ export interface InteractiveSessionSnapshot {
 	importedEntries: RecapLibraryEntry[];
 	warnings: string[];
 	error?: string;
+	errorCode?: InteractiveBrowserErrorCode;
+	diagnosticDetail?: string;
 	profileIsolated: boolean;
 	updatedAtIso: string;
 }
@@ -125,9 +146,27 @@ interface PlaywrightModuleLike {
 const LOGIN_URL_PATTERNS = [/\/login\b/i, /\/signin\b/i, /\/sign-in\b/i, /\/auth\b/i, /\/account\/login/i];
 const LOGIN_DOM_PATTERNS = [/<input[^>]+type\s*=\s*["']password["']/i, /data-aethera-auth-required/i];
 
+function sanitizeDiagnosticPath(raw: string): string {
+	return raw
+		.replace(/[A-Za-z]:\\Users\\[^\\/\s]+/gi, '<USER_HOME>')
+		.replace(/\/Users\/[^/\s]+/g, '<USER_HOME>')
+		.replace(/Cookie:\s*[^\r\n]+/gi, 'Cookie: [REDACTED]')
+		.replace(/Authorization:\s*[^\r\n]+/gi, 'Authorization: [REDACTED]')
+		.slice(0, 400);
+}
+
 function findChromiumExecutable(): string | undefined {
 	if (process.env['CHROMIUM_EXECUTABLE_PATH'] && existsSync(process.env['CHROMIUM_EXECUTABLE_PATH'])) {
 		return process.env['CHROMIUM_EXECUTABLE_PATH'];
+	}
+	const resourcesPath = (process as { resourcesPath?: string }).resourcesPath;
+	if (resourcesPath) {
+		for (const bundled of [
+			join(resourcesPath, 'chromium', 'chrome.exe'),
+			join(resourcesPath, 'chromium', 'chrome-win64', 'chrome.exe'),
+		]) {
+			if (existsSync(bundled)) return bundled;
+		}
 	}
 	const localAppData = process.env['LOCALAPPDATA'];
 	if (localAppData) {
@@ -144,10 +183,15 @@ function findChromiumExecutable(): string | undefined {
 				}
 			}
 		}
+		const userChrome = join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe');
+		if (existsSync(userChrome)) return userChrome;
 	}
 	for (const candidate of [
 		'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+		'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
 		'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+		'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+		'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
 	]) {
 		if (existsSync(candidate)) return candidate;
 	}
@@ -168,16 +212,73 @@ async function loadPlaywrightCore(): Promise<PlaywrightModuleLike> {
 		'playwright',
 		resolve(process.cwd(), 'services', 'firecrawl-local', 'node_modules', 'playwright-core'),
 	];
+
+	let foundExistingModulePath: string | null = null;
+	const loadFailures: string[] = [];
+
 	for (const modPath of candidates) {
+		const isPathLike = modPath.includes('/') || modPath.includes('\\');
+		const existsOnDisk = isPathLike ? existsSync(join(modPath, 'package.json')) : false;
+		if (existsOnDisk) foundExistingModulePath = modPath;
 		try {
 			const loaded = require(modPath) as PlaywrightModuleLike;
 			if (loaded?.chromium?.launchPersistentContext) return loaded;
-		} catch {
-			// try next candidate
+			loadFailures.push(`${sanitizeDiagnosticPath(modPath)}: export chromium.launchPersistentContext ausente`);
+		} catch (err) {
+			const errCode = (err as { code?: string })?.code ?? '';
+			const errMsg = err instanceof Error ? err.message : String(err);
+			if (existsOnDisk || errCode !== 'MODULE_NOT_FOUND') {
+				loadFailures.push(`${sanitizeDiagnosticPath(modPath)}: [${errCode || 'ERR'}] ${sanitizeDiagnosticPath(errMsg)}`);
+			}
 		}
 	}
-	throw new Error(
-		'Playwright não encontrado no ambiente. Instale playwright-core ou use a Importação Assistida por arquivos.',
+
+	if (foundExistingModulePath || loadFailures.length > 0) {
+		throw new InteractiveBrowserError(
+			'PLAYWRIGHT_MODULE_LOAD_FAILED',
+			'Módulo playwright-core encontrado, mas falhou ao carregar em tempo de execução. Use a Importação Assistida por arquivos ou reinstale o aplicativo.',
+			loadFailures.join(' | '),
+		);
+	}
+
+	throw new InteractiveBrowserError(
+		'PLAYWRIGHT_MODULE_MISSING',
+		'Módulo playwright-core não encontrado no pacote instalado. Reinstale o Aethera Studio ou use a Importação Assistida por arquivos.',
+		`resourcesPath=${resourcesPath ? 'present' : 'unset'}; candidatesChecked=${candidates.length}`,
+	);
+}
+
+function classifyBrowserLaunchError(err: unknown): InteractiveBrowserError {
+	if (err instanceof InteractiveBrowserError) return err;
+	const rawCode = (err as { code?: string })?.code ?? '';
+	const rawMsg = err instanceof Error ? err.message : String(err);
+	const sanitized = sanitizeDiagnosticPath(rawMsg);
+
+	if (/EBUSY|SingletonLock|ProcessSingleton|profile.*in use|already running/i.test(`${rawCode} ${rawMsg}`)) {
+		return new InteractiveBrowserError(
+			'BROWSER_PROFILE_LOCKED',
+			'O perfil do navegador para este site já está em uso ou bloqueado. Feche a janela anterior ou clique em "Limpar dados do navegador".',
+			sanitized,
+		);
+	}
+	if (/EACCES|EPERM|access is denied|permission denied/i.test(`${rawCode} ${rawMsg}`)) {
+		return new InteractiveBrowserError(
+			'BROWSER_PERMISSION_DENIED',
+			'Permissão negada pelo sistema operacional ao iniciar o navegador ou gravar o perfil persistente.',
+			sanitized,
+		);
+	}
+	if (/ENOENT|Executable doesn't exist|Failed to launch.*not found/i.test(`${rawCode} ${rawMsg}`)) {
+		return new InteractiveBrowserError(
+			'BROWSER_EXECUTABLE_NOT_FOUND',
+			'Nenhum navegador Chromium/Chrome/Edge compatível foi encontrado neste Windows.',
+			sanitized,
+		);
+	}
+	return new InteractiveBrowserError(
+		'BROWSER_LAUNCH_FAILED',
+		`Falha ao iniciar o navegador persistente: ${sanitized}`,
+		sanitized,
 	);
 }
 
@@ -411,6 +512,12 @@ export class InteractiveRecapBrowserSessionManager {
 		try {
 			const pw = await loadPlaywrightCore();
 			const executablePath = findChromiumExecutable();
+			if (!executablePath) {
+				throw new InteractiveBrowserError(
+					'BROWSER_EXECUTABLE_NOT_FOUND',
+					'Nenhum navegador Chromium, Google Chrome ou Microsoft Edge foi encontrado neste Windows. Instale o Edge/Chrome ou use a Importação Assistida por arquivos.',
+				);
+			}
 
 			// Reuse or launch isolated persistent context for this origin
 			const existingCtx = this.activeContexts.get(originKey);
@@ -419,11 +526,15 @@ export class InteractiveRecapBrowserSessionManager {
 				this.activeContexts.delete(originKey);
 			}
 
-			context = await pw.chromium.launchPersistentContext(profileDir, {
-				...(executablePath ? { executablePath } : {}),
-				headless: this.options.headless ?? false,
-				viewport: { width: 1280, height: 860 },
-			});
+			try {
+				context = await pw.chromium.launchPersistentContext(profileDir, {
+					executablePath,
+					headless: this.options.headless ?? false,
+					viewport: { width: 1280, height: 860 },
+				});
+			} catch (launchErr) {
+				throw classifyBrowserLaunchError(launchErr);
+			}
 			this.activeContexts.set(originKey, context);
 
 			const page = context.pages()[0] ?? (await context.newPage());
@@ -743,11 +854,13 @@ export class InteractiveRecapBrowserSessionManager {
 			});
 		} catch (err) {
 			if (this.cancelFlags.has(sessionId)) return;
-			const msg = err instanceof Error ? err.message : String(err);
+			const classified = classifyBrowserLaunchError(err);
 			this.update(sessionId, {
 				state: 'access_denied',
-				statusMessage: `Não foi possível concluir a importação interativa: ${msg}`,
-				error: msg,
+				statusMessage: `[${classified.code}] ${classified.message}`,
+				error: classified.message,
+				errorCode: classified.code,
+				...(classified.diagnosticDetail ? { diagnosticDetail: classified.diagnosticDetail } : {}),
 			});
 		} finally {
 			// Close the window cleanly after completion/error while preserving the persistent profile on disk
