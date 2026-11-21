@@ -255,6 +255,15 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   recapImportCdnDirect: (input: { imageUrls: string[]; chapterPageUrl: string; workTitle?: string; chapterNumber?: string }) => ipcRenderer.invoke('recap:import-cdn-direct', input),
   recapFirecrawlStatus: () => ipcRenderer.invoke('recap:firecrawl-status'),
   recapFirecrawlConfig: (input: { apiUrl?: string; enabled?: boolean }) => ipcRenderer.invoke('recap:firecrawl-config', input),
+  recapOpenInBrowser: (input: { url: string }) => ipcRenderer.invoke('recap:open-in-browser', input),
+  recapPickAssistedSources: (input?: { mode?: 'files' | 'folder' }) => ipcRenderer.invoke('recap:pick-assisted-sources', input),
+  recapImportAssisted: (input: {
+    paths: string[];
+    workTitle: string;
+    chapterNumber?: string;
+    sourceUrl?: string;
+    seriesProjectId?: string;
+  }) => ipcRenderer.invoke('recap:import-assisted', input),
   recapLibraryList: () => ipcRenderer.invoke('recap:library-list'),
   recapListProjects: () => ipcRenderer.invoke('recap:list-projects'),
   recapLoadProject: (runId: string) => ipcRenderer.invoke('recap:load-project', runId),

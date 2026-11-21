@@ -39,6 +39,8 @@ export interface RecapImportChapterItem {
 	pagesTotal: number;
 	libraryEntry?: RecapLibraryEntry;
 	error?: string;
+	/** True when Cloudflare / CAPTCHA / HTTP 403 stopped automated attempts for this domain. */
+	blockedByProtection?: boolean;
 }
 
 export interface RecapImportJob {
@@ -50,6 +52,10 @@ export interface RecapImportJob {
 	createdAtIso: string;
 	updatedAtIso: string;
 	error?: string;
+	/** True when any domain in this job triggered a Cloudflare/CAPTCHA/403 block. */
+	blockedByProtection?: boolean;
+	/** First blocked URL, offered for Assisted Browser Import. */
+	blockedUrl?: string;
 }
 
 export type RecapImportJobListener = (job: RecapImportJob) => void;
@@ -263,6 +269,19 @@ export class RecapImportJobManager {
 		this.emit(job);
 
 		try {
+			// Domain-level short-circuit: once Cloudflare / CAPTCHA / HTTP 403 is detected on a host,
+			// immediately stop useless automated requests for all remaining links on the same host.
+			const blockedHosts = new Set<string>();
+			const extractHostname = (raw: string): string => {
+				try {
+					return new URL(raw).hostname.toLowerCase();
+				} catch {
+					return '';
+				}
+			};
+			const isAccessProtectionError = (msg: string): boolean =>
+				/cloudflare|captcha|challenge|anti-bot|403|access_denied_403|captcha_detected/i.test(msg);
+
 			for (const item of job.items) {
 				if (controller.signal.aborted || (job.status as RecapImportJobStatus) === 'cancelled') {
 					return;
@@ -273,6 +292,15 @@ export class RecapImportJobManager {
 					return;
 				}
 				if (item.status === 'completed' || item.status === 'skipped_existing') {
+					continue;
+				}
+
+				const itemHost = extractHostname(item.url);
+				if (itemHost && blockedHosts.has(itemHost)) {
+					item.status = 'failed';
+					item.blockedByProtection = true;
+					item.error = `Tentativa automática interrompida: o domínio "${itemHost}" está protegido por Cloudflare/HTTP 403. Use a Importação Assistida pelo Navegador.`;
+					this.emit(job);
 					continue;
 				}
 
@@ -344,7 +372,14 @@ export class RecapImportJobManager {
 						return;
 					}
 					item.status = 'failed';
-					item.error = err instanceof Error ? err.message : String(err);
+					const errMsg = err instanceof Error ? err.message : String(err);
+					item.error = errMsg;
+					if (isAccessProtectionError(errMsg)) {
+						item.blockedByProtection = true;
+						job.blockedByProtection = true;
+						if (!job.blockedUrl) job.blockedUrl = item.url;
+						if (itemHost) blockedHosts.add(itemHost);
+					}
 					this.emit(job);
 				}
 			}

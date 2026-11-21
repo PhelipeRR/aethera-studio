@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importChapter, importChapterFromCdnUrls, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
+import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -5833,6 +5833,65 @@ productionConsole,
     ensureTrusted(event.senderFrame);
     return listRecapLibrary(recapLibraryDir);
   });
+
+  ipcMain.handle('recap:open-in-browser', async (event, input: { url: string }) => {
+    ensureTrusted(event.senderFrame);
+    const raw = (input?.url ?? '').trim();
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Apenas links HTTP/HTTPS podem ser abertos no navegador.');
+    }
+    await shell.openExternal(parsed.toString());
+    return { ok: true, openedUrl: parsed.toString() };
+  });
+
+  ipcMain.handle('recap:pick-assisted-sources', async (event, input?: { mode?: 'files' | 'folder' }) => {
+    ensureTrusted(event.senderFrame);
+    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const mode = input?.mode === 'folder' ? 'folder' : 'files';
+    const openOpts: Electron.OpenDialogOptions =
+      mode === 'folder'
+        ? {
+            title: 'Selecionar pasta com imagens do capítulo',
+            properties: ['openDirectory'],
+          }
+        : {
+            title: 'Selecionar imagens (WEBP, PNG, JPG) ou pacotes (ZIP, CBZ, PDF)',
+            properties: ['openFile', 'multiSelections'],
+            filters: [
+              { name: 'Imagens e Capítulos', extensions: ['webp', 'png', 'jpg', 'jpeg', 'zip', 'cbz', 'pdf'] },
+            ],
+          };
+    const res = parentWin
+      ? await dialog.showOpenDialog(parentWin, openOpts)
+      : await dialog.showOpenDialog(openOpts);
+    if (res.canceled || res.filePaths.length === 0) return { canceled: true, paths: [] as string[] };
+    return { canceled: false, paths: res.filePaths };
+  });
+
+  ipcMain.handle(
+    'recap:import-assisted',
+    async (
+      event,
+      input: {
+        paths: string[];
+        workTitle: string;
+        chapterNumber?: string;
+        sourceUrl?: string;
+        seriesProjectId?: string;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      return importAssistedChapterSources({
+        paths: input.paths,
+        libraryDir: recapLibraryDir,
+        workTitle: input.workTitle,
+        ...(input.chapterNumber ? { chapterNumber: input.chapterNumber } : {}),
+        ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
+        ...(input.seriesProjectId ? { seriesProjectId: input.seriesProjectId } : {}),
+      });
+    },
+  );
 
   // ─── Recap Project Persistence (list, load & delete) ──────────────────────
   ipcMain.handle('recap:list-projects', async (event) => {

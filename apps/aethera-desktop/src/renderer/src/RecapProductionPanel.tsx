@@ -222,12 +222,16 @@ interface RecapBridge {
   recapImportCreateJob?: (input: { urls: string[]; forceReimport?: boolean }) => Promise<{
     id: string;
     status: string;
-    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string }>;
+    blockedByProtection?: boolean;
+    blockedUrl?: string;
+    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string; blockedByProtection?: boolean }>;
   }>;
   recapImportGetJob?: (id: string) => Promise<{
     id: string;
     status: string;
-    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string }>;
+    blockedByProtection?: boolean;
+    blockedUrl?: string;
+    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string; blockedByProtection?: boolean }>;
   } | null>;
   recapImportCancelJob?: (id: string) => Promise<unknown>;
   recapImportRetryJob?: (id: string) => Promise<unknown>;
@@ -257,6 +261,23 @@ interface RecapBridge {
     lastCheckAtIso: string;
     lastError: string | null;
     responseTimeMs: number | null;
+  }>;
+  recapOpenInBrowser?: (input: { url: string }) => Promise<{ ok: boolean; openedUrl: string }>;
+  recapPickAssistedSources?: (input?: { mode?: 'files' | 'folder' }) => Promise<{ canceled: boolean; paths: string[] }>;
+  recapImportAssisted?: (input: {
+    paths: string[];
+    workTitle: string;
+    chapterNumber?: string;
+    sourceUrl?: string;
+    seriesProjectId?: string;
+  }) => Promise<{
+    archivePath: string;
+    format: 'cbz' | 'pdf';
+    pageCount: number;
+    duplicatesRemoved: number;
+    invalidSkipped: number;
+    orderedFileNames: string[];
+    warnings: string[];
   }>;
   recapStartProduction?: (input: {
     runId?: string;
@@ -1146,16 +1167,28 @@ export function RecapProductionPanel() {
   const [motionVelixStatus, setMotionVelixStatus] = useState<MotionVelixKitStatusView | null>(null);
 
   // Import state
-  const [origin, setOrigin] = useState<'cbz' | 'link' | 'cdn'>('cbz');
+  const [origin, setOrigin] = useState<'cbz' | 'link' | 'assisted' | 'cdn'>('cbz');
   const [selectedFiles, setSelectedFiles] = useState<SelectedArchiveFile[]>([]);
   const [linkInputs, setLinkInputs] = useState<string[]>(['']);
   const [linkImporting, setLinkImporting] = useState(false);
   const [linkImportJob, setLinkImportJob] = useState<{
     id: string;
     status: string;
-    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string }>;
+    blockedByProtection?: boolean;
+    blockedUrl?: string;
+    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string; blockedByProtection?: boolean }>;
   } | null>(null);
   const [linkImportedCbz, setLinkImportedCbz] = useState<{ cbzPath: string; label: string } | null>(null);
+  const [assistedUrl, setAssistedUrl] = useState('');
+  const [assistedImporting, setAssistedImporting] = useState(false);
+  const [assistedResult, setAssistedResult] = useState<{
+    archivePath: string;
+    format: 'cbz' | 'pdf';
+    pageCount: number;
+    duplicatesRemoved: number;
+    invalidSkipped: number;
+    warnings: string[];
+  } | null>(null);
   const [firecrawlStatus, setFirecrawlStatus] = useState<{
     enabled: boolean;
     apiUrl: string;
@@ -1267,6 +1300,7 @@ export function RecapProductionPanel() {
           selectedFiles.length > 0 ||
             activeProject?.archivePath ||
             linkImportedCbz?.cbzPath ||
+            assistedResult?.archivePath ||
             cdnResult?.cbzPath,
         ),
         isProducing: isRunning,
@@ -1283,13 +1317,15 @@ export function RecapProductionPanel() {
     [activeSeries, activeProject, selectedFiles.length, linkImportedCbz?.cbzPath, cdnResult?.cbzPath, isRunning, scenes, activeGateG, activeGateH, activePlan],
   );
 
-  // Resolve active archive path across all 3 origins or active project
+  // Resolve active archive path across all origins or active project
   const resolvedArchivePath = useMemo(() => {
     if (origin === 'cbz' && selectedFiles[0]?.path) return selectedFiles[0].path;
+    if (origin === 'assisted' && assistedResult?.archivePath) return assistedResult.archivePath;
     if (origin === 'cdn' && cdnResult?.cbzPath) return cdnResult.cbzPath;
+    if (origin === 'link' && assistedResult?.archivePath) return assistedResult.archivePath;
     if (origin === 'link' && linkImportedCbz?.cbzPath) return linkImportedCbz.cbzPath;
     return activeProject?.archivePath ?? null;
-  }, [origin, selectedFiles, cdnResult, linkImportedCbz, activeProject]);
+  }, [origin, selectedFiles, assistedResult, cdnResult, linkImportedCbz, activeProject]);
 
   // ─── Data Loading & Live IPC Subscription ────────────────────────────────
 
@@ -1657,6 +1693,72 @@ export function RecapProductionPanel() {
     const failedItems = current.items.filter((it) => it.error);
     if (failedItems.length > 0 && readyItems.length === 0) {
       setImportError(failedItems[0]!.error ?? 'Não foi possível importar o capítulo a partir do link informado.');
+    }
+  };
+
+  const handleOpenInBrowser = async (urlToOpen: string) => {
+    const bridge = getRecapBridge();
+    const cleaned = urlToOpen.trim();
+    if (!cleaned) {
+      setImportError('Informe a URL do capítulo para abrir no navegador.');
+      return;
+    }
+    setImportError(null);
+    if (bridge?.recapOpenInBrowser) {
+      try {
+        await bridge.recapOpenInBrowser({ url: cleaned });
+      } catch (err) {
+        setImportError(err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
+    window.open(cleaned, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleAssistedPickAndImport = async (mode: 'files' | 'folder', sourceUrlOverride?: string) => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapPickAssistedSources || !bridge?.recapImportAssisted) {
+      setImportError('Importação assistida indisponível neste build.');
+      return;
+    }
+    setImportError(null);
+    try {
+      const picked = await bridge.recapPickAssistedSources({ mode });
+      if (picked.canceled || picked.paths.length === 0) return;
+
+      setAssistedImporting(true);
+      const effectiveTitle =
+        workTitle.trim() ||
+        activeSeries?.workTitle ||
+        activeProject?.workTitle ||
+        'Aethera Recap';
+      const sourceUrl = (sourceUrlOverride ?? assistedUrl).trim() || linkImportJob?.blockedUrl || linkInputs[0]?.trim() || undefined;
+
+      const res = await bridge.recapImportAssisted({
+        paths: picked.paths,
+        workTitle: effectiveTitle,
+        chapterNumber: String(chapterNumber),
+        ...(sourceUrl ? { sourceUrl } : {}),
+        ...(activeSeries?.projectId ? { seriesProjectId: activeSeries.projectId } : {}),
+      });
+      setAssistedResult(res);
+      setLinkImportedCbz({
+        cbzPath: res.archivePath,
+        label: `Assistida · ${res.pageCount} páginas validadas`,
+      });
+      if (!workTitle.trim()) {
+        setWorkTitle(effectiveTitle);
+      }
+      setStatusNote(
+        `Capítulo importado via fluxo assistido: ${res.pageCount} páginas válidas` +
+          (res.duplicatesRemoved > 0 ? ` · ${res.duplicatesRemoved} duplicadas removidas` : '') +
+          (res.invalidSkipped > 0 ? ` · ${res.invalidSkipped} inválidas ignoradas` : '') +
+          '.',
+      );
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAssistedImporting(false);
     }
   };
 
@@ -2291,11 +2393,12 @@ export function RecapProductionPanel() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <BentoBlock>
             <SectionLabel>Origem dos Capítulos</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12 }}>
               {(
                 [
                   ['cbz', 'Arquivo Local (CBZ / PDF)', 'Selecione capítulos já baixados no computador', Upload],
-                  ['link', 'Link de Capítulo', 'Baixa e empacota automaticamente em CBZ', LinkIcon],
+                  ['assisted', 'Importação Assistida', 'Abra no navegador e traga WEBP, PNG, JPG, pasta, ZIP, CBZ ou PDF', ExternalLink],
+                  ['link', 'Link de Capítulo', 'Baixa de sites acessíveis (com Firecrawl Local ou direto)', LinkIcon],
                   ['cdn', 'CDN Direto (URLs)', 'Importa lista direta de URLs de páginas', Download],
                 ] as const
               ).map(([id, label, desc, Icon]) => {
@@ -2379,6 +2482,103 @@ export function RecapProductionPanel() {
                   ))}
                 </div>
               )}
+            </BentoBlock>
+          )}
+
+          {origin === 'assisted' && (
+            <BentoBlock>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+                <SectionLabel>Importação Assistida pelo Navegador</SectionLabel>
+                <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: T.radiusFull, background: T.accentSoft, color: T.accentInk }}>
+                  Sem bypass · 100% compatível com Story Memory
+                </span>
+              </div>
+              <p style={{ margin: '0 0 14px', fontSize: 12, color: T.inkMuted, lineHeight: 1.55 }}>
+                Para sites com proteção Cloudflare/login, abra o capítulo normalmente no seu navegador conforme as permissões do site e traga as imagens (WEBP, PNG, JPG), pasta de imagens, ZIP, CBZ ou PDF. O Aethera valida a ordem numérica, integridade e duplicidades e gera o CBZ vinculado ao projeto.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    value={assistedUrl}
+                    onChange={(e) => setAssistedUrl(e.target.value)}
+                    placeholder="URL opcional do capítulo para abrir no navegador (ex: https://...)"
+                    aria-label="URL do capítulo para abrir no navegador"
+                    style={{ ...inputStyle, flex: 1, minWidth: 220 }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenInBrowser(assistedUrl || linkInputs[0] || '')}
+                    style={{ ...btnSecondary, minHeight: 40 }}
+                  >
+                    <ExternalLink style={{ width: 15, height: 15 }} /> Abrir no navegador
+                  </button>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+                  <button
+                    type="button"
+                    disabled={assistedImporting}
+                    onClick={() => void handleAssistedPickAndImport('files')}
+                    style={{
+                      ...btnSecondary,
+                      minHeight: 54,
+                      borderStyle: 'dashed',
+                      borderRadius: T.radiusInner,
+                      justifyContent: 'center',
+                      opacity: assistedImporting ? 0.6 : 1,
+                    }}
+                  >
+                    <Upload style={{ width: 16, height: 16 }} />
+                    {assistedImporting ? 'Validando e gerando CBZ…' : 'Selecionar imagens / ZIP / CBZ / PDF'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={assistedImporting}
+                    onClick={() => void handleAssistedPickAndImport('folder')}
+                    style={{
+                      ...btnSecondary,
+                      minHeight: 54,
+                      borderStyle: 'dashed',
+                      borderRadius: T.radiusInner,
+                      justifyContent: 'center',
+                      opacity: assistedImporting ? 0.6 : 1,
+                    }}
+                  >
+                    <FolderOpen style={{ width: 16, height: 16 }} />
+                    {assistedImporting ? 'Validando pasta…' : 'Selecionar pasta de imagens'}
+                  </button>
+                </div>
+
+                {assistedResult && (
+                  <div
+                    style={{
+                      padding: '12px 14px',
+                      borderRadius: T.radiusInner,
+                      background: T.successBg,
+                      border: `1px solid ${T.successBorder}`,
+                      color: T.success,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 6,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700 }}>
+                      <CheckCircle2 style={{ width: 16, height: 16 }} />
+                      CBZ pronto e vinculado ao projeto ({assistedResult.pageCount} páginas validadas)
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 11, fontWeight: 600 }}>
+                      <span>Formato: {assistedResult.format.toUpperCase()}</span>
+                      <span>· Ordem numérica verificada</span>
+                      <span>· Duplicadas removidas: {assistedResult.duplicatesRemoved}</span>
+                      <span>· Inválidas ignoradas: {assistedResult.invalidSkipped}</span>
+                    </div>
+                    <div style={{ fontSize: 11, fontFamily: T.mono, opacity: 0.9, wordBreak: 'break-all' }}>
+                      {assistedResult.archivePath}
+                    </div>
+                  </div>
+                )}
+              </div>
             </BentoBlock>
           )}
 
@@ -2594,6 +2794,59 @@ export function RecapProductionPanel() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+              {linkImportJob && (linkImportJob.blockedByProtection || linkImportJob.items.some((it) => it.blockedByProtection || /cloudflare|403|captcha/i.test(it.error ?? ''))) && (
+                <div
+                  role="region"
+                  aria-label="Recuperação por importação assistida"
+                  style={{
+                    marginTop: 12,
+                    padding: '14px 16px',
+                    borderRadius: T.radiusInner,
+                    background: T.warningBg,
+                    border: `1px solid ${T.warningBorder}`,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                    <ShieldCheck style={{ width: 18, height: 18, color: T.warning, flexShrink: 0, marginTop: 1 }} />
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: T.ink }}>
+                        Proteção Cloudflare / HTTP 403 detectada — tentativas automáticas interrompidas
+                      </div>
+                      <p style={{ margin: '4px 0 0', fontSize: 12, color: T.inkMuted, lineHeight: 1.5 }}>
+                        Para não repetir requisições bloqueadas nem contornar proteções do site, abra o capítulo normalmente no navegador e traga os arquivos autorizados (WEBP, PNG, JPG, pasta, ZIP, CBZ ou PDF).
+                      </p>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    <button
+                      type="button"
+                      onClick={() => void handleOpenInBrowser(linkImportJob.blockedUrl || linkInputs[0] || '')}
+                      style={{ ...btnPrimary, minHeight: 38 }}
+                    >
+                      <ExternalLink style={{ width: 14, height: 14 }} /> Abrir no navegador
+                    </button>
+                    <button
+                      type="button"
+                      disabled={assistedImporting}
+                      onClick={() => void handleAssistedPickAndImport('files', linkImportJob.blockedUrl || linkInputs[0])}
+                      style={{ ...btnSecondary, minHeight: 38 }}
+                    >
+                      <Upload style={{ width: 14, height: 14 }} /> {assistedImporting ? 'Gerando CBZ…' : 'Selecionar imagens / ZIP / CBZ / PDF'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={assistedImporting}
+                      onClick={() => void handleAssistedPickAndImport('folder', linkImportJob.blockedUrl || linkInputs[0])}
+                      style={{ ...btnSecondary, minHeight: 38 }}
+                    >
+                      <FolderOpen style={{ width: 14, height: 14 }} /> Selecionar pasta
+                    </button>
+                  </div>
                 </div>
               )}
               {linkImportedCbz && (

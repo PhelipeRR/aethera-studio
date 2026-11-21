@@ -16,6 +16,7 @@ interface RemoteImportItem {
   pagesTotal: number;
   cbzPath?: string;
   error?: string;
+  blockedByProtection?: boolean;
 }
 
 interface RemoteImportJob {
@@ -24,6 +25,8 @@ interface RemoteImportJob {
   items: RemoteImportItem[];
   createdAtIso: string;
   updatedAtIso: string;
+  blockedByProtection?: boolean;
+  blockedUrl?: string;
 }
 
 function validateSsrfUrl(raw: string): URL {
@@ -148,9 +151,23 @@ export function registerRecapUrlImportRoutes(input: {
     if (!existsSync(safeRoot)) mkdirSync(safeRoot, { recursive: true });
 
     try {
+      const blockedHosts = new Set<string>();
       for (const item of job.items) {
         if (ctrl.signal.aborted || (job.status as string) === 'cancelled') return;
         if (item.status === 'completed') continue;
+        let itemHost = '';
+        try {
+          itemHost = new URL(item.url).hostname.toLowerCase();
+        } catch {
+          itemHost = '';
+        }
+        if (itemHost && blockedHosts.has(itemHost)) {
+          item.status = 'failed';
+          item.blockedByProtection = true;
+          item.error = `Tentativa automática interrompida: "${itemHost}" protegido por Cloudflare/HTTP 403. Use a Importação Assistida pelo Navegador.`;
+          emit(job);
+          continue;
+        }
         try {
           item.status = 'analyzing';
           emit(job);
@@ -159,8 +176,8 @@ export function registerRecapUrlImportRoutes(input: {
           const pageRes = await safeFetch(u.toString(), undefined, ctrl.signal);
           if (!pageRes.ok) throw new Error(`HTTP ${pageRes.status} ao carregar capítulo.`);
           const html = await pageRes.text();
-          if (/cf-challenge|captcha|paywall/i.test(html)) {
-            throw new Error('Acesso restrito pelo site (CAPTCHA/paywall). Nenhum bypass é realizado.');
+          if (/cf-challenge|challenge-platform|just a moment|captcha|paywall/i.test(html)) {
+            throw new Error('Bloqueio Cloudflare/CAPTCHA detectado. Nenhum bypass é realizado; use a Importação Assistida pelo Navegador.');
           }
           const pages = extractPagesFromHtml(html, u);
           if (pages.length === 0) throw new Error('Nenhuma imagem [data-page] detectada no capítulo.');
@@ -191,7 +208,14 @@ export function registerRecapUrlImportRoutes(input: {
           emit(job);
         } catch (err) {
           item.status = ctrl.signal.aborted ? 'cancelled' : 'failed';
-          item.error = err instanceof Error ? err.message : String(err);
+          const errMsg = err instanceof Error ? err.message : String(err);
+          item.error = errMsg;
+          if (/cloudflare|captcha|challenge|403/i.test(errMsg)) {
+            item.blockedByProtection = true;
+            job.blockedByProtection = true;
+            if (!job.blockedUrl) job.blockedUrl = item.url;
+            if (itemHost) blockedHosts.add(itemHost);
+          }
           emit(job);
         }
       }
@@ -317,5 +341,126 @@ export function registerRecapUrlImportRoutes(input: {
     emit(job);
     void runJob(id);
     res.json(job);
+  });
+
+  // ─── Assisted Browser Import (Remote Host) ─────────────────────────────────
+  app.post('/api/recap/import/open-browser', requireRead, (req, res) => {
+    try {
+      const rawUrl = String((req.body as { url?: string })?.url ?? '');
+      const u = validateSsrfUrl(rawUrl);
+      res.json({ openUrl: u.toString(), mode: 'assisted_browser' });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post('/api/recap/import/assisted', requireWrite, (req, res) => {
+    try {
+      const body = req.body as {
+        workTitle?: string;
+        chapterNumber?: string;
+        sourceUrl?: string;
+        seriesProjectId?: string;
+        files?: Array<{ name?: string; contentBase64?: string }>;
+      };
+      const files = Array.isArray(body?.files) ? body.files : [];
+      if (files.length === 0) {
+        res.status(400).json({ error: 'Envie pelo menos uma imagem (WEBP/PNG/JPG) ou pacote (ZIP/CBZ/PDF).' });
+        return;
+      }
+
+      const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+      const workSlug = (body.workTitle || 'aethera-recap')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '') || 'aethera-recap';
+      const chapterSlug = (body.chapterNumber || '1').replace(/[^a-zA-Z0-9._-]+/g, '-') || '1';
+
+      const safeRoot = resolve(libraryRootDir);
+      const targetDir = resolve(safeRoot, 'assisted-imports', workSlug, `cap-${chapterSlug}`);
+      const rel = relative(safeRoot, targetDir);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+        res.status(400).json({ error: 'Caminho de destino inválido.' });
+        return;
+      }
+      mkdirSync(targetDir, { recursive: true });
+
+      const sorted = [...files].sort((a, b) => collator.compare(String(a.name ?? ''), String(b.name ?? '')));
+      const seenHashes = new Set<string>();
+      const warnings: string[] = [];
+      let pageCount = 0;
+      let duplicatesRemoved = 0;
+      let invalidSkipped = 0;
+
+      for (const f of sorted) {
+        const name = String(f.name ?? '').trim();
+        const b64 = String(f.contentBase64 ?? '');
+        if (!name || !b64) continue;
+        const buf = Buffer.from(b64, 'base64');
+        if (buf.length < 32) {
+          invalidSkipped++;
+          warnings.push(`Arquivo muito pequeno/inválido ignorado: ${name}`);
+          continue;
+        }
+        // Detect magic bytes: PNG, JPEG, WEBP, PDF, ZIP/CBZ
+        const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+        const isJpg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+        const isWebp = buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP';
+        const isPdf = buf.subarray(0, 5).toString('ascii') === '%PDF-';
+        const isZip = buf[0] === 0x50 && buf[1] === 0x4b && (buf[2] === 0x03 || buf[2] === 0x05);
+        if (!isPng && !isJpg && !isWebp && !isPdf && !isZip) {
+          invalidSkipped++;
+          warnings.push(`Formato inválido ignorado: ${name}`);
+          continue;
+        }
+        const hash = createHash('sha256').update(buf).digest('hex');
+        if (seenHashes.has(hash)) {
+          duplicatesRemoved++;
+          continue;
+        }
+        seenHashes.add(hash);
+        pageCount++;
+        const ext = isPng ? '.png' : isJpg ? '.jpg' : isWebp ? '.webp' : isPdf ? '.pdf' : '.cbz';
+        writeFileSync(join(targetDir, `${String(pageCount).padStart(4, '0')}${ext}`), buf);
+      }
+
+      if (pageCount === 0) {
+        res.status(400).json({ error: 'Nenhum arquivo válido (WEBP, PNG, JPG, ZIP, CBZ ou PDF) encontrado.' });
+        return;
+      }
+
+      writeFileSync(
+        join(targetDir, 'aethera-source.json'),
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            importMode: 'assisted_browser_remote',
+            workTitle: body.workTitle || 'Aethera Recap',
+            chapterNumber: body.chapterNumber || '1',
+            sourceUrl: body.sourceUrl || null,
+            seriesProjectId: body.seriesProjectId || null,
+            pageCount,
+            duplicatesRemoved,
+            invalidSkipped,
+            createdAtIso: new Date().toISOString(),
+          },
+          null,
+          2,
+        ),
+        'utf-8',
+      );
+
+      res.status(201).json({
+        archivePath: targetDir,
+        pageCount,
+        duplicatesRemoved,
+        invalidSkipped,
+        warnings,
+      });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 }
