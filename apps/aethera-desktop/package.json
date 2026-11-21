@@ -25,7 +25,13 @@
     "sharp": "^0.35.5"
   },
   "devDependencies": {
-    "electron": "44.9.3"
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "44.9.3",
+    "electron-vite": "^6.0.0",
+    "tailwindcss": "^4.1.0",
+    "@tailwindcss/vite": "^4.1.0",
+    "typescript": "^5.8.0",
+    "vite": "^6.2.0"
   },
   "optionalDependencies": {
     "@img/sharp-win32-x64": "0.35.5",
