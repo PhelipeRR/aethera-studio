@@ -35,6 +35,7 @@ import {
   type MotionVelixKitStatusView,
   type MotionVelixRenderTelemetry,
   type RecapAudiovisualPlanView,
+  type RecapDialogueEntryView,
   type RecapGateReportView,
   type RecapProjectRecordView,
   type RecapScriptView,
@@ -85,10 +86,24 @@ interface RecapRevisionPlanView {
 interface EditableSceneRow {
   sceneId: string;
   panelId: string;
+  panelIds: string[];
+  croppedImagePaths: string[];
   narrationText: string;
+  characters: string[];
+  eventDescription?: string;
+  visualSummary?: string;
+  setting?: string;
+  extractedDialogues: RecapDialogueEntryView[];
+  uncertainties: string[];
   motionStyle: string;
   estimatedDurationSec: number;
+  measuredDurationSec?: number;
+  durationSource: 'estimated' | 'tts_measured';
   emotion?: string;
+  confidence?: number;
+  reviewStatus?: string;
+  reviewNotes?: string;
+  dirty?: boolean;
 }
 
 interface SelectedArchiveFile {
@@ -179,6 +194,27 @@ interface RecapBridge {
     resumeCheckpoint: boolean;
   }) => Promise<RecapProductionResponse>;
   recapApprovePreview?: (input: { runId: string }) => Promise<RecapProductionResponse>;
+  recapSaveSceneEdit?: (input: { runId: string; sceneId: string; narrationText: string }) => Promise<{
+    ok: boolean;
+    message?: string;
+    script?: RecapScriptView;
+    gateGReport?: RecapGateReportView | null;
+    record?: RecapProjectRecordView;
+  }>;
+  recapRegenerateScene?: (input: { runId: string; sceneId: string }) => Promise<{
+    ok: boolean;
+    message?: string;
+    script?: RecapScriptView;
+    gateGReport?: RecapGateReportView | null;
+    record?: RecapProjectRecordView;
+  }>;
+  recapRegenerateScript?: (input: { runId: string; invalidateCache?: boolean }) => Promise<{
+    ok: boolean;
+    message?: string;
+    script?: RecapScriptView;
+    gateGReport?: RecapGateReportView | null;
+    record?: RecapProjectRecordView;
+  }>;
   recapListProjects?: () => Promise<RecapProjectRecordView[]>;
   recapLoadProject?: (runId: string) => Promise<RecapProjectDetailResponse | null>;
   recapDeleteProject?: (runId: string) => Promise<{ ok: boolean; deleted?: string; removedPaths?: string[]; error?: string }>;
@@ -414,22 +450,70 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(1024, idx)).toFixed(idx > 0 ? 1 : 0)} ${units[idx]}`;
 }
 
+function estimateTextDurationSec(text: string): number {
+  const cleaned = text.trim();
+  if (!cleaned) return 1;
+  const words = cleaned.split(/\s+/).filter(Boolean).length;
+  const pauses = (cleaned.match(/[.!?…]+/g) ?? []).length * 0.35 + (cleaned.match(/[,;:]+/g) ?? []).length * 0.15;
+  return Math.max(1, Math.round((words / 2.4 + pauses) * 10) / 10);
+}
+
 function scenesFromScript(script: RecapScriptView | null, plan: RecapAudiovisualPlanView | null): EditableSceneRow[] {
   if (!script || !Array.isArray(script.scenes)) return [];
   const motionByScene = new Map<string, string>();
+  const imagesByScene = new Map<string, string[]>();
+  const measuredMsByScene = new Map<string, number>();
+
   for (const shot of plan?.shots ?? []) {
     if (!motionByScene.has(shot.sceneId)) {
       motionByScene.set(shot.sceneId, shot.motionStyle);
     }
+    if (shot.imagePath) {
+      const list = imagesByScene.get(shot.sceneId) ?? [];
+      if (!list.includes(shot.imagePath)) list.push(shot.imagePath);
+      imagesByScene.set(shot.sceneId, list);
+    }
+    measuredMsByScene.set(shot.sceneId, (measuredMsByScene.get(shot.sceneId) ?? 0) + (shot.durationMs ?? 0));
   }
-  return script.scenes.map((scene) => ({
-    sceneId: scene.sceneId,
-    panelId: scene.panelIds?.[0] ?? '—',
-    narrationText: scene.narrationText,
-    motionStyle: motionByScene.get(scene.sceneId) ?? 'ken_burns_in',
-    estimatedDurationSec: Number(scene.estimatedDurationSec ?? 0),
-    ...(scene.emotion ? { emotion: scene.emotion } : {}),
-  }));
+
+  return script.scenes.map((scene) => {
+    const fallbackImages = imagesByScene.get(scene.sceneId) ?? [];
+    const croppedImagePaths =
+      scene.croppedImagePaths && scene.croppedImagePaths.length > 0
+        ? scene.croppedImagePaths
+        : fallbackImages;
+    const planDurationMs = measuredMsByScene.get(scene.sceneId);
+    const measuredDurationSec =
+      scene.measuredDurationSec ??
+      (planDurationMs && planDurationMs > 0 ? Math.round((planDurationMs / 1000) * 10) / 10 : undefined);
+    const durationSource: 'estimated' | 'tts_measured' =
+      scene.durationSource === 'tts_measured' || measuredDurationSec !== undefined
+        ? 'tts_measured'
+        : 'estimated';
+
+    return {
+      sceneId: scene.sceneId,
+      panelId: scene.panelIds?.[0] ?? '—',
+      panelIds: scene.panelIds ?? [],
+      croppedImagePaths,
+      narrationText: scene.narrationText,
+      characters: scene.characters ?? [],
+      ...(scene.eventDescription ? { eventDescription: scene.eventDescription } : {}),
+      ...(scene.visualSummary ? { visualSummary: scene.visualSummary } : {}),
+      ...(scene.setting ? { setting: scene.setting } : {}),
+      extractedDialogues: scene.extractedDialogues ?? [],
+      uncertainties: scene.uncertainties ?? [],
+      motionStyle: motionByScene.get(scene.sceneId) ?? 'ken_burns_in',
+      estimatedDurationSec: Number(scene.estimatedDurationSec ?? estimateTextDurationSec(scene.narrationText)),
+      ...(measuredDurationSec !== undefined ? { measuredDurationSec } : {}),
+      durationSource,
+      ...(scene.emotion ? { emotion: scene.emotion } : {}),
+      ...(scene.confidence !== undefined ? { confidence: scene.confidence } : {}),
+      ...(scene.reviewStatus ? { reviewStatus: scene.reviewStatus } : {}),
+      ...(scene.reviewNotes ? { reviewNotes: scene.reviewNotes } : {}),
+      dirty: false,
+    };
+  });
 }
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
@@ -1020,6 +1104,11 @@ export function RecapProductionPanel() {
 
   // Preview & Review state
   const [scenes, setScenes] = useState<EditableSceneRow[]>([]);
+  const [savingSceneId, setSavingSceneId] = useState<string | null>(null);
+  const [regeneratingSceneId, setRegeneratingSceneId] = useState<string | null>(null);
+  const [regeneratingScript, setRegeneratingScript] = useState(false);
+  const [expandedVisualScenes, setExpandedVisualScenes] = useState<Record<string, boolean>>({});
+  const [selectedPanelIdxByScene, setSelectedPanelIdxByScene] = useState<Record<string, number>>({});
   const [revisionPrompt, setRevisionPrompt] = useState('');
   const [impactPlan, setImpactPlan] = useState<RecapRevisionPlanView | null>(null);
   const [scheduleDate, setScheduleDate] = useState('');
@@ -1418,6 +1507,92 @@ export function RecapProductionPanel() {
       setStatusNote(err instanceof Error ? err.message : String(err));
     } finally {
       setIsApproving(false);
+    }
+  };
+
+  const handleSaveSceneEdit = async (sceneId: string, narrationText: string) => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapSaveSceneEdit || !activeProject?.runId) {
+      setStatusNote('Edição mantida em memória (IPC recap:save-scene-edit indisponível).');
+      return;
+    }
+    setSavingSceneId(sceneId);
+    try {
+      const res = await bridge.recapSaveSceneEdit({
+        runId: activeProject.runId,
+        sceneId,
+        narrationText,
+      });
+      if (!res.ok) {
+        setStatusNote(res.message ?? 'Não foi possível salvar a edição da cena.');
+        return;
+      }
+      if (res.record) setActiveProject(res.record);
+      if (res.script) {
+        setActiveScript(res.script);
+        setScenes(scenesFromScript(res.script, activePlan));
+      }
+      if (res.gateGReport) setActiveGateG(res.gateGReport);
+      setStatusNote(`Narração da cena ${sceneId} salva e auditada pelo Gate G.`);
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingSceneId(null);
+    }
+  };
+
+  const handleRegenerateScene = async (sceneId: string) => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapRegenerateScene || !activeProject?.runId) {
+      setStatusNote('IPC recap:regenerate-scene indisponível neste build.');
+      return;
+    }
+    setRegeneratingSceneId(sceneId);
+    setStatusNote(`Reanalisando painéis e regenerando a cena ${sceneId}…`);
+    try {
+      const res = await bridge.recapRegenerateScene({
+        runId: activeProject.runId,
+        sceneId,
+      });
+      setStatusNote(res.message ?? (res.ok ? `Cena ${sceneId} regenerada.` : 'Falha ao regenerar cena.'));
+      if (res.record) setActiveProject(res.record);
+      if (res.script) {
+        setActiveScript(res.script);
+        setScenes(scenesFromScript(res.script, activePlan));
+      }
+      if (res.gateGReport) setActiveGateG(res.gateGReport);
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRegeneratingSceneId(null);
+    }
+  };
+
+  const handleRegenerateScript = async (invalidateCache = false) => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapRegenerateScript || !activeProject?.runId) {
+      setStatusNote('IPC recap:regenerate-script indisponível neste build.');
+      return;
+    }
+    setRegeneratingScript(true);
+    setStatusNote('Regenerando o roteiro completo com visão multimodal e continuidade narrativa…');
+    try {
+      const res = await bridge.recapRegenerateScript({
+        runId: activeProject.runId,
+        invalidateCache,
+      });
+      setStatusNote(res.message ?? (res.ok ? 'Roteiro completo regenerado.' : 'Falha ao regenerar roteiro.'));
+      if (res.record) setActiveProject(res.record);
+      if (res.script) {
+        setActiveScript(res.script);
+        setScenes(scenesFromScript(res.script, activePlan));
+      }
+      if (res.gateGReport) setActiveGateG(res.gateGReport);
+      await refreshProjects();
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRegeneratingScript(false);
     }
   };
 
@@ -2301,13 +2476,31 @@ export function RecapProductionPanel() {
                 />
               </BentoBlock>
 
-              {/* Humanized Script Review */}
+              {/* Humanized Script Review — Side-by-Side Panel & Narrative Revision (Phase 9) */}
               <BentoBlock>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
-                  <SectionLabel>Roteiro Real ({scenes.length} cenas)</SectionLabel>
-                  <span style={{ fontSize: 11, fontFamily: T.mono, color: T.inkMuted }}>
-                    {language} · Humor {humorVolume}%
-                  </span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                    <SectionLabel>Roteiro Real ({scenes.length} cenas)</SectionLabel>
+                    <span style={{ fontSize: 11, fontFamily: T.mono, color: T.inkMuted }}>
+                      {language} · Humor {humorVolume}%
+                    </span>
+                  </div>
+                  {activeProject?.runId && scenes.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={regeneratingScript || regeneratingSceneId !== null}
+                      onClick={() => void handleRegenerateScript(true)}
+                      style={{
+                        ...btnSecondary,
+                        padding: '6px 12px',
+                        fontSize: 12,
+                        opacity: regeneratingScript ? 0.6 : 1,
+                      }}
+                    >
+                      <RefreshCw style={{ width: 13, height: 13 }} />
+                      {regeneratingScript ? 'Regenerando roteiro…' : 'Regenerar roteiro completo'}
+                    </button>
+                  )}
                 </div>
                 {scenes.length === 0 ? (
                   <div
@@ -2323,48 +2516,376 @@ export function RecapProductionPanel() {
                       Nenhuma cena carregada neste projeto ainda
                     </p>
                     <p style={{ margin: '4px 0 0', fontSize: 12, color: T.inkMuted }}>
-                      As cenas reais geradas pelo Story Engine aparecerão aqui assim que o roteiro for concluído.
+                      As cenas reais geradas pelo Story Engine aparecerão aqui com os painéis originais ao lado assim que o roteiro for concluído.
                     </p>
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                     {scenes.map((row, idx) => {
                       const highlighted = activePlan?.shots.some(
                         (s) => s.shotId === selectedShotId && s.sceneId === row.sceneId,
                       );
+                      const sceneHints = (activeGateG?.hints ?? []).filter((h) => h.sceneId === row.sceneId);
+                      const isLowConfidence =
+                        (row.confidence !== undefined && row.confidence < 0.5) ||
+                        row.reviewStatus === 'needs_review' ||
+                        row.uncertainties.length > 0 ||
+                        sceneHints.length > 0;
+                      const panelIdx = Math.min(
+                        selectedPanelIdxByScene[row.sceneId] ?? 0,
+                        Math.max(0, row.croppedImagePaths.length - 1),
+                      );
+                      const activePanelPath = row.croppedImagePaths[panelIdx] ?? null;
+                      const showVisualComparison = Boolean(expandedVisualScenes[row.sceneId]);
+                      const isRegeneratingThis = regeneratingSceneId === row.sceneId;
+                      const isSavingThis = savingSceneId === row.sceneId;
+                      const sceneNumberLabel = String(idx + 1).padStart(2, '0');
+
                       return (
                         <div
                           key={row.sceneId}
                           style={{
-                            padding: 12,
+                            padding: 14,
                             borderRadius: T.radiusInner,
-                            border: highlighted ? `2px solid ${T.ink}` : `1px solid ${T.border}`,
+                            border: highlighted
+                              ? `2px solid ${T.ink}`
+                              : isLowConfidence
+                                ? `1px solid ${T.warningBorder}`
+                                : `1px solid ${T.border}`,
                             background: highlighted ? '#fbfbfe' : T.surface,
+                            display: 'grid',
+                            gap: 14,
+                            gridTemplateColumns: 'minmax(160px, 210px) minmax(0, 1fr)',
+                            alignItems: 'start',
                           }}
                         >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                              <strong style={{ fontFamily: T.mono, color: T.accent }}>
-                                #{idx + 1} · {row.sceneId}
-                              </strong>
-                              <span style={{ color: T.inkSubtle }}>
-                                {MOTION_LABELS[row.motionStyle] ?? row.motionStyle}
-                              </span>
+                          {/* Left column: Original manga/manhwa panel preview */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            <div
+                              style={{
+                                borderRadius: T.radiusSm,
+                                overflow: 'hidden',
+                                border: `1px solid ${T.border}`,
+                                background: T.surfaceSubtle,
+                                aspectRatio: '3 / 4',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                              }}
+                            >
+                              {activePanelPath ? (
+                                <img
+                                  src={toAetheraMediaUrl(activePanelPath)}
+                                  alt={`Painel original da cena ${sceneNumberLabel}`}
+                                  style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+                                />
+                              ) : (
+                                <div style={{ padding: 12, textAlign: 'center', fontSize: 11, color: T.inkSubtle }}>
+                                  Painel não encontrado no disco
+                                </div>
+                              )}
                             </div>
-                            <span style={{ fontSize: 11, fontFamily: T.mono, color: T.inkMuted }}>
-                              {row.estimatedDurationSec}s
-                            </span>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, fontSize: 11, color: T.inkMuted }}>
+                              <span style={{ fontFamily: T.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {row.panelIds[panelIdx] ?? row.panelId}
+                              </span>
+                              {row.croppedImagePaths.length > 1 && (
+                                <span style={{ fontFamily: T.mono, flexShrink: 0 }}>
+                                  {panelIdx + 1}/{row.croppedImagePaths.length}
+                                </span>
+                              )}
+                            </div>
+                            {row.croppedImagePaths.length > 1 && (
+                              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                                {row.croppedImagePaths.map((_, pIdx) => (
+                                  <button
+                                    key={pIdx}
+                                    type="button"
+                                    onClick={() =>
+                                      setSelectedPanelIdxByScene((prev) => ({ ...prev, [row.sceneId]: pIdx }))
+                                    }
+                                    style={{
+                                      padding: '2px 7px',
+                                      borderRadius: T.radiusFull,
+                                      fontSize: 10,
+                                      fontFamily: T.mono,
+                                      border: `1px solid ${pIdx === panelIdx ? T.ink : T.border}`,
+                                      background: pIdx === panelIdx ? T.ink : T.surface,
+                                      color: pIdx === panelIdx ? '#ffffff' : T.inkMuted,
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    P{pIdx + 1}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
-                          <textarea
-                            value={row.narrationText}
-                            onChange={(e) => {
-                              const next = [...scenes];
-                              next[idx] = { ...row, narrationText: e.target.value };
-                              setScenes(next);
-                            }}
-                            rows={3}
-                            style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.55 }}
-                          />
+
+                          {/* Right column: Narrative review, extracted bubbles, visual comparison & actions */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {/* Scene Header */}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                <strong style={{ fontSize: 13, color: T.ink }}>
+                                  Cena {sceneNumberLabel} — Revisão narrativa
+                                </strong>
+                                <span style={{ fontSize: 11, fontFamily: T.mono, color: T.accent }}>
+                                  {MOTION_LABELS[row.motionStyle] ?? row.motionStyle}
+                                </span>
+                                {row.confidence !== undefined && (
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontFamily: T.mono,
+                                      padding: '2px 7px',
+                                      borderRadius: T.radiusFull,
+                                      background: row.confidence >= 0.6 ? T.successBg : T.warningBg,
+                                      color: row.confidence >= 0.6 ? T.success : T.warning,
+                                      border: `1px solid ${row.confidence >= 0.6 ? T.successBorder : T.warningBorder}`,
+                                    }}
+                                  >
+                                    Confiança {Math.round(row.confidence * 100)}%
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontFamily: T.mono }}>
+                                {row.measuredDurationSec !== undefined ? (
+                                  <span
+                                    title="Duração real medida a partir do áudio TTS sintetizado"
+                                    style={{
+                                      padding: '2px 8px',
+                                      borderRadius: T.radiusFull,
+                                      background: T.successBg,
+                                      color: T.success,
+                                      border: `1px solid ${T.successBorder}`,
+                                    }}
+                                  >
+                                    Real (TTS): {row.measuredDurationSec}s · est. {row.estimatedDurationSec}s
+                                  </span>
+                                ) : (
+                                  <span
+                                    title="Estimativa baseada no texto antes da síntese real de TTS"
+                                    style={{
+                                      padding: '2px 8px',
+                                      borderRadius: T.radiusFull,
+                                      background: T.surfaceSubtle,
+                                      color: T.inkMuted,
+                                      border: `1px solid ${T.border}`,
+                                    }}
+                                  >
+                                    Estimada: ~{row.estimatedDurationSec}s
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Characters & Setting pills */}
+                            {(row.characters.length > 0 || row.setting) && (
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 11, color: T.inkMuted }}>
+                                {row.characters.map((ch) => (
+                                  <span
+                                    key={ch}
+                                    style={{
+                                      padding: '2px 8px',
+                                      borderRadius: T.radiusFull,
+                                      background: T.accentSoft,
+                                      color: T.accentInk,
+                                      fontWeight: 500,
+                                    }}
+                                  >
+                                    {ch}
+                                  </span>
+                                ))}
+                                {row.setting && (
+                                  <span
+                                    style={{
+                                      padding: '2px 8px',
+                                      borderRadius: T.radiusFull,
+                                      background: T.surfaceSubtle,
+                                      color: T.inkMuted,
+                                      border: `1px solid ${T.border}`,
+                                    }}
+                                  >
+                                    Cenário: {row.setting}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Extracted Speech Bubbles / Text */}
+                            {row.extractedDialogues.length > 0 && (
+                              <div
+                                style={{
+                                  padding: '8px 10px',
+                                  borderRadius: T.radiusSm,
+                                  background: T.surfaceSubtle,
+                                  border: `1px solid ${T.border}`,
+                                  fontSize: 12,
+                                }}
+                              >
+                                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: T.inkSubtle, marginBottom: 4 }}>
+                                  Texto extraído dos balões ({row.extractedDialogues.length})
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                  {row.extractedDialogues.map((d, dIdx) => (
+                                    <div key={dIdx} style={{ color: T.ink, lineHeight: 1.45 }}>
+                                      <span style={{ fontFamily: T.mono, fontSize: 10, color: T.accent, marginRight: 6 }}>
+                                        [{(d.kind ?? (d.isNarration ? 'narration' : 'dialogue')).toUpperCase()}]
+                                      </span>
+                                      {d.speaker && <strong style={{ marginRight: 4 }}>{d.speaker}:</strong>}
+                                      <span>"{d.translatedText ?? d.text}"</span>
+                                      {d.originalText && d.translatedText && d.originalText !== d.translatedText && (
+                                        <span style={{ marginLeft: 6, fontSize: 11, color: T.inkSubtle }}>
+                                          (orig.: "{d.originalText}")
+                                        </span>
+                                      )}
+                                      {d.uncertainty && (
+                                        <span style={{ marginLeft: 6, fontSize: 11, color: T.warning }}>
+                                          · {d.uncertainty}
+                                        </span>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Low confidence / Gate G / Uncertainty alerts */}
+                            {isLowConfidence && (
+                              <div
+                                style={{
+                                  padding: '8px 10px',
+                                  borderRadius: T.radiusSm,
+                                  background: T.warningBg,
+                                  border: `1px solid ${T.warningBorder}`,
+                                  color: T.warning,
+                                  fontSize: 11,
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: 3,
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
+                                  <AlertTriangle style={{ width: 13, height: 13, flexShrink: 0 }} />
+                                  <span>Alerta de revisão / confiança</span>
+                                </div>
+                                {row.reviewNotes && <span>{row.reviewNotes}</span>}
+                                {row.uncertainties.map((u, uIdx) => (
+                                  <span key={`u-${uIdx}`}>• {u}</span>
+                                ))}
+                                {sceneHints.map((h, hIdx) => (
+                                  <span key={`h-${hIdx}`}>• [{h.issueCode}] {h.detail}</span>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Editable Narration */}
+                            <div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                                <label
+                                  htmlFor={`narration-${row.sceneId}`}
+                                  style={{ fontSize: 11, fontWeight: 600, color: T.inkMuted }}
+                                >
+                                  Narração gerada
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedVisualScenes((prev) => ({
+                                      ...prev,
+                                      [row.sceneId]: !prev[row.sceneId],
+                                    }))
+                                  }
+                                  style={{
+                                    background: 'transparent',
+                                    border: 'none',
+                                    padding: 0,
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                    color: T.accent,
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  {showVisualComparison ? 'Ocultar análise visual' : 'Comparar análise visual'}
+                                </button>
+                              </div>
+                              <textarea
+                                id={`narration-${row.sceneId}`}
+                                value={row.narrationText}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  const next = [...scenes];
+                                  next[idx] = {
+                                    ...row,
+                                    narrationText: val,
+                                    estimatedDurationSec: estimateTextDurationSec(val),
+                                    dirty: true,
+                                  };
+                                  setScenes(next);
+                                }}
+                                rows={3}
+                                style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.55 }}
+                              />
+                            </div>
+
+                            {/* Collapsible visual analysis comparison */}
+                            {showVisualComparison && (
+                              <div
+                                style={{
+                                  padding: '8px 10px',
+                                  borderRadius: T.radiusSm,
+                                  background: '#f8f7fc',
+                                  border: `1px solid ${T.border}`,
+                                  fontSize: 12,
+                                  color: T.inkMuted,
+                                  lineHeight: 1.5,
+                                }}
+                              >
+                                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: T.accentInk, marginBottom: 4 }}>
+                                  Análise visual observada nos painéis
+                                </div>
+                                <p style={{ margin: 0, color: T.ink }}>
+                                  {row.visualSummary || row.eventDescription || 'Sem descrição visual detalhada registrada.'}
+                                </p>
+                              </div>
+                            )}
+
+                            {/* Per-scene action bar */}
+                            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                              {row.dirty && (
+                                <button
+                                  type="button"
+                                  disabled={isSavingThis}
+                                  onClick={() => void handleSaveSceneEdit(row.sceneId, row.narrationText)}
+                                  style={{
+                                    ...btnPrimary,
+                                    padding: '5px 11px',
+                                    fontSize: 11,
+                                    opacity: isSavingThis ? 0.6 : 1,
+                                  }}
+                                >
+                                  {isSavingThis ? 'Salvando…' : 'Salvar narração'}
+                                </button>
+                              )}
+                              {activeProject?.runId && (
+                                <button
+                                  type="button"
+                                  disabled={isRegeneratingThis || regeneratingScript}
+                                  onClick={() => void handleRegenerateScene(row.sceneId)}
+                                  style={{
+                                    ...btnSecondary,
+                                    padding: '5px 11px',
+                                    fontSize: 11,
+                                    opacity: isRegeneratingThis ? 0.6 : 1,
+                                  }}
+                                >
+                                  <RefreshCw style={{ width: 12, height: 12 }} />
+                                  {isRegeneratingThis ? 'Regenerando…' : 'Regenerar cena'}
+                                </button>
+                              )}
+                            </div>
+                          </div>
                         </div>
                       );
                     })}

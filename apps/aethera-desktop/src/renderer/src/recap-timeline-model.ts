@@ -92,17 +92,36 @@ export interface RecapProjectRecordView {
   updatedAtIso: string;
 }
 
+export interface RecapDialogueEntryView {
+  speaker?: string;
+  text: string;
+  originalText?: string;
+  translatedText?: string;
+  kind?: 'dialogue' | 'thought' | 'narration' | 'sfx';
+  isNarration?: boolean;
+  readingOrder?: number;
+  uncertainty?: string;
+}
+
 export interface RecapScriptSceneView {
   sceneId: string;
   narrationText: string;
   characters?: string[];
   eventDescription?: string;
+  visualSummary?: string;
+  setting?: string;
+  extractedDialogues?: RecapDialogueEntryView[];
+  uncertainties?: string[];
   panelIds?: string[];
+  croppedImagePaths?: string[];
   estimatedDurationSec: number;
+  measuredDurationSec?: number;
+  durationSource?: 'estimated' | 'tts_measured';
   emotion?: string;
   narrativeIntent?: string;
   confidence?: number;
   reviewStatus?: string;
+  reviewNotes?: string;
 }
 
 export interface RecapScriptView {
@@ -181,6 +200,12 @@ export interface RecapGateReportView {
     sceneId?: string;
     shotId?: string;
     detail?: string;
+  }>;
+  hints?: Array<{
+    sceneId?: string;
+    beatId?: string;
+    issueCode: string;
+    detail: string;
   }>;
 }
 

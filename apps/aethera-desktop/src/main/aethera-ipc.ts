@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, createChainedRecapTtsPort, createElevenLabsRecapTtsPort, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, extractPanels, importChapter, importChapterFromCdnUrls, listRecapLibrary, listRecapProjects, loadCheckpoint, loadRecapProjectDetail, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, runGateFPanelIntegrity, runRecapProductionOrchestrator, saveRecapProjectRecord, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort } from '@neuralbridge/cinema';
+import { AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, createChainedRecapTtsPort, createClaudeVisionProvider, createElevenLabsRecapTtsPort, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importChapter, importChapterFromCdnUrls, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, loadCheckpoint, loadRecapProjectDetail, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -152,10 +152,13 @@ import {
   createScriptStageAdapter,
   createStoryboardStageAdapter,
   createSyncStageAdapter,
+  createAgentAdapterVisionProvider,
   createOllamaLocalVlmProvider,
   createAntigravityCliVisionProvider,
   createTaskEngineVisionProvider,
   createVisionProviders,
+  type VisualAnalysisProvider,
+  type VisionCachePort,
   createVisualIndexStageAdapter,
   createYouTubeChannelClient,
   DerivativeService,
@@ -4971,6 +4974,106 @@ productionConsole,
     ];
   };
 
+  const buildRecapVisionAdapter = (rootDir: string) => {
+    mkdirSync(rootDir, { recursive: true });
+    const gwCfg = claudeGatewaySecretStore.load();
+    const providers: VisualAnalysisProvider[] = [];
+    const policyChain: string[] = [];
+
+    const claudeLean = createClaudeVisionProvider({
+      adapter: claude,
+      providerId: 'claude',
+      cwd: rootDir,
+    });
+    providers.push({
+      id: 'claude',
+      model: claudeLean.model,
+      capabilities: ['analyze'],
+      limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
+      detect: () => claudeLean.detect(),
+      analyze: (req) => claudeLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
+    });
+    policyChain.push('claude');
+
+    if (gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl) {
+      const gwAdapter = new ClaudeCliAdapter({
+        id: 'claude-gateway',
+        resolveEnv: () => ({
+          ANTHROPIC_AUTH_TOKEN: gwCfg.authToken,
+          ANTHROPIC_BASE_URL: gwCfg.baseUrl,
+          ...(gwCfg.model ? { ANTHROPIC_MODEL: gwCfg.model } : {}),
+          ANTHROPIC_API_KEY: undefined,
+        }),
+      });
+      const gwLean = createClaudeVisionProvider({
+        adapter: gwAdapter,
+        providerId: 'claude-gateway',
+        cwd: rootDir,
+        ...(gwCfg.model ? { model: gwCfg.model } : {}),
+      });
+      providers.push({
+        id: 'claude-gateway',
+        model: gwLean.model,
+        capabilities: ['analyze'],
+        limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
+        detect: () => gwLean.detect(),
+        analyze: (req) => gwLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
+      });
+      policyChain.push('claude-gateway');
+    }
+
+    providers.push(
+      createAgentAdapterVisionProvider({
+        id: 'codex',
+        root: rootDir,
+        adapter: codex,
+      }),
+    );
+    policyChain.push('codex');
+
+    providers.push(
+      createAntigravityCliVisionProvider({
+        root: rootDir,
+        detect: async () => {
+          const st = await detectAntigravityCli();
+          return st.installed && st.problems.length === 0
+            ? { installed: true, detail: st.version ?? 'agy' }
+            : { installed: false, detail: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.' };
+        },
+        run: (req) => runAntigravityPrompt(req),
+      }),
+    );
+    policyChain.push('antigravity');
+
+    const memCacheStore = new Map<string, unknown>();
+    const cache: VisionCachePort = {
+      get: (key) => memCacheStore.get(JSON.stringify(key)),
+      put: (key, value) => { memCacheStore.set(JSON.stringify(key), value); },
+    };
+    const visionRouter = new VisionRouter({ providers, cache });
+    return createRoutedRecapVisionAdapter({
+      root: rootDir,
+      router: visionRouter as unknown as Parameters<typeof createRoutedRecapVisionAdapter>[0]['router'],
+      policyChain,
+      circuitBreaker: recapCircuitBreaker,
+      maxLatencyMs: 90_000,
+      throwOnAllUnavailable: true,
+    });
+  };
+
+  const buildRecapHumanizePort = () => {
+    try {
+      return createTaskEngineTextEnhancementAdapter({
+        taskEngine: engine,
+        agent: 'claude',
+        model: '',
+        projectId: null,
+      });
+    } catch {
+      return undefined;
+    }
+  };
+
   const buildRecapTtsPort = (preferredProvider?: string) => {
     const elevenLabsCreds = elevenLabsProvider.getSynthesisCredentials();
     const ttsVoiceId = preferredProvider === 'elevenlabs_tts'
@@ -5147,6 +5250,12 @@ productionConsole,
 
         const chainedTtsPort = buildRecapTtsPort(input.ttsProvider);
         const motionVelixKit = resolveMotionVelixKit();
+        const recapVisionAdapter = buildRecapVisionAdapter(recapWorkspace);
+        const recapHumanizePort = buildRecapHumanizePort();
+        const resolvedStyle: ScriptStyle =
+          input.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(input.scriptStyle)
+            ? (input.scriptStyle as ScriptStyle)
+            : 'narrative_recap';
 
         const result = await runRecapProductionOrchestrator({
           runId,
@@ -5155,6 +5264,16 @@ productionConsole,
           panels,
           workspaceDir: recapWorkspace,
           circuitBreaker: recapCircuitBreaker,
+          visionAdapter: recapVisionAdapter,
+          ...(recapHumanizePort
+            ? {
+                humanize: {
+                  enabled: true,
+                  style: resolvedStyle,
+                  port: recapHumanizePort,
+                },
+              }
+            : {}),
           ttsPort: chainedTtsPort,
           ...(motionVelixKit.sfxDir ? { sfxAssetsDir: motionVelixKit.sfxDir } : {}),
           plannerOptions: {
@@ -5281,6 +5400,207 @@ productionConsole,
       exportBundleDir: result.record.exportBundleDir ?? undefined,
     };
   });
+
+  ipcMain.handle(
+    'recap:save-scene-edit',
+    async (event, input: { runId: string; sceneId: string; narrationText: string }) => {
+      ensureTrusted(event.senderFrame);
+      const detail = loadRecapProjectDetail(recapWorkspace, input.runId, legacyRecapCheckpointsRoot);
+      if (!detail || !detail.script) {
+        return { ok: false, message: 'Projeto ou roteiro não encontrado.' };
+      }
+      const trimmed = input.narrationText.trim();
+      if (!trimmed) {
+        return { ok: false, message: 'A narração não pode ficar vazia.' };
+      }
+      const checkpointDir = join(recapWorkspace, 'checkpoints', detail.record.chapterId);
+      const ckpt = loadCheckpoint(checkpointDir);
+      const panels = ckpt?.extractedPanels ?? [];
+
+      const updatedScenes = detail.script.scenes.map((sc) =>
+        sc.sceneId === input.sceneId
+          ? {
+              ...sc,
+              narrationText: trimmed,
+              estimatedDurationSec: estimateNarrationDurationSec(trimmed),
+              durationSource: 'estimated' as const,
+              reviewStatus: 'approved' as const,
+            }
+          : sc,
+      );
+      const totalEstimatedDurationSec = Math.max(
+        1,
+        Math.round(updatedScenes.reduce((sum, s) => sum + s.estimatedDurationSec, 0) * 10) / 10,
+      );
+      const updatedScript: RecapScript = {
+        ...detail.script,
+        scenes: updatedScenes,
+        totalEstimatedDurationSec,
+      };
+      const gateGReport = panels.length > 0
+        ? runGateGNarrativeFidelity({ script: updatedScript, panels })
+        : detail.gateGReport ?? undefined;
+      const updatedRecord: RecapOrchestratorRecord = {
+        ...detail.record,
+        sceneCount: updatedScript.scenes.length,
+        ...(gateGReport ? { gateGVerdict: gateGReport.verdict } : {}),
+        updatedAtIso: new Date().toISOString(),
+      };
+      saveRecapProjectRecord(recapWorkspace, updatedRecord, {
+        script: updatedScript,
+        ...(gateGReport ? { gateGReport } : {}),
+      });
+      return { ok: true, script: updatedScript, gateGReport: gateGReport ?? null, record: updatedRecord };
+    },
+  );
+
+  ipcMain.handle(
+    'recap:regenerate-scene',
+    async (event, input: { runId: string; sceneId: string }) => {
+      ensureTrusted(event.senderFrame);
+      const detail = loadRecapProjectDetail(recapWorkspace, input.runId, legacyRecapCheckpointsRoot);
+      if (!detail || !detail.script) {
+        return { ok: false, message: 'Projeto ou roteiro não encontrado.' };
+      }
+      const targetScene = detail.script.scenes.find((s) => s.sceneId === input.sceneId);
+      if (!targetScene) {
+        return { ok: false, message: `Cena ${input.sceneId} não encontrada.` };
+      }
+      const checkpointDir = join(recapWorkspace, 'checkpoints', detail.record.chapterId);
+      const ckpt = loadCheckpoint(checkpointDir);
+      const allPanels = ckpt?.extractedPanels ?? [];
+      const scenePanels = allPanels.filter((p) => targetScene.panelIds.includes(p.panelId));
+      if (scenePanels.length === 0) {
+        return { ok: false, message: 'Painéis desta cena não encontrados no checkpoint.' };
+      }
+
+      const resolvedStyle: ScriptStyle =
+        detail.record.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(detail.record.scriptStyle)
+          ? (detail.record.scriptStyle as ScriptStyle)
+          : 'narrative_recap';
+      const visionAdapter = buildRecapVisionAdapter(recapWorkspace);
+      const humanizePort = buildRecapHumanizePort();
+      const regenCheckpointDir = join(recapWorkspace, 'checkpoints', `${detail.record.chapterId}-regen-${Date.now()}`);
+
+      try {
+        const storyRes = await runStoryEngine({
+          chapterId: detail.record.chapterId,
+          workTitle: detail.record.workTitle,
+          panels: scenePanels,
+          outputDir: join(recapWorkspace, 'story'),
+          checkpointDir: regenCheckpointDir,
+          visionAdapter,
+          scriptStyle: resolvedStyle,
+          ...(detail.record.language ? { language: detail.record.language } : {}),
+          ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
+          ...(humanizePort ? { humanize: { enabled: true, style: resolvedStyle, port: humanizePort } } : {}),
+        });
+        const mergedNarration = storyRes.script.scenes.map((s) => s.narrationText).join(' ').trim();
+        const firstRegen = storyRes.script.scenes[0];
+        if (!firstRegen || !mergedNarration) {
+          return { ok: false, message: 'Não foi possível regenerar a cena com evidência suficiente.' };
+        }
+        const updatedScenes = detail.script.scenes.map((sc) =>
+          sc.sceneId === input.sceneId
+            ? {
+                ...sc,
+                narrationText: mergedNarration,
+                characters: firstRegen.characters.length > 0 ? firstRegen.characters : sc.characters,
+                eventDescription: firstRegen.eventDescription,
+                ...(firstRegen.visualSummary ? { visualSummary: firstRegen.visualSummary } : {}),
+                ...(firstRegen.setting ? { setting: firstRegen.setting } : {}),
+                ...(firstRegen.extractedDialogues ? { extractedDialogues: firstRegen.extractedDialogues } : {}),
+                ...(firstRegen.uncertainties ? { uncertainties: firstRegen.uncertainties } : {}),
+                estimatedDurationSec: estimateNarrationDurationSec(mergedNarration),
+                durationSource: 'estimated' as const,
+                confidence: firstRegen.confidence,
+                reviewStatus: firstRegen.reviewStatus,
+                ...(firstRegen.reviewNotes ? { reviewNotes: firstRegen.reviewNotes } : {}),
+              }
+            : sc,
+        );
+        const updatedScript: RecapScript = {
+          ...detail.script,
+          scenes: updatedScenes,
+          totalEstimatedDurationSec: Math.max(
+            1,
+            Math.round(updatedScenes.reduce((sum, s) => sum + s.estimatedDurationSec, 0) * 10) / 10,
+          ),
+        };
+        const gateGReport = runGateGNarrativeFidelity({ script: updatedScript, panels: allPanels });
+        const updatedRecord: RecapOrchestratorRecord = {
+          ...detail.record,
+          gateGVerdict: gateGReport.verdict,
+          updatedAtIso: new Date().toISOString(),
+        };
+        saveRecapProjectRecord(recapWorkspace, updatedRecord, { script: updatedScript, gateGReport });
+        return { ok: true, script: updatedScript, gateGReport, record: updatedRecord, message: `Cena ${input.sceneId} regenerada.` };
+      } catch (err) {
+        return { ok: false, message: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'recap:regenerate-script',
+    async (event, input: { runId: string; invalidateCache?: boolean }) => {
+      ensureTrusted(event.senderFrame);
+      const detail = loadRecapProjectDetail(recapWorkspace, input.runId, legacyRecapCheckpointsRoot);
+      if (!detail) {
+        return { ok: false, message: 'Projeto não encontrado.' };
+      }
+      const checkpointDir = join(recapWorkspace, 'checkpoints', detail.record.chapterId);
+      if (input.invalidateCache) {
+        invalidateCheckpointCache(checkpointDir);
+      }
+      const ckpt = loadCheckpoint(checkpointDir);
+      const panels = ckpt?.extractedPanels ?? [];
+      if (panels.length === 0) {
+        return { ok: false, message: 'Painéis extraídos não encontrados no checkpoint para regenerar o roteiro.' };
+      }
+
+      const resolvedStyle: ScriptStyle =
+        detail.record.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(detail.record.scriptStyle)
+          ? (detail.record.scriptStyle as ScriptStyle)
+          : 'narrative_recap';
+      const visionAdapter = buildRecapVisionAdapter(recapWorkspace);
+      const humanizePort = buildRecapHumanizePort();
+
+      try {
+        const storyRes = await runStoryEngine({
+          chapterId: detail.record.chapterId,
+          workTitle: detail.record.workTitle,
+          panels,
+          outputDir: join(recapWorkspace, 'story'),
+          checkpointDir,
+          visionAdapter,
+          scriptStyle: resolvedStyle,
+          ...(detail.record.language ? { language: detail.record.language } : {}),
+          ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
+          ...(humanizePort ? { humanize: { enabled: true, style: resolvedStyle, port: humanizePort } } : {}),
+        });
+        const updatedRecord: RecapOrchestratorRecord = {
+          ...detail.record,
+          sceneCount: storyRes.script.scenes.length,
+          gateGVerdict: storyRes.gateGReport.verdict,
+          updatedAtIso: new Date().toISOString(),
+        };
+        saveRecapProjectRecord(recapWorkspace, updatedRecord, {
+          script: storyRes.script,
+          gateGReport: storyRes.gateGReport,
+        });
+        return {
+          ok: storyRes.gateGReport.verdict !== 'fail',
+          script: storyRes.script,
+          gateGReport: storyRes.gateGReport,
+          record: updatedRecord,
+          message: `Roteiro regenerado (${storyRes.script.scenes.length} cenas) · Gate G: ${storyRes.gateGReport.verdict}.`,
+        };
+      } catch (err) {
+        return { ok: false, message: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
 
   // ─── Aethera Recap URL Chapter Importer IPC (Etapas 2–6) ──────────────────
   const recapLibraryDir = join(userDataDir, 'recap-library');
