@@ -1,0 +1,13 @@
+{
+  "name": "aethera-firecrawl-local",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lightweight local Firecrawl-compatible (/v1/scrape) service for Aethera Recap (Node + Playwright, loopback-only 127.0.0.1:3002)",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.52.0"
+  }
+}
