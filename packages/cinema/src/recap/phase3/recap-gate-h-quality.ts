@@ -31,6 +31,15 @@ export interface GateHInput {
 	};
 	/** When true, checks that every shot's imagePath exists on disk. Default: true. */
 	verifyImageFilesOnDisk?: boolean;
+	/** Fase 7 Gate B: segmentos de narração sintetizados com metadados de provedor e fallback. */
+	synthesizedSegments?: Array<{
+		sceneId: string;
+		speechDurationMs: number;
+		provider: string;
+		isFallback: boolean;
+	}>;
+	/** Fase 7 Gate E: quantidade de SFX do Motion Velix efetivamente aplicados na mixagem. */
+	sfxAppliedCount?: number;
 }
 
 export function runGateHAudiovisualQuality(input: GateHInput): GateHReport {
@@ -232,6 +241,59 @@ export function runGateHAudiovisualQuality(input: GateHInput): GateHReport {
 		reasons.push('Roteiro sintético/técnico (não homologado para publicação final).');
 	}
 
+	// 9. Fase 7 Gate B — Narração obrigatória: TTS real presente e audível
+	let narrationFallbackCount = 0;
+	let narrationSilentCount = 0;
+	if (input.synthesizedSegments && input.synthesizedSegments.length > 0) {
+		for (const seg of input.synthesizedSegments) {
+			if (seg.isFallback) narrationFallbackCount++;
+			if (seg.speechDurationMs <= 0) narrationSilentCount++;
+		}
+		if (narrationFallbackCount > 0) {
+			findings.push({
+				code: 'mp4_probe_mismatch',
+				severity: 'critical',
+				detail: `${narrationFallbackCount} segmento(s) de narração usaram fallback determinístico em vez de TTS real.`,
+			});
+			reasons.push(`Narração com ${narrationFallbackCount} segmento(s) em fallback (TTS real ausente).`);
+		}
+		if (narrationSilentCount > 0) {
+			findings.push({
+				code: 'audio_clipped',
+				severity: 'critical',
+				detail: `${narrationSilentCount} segmento(s) de narração com duração zero ou silenciosa.`,
+			});
+			reasons.push(`Narração com ${narrationSilentCount} segmento(s) silencioso(s).`);
+		}
+	} else if (plan.shots.length > 0) {
+		// Nenhum segmento fornecido mas existem shots → narração não foi sintetizada
+		findings.push({
+			code: 'mp4_probe_mismatch',
+			severity: 'critical',
+			detail: 'Nenhum segmento de narração sintetizado foi fornecido ao Gate H.',
+		});
+		reasons.push('Narração ausente: nenhum segmento TTS fornecido para validação.');
+	}
+
+	// 10. Fase 7 Gate E — Motion Velix: SFX efetivamente aplicados na mixagem
+	const sfxApplied = input.sfxAppliedCount ?? 0;
+	const sfxPlanned = plan.sfxCues.length;
+	if (sfxPlanned > 0 && sfxApplied === 0) {
+		findings.push({
+			code: 'visual_coverage_gap',
+			severity: 'critical',
+			detail: `${sfxPlanned} SFX planejado(s) pelo Motion Velix, mas nenhum foi aplicado na mixagem final.`,
+		});
+		reasons.push(`Motion Velix não aplicado: ${sfxPlanned} SFX planejado(s), 0 aplicado(s).`);
+	} else if (sfxPlanned > 0 && sfxApplied < sfxPlanned) {
+		findings.push({
+			code: 'visual_coverage_gap',
+			severity: 'warning',
+			detail: `Apenas ${sfxApplied} de ${sfxPlanned} SFX do Motion Velix foram aplicados na mixagem.`,
+		});
+		reasons.push(`Motion Velix parcial: ${sfxApplied}/${sfxPlanned} SFX aplicados.`);
+	}
+
 	const hasCritical = findings.some((f) => f.severity === 'critical');
 	const hasWarning = findings.some((f) => f.severity === 'warning');
 	const verdict: GateHVerdict = hasCritical ? 'fail' : hasWarning ? 'needs_review' : 'pass';
@@ -253,6 +315,10 @@ export function runGateHAudiovisualQuality(input: GateHInput): GateHReport {
 			framingCropRisks,
 			missingPanelFiles,
 			mp4ProbeMismatches,
+			narrationFallbackCount,
+			narrationSilentCount,
+			sfxPlanned,
+			sfxApplied,
 			isSyntheticFixture: plan.isSyntheticFixture,
 		},
 		findings,

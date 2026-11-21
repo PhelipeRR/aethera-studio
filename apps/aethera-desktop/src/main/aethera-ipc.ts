@@ -2,12 +2,13 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AgentCircuitBreaker, analyzeChapterUrl, checkRecapProductionReadiness, createTesseractOcrAdapter, extractPanels, importChapter, importChapterFromCdnUrls, listRecapLibrary, planRecapRevisionImpact, RecapImportJobManager, runRecapProductionOrchestrator, type RecapScript } from '@neuralbridge/cinema';
+import { AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, createChainedRecapTtsPort, createElevenLabsRecapTtsPort, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, extractPanels, importChapter, importChapterFromCdnUrls, listRecapLibrary, planRecapRevisionImpact, RecapImportJobManager, runRecapProductionOrchestrator, type RecapScript, type RecapTtsSynthesisPort } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -5012,6 +5013,41 @@ productionConsole,
         ...(input.enableOcr ? { ocrAdapter: createTesseractOcrAdapter({ languages: 'por+eng' }) } : {}),
       });
 
+      // ─── Fase 2 & 5: Narração obrigatória + Motion Velix SFX ────────────────
+      // Constrói cadeia de provedores TTS reais; fallback determinístico só é
+      // autorizado explicitamente (allowDeterministicFallback: false) para que
+      // o pipeline nunca produza vídeo sem narração audível real.
+      // Lê credenciais do ElevenLabs do secret store da UI de configurações,
+      // NÃO de variáveis de ambiente (que estariam vazias no desktop).
+      const elevenLabsCreds = elevenLabsProvider.getSynthesisCredentials();
+      const ttsVoiceId = input.ttsProvider === 'elevenlabs_tts'
+        ? (process.env['NB_ELEVENLABS_VOICE_ID'] ?? 'pNInz6obpgDQGcFmaJgB')
+        : (process.env['NB_VOICESTUDIO_VOICE_ID'] ?? '9190edfa');
+      const ttsPorts: RecapTtsSynthesisPort[] = [];
+      if (elevenLabsCreds?.apiKey) {
+        ttsPorts.push(createElevenLabsRecapTtsPort({
+          apiKey: elevenLabsCreds.apiKey,
+          voiceId: ttsVoiceId,
+          modelId: elevenLabsCreds.modelId,
+          pauseAfterMs: 350,
+        }));
+      }
+      ttsPorts.push(createVoiceStudioRecapTtsPort({
+        voiceId: ttsVoiceId,
+        pauseAfterMs: 350,
+      }));
+      if (process.platform === 'win32') {
+        ttsPorts.push(createWindowsSapiRecapTtsPort({ pauseAfterMs: 350 }));
+      }
+      const chainedTtsPort = createChainedRecapTtsPort({
+        ports: ttsPorts,
+        allowDeterministicFallback: false,
+      });
+
+      // Resolve Motion Velix SFX assets directory (same convention as cinema-pipeline.ts)
+      const velixSfxRoot = process.env['NB_VELIX_DIR'] ?? join(homedir(), '.claude', 'skills', 'motionvelix', 'assets', 'sfx');
+      const sfxAssetsDir = existsSync(velixSfxRoot) ? velixSfxRoot : undefined;
+
       const result = await runRecapProductionOrchestrator({
         runId: `recap-${Date.now()}`,
         chapterId,
@@ -5019,6 +5055,8 @@ productionConsole,
         panels: extracted.panels.slice(0, 24),
         workspaceDir: recapWorkspace,
         circuitBreaker: recapCircuitBreaker,
+        ttsPort: chainedTtsPort,
+        ...(sfxAssetsDir ? { sfxAssetsDir } : {}),
         plannerOptions: {
           aspectRatio: input.aspectRatio ?? '16:9',
         },

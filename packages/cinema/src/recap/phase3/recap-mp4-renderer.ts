@@ -29,6 +29,7 @@ import type {
 } from './recap-audiovisual-types.js';
 import { buildRecapAudiovisualPlan } from './recap-visual-planner.js';
 import { runGateHAudiovisualQuality } from './recap-gate-h-quality.js';
+import { auditNarrationAudioClip } from './recap-tts-adapters.js';
 
 const execFileAsync = promisify(execFile);
 const PHASE3_CKPT_FILE = 'recap-phase3-checkpoint.json';
@@ -245,10 +246,20 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 
 	// ─── Stage 1: Audio Synthesis & Measurement ──────────────────────────────
 	let synthesizedSegments: SynthesizedSceneAudio[] = existing?.synthesizedSegments ?? [];
-	const ttsPort = input.ttsPort ?? createDeterministicFallbackTtsPort();
+
+	// Fase 2 (reforço): NUNCA criar fallback determinístico silenciosamente.
+	// Se nenhum ttsPort real foi fornecido, o pipeline DEVE falhar explicitamente.
+	if (!input.ttsPort) {
+		throw new Error(
+			'Narração obrigatória: nenhum provedor TTS foi configurado ou repassado ao renderer. ' +
+			'Configure ElevenLabs (NB_ELEVENLABS_API_KEY), VoiceStudio (NB_VOICESTUDIO_URL) ou Windows SAPI antes de produzir.',
+		);
+	}
+	const ttsPort = input.ttsPort;
 
 	if (!completedStages.has('audio_sync') || synthesizedSegments.length !== script.scenes.length) {
 		synthesizedSegments = [];
+		const ttsErrors: string[] = [];
 		for (const scene of script.scenes) {
 			const wavPath = join(audioDir, `${scene.sceneId}.wav`);
 			try {
@@ -259,19 +270,23 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 					estimatedDurationSec: scene.estimatedDurationSec,
 					outputPath: wavPath,
 				});
+				// Fase 2: validar integridade do áudio gerado antes de aceitar
+				const audit = await auditNarrationAudioClip(wavPath, { minDurationMs: 400, maxSilenceRatio: 0.65 });
+				if (!audit.ok && !seg.isFallback) {
+					throw new Error(`Áudio de narração inválido na cena ${scene.sceneId}: ${audit.issues.join('; ')}`);
+				}
 				synthesizedSegments.push(seg);
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-				warnings.push(`TTS falhou na cena ${scene.sceneId} (${msg}); aplicando fallback determinístico.`);
-				const fallbackSeg = await createDeterministicFallbackTtsPort().synthesizeScene({
-					sceneId: scene.sceneId,
-					text: scene.narrationText,
-					emotion: scene.emotion,
-					estimatedDurationSec: scene.estimatedDurationSec,
-					outputPath: wavPath,
-				});
-				synthesizedSegments.push(fallbackSeg);
+				ttsErrors.push(`${scene.sceneId}: ${msg}`);
+				// Provedor real falhou — interrompe imediatamente, sem fallback silencioso
+				break;
 			}
+		}
+		if (ttsErrors.length > 0 && synthesizedSegments.length < script.scenes.length) {
+			throw new Error(
+				`Narração obrigatória falhou em ${ttsErrors.length} cena(s). O pipeline não prossegue sem TTS real. Erros: ${ttsErrors.join(' | ')}`,
+			);
 		}
 		completedStages.add('audio_sync');
 		savePhase3Checkpoint(checkpointDir, {
@@ -381,22 +396,28 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		const audioFilterParts: string[] = [];
 		const ffmpegAudioInputs: string[] = [];
 		let streamCount = 0;
+		// Fase 4: padronizar mixagem em 48 kHz para compatibilidade profissional
+		const mixSampleRate = 48000;
 		for (let i = 0; i < synthesizedSegments.length; i++) {
 			const seg = synthesizedSegments[i]!;
 			ffmpegAudioInputs.push('-i', seg.audioPath);
 			const padSec = (seg.pauseAfterMs / 1000).toFixed(3);
-			audioFilterParts.push(`[${i}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,apad=pad_dur=${padSec}[v${i}]`);
+			audioFilterParts.push(`[${i}:a]aformat=sample_fmts=fltp:sample_rates=${mixSampleRate}:channel_layouts=stereo,apad=pad_dur=${padSec}[v${i}]`);
 			streamCount++;
 		}
 		const concatVoiceInputs = Array.from({ length: streamCount }, (_, i) => `[v${i}]`).join('');
 		const totalSec = (plan.totalDurationMs / 1000).toFixed(3);
 
-		// Soundtrack bed (provided file or subtle ambient synth) with real sidechaincompress ducking under voice
+		// Soundtrack bed: apenas usa música real quando fornecida; sem fallback sintético
+		// para evitar o "som de fundo estranho" (tom de 110 Hz) relatado na auditoria.
 		let musicInputIdx = streamCount;
-		if (input.musicBedPath && existsSync(input.musicBedPath)) {
-			ffmpegAudioInputs.push('-stream_loop', '-1', '-i', input.musicBedPath);
+		const hasRealMusicBed = input.musicBedPath && existsSync(input.musicBedPath);
+		if (hasRealMusicBed) {
+			ffmpegAudioInputs.push('-stream_loop', '-1', '-i', input.musicBedPath!);
 		} else {
-			ffmpegAudioInputs.push('-f', 'lavfi', '-t', totalSec, '-i', `sine=frequency=110:sample_rate=44100`);
+			// Gera silêncio puro como placeholder — a narração é o áudio primário;
+			// sem música real, o ducking não tem sinal lateral e a voz fica limpa.
+			ffmpegAudioInputs.push('-f', 'lavfi', '-t', totalSec, '-i', `anullsrc=channel_layout=stereo:sample_rate=${mixSampleRate}`);
 		}
 
 		// Optional real MotionVelix SFX cues (Phase 3.3)
@@ -411,7 +432,7 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 				const delayMs = Math.max(0, Math.round(cue.timeMs));
 				const label = `sfx${sfxAppliedCount}`;
 				sfxFilterParts.push(
-					`[${nextIdx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=${cue.gainDb}dB,adelay=${delayMs}|${delayMs}[${label}]`,
+					`[${nextIdx}:a]aformat=sample_fmts=fltp:sample_rates=${mixSampleRate}:channel_layouts=stereo,volume=${cue.gainDb}dB,adelay=${delayMs}|${delayMs}[${label}]`,
 				);
 				sfxLabels.push(`[${label}]`);
 				sfxAppliedCount++;
@@ -424,7 +445,7 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		const fullAudioFilter = [
 			...audioFilterParts,
 			`${concatVoiceInputs}concat=n=${streamCount}:v=0:a=1,apad=whole_dur=${totalSec},asplit=2[voice_mix][voice_sc]`,
-			`[${musicInputIdx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=${plan.ducking.musicBaseGainDb}dB,atrim=0:${totalSec}[music_raw]`,
+			`[${musicInputIdx}:a]aformat=sample_fmts=fltp:sample_rates=${mixSampleRate}:channel_layouts=stereo,volume=${plan.ducking.musicBaseGainDb}dB,atrim=0:${totalSec}[music_raw]`,
 			`[music_raw][voice_sc]${plan.ducking.sidechainFilter}[music_ducked]`,
 			...sfxFilterParts,
 			`${mixInputs}amix=inputs=${totalMixCount}:duration=first:dropout_transition=2,${plan.ducking.loudnormFilter}[aout]`,
@@ -503,6 +524,14 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		panels,
 		...(mp4ProbeResult ? { mp4Probe: mp4ProbeResult } : {}),
 		verifyImageFilesOnDisk: !dryRunRender,
+		// Fase 7 Gates B & E: passar segmentos TTS e contagem de SFX aplicados
+		synthesizedSegments: synthesizedSegments.map((seg) => ({
+			sceneId: seg.sceneId,
+			speechDurationMs: seg.speechDurationMs,
+			provider: seg.provider,
+			isFallback: seg.isFallback,
+		})),
+		sfxAppliedCount,
 	});
 	completedStages.add('gate_h');
 
