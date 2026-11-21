@@ -895,3 +895,145 @@ export function verifyChapterArchiveIntegrity(archivePath: string): ArchiveInteg
 		};
 	}
 }
+
+export interface MergedChapterArchivesResult {
+	valid: boolean;
+	archivePath: string;
+	chapterCount: number;
+	pageCount: number;
+	sizeBytes: number;
+	chapterNumbers: string[];
+	workTitle: string;
+	label: string;
+	error?: string;
+}
+
+/**
+ * Combines multiple imported CBZ chapter archives into a single unified multi-chapter CBZ
+ * in exact chapter & page reading order so the user can produce one video covering multiple
+ * chapters (e.g. Chapters 1 to 5 in the same video).
+ */
+export function mergeChapterArchivesForProduction(input: {
+	archivePaths: readonly string[];
+	workTitle?: string;
+	libraryDir: string;
+}): MergedChapterArchivesResult {
+	const cleanedPaths = [...new Set(input.archivePaths.map((p) => (p ?? '').trim()).filter(Boolean))];
+	if (cleanedPaths.length === 0) {
+		throw new Error('Selecione pelo menos um capítulo CBZ válido para combinar.');
+	}
+
+	if (cleanedPaths.length === 1) {
+		const single = verifyChapterArchiveIntegrity(cleanedPaths[0]!);
+		if (!single.valid) {
+			throw new Error(single.error ?? `Capítulo inválido: ${cleanedPaths[0]}`);
+		}
+		const title = input.workTitle?.trim() || single.workTitle || 'Aethera Recap';
+		const chNum = single.chapterNumber || '1';
+		return {
+			valid: true,
+			archivePath: single.archivePath,
+			chapterCount: 1,
+			pageCount: single.pageCount,
+			sizeBytes: single.sizeBytes,
+			chapterNumbers: [chNum],
+			workTitle: title,
+			label: `1 capítulo (${single.pageCount} páginas)`,
+		};
+	}
+
+	const collectedImages: Array<{ ext: string; buffer: Buffer; chapterIndex: number; chapterNumber: string }> = [];
+	const chapterNumbers: string[] = [];
+	let detectedWorkTitle = input.workTitle?.trim() || '';
+
+	for (let chIdx = 0; chIdx < cleanedPaths.length; chIdx++) {
+		const p = cleanedPaths[chIdx]!;
+		const check = verifyChapterArchiveIntegrity(p);
+		if (!check.valid) {
+			throw new Error(`Capítulo ${chIdx + 1} inválido (${p}): ${check.error ?? 'corrompido'}`);
+		}
+		if (check.format !== 'cbz') {
+			throw new Error(`A combinação automática de múltiplos capítulos requer arquivos CBZ (encontrado: ${check.format}).`);
+		}
+		if (!detectedWorkTitle && check.workTitle) {
+			detectedWorkTitle = check.workTitle;
+		}
+		const chNum = check.chapterNumber || String(chIdx + 1);
+		chapterNumbers.push(chNum);
+
+		const zip = new AdmZip(p);
+		const imageEntries = zip
+			.getEntries()
+			.filter(
+				(e) =>
+					!e.isDirectory &&
+					!e.entryName.startsWith('__MACOSX') &&
+					/\.(?:webp|png|jpe?g|gif)$/i.test(e.entryName),
+			)
+			.sort((a, b) => a.entryName.localeCompare(b.entryName, undefined, { numeric: true, sensitivity: 'base' }));
+
+		for (const entry of imageEntries) {
+			const buf = entry.getData();
+			const magic = validateImageMagicBytes(buf);
+			if (!magic.valid || !magic.ext) continue;
+			collectedImages.push({
+				ext: magic.ext,
+				buffer: buf,
+				chapterIndex: chIdx + 1,
+				chapterNumber: chNum,
+			});
+		}
+	}
+
+	if (collectedImages.length === 0) {
+		throw new Error('Nenhuma página válida encontrada nos capítulos selecionados.');
+	}
+
+	const finalWorkTitle = detectedWorkTitle || 'Aethera Recap';
+	const workSlug = sanitizeStorageSlug(finalWorkTitle, 'obra');
+	const firstCh = chapterNumbers[0] ?? '1';
+	const lastCh = chapterNumbers[chapterNumbers.length - 1] ?? String(cleanedPaths.length);
+	const rangeSlug = sanitizeStorageSlug(`caps-${firstCh}-a-${lastCh}-${cleanedPaths.length}ch`, 'multi');
+
+	const multiDir = resolveSafeStoragePath(input.libraryDir, 'multi-chapter', workSlug);
+	mkdirSync(multiDir, { recursive: true });
+	const mergedCbzPath = resolveSafeStoragePath(multiDir, `${workSlug}-${rangeSlug}.cbz`);
+	const tmpPath = `${mergedCbzPath}.tmp.${process.pid}.${Date.now()}`;
+
+	const mergedZip = new AdmZip();
+	const padWidth = Math.max(4, String(collectedImages.length).length);
+	for (let i = 0; i < collectedImages.length; i++) {
+		const img = collectedImages[i]!;
+		mergedZip.addFile(`${String(i + 1).padStart(padWidth, '0')}${img.ext}`, img.buffer);
+	}
+
+	const metadata = {
+		schemaVersion: 1,
+		importMode: 'multi_chapter_compilation',
+		workTitle: finalWorkTitle,
+		workSlug,
+		chapterNumber: `${firstCh}-${lastCh}`,
+		chapterNumbers,
+		chapterCount: cleanedPaths.length,
+		sourceArchives: cleanedPaths,
+		pageCount: collectedImages.length,
+		createdAtIso: new Date().toISOString(),
+	};
+	const metaBuf = Buffer.from(JSON.stringify(metadata, null, 2), 'utf-8');
+	mergedZip.addFile('aethera-source.json', metaBuf);
+	mergedZip.addFile('recap-source-metadata.json', metaBuf);
+	mergedZip.writeZip(tmpPath);
+	renameSync(tmpPath, mergedCbzPath);
+
+	const sizeBytes = statSync(mergedCbzPath).size;
+	return {
+		valid: true,
+		archivePath: mergedCbzPath,
+		chapterCount: cleanedPaths.length,
+		pageCount: collectedImages.length,
+		sizeBytes,
+		chapterNumbers,
+		workTitle: finalWorkTitle,
+		label: `${cleanedPaths.length} capítulos combinados (Cap. ${firstCh}–${lastCh} · ${collectedImages.length} páginas)`,
+	};
+}

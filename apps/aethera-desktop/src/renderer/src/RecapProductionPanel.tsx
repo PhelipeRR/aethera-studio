@@ -364,6 +364,7 @@ interface RecapBridge {
   recapStartProduction?: (input: {
     runId?: string;
     archivePath: string;
+    archivePaths?: string[];
     workTitle: string;
     language: string;
     scriptStyle: string;
@@ -375,6 +376,17 @@ interface RecapBridge {
     seriesProjectId?: string;
     chapterNumber?: number;
   }) => Promise<RecapProductionResponse>;
+  recapMergeChapterArchives?: (input: { archivePaths: string[]; workTitle?: string }) => Promise<{
+    valid: boolean;
+    archivePath: string;
+    chapterCount: number;
+    pageCount: number;
+    sizeBytes: number;
+    chapterNumbers: string[];
+    workTitle: string;
+    label: string;
+    error?: string;
+  }>;
   recapApprovePreview?: (input: { runId: string }) => Promise<RecapProductionResponse>;
   recapSaveSceneEdit?: (input: { runId: string; sceneId: string; narrationText: string }) => Promise<{
     ok: boolean;
@@ -1288,6 +1300,8 @@ export function RecapProductionPanel() {
     }>;
   } | null>(null);
   const [linkImportedCbz, setLinkImportedCbz] = useState<{ cbzPath: string; label: string } | null>(null);
+  const [selectedChapterCbzPaths, setSelectedChapterCbzPaths] = useState<string[]>([]);
+  const [mergingChapters, setMergingChapters] = useState(false);
   const [universalAnalyzeState, setUniversalAnalyzeState] = useState<
     | 'idle'
     | 'source_recognized'
@@ -1946,6 +1960,55 @@ export function RecapProductionPanel() {
     }
   }, [origin, firecrawlStatus, refreshFirecrawlStatus]);
 
+  const applySelectedChaptersForProduction = useCallback(
+    async (cbzPaths: string[], fallbackLabel?: string) => {
+      const cleaned = [...new Set(cbzPaths.map((p) => (p ?? '').trim()).filter(Boolean))];
+      setSelectedChapterCbzPaths(cleaned);
+      if (cleaned.length === 0) {
+        setLinkImportedCbz(null);
+        return;
+      }
+      if (cleaned.length === 1) {
+        setLinkImportedCbz({
+          cbzPath: cleaned[0]!,
+          label: fallbackLabel || '1 capítulo selecionado',
+        });
+        return;
+      }
+      const bridge = getRecapBridge();
+      if (!bridge?.recapMergeChapterArchives) {
+        setLinkImportedCbz({
+          cbzPath: cleaned[0]!,
+          label: `${cleaned.length} capítulos selecionados`,
+        });
+        return;
+      }
+      setMergingChapters(true);
+      setImportError(null);
+      try {
+        const effectiveTitle = workTitle.trim() || activeSeries?.workTitle || activeProject?.workTitle || undefined;
+        const merged = await bridge.recapMergeChapterArchives({
+          archivePaths: cleaned,
+          ...(effectiveTitle ? { workTitle: effectiveTitle } : {}),
+        });
+        setLinkImportedCbz({
+          cbzPath: merged.archivePath,
+          label: merged.label,
+        });
+        if (!workTitle.trim() && merged.workTitle) {
+          const firstCh = merged.chapterNumbers[0] ?? '1';
+          const lastCh = merged.chapterNumbers[merged.chapterNumbers.length - 1] ?? String(merged.chapterCount);
+          setWorkTitle(`${merged.workTitle} Cap. ${firstCh}-${lastCh}`);
+        }
+      } catch (err) {
+        setImportError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setMergingChapters(false);
+      }
+    },
+    [workTitle, activeSeries?.workTitle, activeProject?.workTitle],
+  );
+
   const pollLinkImportJob = async (
     bridge: NonNullable<ReturnType<typeof getRecapBridge>>,
     initialJob: {
@@ -1974,19 +2037,19 @@ export function RecapProductionPanel() {
       const totalPages = firstReady.pagesTotal || firstReady.pagesDone || 0;
       const donePages = firstReady.pagesDone || totalPages;
       clearStaleFailureOnSuccessfulImport();
-      setLinkImportedCbz((prev) =>
-        prev && readyItems.some((it) => it.libraryEntry?.cbzPath === prev.cbzPath)
-          ? prev
-          : {
-              cbzPath: firstReady.libraryEntry!.cbzPath,
-              label:
-                readyItems.length > 1
-                  ? `${readyItems.length} capítulos prontos (${donePages}/${totalPages} págs no selecionado)`
-                  : totalPages > 0
-                    ? `${donePages}/${totalPages} páginas importadas`
-                    : 'Capítulo importado e validado',
-            },
-      );
+      const allReadyPaths = readyItems.map((it) => it.libraryEntry!.cbzPath);
+      if (allReadyPaths.length > 1) {
+        await applySelectedChaptersForProduction(allReadyPaths);
+      } else {
+        setSelectedChapterCbzPaths(allReadyPaths);
+        setLinkImportedCbz({
+          cbzPath: firstReady.libraryEntry!.cbzPath,
+          label:
+            totalPages > 0
+              ? `${donePages}/${totalPages} páginas importadas`
+              : 'Capítulo importado e validado',
+        });
+      }
       if (!workTitle.trim()) {
         const slug = firstReady.libraryEntry!.cbzPath.split(/[/\\]/).pop()?.replace(/\.cbz$/i, '') ?? '';
         if (slug) setWorkTitle(slug);
@@ -2034,13 +2097,16 @@ export function RecapProductionPanel() {
       if (cur.state === 'completed' && cur.importedEntries.length > 0) {
         const first = cur.importedEntries[0]!;
         clearStaleFailureOnSuccessfulImport();
-        setLinkImportedCbz({
-          cbzPath: first.cbzPath,
-          label:
-            cur.importedEntries.length > 1
-              ? `${cur.importedEntries.length} capítulos importados (${first.pageCount} págs no cap. ${first.chapterNumber})`
-              : `${first.pageCount}/${first.pageCount} páginas importadas`,
-        });
+        const allInteractivePaths = cur.importedEntries.map((e) => e.cbzPath);
+        if (allInteractivePaths.length > 1) {
+          await applySelectedChaptersForProduction(allInteractivePaths);
+        } else {
+          setSelectedChapterCbzPaths(allInteractivePaths);
+          setLinkImportedCbz({
+            cbzPath: first.cbzPath,
+            label: `${first.pageCount}/${first.pageCount} páginas importadas`,
+          });
+        }
         setLinkImportJob((prev) =>
           reconcileQueueWithSuccessfulImport(
             prev,
@@ -2051,7 +2117,11 @@ export function RecapProductionPanel() {
           ),
         );
         if (!workTitle.trim() && first.workTitle) {
-          setWorkTitle(first.workTitle);
+          setWorkTitle(
+            cur.importedEntries.length > 1
+              ? `${first.workTitle} Cap. ${first.chapterNumber}-${cur.importedEntries[cur.importedEntries.length - 1]!.chapterNumber}`
+              : first.workTitle,
+          );
         }
         setStatusNote(`Sessão interativa concluída: ${cur.importedEntries.length} capítulo(s) pronto(s) em CBZ.`);
       }
@@ -2370,9 +2440,17 @@ export function RecapProductionPanel() {
     setStatusNote(`Iniciando produção real de "${effectiveTitle}"…`);
 
     try {
+      const multiArchivePaths =
+        origin === 'cbz' && selectedFiles.length > 1
+          ? selectedFiles.map((f) => f.path)
+          : origin === 'link' && selectedChapterCbzPaths.length > 1
+            ? selectedChapterCbzPaths
+            : undefined;
+
       const res = await bridge.recapStartProduction({
         ...(resumeCheckpoint && activeProject?.runId ? { runId: activeProject.runId } : {}),
         archivePath,
+        ...(multiArchivePaths ? { archivePaths: multiArchivePaths } : {}),
         workTitle: effectiveTitle,
         language,
         scriptStyle,
@@ -3534,7 +3612,18 @@ export function RecapProductionPanel() {
                   </div>
                 </div>
               )}
-              {linkImportJob && linkImportJob.items.length > 0 && (
+              {linkImportJob && linkImportJob.items.length > 0 && (() => {
+                const readyQueueItems = linkImportJob.items.filter((it) => Boolean(it.libraryEntry?.cbzPath));
+                const allReadyCbzPaths = readyQueueItems.map((it) => it.libraryEntry!.cbzPath);
+                const totalReadyPages = readyQueueItems.reduce(
+                  (sum, it) => sum + (it.pagesTotal || it.pagesDone || 0),
+                  0,
+                );
+                const allSelectedInMulti =
+                  allReadyCbzPaths.length > 1 &&
+                  allReadyCbzPaths.every((p) => selectedChapterCbzPaths.includes(p));
+
+                return (
                 <div
                   style={{
                     marginTop: 12,
@@ -3547,13 +3636,41 @@ export function RecapProductionPanel() {
                     border: `1px solid ${T.border}`,
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, fontWeight: 600, color: T.inkMuted }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 11, fontWeight: 600, color: T.inkMuted }}>
                     <span>Fila de importação ({linkImportJob.items.length} {linkImportJob.items.length === 1 ? 'link' : 'links'})</span>
-                    <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>{linkImportJob.status}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      {allReadyCbzPaths.length > 1 && (
+                        <button
+                          type="button"
+                          disabled={mergingChapters}
+                          onClick={() => void applySelectedChaptersForProduction(allReadyCbzPaths)}
+                          style={{
+                            ...btnGhost,
+                            padding: '4px 10px',
+                            fontSize: 11,
+                            fontWeight: 700,
+                            borderRadius: T.radiusFull,
+                            background: allSelectedInMulti ? T.successBg : T.accentSoft,
+                            border: `1px solid ${allSelectedInMulti ? T.successBorder : T.accent}`,
+                            color: allSelectedInMulti ? T.success : T.accentInk,
+                          }}
+                        >
+                          <Layers style={{ width: 13, height: 13 }} />
+                          {mergingChapters
+                            ? 'Combinando capítulos…'
+                            : allSelectedInMulti
+                              ? `Todos os ${allReadyCbzPaths.length} capítulos combinados (${totalReadyPages} págs)`
+                              : `Usar todos os ${allReadyCbzPaths.length} capítulos no mesmo vídeo (${totalReadyPages} págs)`}
+                        </button>
+                      )}
+                      <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>{linkImportJob.status}</span>
+                    </div>
                   </div>
                   {linkImportJob.items.map((item, idx) => {
                     const cbzPath = item.libraryEntry?.cbzPath;
-                    const isSelected = Boolean(cbzPath && linkImportedCbz?.cbzPath === cbzPath);
+                    const isIncludedInMulti = Boolean(cbzPath && selectedChapterCbzPaths.includes(cbzPath));
+                    const isSelectedSingle = Boolean(cbzPath && linkImportedCbz?.cbzPath === cbzPath);
+                    const isSelected = isIncludedInMulti || isSelectedSingle;
                     const { isDone, pct, statusLabel } = deriveQueueItemDisplayStatus(item, linkImportJob.status);
                     return (
                       <div
@@ -3561,14 +3678,41 @@ export function RecapProductionPanel() {
                         style={{
                           padding: '8px 10px',
                           borderRadius: 8,
-                          background: isSelected || isDone ? T.successBg : T.surface,
-                          border: `1px solid ${isSelected || isDone ? T.successBorder : item.error ? T.errorBorder : T.border}`,
+                          background: isSelected ? T.successBg : isDone ? '#f6fbf2' : T.surface,
+                          border: `1px solid ${isSelected ? T.successBorder : item.error ? T.errorBorder : T.border}`,
                           display: 'flex',
                           flexDirection: 'column',
                           gap: 5,
                         }}
                       >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                          {cbzPath && allReadyCbzPaths.length > 1 && (
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              disabled={mergingChapters}
+                              aria-label={`Incluir capítulo ${idx + 1} no vídeo`}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                const currentList =
+                                  selectedChapterCbzPaths.length > 0
+                                    ? selectedChapterCbzPaths
+                                    : linkImportedCbz?.cbzPath
+                                      ? [linkImportedCbz.cbzPath]
+                                      : [];
+                                const nextList = checked
+                                  ? allReadyCbzPaths.filter((p) => currentList.includes(p) || p === cbzPath)
+                                  : currentList.filter((p) => p !== cbzPath);
+                                if (nextList.length > 0) {
+                                  void applySelectedChaptersForProduction(
+                                    nextList,
+                                    `${item.pagesDone}/${item.pagesTotal} páginas`,
+                                  );
+                                }
+                              }}
+                              style={{ cursor: 'pointer' }}
+                            />
+                          )}
                           <span style={{ fontSize: 12, color: T.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                             {idx + 1}. {item.url}
                           </span>
@@ -3601,13 +3745,34 @@ export function RecapProductionPanel() {
                           {cbzPath && (
                             <button
                               type="button"
+                              disabled={mergingChapters}
                               onClick={() => {
-                                setLinkImportedCbz({
-                                  cbzPath,
-                                  label: `${item.pagesDone}/${item.pagesTotal} páginas`,
-                                });
-                                const slug = cbzPath.split(/[/\\]/).pop()?.replace(/\.cbz$/i, '') ?? '';
-                                if (slug) setWorkTitle(slug);
+                                if (allReadyCbzPaths.length > 1) {
+                                  const currentList =
+                                    selectedChapterCbzPaths.length > 0
+                                      ? selectedChapterCbzPaths
+                                      : linkImportedCbz?.cbzPath
+                                        ? [linkImportedCbz.cbzPath]
+                                        : [];
+                                  const exists = currentList.includes(cbzPath);
+                                  const nextList = exists
+                                    ? currentList.length > 1
+                                      ? currentList.filter((p) => p !== cbzPath)
+                                      : currentList
+                                    : allReadyCbzPaths.filter((p) => currentList.includes(p) || p === cbzPath);
+                                  void applySelectedChaptersForProduction(
+                                    nextList,
+                                    `${item.pagesDone}/${item.pagesTotal} páginas`,
+                                  );
+                                } else {
+                                  setSelectedChapterCbzPaths([cbzPath]);
+                                  setLinkImportedCbz({
+                                    cbzPath,
+                                    label: `${item.pagesDone}/${item.pagesTotal} páginas`,
+                                  });
+                                  const slug = cbzPath.split(/[/\\]/).pop()?.replace(/\.cbz$/i, '') ?? '';
+                                  if (slug) setWorkTitle(slug);
+                                }
                               }}
                               style={{
                                 ...btnGhost,
@@ -3617,7 +3782,13 @@ export function RecapProductionPanel() {
                                 borderColor: isSelected ? T.successBorder : T.border,
                               }}
                             >
-                              {isSelected ? 'Selecionado' : 'Usar capítulo'}
+                              {isSelected
+                                ? selectedChapterCbzPaths.length > 1
+                                  ? `Incluído (${selectedChapterCbzPaths.indexOf(cbzPath) + 1}/${selectedChapterCbzPaths.length})`
+                                  : 'Selecionado'
+                                : allReadyCbzPaths.length > 1
+                                  ? 'Incluir no vídeo'
+                                  : 'Usar capítulo'}
                             </button>
                           )}
                         </div>
@@ -3633,7 +3804,8 @@ export function RecapProductionPanel() {
                     );
                   })}
                 </div>
-              )}
+                );
+              })()}
               {linkImportJob && (linkImportJob.blockedByProtection || linkImportJob.items.some((it) => it.blockedByProtection || /cloudflare|403|captcha/i.test(it.error ?? ''))) && (
                 <div
                   role="region"

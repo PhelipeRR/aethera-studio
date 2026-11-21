@@ -61,20 +61,49 @@ class VisionOverBudgetError extends Error { constructor() { super('vision budget
 /** Cache keys bind ordered inputs, capability, provider, model and prompt. All capabilities share the run budget. */
 export class VisionRouter {
   private readonly providers: Map<string, VisualAnalysisProvider>;
+  private readonly cache: VisionCachePort;
+  private readonly calibrations: readonly ConfidenceCalibration[];
   private readonly spend: VisionSpendPort;
+  private readonly scheduler: VisualWorkScheduler;
+  private readonly cooldowns: Map<string, VisionCooldownEntry>;
+  private readonly timeoutFailures: Map<string, number>;
+  private readonly healthTimeoutMs: number;
+  private readonly config: VisionRouterConfig;
   private readonly telemetry = new Map<string, { calls: number; successes: number; failures: number; timeouts: number; totalLatencyMs: number; lastError?: string }>();
   constructor(
-    providers: readonly VisualAnalysisProvider[],
-    private readonly cache: VisionCachePort,
-    private readonly calibrations: readonly ConfidenceCalibration[] = [],
-    spend?: VisionSpendPort,
-    private readonly scheduler: VisualWorkScheduler = visionGpuScheduler,
-    private readonly cooldowns: Map<string, VisionCooldownEntry> = new Map(),
-    private readonly timeoutFailures: Map<string, number> = new Map(),
-    private readonly healthTimeoutMs = 1_500,
-    private readonly config: VisionRouterConfig = {},
+    providersOrOpts:
+      | readonly VisualAnalysisProvider[]
+      | {
+          providers: readonly VisualAnalysisProvider[];
+          cache: VisionCachePort;
+          calibrations?: readonly ConfidenceCalibration[];
+          spend?: VisionSpendPort;
+          scheduler?: VisualWorkScheduler;
+          cooldowns?: Map<string, VisionCooldownEntry>;
+          timeoutFailures?: Map<string, number>;
+          healthTimeoutMs?: number;
+          config?: VisionRouterConfig;
+        },
+    cacheArg?: VisionCachePort,
+    calibrationsArg: readonly ConfidenceCalibration[] = [],
+    spendArg?: VisionSpendPort,
+    schedulerArg: VisualWorkScheduler = visionGpuScheduler,
+    cooldownsArg: Map<string, VisionCooldownEntry> = new Map(),
+    timeoutFailuresArg: Map<string, number> = new Map(),
+    healthTimeoutMsArg = 1_500,
+    configArg: VisionRouterConfig = {},
   ) {
-    this.providers = new Map(providers.map((provider) => [provider.id, provider]));
+    const isObj = !Array.isArray(providersOrOpts) && typeof providersOrOpts === 'object' && providersOrOpts !== null && 'providers' in providersOrOpts;
+    const providersList = isObj ? providersOrOpts.providers : (providersOrOpts as readonly VisualAnalysisProvider[]);
+    this.cache = isObj ? providersOrOpts.cache : cacheArg!;
+    this.calibrations = isObj ? (providersOrOpts.calibrations ?? []) : calibrationsArg;
+    this.scheduler = isObj ? (providersOrOpts.scheduler ?? visionGpuScheduler) : schedulerArg;
+    this.cooldowns = isObj ? (providersOrOpts.cooldowns ?? new Map()) : cooldownsArg;
+    this.timeoutFailures = isObj ? (providersOrOpts.timeoutFailures ?? new Map()) : timeoutFailuresArg;
+    this.healthTimeoutMs = isObj ? (providersOrOpts.healthTimeoutMs ?? 1_500) : healthTimeoutMsArg;
+    this.config = isObj ? (providersOrOpts.config ?? {}) : configArg;
+    const spend = isObj ? providersOrOpts.spend : spendArg;
+    this.providers = new Map((Array.isArray(providersList) ? providersList : []).map((provider) => [provider.id, provider]));
     const amounts = new Map<string, number>();
     this.spend = spend ?? { get: (key) => amounts.get(key) ?? 0, add: (key, amount) => { const total = (amounts.get(key) ?? 0) + amount; amounts.set(key, total); return total; } };
   }

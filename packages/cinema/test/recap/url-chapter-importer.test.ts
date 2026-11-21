@@ -20,6 +20,7 @@ import {
 	downloadChapterPages,
 	buildAndRegisterChapterCbz,
 	listRecapLibrary,
+	mergeChapterArchivesForProduction,
 	RecapImportJobManager,
 	verifyChapterArchiveIntegrity,
 	importChapter,
@@ -320,6 +321,64 @@ describe('Aethera Recap — URL Chapter Importer (Etapas 2–7)', () => {
 			expect(integrity.pageCount).toBe(24);
 			expect(integrity.workTitle).toBe('Nano Machine');
 			expect(integrity.chapterNumber).toBe('1');
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('12. combines 5 imported chapters (24 + 10 + 19 + 7 + 20 = 80 pages) into a single validated multi-chapter CBZ for one unified video', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'recap-multi-ch-'));
+		const libraryDir = join(dir, 'library');
+		try {
+			const pageCounts = [24, 10, 19, 7, 20];
+			const cbzPaths: string[] = [];
+
+			for (let chIdx = 0; chIdx < pageCounts.length; chIdx++) {
+				const chNum = String(chIdx + 1);
+				const count = pageCounts[chIdx]!;
+				const chCbzPath = join(dir, `cap-${chNum}.cbz`);
+				const zip = new AdmZip();
+				for (let p = 1; p <= count; p++) {
+					zip.addFile(`${String(p).padStart(4, '0')}.png`, makeValidPngBuffer((chIdx + 1) * 30 + p));
+				}
+				zip.addFile(
+					'aethera-source.json',
+					Buffer.from(
+						JSON.stringify({
+							workTitle: 'Nano Machine',
+							chapterNumber: chNum,
+							pageCount: count,
+						}),
+						'utf-8',
+					),
+				);
+				zip.writeZip(chCbzPath);
+				cbzPaths.push(chCbzPath);
+			}
+
+			const merged = mergeChapterArchivesForProduction({
+				archivePaths: cbzPaths,
+				workTitle: 'Nano Machine',
+				libraryDir,
+			});
+
+			expect(merged.valid).toBe(true);
+			expect(merged.chapterCount).toBe(5);
+			expect(merged.pageCount).toBe(80);
+			expect(merged.chapterNumbers).toEqual(['1', '2', '3', '4', '5']);
+			expect(merged.label).toContain('5 capítulos combinados');
+			expect(merged.label).toContain('80 páginas');
+
+			const integrity = verifyChapterArchiveIntegrity(merged.archivePath);
+			expect(integrity.valid).toBe(true);
+			expect(integrity.pageCount).toBe(80);
+
+			const imported = await importChapter({
+				chapterId: 'nano-machine-caps-1-5',
+				archivePath: merged.archivePath,
+				outputDir: join(dir, 'extracted-80'),
+			});
+			expect(imported.pageCount).toBe(80);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
+import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeChapterArchivesForProduction, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -5050,7 +5050,7 @@ productionConsole,
       get: (key) => memCacheStore.get(JSON.stringify(key)),
       put: (key, value) => { memCacheStore.set(JSON.stringify(key), value); },
     };
-    const visionRouter = new VisionRouter({ providers, cache });
+    const visionRouter = new VisionRouter(providers, cache);
     return createRoutedRecapVisionAdapter({
       root: rootDir,
       router: visionRouter as unknown as Parameters<typeof createRoutedRecapVisionAdapter>[0]['router'],
@@ -5145,6 +5145,7 @@ productionConsole,
       input: {
         runId?: string;
         archivePath: string;
+        archivePaths?: string[];
         workTitle: string;
         language?: string;
         scriptStyle?: string;
@@ -5164,6 +5165,9 @@ productionConsole,
       const runId = input.runId?.trim() || `recap-${Date.now()}`;
       const importDir = join(recapWorkspace, 'import', chapterId);
       const createdAtIso = new Date().toISOString();
+      let effectiveArchivePath = input.archivePath;
+      let lastReachedStage: RecapOrchestratorRecord['currentStage'] = 'import';
+      let lastCompletedSteps: string[] = [];
 
       const persistAndEmit = (
         state: RecapOrchestratorRecord['state'],
@@ -5178,7 +5182,7 @@ productionConsole,
           runId,
           chapterId,
           workTitle,
-          archivePath: input.archivePath,
+          archivePath: effectiveArchivePath,
           ...(input.language ? { language: input.language } : {}),
           ...(input.scriptStyle ? { scriptStyle: input.scriptStyle } : {}),
           aspectRatio: input.aspectRatio ?? '16:9',
@@ -5211,12 +5215,23 @@ productionConsole,
       persistAndEmit('importing', 'import', [], `Importando páginas de "${workTitle}"…`);
 
       try {
+        if (Array.isArray(input.archivePaths) && input.archivePaths.length > 1) {
+          const merged = mergeChapterArchivesForProduction({
+            archivePaths: input.archivePaths,
+            workTitle,
+            libraryDir: recapLibraryDir,
+          });
+          effectiveArchivePath = merged.archivePath;
+        }
+
         const imported = await importChapter({
           chapterId,
-          archivePath: input.archivePath,
+          archivePath: effectiveArchivePath,
           outputDir: importDir,
           readingOrder: 'vertical',
         });
+        lastReachedStage = 'gate-f';
+        lastCompletedSteps = ['import'];
         persistAndEmit('importing', 'gate-f', ['import'], `Capítulo importado (${imported.pages.length} páginas). Extraindo painéis e validando Gate F…`);
 
         const extracted = await extractPanels({
@@ -5224,9 +5239,14 @@ productionConsole,
           outputDir: importDir,
           ...(input.enableOcr ? { ocrAdapter: createTesseractOcrAdapter({ languages: 'por+eng' }) } : {}),
         });
-        const panels = extracted.panels.slice(0, 24);
+        const maxPanels =
+          Array.isArray(input.archivePaths) && input.archivePaths.length > 1
+            ? Math.min(60, Math.max(24, input.archivePaths.length * 10))
+            : 24;
+        const panels = extracted.panels.slice(0, maxPanels);
         const gateFReport = runGateFPanelIntegrity({ chapter: imported, panels });
         const initialSteps = gateFReport.verdict === 'fail' ? ['import'] : ['import', 'gate-f'];
+        lastCompletedSteps = initialSteps;
 
         if (gateFReport.verdict === 'fail') {
           const errMsg = `Gate F falhou: ${gateFReport.reasons.join('; ')}`;
@@ -5245,6 +5265,7 @@ productionConsole,
           };
         }
 
+        lastReachedStage = 'vision';
         persistAndEmit('preflight', 'vision', initialSteps, `Gate F aprovado (${panels.length} painéis). Iniciando orquestrador…`, {
           panelCount: panels.length,
           gateFVerdict: gateFReport.verdict,
@@ -5284,7 +5305,7 @@ productionConsole,
             aspectRatio: input.aspectRatio ?? '16:9',
           },
           ...(input.masterApproved ? { masterApproved: true } : {}),
-          archivePath: input.archivePath,
+          archivePath: effectiveArchivePath,
           ...(input.language ? { language: input.language } : {}),
           ...(input.scriptStyle ? { scriptStyle: input.scriptStyle } : {}),
           ...(input.ttsProvider ? { ttsProvider: input.ttsProvider } : {}),
@@ -5316,7 +5337,7 @@ productionConsole,
         };
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        const failedRec = persistAndEmit('failed', 'import', [], errMsg, { lastError: errMsg });
+        const failedRec = persistAndEmit('failed', lastReachedStage, lastCompletedSteps, errMsg, { lastError: errMsg });
         return {
           ok: false,
           runId,
@@ -5840,6 +5861,18 @@ productionConsole,
     ensureTrusted(event.senderFrame);
     return verifyChapterArchiveIntegrity(input?.archivePath ?? '');
   });
+
+  ipcMain.handle(
+    'recap:merge-chapter-archives',
+    async (event, input: { archivePaths: string[]; workTitle?: string }) => {
+      ensureTrusted(event.senderFrame);
+      return mergeChapterArchivesForProduction({
+        archivePaths: Array.isArray(input?.archivePaths) ? input.archivePaths : [],
+        ...(input?.workTitle ? { workTitle: input.workTitle } : {}),
+        libraryDir: recapLibraryDir,
+      });
+    },
+  );
 
   ipcMain.handle('recap:open-in-browser', async (event, input: { url: string }) => {
     ensureTrusted(event.senderFrame);

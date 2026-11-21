@@ -272,6 +272,8 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   recapInteractiveClearProfile: (input: { url: string }) => ipcRenderer.invoke('recap:interactive-clear-profile', input),
   recapLibraryList: () => ipcRenderer.invoke('recap:library-list'),
   recapVerifyArchive: (input: { archivePath: string }) => ipcRenderer.invoke('recap:verify-archive', input),
+  recapMergeChapterArchives: (input: { archivePaths: string[]; workTitle?: string }) =>
+    ipcRenderer.invoke('recap:merge-chapter-archives', input),
   recapListProjects: () => ipcRenderer.invoke('recap:list-projects'),
   recapLoadProject: (runId: string) => ipcRenderer.invoke('recap:load-project', runId),
   recapDeleteProject: (runId: string) => ipcRenderer.invoke('recap:delete-project', runId),
