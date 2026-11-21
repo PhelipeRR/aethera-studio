@@ -1,7 +1,7 @@
 {
   "name": "@neuralbridge/aethera-desktop",
   "private": true,
-  "version": "0.1.79",
+  "version": "0.1.80",
   "description": "Aethera Studio â€” standalone autonomous AI video studio & channel manager",
   "main": "out/main/index.js",
   "scripts": {
@@ -20,6 +20,7 @@
     "better-sqlite3": "13.0.3",
     "drizzle-orm": "0.45.4",
     "lucide-react": "1.56.0",
+    "playwright-core": "^1.52.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "sharp": "^0.35.5"

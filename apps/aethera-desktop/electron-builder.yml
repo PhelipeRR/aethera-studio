@@ -23,6 +23,7 @@ asarUnpack:
   - node_modules/ws/**
   - node_modules/sharp/**
   - node_modules/@img/**
+  - node_modules/playwright-core/**
   - node_modules/semver/**
   - node_modules/color/**
   - node_modules/color-convert/**

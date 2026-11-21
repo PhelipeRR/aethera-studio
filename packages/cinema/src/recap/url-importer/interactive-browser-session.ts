@@ -156,7 +156,9 @@ function findChromiumExecutable(): string | undefined {
 
 async function loadPlaywrightCore(): Promise<PlaywrightModuleLike> {
 	const require = createRequire(import.meta.url);
+	const resourcesPath = (process as { resourcesPath?: string }).resourcesPath;
 	const candidates = [
+		...(resourcesPath ? [join(resourcesPath, 'app.asar.unpacked', 'node_modules', 'playwright-core')] : []),
 		'playwright-core',
 		'playwright',
 		resolve(process.cwd(), 'services', 'firecrawl-local', 'node_modules', 'playwright-core'),
