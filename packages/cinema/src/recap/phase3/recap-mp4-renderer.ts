@@ -30,13 +30,14 @@ import type {
 import { buildRecapAudiovisualPlan } from './recap-visual-planner.js';
 import { runGateHAudiovisualQuality } from './recap-gate-h-quality.js';
 import { auditNarrationAudioClip } from './recap-tts-adapters.js';
-import { buildShotZoompanFilter, MOTIONVELIX_SFX_MAP, type MotionVelixRenderReport } from './recap-motionvelix.js';
+import { buildShotZoompanFilter, buildVerticalPanelFilterComplex, MOTIONVELIX_SFX_MAP, type MotionVelixRenderReport } from './recap-motionvelix.js';
 import type { RecapVfxSpec } from './recap-audiovisual-types.js';
 import {
 	alignBeatsToRealWavAudio,
 	buildNarrativeBeatAlignments,
 	runGateISemanticSync,
 	runGateJVoiceConsistency,
+	transcribeWavWordTimestamps,
 	type AlignedBeatInterval,
 	type GateIReport,
 	type GateJReport,
@@ -358,10 +359,16 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		existsSync(synthesizedSegments[0]!.audioPath);
 
 	if (isSingleContinuousSession) {
+		const wordTimestamps = dryRunRender
+			? null
+			: await transcribeWavWordTimestamps(synthesizedSegments[0]!.audioPath, {
+					language: synthesizedSegments[0]!.language?.slice(0, 2) ?? 'pt',
+				});
 		const alignmentResult = alignBeatsToRealWavAudio({
 			alignments: rawBeatAlignments,
 			wavPath: synthesizedSegments[0]!.audioPath,
 			tailPaddingMs: 300,
+			wordTimestamps,
 		});
 		alignedBeats = alignmentResult.alignedBeats;
 	} else {
@@ -461,24 +468,36 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 				continue;
 			}
 
-			const vf = buildShotZoompanFilter(shot, plan.width, plan.height, plan.fps, vfx);
-			await execFileAsync(
-				'ffmpeg',
-				[
-					'-y',
-					'-loop', '1',
-					'-i', shot.imagePath,
-					'-vf', vf,
-					'-t', (shot.durationMs / 1000).toFixed(3),
-					'-r', String(plan.fps),
-					'-c:v', 'libx264',
-					'-preset', renderTarget === 'master' ? 'medium' : 'ultrafast',
-					'-pix_fmt', 'yuv420p',
-					'-an',
-					clipPath,
-				],
-				{ timeout: 60_000, windowsHide: true },
-			);
+			const verticalFx = buildVerticalPanelFilterComplex(shot, plan.width, plan.height, plan.fps, vfx);
+			const ffmpegShotArgs = verticalFx
+				? [
+						'-y',
+						'-loop', '1',
+						'-i', shot.imagePath,
+						'-filter_complex', verticalFx.filterComplex,
+						'-map', verticalFx.mapLabel,
+						'-t', (shot.durationMs / 1000).toFixed(3),
+						'-r', String(plan.fps),
+						'-c:v', 'libx264',
+						'-preset', renderTarget === 'master' ? 'medium' : 'ultrafast',
+						'-pix_fmt', 'yuv420p',
+						'-an',
+						clipPath,
+					]
+				: [
+						'-y',
+						'-loop', '1',
+						'-i', shot.imagePath,
+						'-vf', buildShotZoompanFilter(shot, plan.width, plan.height, plan.fps, vfx),
+						'-t', (shot.durationMs / 1000).toFixed(3),
+						'-r', String(plan.fps),
+						'-c:v', 'libx264',
+						'-preset', renderTarget === 'master' ? 'medium' : 'ultrafast',
+						'-pix_fmt', 'yuv420p',
+						'-an',
+						clipPath,
+					];
+			await execFileAsync('ffmpeg', ffmpegShotArgs, { timeout: 60_000, windowsHide: true });
 			writeFileSync(hashPath, expectedHash, 'utf-8');
 			renderedShotsCount++;
 			shotClips.push(clipPath);

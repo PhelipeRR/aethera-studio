@@ -7,7 +7,7 @@
  * so Mangá Recap never silently drops MotionVelix assets or fails Gate H due to path mismatch.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { RecapPanelShot, RecapSfxKind, RecapVfxSpec } from './recap-audiovisual-types.js';
@@ -231,4 +231,99 @@ export function buildShotZoompanFilter(
 
 	chain.push('format=yuv420p');
 	return chain.join(',');
+}
+
+/**
+ * Reads image dimensions (width × height) synchronously from PNG or JPEG headers
+ * without spawning any external process.
+ */
+export function readImageDimensionsFast(imagePath: string): { width: number; height: number } | null {
+	try {
+		if (!existsSync(imagePath)) return null;
+		const buf = readFileSync(imagePath);
+		// PNG: signature 89 50 4E 47, IHDR width at offset 16, height at offset 20 (big-endian)
+		if (buf.length >= 24 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+			return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+		}
+		// JPEG: scan SOF0/SOF2 markers (FF C0 / FF C2)
+		if (buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+			let off = 2;
+			while (off + 9 < buf.length) {
+				if (buf[off] !== 0xff) {
+					off++;
+					continue;
+				}
+				const marker = buf[off + 1]!;
+				if (marker === 0xc0 || marker === 0xc2) {
+					return { height: buf.readUInt16BE(off + 5), width: buf.readUInt16BE(off + 7) };
+				}
+				const segLen = buf.readUInt16BE(off + 2);
+				if (segLen < 2) break;
+				off += 2 + segLen;
+			}
+		}
+		return null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * MotionVelix Vertical Panel Compositor (Phase 5 / Audiovisual Refinement):
+ * For tall vertical manhwa panels (`height / width > 1.35`) in a landscape 16:9 viewport,
+ * replaces harsh black pillarbox bars and tiny static strips with:
+ * - A blurred, darkened ambient backdrop of the same panel (full 16:9)
+ * - The crisp vertical panel scaled to a comfortable ~56% viewport width (ZERO left/right crop,
+ *   full speech-balloon readability, ZERO excessive zoom)
+ * - Smooth top-to-bottom vertical camera scroll synced to the shot duration
+ *
+ * Returns `{ filterComplex, mapLabel }` when vertical mode applies, or `null` to use standard `-vf`.
+ */
+export function buildVerticalPanelFilterComplex(
+	shot: RecapPanelShot,
+	width: number,
+	height: number,
+	fps: number,
+	vfx?: RecapVfxSpec,
+): { filterComplex: string; mapLabel: string } | null {
+	if (width <= height) return null; // Already vertical 9:16 viewport
+	const dims = readImageDimensionsFast(shot.imagePath);
+	if (!dims || dims.width <= 0 || dims.height <= 0) return null;
+	const heightToWidth = dims.height / dims.width;
+	if (heightToWidth <= 1.35) return null;
+
+	// Scale foreground to ~56% of viewport width (even integer) so full artwork & balloons fit cleanly
+	const fgW = Math.floor((width * 0.56) / 2) * 2;
+	const scaledFgH = Math.floor(((dims.height / dims.width) * fgW) / 2) * 2;
+	if (scaledFgH <= height + 40) return null;
+
+	const durSec = Math.max(0.5, shot.durationMs / 1000).toFixed(3);
+	const maxScrollY = Math.max(0, scaledFgH - height);
+	// Smooth ease-in-out / linear top-to-bottom camera glide matching vertical manhwa reading order
+	const yExpr = `${maxScrollY}*min(1\\,max(0\\,t/${durSec}))`;
+
+	const postFx: string[] = [];
+	if (vfx && vfx.contrastBoost > 1.01) {
+		postFx.push(`eq=contrast=${Math.min(1.14, vfx.contrastBoost).toFixed(2)}`);
+	}
+	if (vfx && vfx.vignetteStrength > 0.05) {
+		const angle = (Math.min(0.32, vfx.vignetteStrength) * 1.2).toFixed(3);
+		postFx.push(`vignette=angle=${angle}`);
+	}
+	const fadeDur = Math.min(0.28, Math.max(0.12, (shot.durationMs / 1000) * 0.14)).toFixed(2);
+	if (shot.transitionIn === 'dip_black' || shot.transitionIn === 'crossfade') {
+		postFx.push(`fade=t=in:st=0:d=${fadeDur}:color=black`);
+	} else if (shot.transitionIn === 'flash_white') {
+		postFx.push(`fade=t=in:st=0:d=0.16:color=white`);
+	}
+	postFx.push(`fps=${fps}`, 'setsar=1', 'format=yuv420p');
+
+	const filterComplex = [
+		`[0:v]split=2[src_bg][src_fg]`,
+		`[src_bg]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},gblur=sigma=28,eq=brightness=-0.16:saturation=0.85[bg]`,
+		`[src_fg]scale=${fgW}:${scaledFgH},crop=${fgW}:${height}:0:'${yExpr}'[fg]`,
+		`[bg][fg]overlay=(W-w)/2:0,${postFx.join(',')}[vout]`,
+	].join(';');
+
+	return { filterComplex, mapLabel: '[vout]' };
 }

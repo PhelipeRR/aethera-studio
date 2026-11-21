@@ -37,7 +37,7 @@ const execFileAsync = promisify(execFile);
 
 const REPO_ROOT = realpathSync(join(dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')), '..'));
 const SOURCE_CKPT_DIR = join(REPO_ROOT, '.aethera-recap-data', 'story-engine-e2e-real', 'checkpoints', 'nano-machine-cap-01');
-const WORK_DIR = join(REPO_ROOT, '.aethera-recap-data', 'story-engine-semantic-sync');
+const WORK_DIR = join(REPO_ROOT, '.aethera-recap-data', 'story-engine-semantic-sync-v2');
 const RENDER_DIR = join(WORK_DIR, 'render');
 const REPORT_PATH = join(REPO_ROOT, 'docs', 'recap-semantic-sync-voice-report.md');
 
@@ -205,8 +205,8 @@ async function main() {
 		'| --- | --- | --- | --- |',
 		`| **Gate G** | Fidelidade Narrativa | \`${gateG.verdict}\` | ${finalScript.scenes.length} cenas · estilo \`${finalScript.style ?? 'natural_recap'}\` |`,
 		`| **Gate H** | Qualidade Audiovisual | \`${renderRes.gateHReport.verdict}\` | ${renderRes.plan.shots.length} shots · lacunas=0 · duplicados=0 |`,
-		`| **Gate I** | Sincronização Semântica | \`${renderRes.gateIReport.verdict}\` | beats=${renderRes.gateIReport.metrics['alignedBeatCount']} · wavSnapped=${renderRes.gateIReport.metrics['wavSnappedCount']} · score=${renderRes.gateIReport.metrics['avgSemanticScore']} · tailExcess=${renderRes.gateIReport.metrics['tailExcessMs']}ms · freezes=${renderRes.gateIReport.metrics['freezeCount']} |`,
-		`| **Gate J** | Consistência da Voz | \`${renderRes.gateJReport.verdict}\` | sessãoÚnica=${renderRes.gateJReport.metrics['singleContinuousSession']} · provedor=\`${renderRes.gateJReport.metrics['provider']}\` · voz=\`${renderRes.gateJReport.metrics['voiceId']}\` · sampleRate=${renderRes.gateJReport.metrics['outputSampleRateHz']}Hz · clipping=${renderRes.gateJReport.metrics['totalClippedSamples']} |`,
+		`| **Gate I** | Sincronização Semântica | \`${renderRes.gateIReport.verdict}\` | beats=${renderRes.gateIReport.metrics['alignedBeatCount']} · whisperWordAligned=${renderRes.gateIReport.metrics['whisperAlignedCount']} · score=${renderRes.gateIReport.metrics['avgSemanticScore']} · tailExcess=${renderRes.gateIReport.metrics['tailExcessMs']}ms · freezes=${renderRes.gateIReport.metrics['freezeCount']} |`,
+		`| **Gate J** | Consistência da Voz | \`${renderRes.gateJReport.verdict}\` | sessãoÚnica=${renderRes.gateJReport.metrics['singleContinuousSession']} · provedor=\`${renderRes.gateJReport.metrics['provider']}\` · voz=\`${renderRes.gateJReport.metrics['voiceId']}\` · ΔRMS intra=${renderRes.gateJReport.metrics['intraClipMaxRmsDeltaDb']}dB · ΔZCR intra=${renderRes.gateJReport.metrics['intraClipMaxZcrDelta']} · sampleRate=${renderRes.gateJReport.metrics['outputSampleRateHz']}Hz · clipping=${renderRes.gateJReport.metrics['totalClippedSamples']} |`,
 		'',
 		'## Fase 1 — Diagnóstico do Caso de Regressão Anterior (Evidências)',
 		'',

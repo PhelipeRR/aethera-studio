@@ -42,6 +42,15 @@ function selectMotionForScene(
 	const isDialogue = panel?.metadata.classification === 'dialogue';
 	const isVerticalStrip = panel ? panel.height > panel.width * 1.35 : false;
 
+	if (isVerticalStrip) {
+		return {
+			motionStyle: 'pan_vertical',
+			focalStart: { x: 0.5, y: 0.35, zoom: 1.04 },
+			focalEnd: { x: 0.5, y: 0.65, zoom: 1.04 },
+			balloonSafeZoneProtected: isDialogue,
+		};
+	}
+
 	if (isDialogue) {
 		// Protect speech balloons: subtle gentle zoom, centered safe focal area
 		return {
@@ -49,15 +58,6 @@ function selectMotionForScene(
 			focalStart: { x: 0.5, y: 0.48, zoom: 1.0 },
 			focalEnd: { x: 0.5, y: 0.48, zoom: 1.04 },
 			balloonSafeZoneProtected: true,
-		};
-	}
-
-	if (isVerticalStrip) {
-		return {
-			motionStyle: 'pan_vertical',
-			focalStart: { x: 0.5, y: 0.35, zoom: 1.08 },
-			focalEnd: { x: 0.5, y: 0.65, zoom: 1.08 },
-			balloonSafeZoneProtected: false,
 		};
 	}
 

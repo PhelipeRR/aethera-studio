@@ -25,12 +25,18 @@ export interface NarrativeBeatAlignment {
 	matchedTerms: string[];
 }
 
+export interface WordTimestamp {
+	word: string;
+	startMs: number;
+	endMs: number;
+}
+
 export interface AlignedBeatInterval extends NarrativeBeatAlignment {
 	speechStartMs: number;
 	speechEndMs: number;
 	displayStartMs: number;
 	displayEndMs: number;
-	alignmentMethod: 'wav_pause_aligned' | 'speech_envelope_aligned';
+	alignmentMethod: 'whisper_word_aligned' | 'wav_pause_aligned' | 'speech_envelope_aligned';
 }
 
 export interface SpeechWindow {
@@ -124,6 +130,12 @@ function scoreClauseAgainstPanel(
 	return { score: Number(score.toFixed(3)), matchedTerms: matched };
 }
 
+function isReactionCloseUpPanel(analysis: PanelAnalysis | undefined): boolean {
+	if (!analysis) return false;
+	const desc = `${analysis.visualDescription ?? ''} ${(analysis.expressions ?? []).join(' ')}`.toLowerCase();
+	return /(plano\s+superfechado|close[-\s]?up|olho\s+(esquerdo|direito)|íris|expressão\s+de\s+choque|plano\s+fechado\s+no\s+rosto)/i.test(desc);
+}
+
 /**
  * Splits a scene's natural narration into atomic narrative clauses/events
  * so each clause can align to its exact visual panel.
@@ -138,29 +150,62 @@ export function splitNarrationIntoNarrativeClauses(text: string, targetPanelCoun
 		.map((s) => s.trim())
 		.filter((s) => s.length > 0);
 
-	if (sentences.length >= targetPanelCount) {
-		return sentences;
+	// 2. Further split compound sentences on strong narrative connectors when a sentence spans multiple panels
+	let clauses: string[] = [...sentences];
+	if (clauses.length < targetPanelCount) {
+		const expanded: string[] = [];
+		for (let i = 0; i < clauses.length; i++) {
+			const sent = clauses[i]!;
+			const remainingAfter = clauses.length - 1 - i;
+			if (expanded.length + 1 + remainingAfter >= targetPanelCount) {
+				expanded.push(sent);
+				continue;
+			}
+			const subParts = sent
+				.split(/(?<=,)\s+(?=(?:onde|mas|enquanto|quando|então|entao|logo depois|e\s+(?:despenca|cai|tropeça|corre|acaba|sai|aterrissa|olha|percebe)))/i)
+				.map((p) => p.trim())
+				.filter((p) => p.length > 0);
+			if (subParts.length > 1) {
+				expanded.push(...subParts);
+			} else {
+				expanded.push(sent);
+			}
+		}
+		clauses = expanded;
 	}
 
-	// 2. Further split compound sentences on strong narrative connectors when a sentence spans multiple panels
-	const clauses: string[] = [];
-	for (const sent of sentences) {
-		if (clauses.length + (sentences.length - sentences.indexOf(sent)) >= targetPanelCount) {
-			clauses.push(sent);
-			continue;
+	// 3. If still fewer clauses than panels, split the longest compound clause at a clean mid-action conjunction (" e ", " pelo ", " contra ")
+	while (clauses.length < targetPanelCount) {
+		let bestIdx = -1;
+		let bestLen = 0;
+		for (let i = 0; i < clauses.length; i++) {
+			const c = clauses[i]!;
+			if (c.length > bestLen && /\s+(?:e\s+(?:em|despenca|cai|sai|se\s+|bate|corre)|pelo\s+|contra\s+)/i.test(c)) {
+				bestLen = c.length;
+				bestIdx = i;
+			}
 		}
-		const subParts = sent
-			.split(/(?<=,)\s+(?=(?:onde|mas|enquanto|quando|então|entao|logo depois|e\s+(?:despenca|cai|tropeça|corre|acaba|sai|aterrissa|olha|percebe)))/i)
-			.map((p) => p.trim())
-			.filter((p) => p.length > 0);
-		if (subParts.length > 1) {
-			clauses.push(...subParts);
-		} else {
-			clauses.push(sent);
-		}
+		if (bestIdx < 0) break;
+		const target = clauses[bestIdx]!;
+		const m = /\s+(?=(?:e\s+(?:em|despenca|cai|sai|se\s+|bate|corre)|pelo\s+|contra\s+))/i.exec(target);
+		if (!m || m.index < 12 || target.length - m.index < 12) break;
+		const left = target.slice(0, m.index).trim();
+		const right = target.slice(m.index).trim();
+		clauses.splice(bestIdx, 1, left, right);
 	}
 
 	return clauses.length > 0 ? clauses : [cleaned];
+}
+
+/**
+ * Splits a reaction close-up sentence so the close-up holds ONLY during the shock/reaction beat
+ * and cuts cleanly to the following action panel right as the action begins (e.g. "de um penhasco...").
+ */
+function splitReactionClauseForCloseUp(clause: string): [string, string] | null {
+	// Match natural transition from shock/reaction into the main action ("da borda de um penhasco", "e despenca", "e cai", etc.)
+	const match = /\s+(?=(?:de\s+um\s+penhasco|do\s+penhasco|e\s+despenca|e\s+cai|e\s+se\s+joga|quando\s+))/i.exec(clause);
+	if (!match || match.index < 12 || clause.length - match.index < 14) return null;
+	return [clause.slice(0, match.index).trim(), clause.slice(match.index).trim()];
 }
 
 /**
@@ -181,7 +226,20 @@ export function buildNarrativeBeatAlignments(input: {
 		const panelIds = scene.panelIds.filter((pid, i) => i === 0 || pid !== scene.panelIds[i - 1]);
 		if (panelIds.length === 0) continue;
 
-		const clauses = splitNarrationIntoNarrativeClauses(scene.narrationText, panelIds.length);
+		let clauses = splitNarrationIntoNarrativeClauses(scene.narrationText, panelIds.length);
+		// Close-up pacing guard: if the first panel in this scene is a reaction close-up followed by an action panel,
+		// split the opening reaction sentence so the close-up stays punchy (~2-3s) and cuts right when the action starts.
+		if (
+			panelIds.length >= 2 &&
+			clauses.length >= 1 &&
+			isReactionCloseUpPanel(analysisByPanel.get(panelIds[0]!))
+		) {
+			const splitReaction = splitReactionClauseForCloseUp(clauses[0]!);
+			if (splitReaction) {
+				clauses = [splitReaction[0], splitReaction[1], ...clauses.slice(1)];
+			}
+		}
+
 		const numClauses = clauses.length;
 		const numPanels = panelIds.length;
 
@@ -201,23 +259,28 @@ export function buildNarrativeBeatAlignments(input: {
 		// Monotonic assignment: every panel gets at least one clause if numClauses >= numPanels;
 		// if numClauses < numPanels, split the best-matching clause proportionally across remaining panels in order.
 		if (numClauses >= numPanels) {
-			// Monotonic DP to assign each clause c in [0..numClauses-1] to panel p in [0..numPanels-1]
 			let panelCursor = 0;
+			let beatsOnCurrentPanel = 0;
 			for (let cIdx = 0; cIdx < numClauses; cIdx++) {
 				const remainingClauses = numClauses - cIdx;
 				const remainingPanels = numPanels - panelCursor;
 
 				let chosenPanelIdx = panelCursor;
 				if (remainingPanels > 1) {
-					if (remainingClauses === remainingPanels) {
-						// Must advance to cover remaining panels
+					const curIsCloseUp = isReactionCloseUpPanel(analysisByPanel.get(panelIds[panelCursor]!));
+					if (curIsCloseUp && beatsOnCurrentPanel >= 1) {
+						// Never let a reaction close-up linger over subsequent action clauses
+						panelCursor++;
+						beatsOnCurrentPanel = 0;
+						chosenPanelIdx = panelCursor;
+					} else if (remainingClauses === remainingPanels) {
 						chosenPanelIdx = panelCursor;
 					} else {
-						// Compare staying on current panel vs advancing to next panel
 						const curScore = scoreClauseAgainstPanel(clauses[cIdx]!, analysisByPanel.get(panelIds[panelCursor]!)).score;
 						const nextScore = scoreClauseAgainstPanel(clauses[cIdx]!, analysisByPanel.get(panelIds[panelCursor + 1]!)).score;
 						if (cIdx > 0 && nextScore > curScore + 0.05) {
 							panelCursor++;
+							beatsOnCurrentPanel = 0;
 							chosenPanelIdx = panelCursor;
 						}
 					}
@@ -233,10 +296,12 @@ export function buildNarrativeBeatAlignments(input: {
 					semanticScore: score,
 					matchedTerms,
 				});
+				beatsOnCurrentPanel++;
 
 				// If this panel was just covered and we have more panels ahead, allow next clause to move forward
 				if (remainingClauses === remainingPanels && panelCursor < numPanels - 1) {
 					panelCursor++;
+					beatsOnCurrentPanel = 0;
 				}
 			}
 		} else {
@@ -437,15 +502,158 @@ function estimatePhoneticWeight(text: string): number {
 	return Math.max(4, letters + pauses);
 }
 
+function normalizeWordToken(raw: string): string {
+	return raw
+		.toLowerCase()
+		.normalize('NFD')
+		.replace(/[\u0300-\u036f]/g, '')
+		.replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Phase 3 Forced Alignment: Queries local VoiceStudio WhisperX / OpenAI-compatible STT
+ * (`/v1/audio/transcriptions`) for exact real word-level timestamps on the synthesized WAV.
+ * Gracefully returns `null` when STT is unreachable so the pipeline falls back to WAV pause alignment.
+ */
+export async function transcribeWavWordTimestamps(
+	wavPath: string,
+	options?: { baseUrl?: string; language?: string; model?: string; timeoutMs?: number },
+): Promise<WordTimestamp[] | null> {
+	if (!existsSync(wavPath)) return null;
+	const baseUrl = (options?.baseUrl ?? process.env['NB_VOICESTUDIO_URL'] ?? 'http://127.0.0.1:3900').replace(/\/+$/, '');
+	const language = options?.language ?? 'pt';
+	const model = options?.model ?? 'whisper-1';
+	const timeoutMs = options?.timeoutMs ?? 45_000;
+
+	try {
+		const wavBuf = readFileSync(wavPath);
+		const form = new FormData();
+		form.append('file', new Blob([wavBuf], { type: 'audio/wav' }), 'narration.wav');
+		form.append('model', model);
+		form.append('language', language);
+		form.append('response_format', 'verbose_json');
+		form.append('timestamp_granularities[]', 'word');
+
+		const res = await fetch(`${baseUrl}/v1/audio/transcriptions`, {
+			method: 'POST',
+			body: form,
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+		if (!res.ok) return null;
+		const data = (await res.json()) as {
+			words?: Array<{ word?: string; start?: number; end?: number }>;
+		};
+		if (!Array.isArray(data.words) || data.words.length === 0) return null;
+
+		const timestamps: WordTimestamp[] = [];
+		for (const w of data.words) {
+			if (typeof w.word !== 'string' || typeof w.start !== 'number' || typeof w.end !== 'number') continue;
+			const startMs = Math.max(0, Math.round(w.start * 1000));
+			const endMs = Math.max(startMs + 20, Math.round(w.end * 1000));
+			timestamps.push({ word: w.word.trim(), startMs, endMs });
+		}
+		return timestamps.length > 0 ? timestamps : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Aligns beats sequentially against exact WhisperX/STT word-level timestamps so each
+ * visual panel transition lands cleanly at the exact moment the narrator starts the next action.
+ */
+function alignBeatsWithWordTimestamps(
+	alignments: readonly NarrativeBeatAlignment[],
+	words: readonly WordTimestamp[],
+	totalDurationMs: number,
+): AlignedBeatInterval[] | null {
+	if (alignments.length === 0 || words.length === 0) return null;
+
+	const normWords = words.map((w) => normalizeWordToken(w.word));
+	const spans: Array<{ startMs: number; endMs: number }> = [];
+	let wordCursor = 0;
+
+	for (let bIdx = 0; bIdx < alignments.length; bIdx++) {
+		const clauseTokens = alignments[bIdx]!.clauseText
+			.split(/\s+/)
+			.map(normalizeWordToken)
+			.filter((t) => t.length > 0);
+		if (clauseTokens.length === 0) return null;
+
+		const firstTok = clauseTokens[0]!;
+		const lastTok = clauseTokens[clauseTokens.length - 1]!;
+
+		// Find first token near current cursor (within +6 words tolerance)
+		let startIdx = wordCursor;
+		const searchLimit = Math.min(words.length - 1, wordCursor + 6);
+		for (let i = wordCursor; i <= searchLimit; i++) {
+			if (normWords[i] === firstTok || (firstTok.length >= 4 && normWords[i]?.startsWith(firstTok.slice(0, 4)))) {
+				startIdx = i;
+				break;
+			}
+		}
+
+		// Estimate end index by token count, then snap to matching last token within ±4 words
+		const approxEnd = Math.min(words.length - 1, startIdx + clauseTokens.length - 1);
+		let endIdx = approxEnd;
+		let bestDist = 5;
+		const lo = Math.max(startIdx, approxEnd - 4);
+		const hi = Math.min(words.length - 1, approxEnd + 4);
+		for (let i = lo; i <= hi; i++) {
+			if (normWords[i] === lastTok || (lastTok.length >= 4 && normWords[i]?.startsWith(lastTok.slice(0, 4)))) {
+				const d = Math.abs(i - approxEnd);
+				if (d < bestDist) {
+					bestDist = d;
+					endIdx = i;
+				}
+			}
+		}
+		if (bIdx === alignments.length - 1) {
+			endIdx = words.length - 1;
+		}
+
+		const startMs = words[startIdx]!.startMs;
+		const endMs = Math.max(startMs + 100, words[endIdx]!.endMs);
+		spans.push({ startMs, endMs });
+		wordCursor = Math.min(words.length - 1, endIdx + 1);
+	}
+
+	// Build contiguous display windows with cuts placed at the exact natural midpoint between spoken clauses
+	const result: AlignedBeatInterval[] = [];
+	for (let i = 0; i < alignments.length; i++) {
+		const cur = spans[i]!;
+		const prev = i > 0 ? spans[i - 1]! : null;
+		const next = i + 1 < spans.length ? spans[i + 1]! : null;
+
+		const displayStartMs = i === 0 ? 0 : Math.round((prev!.endMs + cur.startMs) / 2);
+		const displayEndMs =
+			i === alignments.length - 1
+				? totalDurationMs
+				: Math.max(displayStartMs + 200, Math.round((cur.endMs + next!.startMs) / 2));
+
+		result.push({
+			...alignments[i]!,
+			speechStartMs: cur.startMs,
+			speechEndMs: cur.endMs,
+			displayStartMs,
+			displayEndMs,
+			alignmentMethod: 'whisper_word_aligned',
+		});
+	}
+
+	return result;
+}
+
 /**
  * Phase 3: Aligns `NarrativeBeatAlignment[]` to real WAV speech boundaries and natural pauses.
- * Snaps clause cut points to genuine pauses in the synthesized audio whenever a pause
- * exists near the clause's phonetic position, eliminating mid-word cuts and uniform splits.
+ * When WhisperX/STT `wordTimestamps` are provided, uses exact word-level forced alignment (< 80ms precision).
+ * Otherwise snaps clause cut points to genuine pauses in the synthesized audio.
  */
 export function alignBeatsToRealWavAudio(input: {
 	alignments: readonly NarrativeBeatAlignment[];
 	wavPath: string;
 	tailPaddingMs?: number;
+	wordTimestamps?: readonly WordTimestamp[] | null;
 }): {
 	alignedBeats: AlignedBeatInterval[];
 	acoustics: WavAcousticMetrics;
@@ -457,6 +665,14 @@ export function alignBeatsToRealWavAudio(input: {
 
 	if (input.alignments.length === 0) {
 		return { alignedBeats: [], acoustics, totalDurationMs };
+	}
+
+	// Prefer exact word-level forced alignment when real STT word timestamps are available
+	if (input.wordTimestamps && input.wordTimestamps.length > 0) {
+		const wordAligned = alignBeatsWithWordTimestamps(input.alignments, input.wordTimestamps, totalDurationMs);
+		if (wordAligned && wordAligned.length === input.alignments.length) {
+			return { alignedBeats: wordAligned, acoustics, totalDurationMs };
+		}
 	}
 
 	const firstSpeechMs = acoustics.speechWindows[0]?.startMs ?? 0;
@@ -547,16 +763,17 @@ export function runGateISemanticSync(input: {
 		if (curOrder !== undefined) prevOrder = curOrder;
 	}
 
-	// 2. Check unjustified freezes (> 11s on a single panel)
+	// 2. Check unjustified freezes (> 11s on static/standard panel, > 15s on animated vertical-scroll sequence panel)
 	let freezeCount = 0;
 	for (const shot of input.plan.shots) {
-		if (shot.durationMs > 11_000) {
+		const maxAllowedMs = shot.motionStyle === 'pan_vertical' ? 15_000 : 11_000;
+		if (shot.durationMs > maxAllowedMs) {
 			freezeCount++;
 			findings.push({
 				code: 'unjustified_freeze',
 				severity: 'warning',
 				panelId: shot.panelId,
-				detail: `Painel ${shot.panelId} permanece ${(shot.durationMs / 1000).toFixed(1)}s na tela (> 11s).`,
+				detail: `Painel ${shot.panelId} permanece ${(shot.durationMs / 1000).toFixed(1)}s na tela (> ${(maxAllowedMs / 1000).toFixed(0)}s).`,
 			});
 		}
 	}
@@ -579,7 +796,10 @@ export function runGateISemanticSync(input: {
 		alignments.length > 0
 			? Number((alignments.reduce((s, a) => s + a.semanticScore, 0) / alignments.length).toFixed(3))
 			: 0;
-	const wavSnappedCount = alignments.filter((a) => a.alignmentMethod === 'wav_pause_aligned').length;
+	const wavSnappedCount = alignments.filter(
+		(a) => a.alignmentMethod === 'whisper_word_aligned' || a.alignmentMethod === 'wav_pause_aligned',
+	).length;
+	const whisperAlignedCount = alignments.filter((a) => a.alignmentMethod === 'whisper_word_aligned').length;
 
 	if (alignments.length === 0) {
 		findings.push({
@@ -610,6 +830,7 @@ export function runGateISemanticSync(input: {
 			shotCount: input.plan.shots.length,
 			alignedBeatCount: alignments.length,
 			wavSnappedCount,
+			whisperAlignedCount,
 			avgSemanticScore,
 			orderViolations,
 			freezeCount,
@@ -680,18 +901,79 @@ export function runGateJVoiceConsistency(input: {
 		}
 	}
 
-	if (maxRmsJumpDb > 4.5) {
+	// Intra-clip sliding-window (4s) acoustic stability check — verifies volume/timbre consistency
+	// even inside a single continuous TTS session (not just across separate segments).
+	let intraClipMaxRmsDeltaDb = 0;
+	let intraClipMaxZcrDelta = 0;
+	for (const seg of input.segments) {
+		if (!existsSync(seg.audioPath)) continue;
+		try {
+			const buf = readFileSync(seg.audioPath);
+			if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF') continue;
+			const sr = buf.readUInt32LE(24);
+			const ch = buf.readUInt16LE(22);
+			const bps = buf.readUInt16LE(34) / 8;
+			let off = 12;
+			while (off + 8 <= buf.length && buf.toString('ascii', off, off + 4) !== 'data') {
+				off += 8 + buf.readUInt32LE(off + 4);
+			}
+			if (off + 8 > buf.length) continue;
+			const dataOff = off + 8;
+			const dataSize = buf.readUInt32LE(off + 4);
+			const totalFrames = Math.floor(dataSize / (ch * bps));
+			const winFrames = sr * 4;
+			const winMetrics: Array<{ rmsDb: number; zcr: number }> = [];
+			for (let f = 0; f + sr * 2 <= totalFrames; f += winFrames) {
+				const end = Math.min(totalFrames, f + winFrames);
+				let sumSq = 0;
+				let active = 0;
+				let zc = 0;
+				let prev = 0;
+				for (let i = f; i < end; i++) {
+					const pos = dataOff + i * ch * bps;
+					if (pos + 1 >= buf.length) break;
+					const s = buf.readInt16LE(pos) / 32768;
+					if (Math.abs(s) > 0.01) {
+						sumSq += s * s;
+						active++;
+					}
+					const sign = s >= 0 ? 1 : -1;
+					if (prev !== 0 && sign !== prev) zc++;
+					prev = sign;
+				}
+				if (active > sr * 0.4) {
+					winMetrics.push({
+						rmsDb: 20 * Math.log10(Math.sqrt(sumSq / active)),
+						zcr: zc / Math.max(1, end - f),
+					});
+				}
+			}
+			for (let i = 1; i < winMetrics.length; i++) {
+				const dRms = Math.abs(winMetrics[i]!.rmsDb - winMetrics[i - 1]!.rmsDb);
+				const dZcr = Math.abs(winMetrics[i]!.zcr - winMetrics[i - 1]!.zcr);
+				if (dRms > intraClipMaxRmsDeltaDb) intraClipMaxRmsDeltaDb = dRms;
+				if (dZcr > intraClipMaxZcrDelta) intraClipMaxZcrDelta = dZcr;
+			}
+		} catch {
+			// ignore non-wav
+		}
+	}
+
+	const effectiveMaxRmsJumpDb = Math.max(maxRmsJumpDb, intraClipMaxRmsDeltaDb);
+	const effectiveMaxZcrDelta = Math.max(maxZcrDelta, intraClipMaxZcrDelta);
+
+	if (effectiveMaxRmsJumpDb > 4.5) {
 		findings.push({
 			code: 'volume_jump',
 			severity: 'warning',
-			detail: `Salto de volume entre blocos de narração (${maxRmsJumpDb.toFixed(1)} dB > 4.5 dB).`,
+			detail: `Salto de volume entre blocos/frases de narração (${effectiveMaxRmsJumpDb.toFixed(1)} dB > 4.5 dB).`,
 		});
 	}
-	if (maxZcrDelta > 0.045) {
+	if (effectiveMaxZcrDelta > 0.045) {
 		findings.push({
 			code: 'timbre_shift',
 			severity: 'warning',
-			detail: `Variação perceptível de timbre/entonação entre blocos (ΔZCR=${maxZcrDelta.toFixed(4)}).`,
+			detail: `Variação perceptível de timbre/entonação entre blocos/frases (ΔZCR=${effectiveMaxZcrDelta.toFixed(4)}).`,
 		});
 	}
 
@@ -720,8 +1002,10 @@ export function runGateJVoiceConsistency(input: {
 			providerCount: providers.size,
 			provider: [...providers][0] ?? 'unknown',
 			voiceId: [...voiceIds][0] ?? 'default',
-			maxRmsJumpDb: Number(maxRmsJumpDb.toFixed(2)),
-			maxZcrDelta: Number(maxZcrDelta.toFixed(4)),
+			maxRmsJumpDb: Number(effectiveMaxRmsJumpDb.toFixed(2)),
+			maxZcrDelta: Number(effectiveMaxZcrDelta.toFixed(4)),
+			intraClipMaxRmsDeltaDb: Number(intraClipMaxRmsDeltaDb.toFixed(2)),
+			intraClipMaxZcrDelta: Number(intraClipMaxZcrDelta.toFixed(4)),
 			totalClippedSamples: totalClipped,
 			outputSampleRateHz: input.outputSampleRateHz ?? 48000,
 		},
