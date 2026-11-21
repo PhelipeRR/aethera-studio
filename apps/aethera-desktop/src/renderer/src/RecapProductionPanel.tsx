@@ -46,9 +46,16 @@ interface EditableSceneRow {
   estimatedDurationSec: number;
 }
 
+interface SelectedArchiveFile {
+  path: string;
+  name: string;
+  sizeBytes: number;
+}
+
 interface RecapBridge {
   recapGetReadiness?: (input?: { chapterId?: string }) => Promise<RecapReadinessView>;
   recapPlanRevision?: (input: { prompt: string; script: unknown; availablePanelIds?: string[] }) => Promise<RecapRevisionPlanView>;
+  recapSelectArchives?: () => Promise<{ canceled: boolean; files: SelectedArchiveFile[] }>;
   recapImportAnalyze?: (input: { url: string }) => Promise<{
     sourceUrl: string;
     adapterName: string;
@@ -138,27 +145,34 @@ const DEFAULT_READINESS: RecapReadinessView = {
   checkedAtIso: new Date().toISOString(),
 };
 
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
 export function RecapProductionPanel() {
   // Fase 4.1 — Criação de projeto
-  const [importMode, setImportMode] = useState<'local' | 'url'>('local');
-  const [archivePath, setArchivePath] = useState('tests/fixtures/real-manga/Nano-Machine-Capitulo-01.cbz');
-  const [chapterUrl, setChapterUrl] = useState('https://asurascans.com/comics/nano-machine-7ba78ec7/chapter/1');
-  const [analyzedLink, setAnalyzedLink] = useState<{
-    sourceUrl: string;
+  const [origin, setOrigin] = useState<'cbz' | 'link'>('cbz');
+  const [selectedFiles, setSelectedFiles] = useState<SelectedArchiveFile[]>([]);
+  const [linkInputs, setLinkInputs] = useState<string[]>(['']);
+  const [analyzedLinks, setAnalyzedLinks] = useState<Array<{
+    url: string;
     adapterName: string;
     meta: { workTitle: string; chapterNumber: string };
-    pages: Array<{ pageNumber: number; imageUrl: string }>;
-    availableChapters: Array<{ chapterNumber: string; title: string; url: string }>;
+    pagesCount: number;
     alreadyImported: { cbzPath: string } | null;
-  } | null>(null);
-  const [selectedBatchUrls, setSelectedBatchUrls] = useState<string[]>([]);
+  }>>([]);
   const [importJob, setImportJob] = useState<{
     id: string;
     status: string;
     items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string }>;
   } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
-  const [workTitle, setWorkTitle] = useState('Nano Machine');
+  const [productionMode, setProductionMode] = useState<'single' | 'individual'>('single');
+  const [startState, setStartState] = useState<'idle' | 'validating' | 'analyzing' | 'downloading' | 'generating-cbz' | 'preparing' | 'producing'>('idle');
+  const [workTitle, setWorkTitle] = useState('');
   const [language, setLanguage] = useState('pt-BR');
   const [scriptStyle, setScriptStyle] = useState('cinematic_recap');
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
@@ -171,11 +185,7 @@ export function RecapProductionPanel() {
   const [statusNote, setStatusNote] = useState<string | null>(null);
 
   // Fase 4.3 — Editor de Cenas
-  const [scenes, setScenes] = useState<EditableSceneRow[]>([
-    { sceneId: 'scene-1', panelId: 'panel-001', narrationText: 'Abertura cinematográfica no pátio sombrio.', motionStyle: 'ken_burns_out', estimatedDurationSec: 3.5 },
-    { sceneId: 'scene-2', panelId: 'panel-002', narrationText: 'O protagonista encara o rival antes do confronto.', motionStyle: 'static_focus', estimatedDurationSec: 4.0 },
-    { sceneId: 'scene-3', panelId: 'panel-003', narrationText: 'O golpe decide o ritmo do capítulo.', motionStyle: 'impact_push', estimatedDurationSec: 3.5 },
-  ]);
+  const [scenes, setScenes] = useState<EditableSceneRow[]>([]);
 
   // Fase 4.4 — Revisão por Prompt com Plano de Impacto
   const [revisionPrompt, setRevisionPrompt] = useState('');
@@ -241,69 +251,195 @@ export function RecapProductionPanel() {
   }, [refreshReadiness]);
 
 
-  const handleAnalyzeLink = async () => {
-    setImportError(null);
+  const handleSelectFiles = async () => {
     const bridge = getRecapBridge();
-    if (!bridge?.recapImportAnalyze) {
-      setImportError('Bridge IPC de importação por link disponível apenas no Aethera Desktop / Remote Host.');
+    if (!bridge?.recapSelectArchives) {
+      setImportError('Seletor de arquivos disponível apenas no Aethera Desktop.');
       return;
     }
-    setLoading(true);
-    try {
-      const res = await bridge.recapImportAnalyze({ url: chapterUrl });
-      setAnalyzedLink(res);
-      setWorkTitle(res.meta.workTitle);
-      setSelectedBatchUrls([res.sourceUrl]);
-    } catch (err) {
-      setImportError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
+    const result = await bridge.recapSelectArchives();
+    if (!result.canceled && result.files.length > 0) {
+      setSelectedFiles(result.files);
+      setImportError(null);
+      if (!workTitle && result.files.length === 1) {
+        setWorkTitle(result.files[0].name.replace(/\.(cbz|pdf)$/i, ''));
+      }
     }
   };
 
-  const handleImportByUrl = async () => {
+  const moveFile = (index: number, direction: -1 | 1) => {
+    const next = [...selectedFiles];
+    const target = index + direction;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    setSelectedFiles(next);
+  };
+
+  const removeFile = (index: number) => {
+    setSelectedFiles(selectedFiles.filter((_, i) => i !== index));
+  };
+
+  const addLinkInput = () => setLinkInputs([...linkInputs, '']);
+  const updateLinkInput = (index: number, value: string) => {
+    const next = [...linkInputs];
+    next[index] = value;
+    setLinkInputs(next);
+  };
+  const removeLinkInput = (index: number) => {
+    setLinkInputs(linkInputs.filter((_, i) => i !== index));
+  };
+  const moveLink = (index: number, direction: -1 | 1) => {
+    const next = [...linkInputs];
+    const target = index + direction;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    setLinkInputs(next);
+  };
+
+  const handleAnalyzeAllLinks = async () => {
     setImportError(null);
     const bridge = getRecapBridge();
-    if (!bridge?.recapImportCreateJob || !bridge.recapImportGetJob) return;
-    const urls = selectedBatchUrls.length > 0 ? selectedBatchUrls : [chapterUrl];
-    const job = await bridge.recapImportCreateJob({ urls });
-    setImportJob(job);
-    const poll = setInterval(async () => {
-      const snap = await bridge.recapImportGetJob?.(job.id);
-      if (snap) {
-        setImportJob(snap);
-        if (snap.status === 'completed' || snap.status === 'failed' || snap.status === 'cancelled') {
-          clearInterval(poll);
-          const firstCbz = snap.items.find((i) => i.libraryEntry?.cbzPath)?.libraryEntry?.cbzPath;
-          if (firstCbz) setArchivePath(firstCbz);
-        }
+    if (!bridge?.recapImportAnalyze) {
+      setImportError('Bridge IPC de importação por link disponível apenas no Aethera Desktop.');
+      return;
+    }
+    const validUrls = linkInputs.map((u) => u.trim()).filter(Boolean);
+    if (validUrls.length === 0) {
+      setImportError('Adicione pelo menos um link válido.');
+      return;
+    }
+    setStartState('analyzing');
+    const results: typeof analyzedLinks = [];
+    for (const url of validUrls) {
+      try {
+        const res = await bridge.recapImportAnalyze({ url });
+        results.push({
+          url: res.sourceUrl,
+          adapterName: res.adapterName,
+          meta: res.meta,
+          pagesCount: res.pages.length,
+          alreadyImported: res.alreadyImported,
+        });
+        if (!workTitle && res.meta.workTitle) setWorkTitle(res.meta.workTitle);
+      } catch (err) {
+        setImportError(`Falha ao analisar ${url}: ${err instanceof Error ? err.message : String(err)}`);
+        setStartState('idle');
+        return;
       }
-    }, 600);
+    }
+    setAnalyzedLinks(results);
+    setStartState('idle');
   };
 
   const handleStart = async (resumeCheckpoint: boolean) => {
     const bridge = getRecapBridge();
     if (!bridge?.recapStartProduction) {
-      setStatusNote('Orquestração direta via UI aguardando conexão IPC recap:start-production. Use os scripts CLI da Fase 2.2.4 / Fase 3 enquanto isso.');
+      setStatusNote('Orquestração direta via UI aguardando conexão IPC recap:start-production.');
       return;
     }
-    setLoading(true);
-    try {
-      const res = await bridge.recapStartProduction({
-        archivePath,
-        workTitle,
-        language,
-        scriptStyle,
-        aspectRatio,
-        ttsProvider,
-        enableOcr,
-        resumeCheckpoint,
-      });
-      setStatusNote(res.message);
-    } catch (err) {
-      setStatusNote(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
+    setImportError(null);
+
+    if (origin === 'cbz') {
+      if (selectedFiles.length === 0) {
+        setImportError('Selecione pelo menos um arquivo CBZ ou PDF.');
+        return;
+      }
+      setStartState('validating');
+      const archivePath = selectedFiles[0].path;
+      setStartState('preparing');
+      try {
+        const res = await bridge.recapStartProduction({
+          archivePath,
+          workTitle: workTitle || selectedFiles[0].name.replace(/\.(cbz|pdf)$/i, ''),
+          language,
+          scriptStyle,
+          aspectRatio,
+          ttsProvider,
+          enableOcr,
+          resumeCheckpoint,
+          productionMode,
+          allArchives: selectedFiles.map((f) => f.path),
+        });
+        setStartState('producing');
+        setStatusNote(res.message);
+      } catch (err) {
+        setStartState('idle');
+        setStatusNote(err instanceof Error ? err.message : String(err));
+      }
+    } else {
+      const validUrls = linkInputs.map((u) => u.trim()).filter(Boolean);
+      if (validUrls.length === 0) {
+        setImportError('Adicione pelo menos um link válido.');
+        return;
+      }
+      if (!bridge.recapImportCreateJob || !bridge.recapImportGetJob) {
+        setImportError('Bridge IPC de importação indisponível.');
+        return;
+      }
+      setStartState('downloading');
+      try {
+        const job = await bridge.recapImportCreateJob({ urls: validUrls });
+        setImportJob(job);
+        const pollRef = { current: null as ReturnType<typeof setInterval> | null };
+        pollRef.current = setInterval(async () => {
+          const snap = await bridge.recapImportGetJob?.(job.id);
+          if (snap) {
+            setImportJob(snap);
+            if (snap.status === 'completed') {
+              if (pollRef.current) clearInterval(pollRef.current);
+              setStartState('generating-cbz');
+              const cbzPaths = snap.items
+                .map((i) => i.libraryEntry?.cbzPath)
+                .filter((p): p is string => Boolean(p));
+              if (cbzPaths.length === 0) {
+                setImportError('Importação concluída mas nenhum CBZ foi gerado.');
+                setStartState('idle');
+                return;
+              }
+              setStartState('preparing');
+              try {
+                const res = await bridge.recapStartProduction({
+                  archivePath: cbzPaths[0],
+                  workTitle: workTitle || 'Recap',
+                  language,
+                  scriptStyle,
+                  aspectRatio,
+                  ttsProvider,
+                  enableOcr,
+                  resumeCheckpoint: false,
+                  productionMode,
+                  allArchives: cbzPaths,
+                });
+                setStartState('producing');
+                setStatusNote(res.message);
+              } catch (startErr) {
+                setStartState('idle');
+                setStatusNote(startErr instanceof Error ? startErr.message : String(startErr));
+              }
+            } else if (snap.status === 'failed' || snap.status === 'cancelled') {
+              if (pollRef.current) clearInterval(pollRef.current);
+              setStartState('idle');
+              const failedItem = snap.items.find((i) => i.error);
+              setImportError(failedItem?.error ?? `Importação ${snap.status}.`);
+            }
+          }
+        }, 600);
+      } catch (err) {
+        setStartState('idle');
+        setImportError(err instanceof Error ? err.message : String(err));
+      }
+    }
+  };
+
+  const startLabel = (): string => {
+    switch (startState) {
+      case 'validating': return 'Validando arquivos…';
+      case 'analyzing': return 'Analisando links…';
+      case 'downloading': return 'Baixando capítulos…';
+      case 'generating-cbz': return 'Gerando CBZ…';
+      case 'preparing': return 'Preparando Recap…';
+      case 'producing': return 'Produzindo…';
+      default: return 'Iniciar Produção Recap';
     }
   };
 
@@ -339,150 +475,163 @@ export function RecapProductionPanel() {
           </button>
         </div>
 
-        {/* Seletor: CBZ Local vs Importar por link */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-          <button
-            type="button"
-            onClick={() => setImportMode('local')}
-            style={{
-              padding: '7px 14px',
-              borderRadius: 9999,
-              border: '1px solid #d4d4dc',
-              background: importMode === 'local' ? '#111111' : '#ffffff',
-              color: importMode === 'local' ? '#ffffff' : '#111111',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
+        {/* Origem dos capítulos */}
+        <label style={{ fontSize: 12, color: '#555562', marginBottom: 10, display: 'block' }}>
+          Origem dos capítulos
+          <select
+            value={origin}
+            onChange={(e) => setOrigin(e.target.value as 'cbz' | 'link')}
+            style={{ ...INPUT_STYLE, marginTop: 4 }}
           >
-            CBZ / PDF Local
-          </button>
-          <button
-            type="button"
-            onClick={() => setImportMode('url')}
-            style={{
-              padding: '7px 14px',
-              borderRadius: 9999,
-              border: '1px solid #d4d4dc',
-              background: importMode === 'url' ? '#111111' : '#ffffff',
-              color: importMode === 'url' ? '#ffffff' : '#111111',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
-          >
-            Importar por link
-          </button>
-        </div>
+            <option value="cbz">CBZ / PDF</option>
+            <option value="link">Link</option>
+          </select>
+        </label>
 
-        {importMode === 'url' && (
+        {origin === 'cbz' && (
           <div style={{ padding: 14, borderRadius: 16, background: '#f8f8fb', border: '1px solid #e4e4ec', marginBottom: 14 }}>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-              <input
-                value={chapterUrl}
-                onChange={(e) => setChapterUrl(e.target.value)}
-                placeholder="https://asurascans.com/comics/nano-machine-7ba78ec7/chapter/1"
-                style={INPUT_STYLE}
-              />
-              <button
-                type="button"
-                disabled={loading}
-                onClick={() => void handleAnalyzeLink()}
-                style={{
-                  padding: '10px 16px',
-                  borderRadius: 9999,
-                  border: 0,
-                  background: '#111111',
-                  color: '#ffffff',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                Analisar link
-              </button>
-            </div>
-
-            {importError && (
-              <p style={{ margin: '6px 0', fontSize: 12, color: '#b42840', fontWeight: 500 }}>{importError}</p>
-            )}
-
-            {analyzedLink && (
-              <div style={{ marginTop: 10, fontSize: 12, color: '#111111' }}>
-                <div>
-                  <strong>{analyzedLink.meta.workTitle}</strong> — Capítulo {analyzedLink.meta.chapterNumber} ({analyzedLink.adapterName}) ·{' '}
-                  <strong>{analyzedLink.pages.length}</strong> páginas detectadas
-                </div>
-                <div style={{ display: 'flex', gap: 6, overflowX: 'auto', padding: '8px 0' }}>
-                  {analyzedLink.pages.slice(0, 8).map((pg) => (
-                    <span
-                      key={pg.pageNumber}
-                      style={{ fontSize: 11, padding: '4px 8px', borderRadius: 10, background: '#ffffff', border: '1px solid #e2e2ea', whiteSpace: 'nowrap' }}
-                    >
-                      Pág. {pg.pageNumber}
-                    </span>
-                  ))}
-                  {analyzedLink.pages.length > 8 && <span style={{ fontSize: 11, color: '#636370' }}>+{analyzedLink.pages.length - 8} páginas</span>}
-                </div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                  <button
-                    type="button"
-                    onClick={() => void handleImportByUrl()}
+            <button
+              type="button"
+              onClick={() => void handleSelectFiles()}
+              style={{
+                padding: '10px 18px',
+                borderRadius: 9999,
+                border: '1px dashed #c4c4cc',
+                background: '#ffffff',
+                color: '#111111',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+                width: '100%',
+                textAlign: 'center',
+              }}
+            >
+              Selecionar arquivos (.cbz, .pdf)
+            </button>
+            {selectedFiles.length > 0 && (
+              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {selectedFiles.map((file, idx) => (
+                  <div
+                    key={file.path}
                     style={{
-                      padding: '8px 16px',
-                      borderRadius: 9999,
-                      border: 0,
-                      background: '#d8fb4f',
-                      color: '#111111',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '8px 12px',
+                      borderRadius: 12,
+                      background: '#ffffff',
+                      border: '1px solid #e4e4ec',
                       fontSize: 12,
-                      fontWeight: 700,
-                      cursor: 'pointer',
                     }}
                   >
-                    Importar ({selectedBatchUrls.length || 1} cap.)
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {importJob && (
-              <div style={{ marginTop: 10, padding: 10, borderRadius: 12, background: '#ffffff', border: '1px solid #e4e4ec', fontSize: 12 }}>
-                <strong>Status da Importação:</strong> {importJob.status}
-                {importJob.items.map((it) => (
-                  <div key={it.url} style={{ marginTop: 4 }}>
-                    {it.status} — {it.pagesDone}/{it.pagesTotal} páginas {it.error ? `(${it.error})` : ''}
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}>
+                      {idx + 1}. {file.name}
+                    </span>
+                    <span style={{ fontSize: 11, color: '#636370', whiteSpace: 'nowrap' }}>{formatBytes(file.sizeBytes)}</span>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <button type="button" onClick={() => moveFile(idx, -1)} disabled={idx === 0} style={{ padding: '2px 6px', borderRadius: 6, border: '1px solid #d4d4dc', background: '#fff', cursor: idx === 0 ? 'not-allowed' : 'pointer', fontSize: 11 }}>↑</button>
+                      <button type="button" onClick={() => moveFile(idx, 1)} disabled={idx === selectedFiles.length - 1} style={{ padding: '2px 6px', borderRadius: 6, border: '1px solid #d4d4dc', background: '#fff', cursor: idx === selectedFiles.length - 1 ? 'not-allowed' : 'pointer', fontSize: 11 }}>↓</button>
+                      <button type="button" onClick={() => removeFile(idx)} style={{ padding: '2px 6px', borderRadius: 6, border: '1px solid #fca5a5', background: '#fef2f2', color: '#991b1b', cursor: 'pointer', fontSize: 11 }}>✕</button>
+                    </div>
                   </div>
                 ))}
-                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                  {importJob.status === 'failed' && (
-                    <button type="button" onClick={() => void getRecapBridge()?.recapImportRetryJob?.(importJob.id)} style={{ fontSize: 11, padding: '5px 10px', borderRadius: 9999, border: '1px solid #d4d4dc', cursor: 'pointer' }}>
-                      Tentar novamente
-                    </button>
-                  )}
-                  {importJob.status === 'completed' && (
-                    <button
-                      type="button"
-                      onClick={() => void handleStart(false)}
-                      style={{ fontSize: 11, padding: '6px 12px', borderRadius: 9999, border: 0, background: '#111111', color: '#ffffff', fontWeight: 600, cursor: 'pointer' }}
-                    >
-                      Criar Recap
-                    </button>
-                  )}
-                </div>
               </div>
             )}
           </div>
         )}
 
+        {origin === 'link' && (
+          <div style={{ padding: 14, borderRadius: 16, background: '#f8f8fb', border: '1px solid #e4e4ec', marginBottom: 14 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+              {linkInputs.map((url, idx) => (
+                <div key={idx} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input
+                    value={url}
+                    onChange={(e) => updateLinkInput(idx, e.target.value)}
+                    placeholder="https://exemplo.com/manga/capitulo/1"
+                    style={{ ...INPUT_STYLE, flex: 1 }}
+                  />
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button type="button" onClick={() => moveLink(idx, -1)} disabled={idx === 0} style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #d4d4dc', background: '#fff', cursor: idx === 0 ? 'not-allowed' : 'pointer', fontSize: 11 }}>↑</button>
+                    <button type="button" onClick={() => moveLink(idx, 1)} disabled={idx === linkInputs.length - 1} style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #d4d4dc', background: '#fff', cursor: idx === linkInputs.length - 1 ? 'not-allowed' : 'pointer', fontSize: 11 }}>↓</button>
+                    <button type="button" onClick={() => removeLinkInput(idx)} disabled={linkInputs.length <= 1} style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #fca5a5', background: linkInputs.length <= 1 ? '#f5f5f5' : '#fef2f2', color: '#991b1b', cursor: linkInputs.length <= 1 ? 'not-allowed' : 'pointer', fontSize: 11 }}>✕</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={addLinkInput} style={{ padding: '7px 14px', borderRadius: 9999, border: '1px solid #d4d4dc', background: '#ffffff', color: '#111111', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                + Adicionar link
+              </button>
+              <button
+                type="button"
+                disabled={startState !== 'idle'}
+                onClick={() => void handleAnalyzeAllLinks()}
+                style={{
+                  padding: '7px 14px',
+                  borderRadius: 9999,
+                  border: 0,
+                  background: '#111111',
+                  color: '#ffffff',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Analisar todos
+              </button>
+            </div>
+            {analyzedLinks.length > 0 && (
+              <div style={{ marginTop: 10, fontSize: 12, color: '#111111' }}>
+                {analyzedLinks.map((link) => (
+                  <div key={link.url} style={{ padding: '6px 0', borderBottom: '1px solid #e4e4ec' }}>
+                    <strong>{link.meta.workTitle}</strong> — Cap. {link.meta.chapterNumber} ({link.adapterName}) · {link.pagesCount} págs.
+                    {link.alreadyImported && <span style={{ marginLeft: 6, fontSize: 11, color: '#16a34a' }}>✓ Já importado</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {importJob && (
+              <div style={{ marginTop: 10, padding: 10, borderRadius: 12, background: '#ffffff', border: '1px solid #e4e4ec', fontSize: 12 }}>
+                <strong>Status:</strong> {importJob.status}
+                {importJob.items.map((it) => (
+                  <div key={it.url} style={{ marginTop: 4 }}>
+                    {it.status} — {it.pagesDone}/{it.pagesTotal} páginas {it.error ? `⚠ ${it.error}` : ''}
+                  </div>
+                ))}
+                {importJob.status === 'failed' && (
+                  <button type="button" onClick={() => void getRecapBridge()?.recapImportRetryJob?.(importJob.id)} style={{ marginTop: 8, fontSize: 11, padding: '5px 10px', borderRadius: 9999, border: '1px solid #d4d4dc', cursor: 'pointer' }}>
+                    Tentar novamente
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {importError && (
+          <div style={{ padding: '10px 14px', borderRadius: 12, background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: 12, fontWeight: 500, marginBottom: 14 }}>
+            {importError}
+          </div>
+        )}
+
+        {/* Modalidade de produção */}
+        <label style={{ fontSize: 12, color: '#555562', marginBottom: 10, display: 'block' }}>
+          Modalidade
+          <select
+            value={productionMode}
+            onChange={(e) => setProductionMode(e.target.value as 'single' | 'individual')}
+            style={{ ...INPUT_STYLE, marginTop: 4 }}
+          >
+            <option value="single">Recap único (combinar capítulos)</option>
+            <option value="individual">Recaps individuais (um por capítulo)</option>
+          </select>
+        </label>
+
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
           <label style={{ fontSize: 12, color: '#555562' }}>
-            Capítulo (CBZ, PDF ou pasta)
-            <input value={archivePath} onChange={(e) => setArchivePath(e.target.value)} style={{ ...INPUT_STYLE, marginTop: 4 }} />
-          </label>
-          <label style={{ fontSize: 12, color: '#555562' }}>
             Obra
-            <input value={workTitle} onChange={(e) => setWorkTitle(e.target.value)} style={{ ...INPUT_STYLE, marginTop: 4 }} />
+            <input value={workTitle} onChange={(e) => setWorkTitle(e.target.value)} placeholder="Nome da obra" style={{ ...INPUT_STYLE, marginTop: 4 }} />
           </label>
           <label style={{ fontSize: 12, color: '#555562' }}>
             Estilo Narrativo
@@ -611,20 +760,21 @@ export function RecapProductionPanel() {
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <button
             type="button"
-            disabled={!readiness.ready || loading}
+            disabled={!readiness.ready || loading || startState !== 'idle'}
             onClick={() => void handleStart(false)}
             style={{
               padding: '10px 18px',
               borderRadius: 9999,
               border: 0,
-              background: readiness.ready ? '#d8fb4f' : '#e5e7eb',
+              background: readiness.ready && startState === 'idle' ? '#d8fb4f' : startState !== 'idle' ? '#fef3c7' : '#e5e7eb',
               color: '#111111',
               fontWeight: 700,
               fontSize: 13,
-              cursor: readiness.ready ? 'pointer' : 'not-allowed',
+              cursor: readiness.ready && startState === 'idle' ? 'pointer' : 'not-allowed',
+              transition: 'background 200ms ease-out',
             }}
           >
-            Iniciar Produção Recap
+            {startLabel()}
           </button>
 
           {readiness.checkpoint.canResume && (

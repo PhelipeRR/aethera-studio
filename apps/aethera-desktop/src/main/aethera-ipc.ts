@@ -5082,6 +5082,37 @@ productionConsole,
   const recapLibraryDir = join(userDataDir, 'recap-library');
   const recapImportJobs = new RecapImportJobManager({ libraryDir: recapLibraryDir });
 
+  ipcMain.handle('recap:select-archives', async (event) => {
+    ensureTrusted(event.senderFrame);
+    const parentWin = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const openOpts: Electron.OpenDialogOptions = {
+      title: 'Selecionar capítulos (CBZ / PDF)',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Capítulos de Mangá / Manhwa', extensions: ['cbz', 'pdf'] },
+      ],
+    };
+    const res = parentWin
+      ? await dialog.showOpenDialog(parentWin, openOpts)
+      : await dialog.showOpenDialog(openOpts);
+    if (res.canceled || res.filePaths.length === 0) return { canceled: true, files: [] };
+    const files = await Promise.all(
+      res.filePaths.map(async (filePath) => {
+        try {
+          const stat = await import('node:fs/promises').then((fs) => fs.stat(filePath));
+          return {
+            path: filePath,
+            name: filePath.split(/[/\\]/).pop() ?? filePath,
+            sizeBytes: stat.size,
+          };
+        } catch {
+          return { path: filePath, name: filePath.split(/[/\\]/).pop() ?? filePath, sizeBytes: 0 };
+        }
+      }),
+    );
+    return { canceled: false, files };
+  });
+
   ipcMain.handle('recap:import-analyze', async (event, input: { url: string }) => {
     ensureTrusted(event.senderFrame);
     return analyzeChapterUrl({ url: input.url, libraryDir: recapLibraryDir });

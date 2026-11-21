@@ -234,6 +234,7 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeSaveImageEngineSettings: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:save-image-engine-settings', input),
   recapGetReadiness: (input?: { chapterId?: string }) => ipcRenderer.invoke('recap:get-readiness', input),
   recapPlanRevision: (input: { prompt: string; script: unknown; availablePanelIds?: string[] }) => ipcRenderer.invoke('recap:plan-revision', input),
+  recapSelectArchives: () => ipcRenderer.invoke('recap:select-archives'),
   recapStartProduction: (input: Record<string, unknown>) => ipcRenderer.invoke('recap:start-production', input),
   recapImportAnalyze: (input: { url: string }) => ipcRenderer.invoke('recap:import-analyze', input),
   recapImportCreateJob: (input: { urls: string[]; forceReimport?: boolean }) => ipcRenderer.invoke('recap:import-create-job', input),
