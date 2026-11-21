@@ -383,7 +383,30 @@ export class AcquisitionRouter implements PageDiscoveryPort {
 
 			const attemptStart = Date.now();
 			try {
-				const result = await provider.discover(input);
+				const discoverPromise = provider.discover(input);
+				const result = await (input.signal
+					? new Promise<Awaited<typeof discoverPromise>>((resolve, reject) => {
+							const sig = input.signal!;
+							if (sig.aborted) {
+								reject(new AcquisitionError('cancelled', 'Descoberta cancelada pelo usuário.', providerId, false));
+								return;
+							}
+							const onAbort = () => {
+								reject(new AcquisitionError('cancelled', 'Descoberta cancelada pelo usuário.', providerId, false));
+							};
+							sig.addEventListener('abort', onAbort, { once: true });
+							discoverPromise.then(
+								(val) => {
+									sig.removeEventListener('abort', onAbort);
+									resolve(val);
+								},
+								(err) => {
+									sig.removeEventListener('abort', onAbort);
+									reject(err);
+								},
+							);
+						})
+					: discoverPromise);
 				const durationMs = Date.now() - attemptStart;
 				cb.recordSuccess(durationMs);
 
@@ -428,8 +451,13 @@ export class AcquisitionRouter implements PageDiscoveryPort {
 				errors.push({ providerId, error: classified });
 
 				// Non-retryable errors should not trigger fallback to weaker providers
-				// for security-sensitive issues (SSRF, CAPTCHA detection)
-				if (classified.code === 'ssrf_blocked' || classified.code === 'captcha_detected' || classified.code === 'paywall_detected') {
+				// for security-sensitive issues (SSRF, CAPTCHA detection) or explicit cancellation
+				if (
+					classified.code === 'cancelled' ||
+					classified.code === 'ssrf_blocked' ||
+					classified.code === 'captcha_detected' ||
+					classified.code === 'paywall_detected'
+				) {
 					throw classified;
 				}
 			}

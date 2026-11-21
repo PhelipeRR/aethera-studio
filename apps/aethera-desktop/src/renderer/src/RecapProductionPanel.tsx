@@ -1130,6 +1130,11 @@ export function RecapProductionPanel() {
   const [selectedFiles, setSelectedFiles] = useState<SelectedArchiveFile[]>([]);
   const [linkInputs, setLinkInputs] = useState<string[]>(['']);
   const [linkImporting, setLinkImporting] = useState(false);
+  const [linkImportJob, setLinkImportJob] = useState<{
+    id: string;
+    status: string;
+    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string }>;
+  } | null>(null);
   const [linkImportedCbz, setLinkImportedCbz] = useState<{ cbzPath: string; label: string } | null>(null);
   const [cdnImageUrls, setCdnImageUrls] = useState('');
   const [cdnChapterUrl, setCdnChapterUrl] = useState('');
@@ -1529,6 +1534,53 @@ export function RecapProductionPanel() {
     }
   };
 
+  const pollLinkImportJob = async (
+    bridge: NonNullable<ReturnType<typeof getRecapBridge>>,
+    initialJob: {
+      id: string;
+      status: string;
+      items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string }>;
+    },
+  ) => {
+    let current = initialJob;
+    setLinkImportJob(current);
+    const maxPolls = Math.max(120, current.items.length * 90);
+    for (let attempt = 0; attempt < maxPolls; attempt++) {
+      if (current.status === 'completed' || current.status === 'failed' || current.status === 'cancelled') {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 700));
+      const polled = await bridge.recapImportGetJob?.(current.id);
+      if (!polled) break;
+      current = polled;
+      setLinkImportJob(current);
+    }
+
+    const readyItems = current.items.filter((it) => it.libraryEntry?.cbzPath);
+    if (readyItems.length > 0) {
+      const firstReady = readyItems[0]!;
+      setLinkImportedCbz((prev) =>
+        prev && readyItems.some((it) => it.libraryEntry?.cbzPath === prev.cbzPath)
+          ? prev
+          : {
+              cbzPath: firstReady.libraryEntry!.cbzPath,
+              label:
+                readyItems.length > 1
+                  ? `${readyItems.length} capítulos prontos (${firstReady.pagesDone}/${firstReady.pagesTotal} págs no selecionado)`
+                  : `${firstReady.pagesDone}/${firstReady.pagesTotal} páginas importadas`,
+            },
+      );
+      if (!workTitle.trim()) {
+        const slug = firstReady.libraryEntry!.cbzPath.split(/[/\\]/).pop()?.replace(/\.cbz$/i, '') ?? '';
+        if (slug) setWorkTitle(slug);
+      }
+    }
+    const failedItems = current.items.filter((it) => it.error);
+    if (failedItems.length > 0 && readyItems.length === 0) {
+      setImportError(failedItems[0]!.error ?? 'Não foi possível importar o capítulo a partir do link informado.');
+    }
+  };
+
   const handleImportLinkChapters = async () => {
     const bridge = getRecapBridge();
     if (!bridge?.recapImportCreateJob || !bridge?.recapImportGetJob) {
@@ -1543,32 +1595,38 @@ export function RecapProductionPanel() {
     setImportError(null);
     setLinkImporting(true);
     setLinkImportedCbz(null);
+    setLinkImportJob(null);
     try {
       const job = await bridge.recapImportCreateJob({ urls });
-      let current = job;
-      for (let attempt = 0; attempt < 90; attempt++) {
-        if (current.status === 'completed' || current.status === 'failed' || current.status === 'cancelled') {
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 1000));
-        const polled = await bridge.recapImportGetJob(job.id);
-        if (!polled) break;
-        current = polled;
-      }
-      const importedItem = current.items.find((it) => it.libraryEntry?.cbzPath);
-      if (importedItem?.libraryEntry?.cbzPath) {
-        setLinkImportedCbz({
-          cbzPath: importedItem.libraryEntry.cbzPath,
-          label: `${importedItem.pagesDone}/${importedItem.pagesTotal} páginas importadas`,
-        });
-        if (!workTitle.trim()) {
-          const slug = importedItem.libraryEntry.cbzPath.split(/[/\\]/).pop()?.replace(/\.cbz$/i, '') ?? '';
-          if (slug) setWorkTitle(slug);
-        }
-      } else {
-        const firstErr = current.items.find((it) => it.error)?.error;
-        setImportError(firstErr ?? 'Não foi possível importar o capítulo a partir do link informado.');
-      }
+      await pollLinkImportJob(bridge, job);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLinkImporting(false);
+    }
+  };
+
+  const handleCancelLinkImport = async () => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapImportCancelJob || !linkImportJob?.id) return;
+    try {
+      await bridge.recapImportCancelJob(linkImportJob.id);
+      const polled = await bridge.recapImportGetJob?.(linkImportJob.id);
+      if (polled) setLinkImportJob(polled);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleRetryLinkImport = async () => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapImportRetryJob || !bridge?.recapImportGetJob || !linkImportJob?.id) return;
+    setImportError(null);
+    setLinkImporting(true);
+    try {
+      await bridge.recapImportRetryJob(linkImportJob.id);
+      const polled = await bridge.recapImportGetJob(linkImportJob.id);
+      if (polled) await pollLinkImportJob(bridge, polled);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2273,23 +2331,134 @@ export function RecapProductionPanel() {
                   </div>
                 ))}
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginTop: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
                 <button type="button" onClick={() => setLinkInputs([...linkInputs, ''])} style={btnGhost}>
                   <Plus style={{ width: 14, height: 14 }} /> Adicionar outro link
                 </button>
-                <button
-                  type="button"
-                  disabled={linkImporting}
-                  onClick={() => void handleImportLinkChapters()}
-                  style={{ ...btnPrimary, opacity: linkImporting ? 0.6 : 1 }}
-                >
-                  {linkImporting ? 'Baixando capítulo…' : 'Baixar e Preparar CBZ'}
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {linkImporting && linkImportJob && (
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelLinkImport()}
+                      style={{ ...btnGhost, color: T.error, borderColor: T.errorBorder }}
+                    >
+                      <X style={{ width: 14, height: 14 }} /> Cancelar
+                    </button>
+                  )}
+                  {!linkImporting && linkImportJob && linkImportJob.items.some((it) => it.status === 'failed' || it.status === 'cancelled') && (
+                    <button
+                      type="button"
+                      onClick={() => void handleRetryLinkImport()}
+                      style={btnGhost}
+                    >
+                      <RefreshCw style={{ width: 14, height: 14 }} /> Tentar falhos novamente
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={linkImporting}
+                    onClick={() => void handleImportLinkChapters()}
+                    style={{ ...btnPrimary, opacity: linkImporting ? 0.6 : 1 }}
+                  >
+                    {linkImporting ? 'Baixando capítulos…' : 'Baixar e Preparar CBZ'}
+                  </button>
+                </div>
               </div>
-              {linkImportedCbz && (
+              {linkImportJob && linkImportJob.items.length > 0 && (
                 <div
                   style={{
                     marginTop: 12,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                    padding: '10px 12px',
+                    borderRadius: T.radiusSm,
+                    background: T.surfaceSubtle,
+                    border: `1px solid ${T.border}`,
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, fontWeight: 600, color: T.inkMuted }}>
+                    <span>Fila de importação ({linkImportJob.items.length} {linkImportJob.items.length === 1 ? 'link' : 'links'})</span>
+                    <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>{linkImportJob.status}</span>
+                  </div>
+                  {linkImportJob.items.map((item, idx) => {
+                    const cbzPath = item.libraryEntry?.cbzPath;
+                    const isSelected = Boolean(cbzPath && linkImportedCbz?.cbzPath === cbzPath);
+                    const pct = item.pagesTotal > 0 ? Math.min(100, Math.round((item.pagesDone / item.pagesTotal) * 100)) : item.status === 'completed' || item.status === 'skipped' ? 100 : 0;
+                    const statusLabel =
+                      item.status === 'completed'
+                        ? `Pronto (${item.pagesDone}/${item.pagesTotal} págs)`
+                        : item.status === 'skipped'
+                          ? 'Já importado'
+                          : item.status === 'downloading'
+                            ? `Baixando ${item.pagesDone}/${item.pagesTotal || '?'}`
+                            : item.status === 'analyzing'
+                              ? 'Analisando página…'
+                              : item.status === 'failed'
+                                ? 'Falhou'
+                                : item.status === 'cancelled'
+                                  ? 'Cancelado'
+                                  : 'Na fila';
+                    return (
+                      <div
+                        key={`${item.url}-${idx}`}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: 8,
+                          background: isSelected ? T.successBg : T.surface,
+                          border: `1px solid ${isSelected ? T.successBorder : item.error ? T.errorBorder : T.border}`,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 5,
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: 12, color: T.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                            {idx + 1}. {item.url}
+                          </span>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: item.error ? T.error : cbzPath ? T.success : T.inkMuted, flexShrink: 0 }}>
+                            {statusLabel}
+                          </span>
+                          {cbzPath && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setLinkImportedCbz({
+                                  cbzPath,
+                                  label: `${item.pagesDone}/${item.pagesTotal} páginas`,
+                                });
+                                const slug = cbzPath.split(/[/\\]/).pop()?.replace(/\.cbz$/i, '') ?? '';
+                                if (slug) setWorkTitle(slug);
+                              }}
+                              style={{
+                                ...btnGhost,
+                                padding: '3px 9px',
+                                fontSize: 11,
+                                color: isSelected ? T.success : T.ink,
+                                borderColor: isSelected ? T.successBorder : T.border,
+                              }}
+                            >
+                              {isSelected ? 'Selecionado' : 'Usar capítulo'}
+                            </button>
+                          )}
+                        </div>
+                        {pct > 0 && pct < 100 && (
+                          <div style={{ height: 3, borderRadius: 99, background: T.border, overflow: 'hidden' }}>
+                            <div style={{ width: `${pct}%`, height: '100%', background: T.accent, transition: 'width 180ms ease-out' }} />
+                          </div>
+                        )}
+                        {item.error && (
+                          <div style={{ fontSize: 11, color: T.error }}>{item.error}</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {linkImportedCbz && (
+                <div
+                  style={{
+                    marginTop: 10,
                     padding: '10px 12px',
                     borderRadius: T.radiusSm,
                     background: T.successBg,
@@ -2299,7 +2468,7 @@ export function RecapProductionPanel() {
                     fontWeight: 600,
                   }}
                 >
-                  Capítulo pronto: {linkImportedCbz.label} ({linkImportedCbz.cbzPath})
+                  Capítulo ativo: {linkImportedCbz.label} ({linkImportedCbz.cbzPath})
                 </div>
               )}
             </BentoBlock>
