@@ -264,6 +264,12 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
     sourceUrl?: string;
     seriesProjectId?: string;
   }) => ipcRenderer.invoke('recap:import-assisted', input),
+  recapInteractiveStart: (input: { urls: string[]; workTitle?: string; seriesProjectId?: string }) =>
+    ipcRenderer.invoke('recap:interactive-start', input),
+  recapInteractiveStatus: (sessionId: string) => ipcRenderer.invoke('recap:interactive-status', sessionId),
+  recapInteractiveCancel: (sessionId: string) => ipcRenderer.invoke('recap:interactive-cancel', sessionId),
+  recapInteractiveCloseSession: (input: { url: string }) => ipcRenderer.invoke('recap:interactive-close-session', input),
+  recapInteractiveClearProfile: (input: { url: string }) => ipcRenderer.invoke('recap:interactive-clear-profile', input),
   recapLibraryList: () => ipcRenderer.invoke('recap:library-list'),
   recapListProjects: () => ipcRenderer.invoke('recap:list-projects'),
   recapLoadProject: (runId: string) => ipcRenderer.invoke('recap:load-project', runId),

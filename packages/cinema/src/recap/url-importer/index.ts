@@ -7,4 +7,5 @@ export * from './acquisition-router.js';
 export * from './electron-playwright-provider.js';
 export * from './firecrawl-provider.js';
 export * from './assisted-chapter-importer.js';
+export * from './interactive-browser-session.js';
 export * from './import-checkpoint-store.js';

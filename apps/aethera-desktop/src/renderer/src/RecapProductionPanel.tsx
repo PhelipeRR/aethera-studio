@@ -279,6 +279,37 @@ interface RecapBridge {
     orderedFileNames: string[];
     warnings: string[];
   }>;
+  recapInteractiveStart?: (input: { urls: string[]; workTitle?: string; seriesProjectId?: string }) => Promise<{
+    sessionId: string;
+    originKey: string;
+    state: string;
+    statusMessage: string;
+    currentUrl: string | null;
+    completedChapters: number;
+    totalChapters: number;
+    currentChapterPagesDone: number;
+    currentChapterPagesTotal: number;
+    importedEntries: Array<{ cbzPath: string; workTitle: string; chapterNumber: string; pageCount: number }>;
+    warnings: string[];
+    error?: string;
+  }>;
+  recapInteractiveStatus?: (sessionId: string) => Promise<{
+    sessionId: string;
+    originKey: string;
+    state: string;
+    statusMessage: string;
+    currentUrl: string | null;
+    completedChapters: number;
+    totalChapters: number;
+    currentChapterPagesDone: number;
+    currentChapterPagesTotal: number;
+    importedEntries: Array<{ cbzPath: string; workTitle: string; chapterNumber: string; pageCount: number }>;
+    warnings: string[];
+    error?: string;
+  } | null>;
+  recapInteractiveCancel?: (sessionId: string) => Promise<unknown>;
+  recapInteractiveCloseSession?: (input: { url: string }) => Promise<{ ok: boolean; originKey: string }>;
+  recapInteractiveClearProfile?: (input: { url: string }) => Promise<{ ok: boolean; originKey: string; cleared: boolean }>;
   recapStartProduction?: (input: {
     runId?: string;
     archivePath: string;
@@ -1189,6 +1220,21 @@ export function RecapProductionPanel() {
     invalidSkipped: number;
     warnings: string[];
   } | null>(null);
+  const [interactiveModalOpen, setInteractiveModalOpen] = useState(false);
+  const [interactiveSession, setInteractiveSession] = useState<{
+    sessionId: string;
+    originKey: string;
+    state: string;
+    statusMessage: string;
+    currentUrl: string | null;
+    completedChapters: number;
+    totalChapters: number;
+    currentChapterPagesDone: number;
+    currentChapterPagesTotal: number;
+    importedEntries: Array<{ cbzPath: string; workTitle: string; chapterNumber: string; pageCount: number }>;
+    warnings: string[];
+    error?: string;
+  } | null>(null);
   const [firecrawlStatus, setFirecrawlStatus] = useState<{
     enabled: boolean;
     apiUrl: string;
@@ -1693,6 +1739,84 @@ export function RecapProductionPanel() {
     const failedItems = current.items.filter((it) => it.error);
     if (failedItems.length > 0 && readyItems.length === 0) {
       setImportError(failedItems[0]!.error ?? 'Não foi possível importar o capítulo a partir do link informado.');
+    }
+  };
+
+  const handleStartInteractiveImport = async (urlsToImport: string[]) => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapInteractiveStart || !bridge?.recapInteractiveStatus) {
+      setImportError('Sessão interativa com navegador persistente indisponível neste build.');
+      return;
+    }
+    const cleaned = urlsToImport.map((u) => u.trim()).filter(Boolean);
+    if (cleaned.length === 0) {
+      setImportError('Informe pelo menos uma URL de capítulo para verificar no navegador.');
+      return;
+    }
+    setImportError(null);
+    setInteractiveModalOpen(true);
+    try {
+      const effectiveTitle = workTitle.trim() || activeSeries?.workTitle || activeProject?.workTitle || undefined;
+      const initial = await bridge.recapInteractiveStart({
+        urls: cleaned,
+        ...(effectiveTitle ? { workTitle: effectiveTitle } : {}),
+        ...(activeSeries?.projectId ? { seriesProjectId: activeSeries.projectId } : {}),
+      });
+      setInteractiveSession(initial);
+
+      const terminal = new Set(['completed', 'access_denied', 'session_expired', 'cancelled']);
+      let cur = initial;
+      for (let i = 0; i < 600; i++) {
+        if (terminal.has(cur.state)) break;
+        await new Promise((r) => setTimeout(r, 800));
+        const next = await bridge.recapInteractiveStatus(cur.sessionId);
+        if (!next) break;
+        cur = next;
+        setInteractiveSession(cur);
+      }
+
+      if (cur.state === 'completed' && cur.importedEntries.length > 0) {
+        const first = cur.importedEntries[0]!;
+        setLinkImportedCbz({
+          cbzPath: first.cbzPath,
+          label:
+            cur.importedEntries.length > 1
+              ? `${cur.importedEntries.length} capítulos importados (${first.pageCount} págs no cap. ${first.chapterNumber})`
+              : `Cap. ${first.chapterNumber} · ${first.pageCount} páginas`,
+        });
+        if (!workTitle.trim() && first.workTitle) {
+          setWorkTitle(first.workTitle);
+        }
+        setStatusNote(`Sessão interativa concluída: ${cur.importedEntries.length} capítulo(s) pronto(s) em CBZ.`);
+      }
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+      setInteractiveModalOpen(false);
+    }
+  };
+
+  const handleCancelInteractiveImport = async () => {
+    const bridge = getRecapBridge();
+    if (bridge?.recapInteractiveCancel && interactiveSession?.sessionId) {
+      await bridge.recapInteractiveCancel(interactiveSession.sessionId).catch(() => {});
+      const snap = await bridge.recapInteractiveStatus?.(interactiveSession.sessionId).catch(() => null);
+      if (snap) setInteractiveSession(snap);
+    }
+  };
+
+  const handleClearInteractiveProfile = async (rawUrl: string) => {
+    const bridge = getRecapBridge();
+    const cleaned = rawUrl.trim();
+    if (!bridge?.recapInteractiveClearProfile || !cleaned) return;
+    try {
+      const res = await bridge.recapInteractiveClearProfile({ url: cleaned });
+      setStatusNote(
+        res.cleared
+          ? `Sessão encerrada e dados do navegador limpos para o perfil "${res.originKey}".`
+          : `Nenhuma sessão persistida encontrada para "${res.originKey}".`,
+      );
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -2825,10 +2949,10 @@ export function RecapProductionPanel() {
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                     <button
                       type="button"
-                      onClick={() => void handleOpenInBrowser(linkImportJob.blockedUrl || linkInputs[0] || '')}
+                      onClick={() => void handleStartInteractiveImport(linkInputs.map((u) => u.trim()).filter(Boolean))}
                       style={{ ...btnPrimary, minHeight: 38 }}
                     >
-                      <ExternalLink style={{ width: 14, height: 14 }} /> Abrir no navegador
+                      <ExternalLink style={{ width: 14, height: 14 }} /> Abrir navegador e verificar acesso
                     </button>
                     <button
                       type="button"
@@ -2836,15 +2960,14 @@ export function RecapProductionPanel() {
                       onClick={() => void handleAssistedPickAndImport('files', linkImportJob.blockedUrl || linkInputs[0])}
                       style={{ ...btnSecondary, minHeight: 38 }}
                     >
-                      <Upload style={{ width: 14, height: 14 }} /> {assistedImporting ? 'Gerando CBZ…' : 'Selecionar imagens / ZIP / CBZ / PDF'}
+                      <Upload style={{ width: 14, height: 14 }} /> {assistedImporting ? 'Gerando CBZ…' : 'Importar arquivos (WEBP/PNG/JPG/ZIP/CBZ/PDF)'}
                     </button>
                     <button
                       type="button"
-                      disabled={assistedImporting}
-                      onClick={() => void handleAssistedPickAndImport('folder', linkImportJob.blockedUrl || linkInputs[0])}
-                      style={{ ...btnSecondary, minHeight: 38 }}
+                      onClick={() => void handleClearInteractiveProfile(linkImportJob.blockedUrl || linkInputs[0] || '')}
+                      style={{ ...btnGhost, minHeight: 38 }}
                     >
-                      <FolderOpen style={{ width: 14, height: 14 }} /> Selecionar pasta
+                      <Trash2 style={{ width: 14, height: 14 }} /> Limpar dados do navegador
                     </button>
                   </div>
                 </div>
@@ -4214,6 +4337,234 @@ export function RecapProductionPanel() {
               </div>
             </BentoBlock>
           )}
+        </div>
+      )}
+
+      {/* Interactive Persistent Browser Progress Modal (8 Required States) */}
+      {interactiveModalOpen && interactiveSession && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="recap-interactive-modal-title"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 65,
+            background: 'rgba(17, 17, 17, 0.48)',
+            backdropFilter: 'blur(6px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 20,
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: 540,
+              borderRadius: T.radiusCard,
+              background: T.surface,
+              border: `1px solid ${T.border}`,
+              boxShadow: '0 24px 64px rgba(17, 17, 17, 0.22)',
+              padding: 24,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+              <div>
+                <h3 id="recap-interactive-modal-title" style={{ margin: 0, fontSize: 16, fontWeight: 700, color: T.ink }}>
+                  Importação Interativa com Navegador Persistente
+                </h3>
+                <p style={{ margin: '4px 0 0', fontSize: 12, color: T.inkMuted }}>
+                  Perfil isolado: <span style={{ fontFamily: T.mono }}>{interactiveSession.originKey}</span>
+                </p>
+              </div>
+              {['completed', 'access_denied', 'session_expired', 'cancelled'].includes(interactiveSession.state) && (
+                <button
+                  type="button"
+                  aria-label="Fechar modal"
+                  onClick={() => setInteractiveModalOpen(false)}
+                  style={{ ...btnGhost, padding: 6 }}
+                >
+                  <X style={{ width: 16, height: 16 }} />
+                </button>
+              )}
+            </div>
+
+            {/* 8-State Progress Stepper */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 6 }}>
+              {(
+                [
+                  ['opening_browser', '1. Abrindo navegador'],
+                  ['awaiting_user_verification', '2. Aguardando verificação do usuário'],
+                  ['verifying_access', '3. Verificando acesso'],
+                  ['access_authorized', '4. Acesso autorizado'],
+                  ['importing_chapters', '5. Importando capítulos'],
+                  ['preparing_cbz', '6. Preparando CBZ'],
+                  ['completed', '7. Concluído'],
+                  ['access_denied', '8. Acesso negado'],
+                ] as const
+              ).map(([stKey, stLabel]) => {
+                const order = [
+                  'opening_browser',
+                  'awaiting_user_verification',
+                  'verifying_access',
+                  'access_authorized',
+                  'importing_chapters',
+                  'preparing_cbz',
+                  'completed',
+                ];
+                const curIdx = order.indexOf(interactiveSession.state);
+                const itemIdx = order.indexOf(stKey);
+                const isActive = interactiveSession.state === stKey;
+                const isDone = stKey !== 'access_denied' && curIdx > itemIdx && itemIdx >= 0;
+                const isDenied = stKey === 'access_denied' && interactiveSession.state === 'access_denied';
+                return (
+                  <div
+                    key={stKey}
+                    style={{
+                      padding: '7px 10px',
+                      borderRadius: T.radiusSm,
+                      fontSize: 11,
+                      fontWeight: isActive || isDenied ? 700 : 500,
+                      border: `1px solid ${
+                        isDenied
+                          ? T.errorBorder
+                          : isActive
+                            ? T.accent
+                            : isDone
+                              ? T.successBorder
+                              : T.border
+                      }`,
+                      background: isDenied
+                        ? T.errorBg
+                        : isActive
+                          ? T.accentSoft
+                          : isDone
+                            ? T.successBg
+                            : T.surfaceSubtle,
+                      color: isDenied
+                        ? T.error
+                        : isActive
+                          ? T.accentInk
+                          : isDone
+                            ? T.success
+                            : T.inkMuted,
+                    }}
+                  >
+                    {stLabel}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Live Status Box */}
+            <div
+              style={{
+                padding: '12px 14px',
+                borderRadius: T.radiusInner,
+                background:
+                  interactiveSession.state === 'access_denied'
+                    ? T.errorBg
+                    : interactiveSession.state === 'session_expired'
+                      ? T.warningBg
+                      : interactiveSession.state === 'completed'
+                        ? T.successBg
+                        : T.surfaceSubtle,
+                border: `1px solid ${
+                  interactiveSession.state === 'access_denied'
+                    ? T.errorBorder
+                    : interactiveSession.state === 'session_expired'
+                      ? T.warningBorder
+                      : interactiveSession.state === 'completed'
+                        ? T.successBorder
+                        : T.border
+                }`,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 600, color: T.ink }}>
+                {interactiveSession.statusMessage}
+              </div>
+              {interactiveSession.totalChapters > 0 && (
+                <div style={{ fontSize: 11, color: T.inkMuted, fontFamily: T.mono }}>
+                  Capítulos: {interactiveSession.completedChapters}/{interactiveSession.totalChapters}
+                  {interactiveSession.currentChapterPagesTotal > 0
+                    ? ` · Páginas do capítulo atual: ${interactiveSession.currentChapterPagesDone}/${interactiveSession.currentChapterPagesTotal}`
+                    : ''}
+                </div>
+              )}
+              {interactiveSession.currentChapterPagesTotal > 0 && (
+                <div style={{ height: 4, borderRadius: 99, background: T.border, overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      height: '100%',
+                      width: `${Math.min(100, Math.round((interactiveSession.currentChapterPagesDone / interactiveSession.currentChapterPagesTotal) * 100))}%`,
+                      background: T.accent,
+                      transition: 'width 180ms ease-out',
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => void handleClearInteractiveProfile(interactiveSession.currentUrl || linkInputs[0] || '')}
+                style={{ ...btnGhost, fontSize: 12 }}
+              >
+                <Trash2 style={{ width: 13, height: 13 }} /> Limpar dados do navegador
+              </button>
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {!['completed', 'access_denied', 'session_expired', 'cancelled'].includes(interactiveSession.state) && (
+                  <button
+                    type="button"
+                    onClick={() => void handleCancelInteractiveImport()}
+                    style={{ ...btnGhost, color: T.error, borderColor: T.errorBorder }}
+                  >
+                    <X style={{ width: 14, height: 14 }} /> Encerrar sessão
+                  </button>
+                )}
+                {interactiveSession.state === 'access_denied' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInteractiveModalOpen(false);
+                      setOrigin('assisted');
+                    }}
+                    style={btnPrimary}
+                  >
+                    <Upload style={{ width: 14, height: 14 }} /> Usar importação por arquivos
+                  </button>
+                )}
+                {interactiveSession.state === 'session_expired' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleStartInteractiveImport(linkInputs.map((u) => u.trim()).filter(Boolean))}
+                    style={btnPrimary}
+                  >
+                    <RefreshCw style={{ width: 14, height: 14 }} /> Reautenticar no navegador
+                  </button>
+                )}
+                {interactiveSession.state === 'completed' && (
+                  <button
+                    type="button"
+                    onClick={() => setInteractiveModalOpen(false)}
+                    style={btnPrimary}
+                  >
+                    <CheckCircle2 style={{ width: 14, height: 14 }} /> Continuar com capítulos importados
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
