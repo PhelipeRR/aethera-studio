@@ -104,6 +104,24 @@ export class AetheraDatabase {
         key TEXT PRIMARY KEY,
         payload TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS social_publications (
+        id TEXT PRIMARY KEY,
+        publication_id TEXT UNIQUE NOT NULL,
+        batch_series_id TEXT,
+        status TEXT NOT NULL,
+        scheduled_at TEXT,
+        updated_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS social_publish_idempotency (
+        idempotency_key TEXT PRIMARY KEY,
+        publication_id TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        executed_at TEXT NOT NULL,
+        result_json TEXT NOT NULL
+      );
     `);
   }
 
@@ -365,6 +383,59 @@ export class AetheraDatabase {
       )
       .run(JSON.stringify(prefs));
     return prefs;
+  }
+
+  // Cloud Social Publishing Hub & Unified Calendar (persists across restarts & offline Desktop/Remote Host)
+  public listSocialPublications(): Array<Record<string, unknown>> {
+    const rows = this.db
+      .prepare('SELECT payload FROM social_publications ORDER BY COALESCE(scheduled_at, updated_at) ASC')
+      .all() as Array<{ payload: string }>;
+    return rows.map((r) => JSON.parse(r.payload) as Record<string, unknown>);
+  }
+
+  public getSocialPublication(id: string): Record<string, unknown> | null {
+    const row = this.db
+      .prepare('SELECT payload FROM social_publications WHERE id = ? OR publication_id = ?')
+      .get(id, id) as { payload: string } | undefined;
+    return row ? (JSON.parse(row.payload) as Record<string, unknown>) : null;
+  }
+
+  public upsertSocialPublication(pub: Record<string, unknown>): Record<string, unknown> {
+    const id = String(pub.id ?? pub.publicationId);
+    const pubId = String(pub.publicationId ?? id);
+    const batchSeriesId = typeof pub.batchSeriesId === 'string' ? pub.batchSeriesId : null;
+    const status = String(pub.status ?? 'draft');
+    const scheduledAt = typeof pub.scheduledPublishAtIso === 'string' ? pub.scheduledPublishAtIso : null;
+    const updatedAt = String(pub.updatedAt ?? new Date().toISOString());
+    this.db
+      .prepare(
+        `INSERT INTO social_publications (id, publication_id, batch_series_id, status, scheduled_at, updated_at, payload)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           batch_series_id = excluded.batch_series_id,
+           status = excluded.status,
+           scheduled_at = excluded.scheduled_at,
+           updated_at = excluded.updated_at,
+           payload = excluded.payload`,
+      )
+      .run(id, pubId, batchSeriesId, status, scheduledAt, updatedAt, JSON.stringify(pub));
+    return pub;
+  }
+
+  public hasSocialIdempotencyKey(key: string): boolean {
+    const row = this.db
+      .prepare('SELECT 1 as ok FROM social_publish_idempotency WHERE idempotency_key = ?')
+      .get(key) as { ok: number } | undefined;
+    return Boolean(row?.ok);
+  }
+
+  public recordSocialIdempotencyKey(key: string, publicationId: string, platform: string, result: unknown): void {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO social_publish_idempotency (idempotency_key, publication_id, platform, executed_at, result_json)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(key, publicationId, platform, new Date().toISOString(), JSON.stringify(result));
   }
 
   public close(): void {

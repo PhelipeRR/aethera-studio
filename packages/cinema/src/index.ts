@@ -45,6 +45,8 @@ export * from './evolution/director-orchestrator.js';
 export * from './evolution/academy-engine.js';
 export * from './evolution/transition-academy.js';
 export * from './calendar/editorial-calendar-engine.js';
+export * from './calendar/youtube-chapter-generator.js';
+export * from './calendar/social-publishing-hub.js';
 export * from './recap/index.js';
 
 import {

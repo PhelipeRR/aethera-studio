@@ -444,6 +444,8 @@ interface RecapBridge {
   }>;
   onRecapProductionProgress?: (listener: (event: unknown) => void) => () => void;
   cinemaCalendarUpsertEvent?: (input: Record<string, unknown>) => Promise<unknown>;
+  cinemaPublishingSchedule?: (input: Record<string, unknown>) => Promise<{ event: { id: string; scheduledPublishAtIso?: string } }>;
+  cinemaPublishingBatchRecap?: (input: Record<string, unknown>) => Promise<{ batchSeriesId: string; events: Array<{ id: string }> }>;
 }
 
 function getRecapBridge(): RecapBridge | undefined {
@@ -1581,6 +1583,8 @@ export function RecapProductionPanel() {
   const [impactPlan, setImpactPlan] = useState<RecapRevisionPlanView | null>(null);
   const [scheduleDate, setScheduleDate] = useState('');
   const [publishNote, setPublishNote] = useState<string | null>(null);
+  const [publishPlatforms, setPublishPlatforms] = useState<Array<'youtube' | 'instagram' | 'tiktok'>>(['youtube', 'instagram', 'tiktok']);
+  const [publishRightsConfirmed, setPublishRightsConfirmed] = useState(false);
 
   const recentProjects = useMemo(
     () => mergeActiveProjectIntoRecentList(persistedProjects, activeProject),
@@ -2802,26 +2806,68 @@ export function RecapProductionPanel() {
       setPublishNote('Renderize e aprove o vídeo antes de agendar.');
       return;
     }
+    if (!scorecard.approvedForRelease) {
+      setPublishNote('Os Gates de qualidade obrigatórios (Gate F/G/H) ainda não foram aprovados para publicação.');
+      return;
+    }
+    if (!publishRightsConfirmed) {
+      setPublishNote('Confirme a verificação de direitos de uso do material antes de autorizar o agendamento.');
+      return;
+    }
     if (!scheduleDate) {
       setPublishNote('Escolha uma data e hora de publicação.');
       return;
     }
     const bridge = getRecapBridge();
-    if (!bridge?.cinemaCalendarUpsertEvent) {
-      setPublishNote('Integração de calendário indisponível neste build.');
+    if (!bridge?.cinemaPublishingSchedule) {
+      setPublishNote('Integração de publicação unificada indisponível neste build.');
       return;
     }
     try {
-      await bridge.cinemaCalendarUpsertEvent({
-        title: `Mangá Recap: ${activeProject.workTitle}`,
-        platform: 'youtube',
+      const targetIso = new Date(scheduleDate).toISOString();
+      const res = await bridge.cinemaPublishingSchedule({
+        publicationId: `recap_${activeProject.runId}`,
+        title: activeProject.workTitle,
+        description: activeProject.exportBundleDir
+          ? `Mangá Recap — ${activeProject.workTitle} (Pacote: ${activeProject.exportBundleDir})`
+          : `Mangá Recap — ${activeProject.workTitle}`,
+        channelId: 'main_yt',
+        channelName: 'Canal Principal',
+        productionMode: 'manga_recap',
         format: activeProject.aspectRatio === '9:16' ? 'short' : 'long',
-        status: 'scheduled',
-        scheduledAtIso: new Date(scheduleDate).toISOString(),
         projectId: activeProject.runId,
-        notes: activeProject.exportBundleDir ? `Pacote: ${activeProject.exportBundleDir}` : undefined,
+        videoPath: activeMediaPath,
+        videoDurationMs: activeProject.totalDurationMs,
+        platforms: publishPlatforms.length > 0 ? publishPlatforms : ['youtube'],
+        scheduledPublishAtIso: targetIso,
+        timezone: 'America/Sao_Paulo',
+        status: 'scheduled',
+        reviewApproved: true,
+        qualityGates: {
+          gateF: scorecard.gateFVerdict ?? 'pass',
+          gateG: scorecard.gateGVerdict ?? 'pass',
+          gateH: scorecard.gateHVerdict ?? 'pass',
+          allMandatoryPassed: scorecard.approvedForRelease,
+        },
+        rightsVerification: {
+          verified: publishRightsConfirmed,
+          verifiedAtIso: new Date().toISOString(),
+          sourceAuthorized: true,
+          musicAndSfxLicensed: true,
+          noProhibitedWatermarks: true,
+          transformativeEditorialUse: true,
+        },
+        recapBinding: {
+          runId: activeProject.runId,
+          ...(selectedSeriesId ? { seriesProjectId: selectedSeriesId } : {}),
+          workTitle: activeProject.workTitle,
+          chapterNumbers: [chapterNumberInput],
+          singleVideoMode: selectedQueueArchives.length > 1,
+        },
       });
-      setPublishNote(`Agendado no Calendário Editorial para ${formatDateTimePt(new Date(scheduleDate).toISOString())}.`);
+      setPublishNote(
+        `Agendado no Calendário Unificado (${publishPlatforms.join(', ')}) para ${formatDateTimePt(targetIso)} · ID ${res.event.id}.`,
+      );
     } catch (err) {
       setPublishNote(err instanceof Error ? err.message : 'Erro ao agendar no calendário.');
     }
@@ -5050,7 +5096,39 @@ export function RecapProductionPanel() {
 
               {/* Publication */}
               <BentoBlock>
-                <SectionLabel>Publicação</SectionLabel>
+                <SectionLabel>Publicar / Agendar (Calendário Unificado)</SectionLabel>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                  {(['youtube', 'instagram', 'tiktok'] as const).map((plat) => {
+                    const active = publishPlatforms.includes(plat);
+                    return (
+                      <button
+                        key={plat}
+                        type="button"
+                        onClick={() =>
+                          setPublishPlatforms((prev) =>
+                            prev.includes(plat)
+                              ? prev.length > 1
+                                ? prev.filter((x) => x !== plat)
+                                : prev
+                              : [...prev, plat],
+                          )
+                        }
+                        style={{
+                          padding: '4px 10px',
+                          borderRadius: T.radiusFull,
+                          border: `1px solid ${active ? T.ink : T.border}`,
+                          background: active ? T.ink : T.surfaceSubtle,
+                          color: active ? '#ffffff' : T.inkMuted,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {plat === 'youtube' ? 'YouTube' : plat === 'instagram' ? 'Instagram' : 'TikTok'}
+                      </button>
+                    );
+                  })}
+                </div>
                 <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
                   Data de agendamento
                   <input
@@ -5060,14 +5138,26 @@ export function RecapProductionPanel() {
                     style={inputStyle}
                   />
                 </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 11, color: T.ink }}>
+                  <input
+                    type="checkbox"
+                    checked={publishRightsConfirmed}
+                    onChange={(e) => setPublishRightsConfirmed(e.target.checked)}
+                  />
+                  Verifiquei os direitos de uso editorial, áudio e ausência de marcas d&apos;água proibidas
+                </label>
                 <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                   <button
                     type="button"
-                    disabled={!activeMediaPath}
+                    disabled={!activeMediaPath || !scorecard.approvedForRelease || !publishRightsConfirmed}
                     onClick={() => void handleSchedulePublication()}
-                    style={{ ...btnLime, flex: 1, opacity: activeMediaPath ? 1 : 0.45 }}
+                    style={{
+                      ...btnLime,
+                      flex: 1,
+                      opacity: activeMediaPath && scorecard.approvedForRelease && publishRightsConfirmed ? 1 : 0.45,
+                    }}
                   >
-                    <CalendarIcon style={{ width: 14, height: 14 }} /> Agendar
+                    <CalendarIcon style={{ width: 14, height: 14 }} /> Publicar / Agendar
                   </button>
                   <a
                     href="#/aethera/calendar"

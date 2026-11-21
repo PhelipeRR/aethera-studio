@@ -255,5 +255,6 @@ export * from './production-readiness.js';
 export * from './phase4/recap-prompt-revision.js';
 export * from './phase5/recap-production-orchestrator.js';
 export * from './phase5/recap-project-store.js';
+export * from './recap-chapter-markers.js';
 export * from './url-importer/index.js';
 

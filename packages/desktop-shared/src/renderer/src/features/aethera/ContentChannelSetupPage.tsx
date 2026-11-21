@@ -31,6 +31,7 @@ import {
   type ContentChannel,
 } from '@neuralbridge/shared/content-operating-system';
 import { SetupTutorialDrawer } from './SetupTutorialDrawer';
+import { YouTubeLongFormPublishingStudio } from './YouTubeLongFormPublishingStudio';
 import {
   buildEmptyChannelForm,
   buildFormFromChannel,
@@ -48,9 +49,10 @@ import {
   type ChannelFormState,
 } from './channel-manager-helpers';
 
-type ManagerTab = 'identity' | 'editorial' | 'publishing' | 'autonomy' | 'help';
+type ManagerTab = 'studio' | 'identity' | 'editorial' | 'publishing' | 'autonomy' | 'help';
 
 const TABS: ReadonlyArray<{ id: ManagerTab; label: string; icon: typeof Palette }> = [
+  { id: 'studio', label: 'Estúdio de Publicação & Agendamento', icon: Video },
   { id: 'identity', label: 'Identidade & Brand Kit', icon: Palette },
   { id: 'editorial', label: 'Estratégia Editorial', icon: BookOpen },
   { id: 'publishing', label: 'Publicação & Distribuição', icon: CalendarClock },
@@ -60,7 +62,7 @@ const TABS: ReadonlyArray<{ id: ManagerTab; label: string; icon: typeof Palette 
 
 export function ContentChannelSetupPage() {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<ManagerTab>('identity');
+  const [activeTab, setActiveTab] = useState<ManagerTab>('studio');
   const [selectedId, setSelectedId] = useState<string>('new');
   const [form, setForm] = useState<ChannelFormState>(() => buildEmptyChannelForm(crypto.randomUUID()));
   const [hasDraftChanges, setHasDraftChanges] = useState(false);
@@ -1625,6 +1627,15 @@ export function ContentChannelSetupPage() {
               </div>
             </section>
           </div>
+        )}
+
+        {/* TAB 0: ESTÚDIO DE PUBLICAÇÃO MULTIPLATAFORMA & YOUTUBE LONG-FORM */}
+        {activeTab === 'studio' && (
+          <YouTubeLongFormPublishingStudio
+            youtubeConnected={Boolean(oauthStatus.data?.connected)}
+            channelId={form.id || 'main_yt'}
+            channelName={form.name || 'Canal Principal'}
+          />
         )}
 
         {/* TAB 5: AJUDA & AUDITORIA */}

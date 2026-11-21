@@ -123,6 +123,27 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
     ipcRenderer.invoke('cinema:calendar-upsert-series', input),
   cinemaCalendarGenerateSeries: (input: { seriesId: string; weeksAhead?: number }) =>
     ipcRenderer.invoke('cinema:calendar-generate-series', input),
+  cinemaPublishingSchedule: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke('cinema:publishing-schedule', input),
+  cinemaPublishingReschedule: (input: { publicationId: string; targetDateIso: string; reason?: string }) =>
+    ipcRenderer.invoke('cinema:publishing-reschedule', input),
+  cinemaPublishingCancel: (input: {
+    publicationId?: string;
+    batchSeriesId?: string;
+    platform?: string;
+    reason?: string;
+    confirmIrreversible?: boolean;
+  }) => ipcRenderer.invoke('cinema:publishing-cancel', input),
+  cinemaPublishingBatchRecap: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke('cinema:publishing-batch-recap', input),
+  cinemaPublishingGenerateChapters: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke('cinema:publishing-generate-chapters', input),
+  cinemaPublishingGenerateRecapMetadata: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke('cinema:publishing-generate-recap-metadata', input),
+  cinemaPublishingValidateThumbnail: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke('cinema:publishing-validate-thumbnail', input),
+  cinemaPublishingReferenceScenario: () =>
+    ipcRenderer.invoke('cinema:publishing-reference-scenario'),
   cinemaUpdateAudioMix: (input: {
     projectId: string;
     stems: Array<{ stemRole: string; targetGainDb?: number; muted?: boolean; duckingUnderVoiceDb?: number }>;

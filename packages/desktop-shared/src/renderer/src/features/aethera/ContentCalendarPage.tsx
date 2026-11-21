@@ -29,8 +29,10 @@ type CalendarEventStatus =
   | 'in_review'
   | 'approved'
   | 'scheduled'
+  | 'publishing'
   | 'published'
-  | 'failed';
+  | 'failed'
+  | 'cancelled';
 type CalendarPlatform = 'youtube' | 'youtube_shorts' | 'instagram' | 'tiktok';
 type CalendarFormat =
   | 'long'
@@ -52,11 +54,26 @@ interface RescheduleHistoryEntry {
 
 interface EditorialCalendarEventView {
   id: string;
+  publicationId?: string;
   title: string;
   description: string;
   channelId: string;
   channelName: string;
   platform: CalendarPlatform;
+  platforms?: CalendarPlatform[];
+  platformTargets?: Partial<
+    Record<
+      CalendarPlatform,
+      {
+        platform: CalendarPlatform;
+        status: CalendarEventStatus;
+        title?: string;
+        remoteId?: string;
+        lastError?: string;
+      }
+    >
+  >;
+  productionMode?: 'manual_project' | 'ai_cinema' | 'manga_recap' | 'media_library';
   format: CalendarFormat;
   projectId?: string;
   thumbnailUrl?: string;
@@ -68,6 +85,7 @@ interface EditorialCalendarEventView {
   reviewApprovedAt?: string;
   integrationError?: string;
   seriesId?: string;
+  batchSeriesId?: string;
   productionLeadDays?: number;
   metrics?: { views?: number; ctr?: number; avgViewDurationSec?: number };
   rescheduleHistory: RescheduleHistoryEntry[];
@@ -135,6 +153,14 @@ interface CalendarBridge {
   cinemaCalendarSchedulePlatform?: (input: { id: string; publishAtIso: string }) => Promise<{ event: EditorialCalendarEventView; calendar: CalendarPayloadView }>;
   cinemaCalendarUpsertSeries?: (input: Record<string, unknown>) => Promise<{ series: RecurringSeriesView; calendar: CalendarPayloadView }>;
   cinemaCalendarGenerateSeries?: (input: { seriesId: string; weeksAhead?: number }) => Promise<{ created: EditorialCalendarEventView[]; calendar: CalendarPayloadView }>;
+  cinemaPublishingCancel?: (input: {
+    publicationId?: string;
+    batchSeriesId?: string;
+    platform?: CalendarPlatform;
+    reason?: string;
+    confirmIrreversible?: boolean;
+  }) => Promise<{ event?: EditorialCalendarEventView; calendar: CalendarPayloadView }>;
+  cinemaPublishingReferenceScenario?: () => Promise<{ event: EditorialCalendarEventView; calendar: CalendarPayloadView }>;
 }
 
 const STATUS_META: Record<CalendarEventStatus, { label: string; dot: string; badge: string }> = {
@@ -144,8 +170,10 @@ const STATUS_META: Record<CalendarEventStatus, { label: string; dot: string; bad
   in_review: { label: 'Revisão', dot: 'bg-orange-400', badge: 'border-orange-500/40 bg-orange-500/15 text-orange-200' },
   approved: { label: 'Aprovado', dot: 'bg-emerald-400', badge: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200' },
   scheduled: { label: 'Agendado', dot: 'bg-violet-400', badge: 'border-violet-500/40 bg-violet-500/15 text-violet-200' },
+  publishing: { label: 'Publicando', dot: 'bg-sky-400', badge: 'border-sky-500/40 bg-sky-500/15 text-sky-200' },
   published: { label: 'Publicado', dot: 'bg-teal-400', badge: 'border-teal-500/40 bg-teal-500/15 text-teal-200' },
   failed: { label: 'Falha', dot: 'bg-rose-500', badge: 'border-rose-500/40 bg-rose-500/15 text-rose-200' },
+  cancelled: { label: 'Cancelado', dot: 'bg-zinc-500', badge: 'border-zinc-500/40 bg-zinc-500/15 text-zinc-300' },
 };
 
 const PLATFORM_LABELS: Record<CalendarPlatform, string> = {
@@ -177,9 +205,12 @@ const WEEKDAYS_SHORT = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
 const WEEKDAYS_FULL = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
 function getBridge(): CalendarBridge {
-  return ((window as unknown as { aethera?: CalendarBridge; neuralbridge?: CalendarBridge }).aethera ??
-    (window as unknown as { neuralbridge?: CalendarBridge }).neuralbridge ??
-    {}) as CalendarBridge;
+  const w = window as unknown as {
+    aetheraBridge?: CalendarBridge;
+    aethera?: CalendarBridge;
+    neuralbridge?: CalendarBridge;
+  };
+  return (w.aetheraBridge ?? w.aethera ?? w.neuralbridge ?? {}) as CalendarBridge;
 }
 
 function formatDayAndTime(iso: string, tz: string): { dayKey: string; timeHHmm: string } {
@@ -321,7 +352,8 @@ export function ContentCalendarPage() {
   const filteredEvents = useMemo(() => {
     return events.filter((ev) => {
       if (channelFilter !== 'all' && ev.channelId !== channelFilter) return false;
-      if (platformFilter !== 'all' && ev.platform !== platformFilter) return false;
+      const evPlatforms = ev.platforms && ev.platforms.length > 0 ? ev.platforms : [ev.platform];
+      if (platformFilter !== 'all' && !evPlatforms.includes(platformFilter)) return false;
       if (formatFilter !== 'all' && ev.format !== formatFilter) return false;
       if (statusFilter !== 'all' && ev.status !== statusFilter) return false;
       if (projectFilter !== 'all' && (ev.projectId ?? '') !== projectFilter) return false;

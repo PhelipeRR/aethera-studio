@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type { RecapChapterMarker } from '../recap/recap-chapter-markers.js';
+import type { YouTubeTimelineChapter } from './youtube-chapter-generator.js';
 
 export type CalendarEventStatus =
   | 'draft'
@@ -8,10 +10,90 @@ export type CalendarEventStatus =
   | 'in_review'
   | 'approved'
   | 'scheduled'
+  | 'publishing'
   | 'published'
-  | 'failed';
+  | 'failed'
+  | 'cancelled';
 
 export type CalendarPlatform = 'youtube' | 'youtube_shorts' | 'instagram' | 'tiktok';
+
+export type ProductionSourceMode = 'manual_project' | 'ai_cinema' | 'manga_recap' | 'media_library';
+
+export interface PlatformDestinationState {
+  platform: CalendarPlatform;
+  status: CalendarEventStatus;
+  title: string;
+  description: string;
+  hashtags: string[];
+  tags?: string[];
+  thumbnailUrl?: string;
+  videoPath?: string;
+  aspectRatio?: '16:9' | '9:16';
+  remoteId?: string;
+  remoteUrl?: string;
+  lastError?: string;
+  publishedAtIso?: string;
+  attempts?: number;
+  updatedAtIso?: string;
+}
+
+export interface RightsVerificationState {
+  verified: boolean;
+  verifiedAtIso?: string;
+  sourceAuthorized: boolean;
+  musicAndSfxLicensed: boolean;
+  noProhibitedWatermarks: boolean;
+  transformativeEditorialUse: boolean;
+  notes?: string;
+}
+
+export interface QualityGatesReadinessState {
+  gateF?: 'pass' | 'needs_review' | 'fail';
+  gateG?: 'pass' | 'needs_review' | 'fail';
+  gateH?: 'pass' | 'needs_review' | 'fail';
+  allMandatoryPassed: boolean;
+}
+
+export interface RecapPublicationBinding {
+  runId: string;
+  seriesProjectId?: string;
+  workTitle: string;
+  chapterNumbers: number[];
+  chapterMarkers?: RecapChapterMarker[];
+  singleVideoMode: boolean;
+}
+
+export interface YouTubeLongFormStudioMeta {
+  tags: string[];
+  savedTitleVersions: string[];
+  chapters: YouTubeTimelineChapter[];
+  thumbnailApproved: boolean;
+  thumbnailPath?: string;
+  privacyStatus: 'private' | 'unlisted' | 'public';
+  categoryId?: string;
+  defaultLanguage?: string;
+}
+
+export interface PublicationAuditEntry {
+  id: string;
+  timestampIso: string;
+  action:
+    | 'created'
+    | 'scheduled'
+    | 'rescheduled'
+    | 'platform_publishing'
+    | 'platform_published'
+    | 'platform_failed'
+    | 'cancelled'
+    | 'platform_cancelled'
+    | 'metadata_updated'
+    | 'rights_verified'
+    | 'thumbnail_updated'
+    | 'chapters_updated';
+  actor: 'user' | 'cloud_worker' | 'system';
+  platform?: CalendarPlatform;
+  detail: string;
+}
 
 export type CalendarFormat =
   | 'long'
@@ -39,29 +121,45 @@ export interface EditorialCalendarMetrics {
 
 export interface EditorialCalendarEvent {
   id: string;
+  /** Identificador único compartilhado entre Calendário e Central de Publicações (evita duplicação) */
+  publicationId?: string;
   title: string;
   description: string;
   channelId: string;
   channelName: string;
   platform: CalendarPlatform;
+  /** Múltiplas plataformas vinculadas ao mesmo agendamento unificado (YouTube, Instagram, TikTok, Shorts) */
+  platforms?: CalendarPlatform[];
+  /** Estado independente por plataforma — falha em uma não bloqueia as demais */
+  platformTargets?: Partial<Record<CalendarPlatform, PlatformDestinationState>>;
   format: CalendarFormat;
+  productionMode?: ProductionSourceMode;
   projectId?: string;
   thumbnailUrl?: string;
+  videoPath?: string;
+  videoDurationMs?: number;
+  cloudMediaKey?: string;
   /** Data/hora editorial planejada pela equipe (independente do agendamento na plataforma) */
   plannedDateIso: string;
-  /** Data/hora efetivamente agendada na plataforma (YouTube/etc.); exige aprovação na Sala de Revisão */
+  /** Data/hora efetivamente agendada na plataforma (YouTube/Instagram/TikTok); exige aprovação + direitos */
   scheduledPublishAtIso?: string;
   /** Fuso horário IANA (ex.: America/Sao_Paulo) */
   timezone: string;
   status: CalendarEventStatus;
   reviewApproved: boolean;
   reviewApprovedAt?: string;
+  qualityGates?: QualityGatesReadinessState;
+  rightsVerification?: RightsVerificationState;
+  recapBinding?: RecapPublicationBinding;
+  youtubeStudio?: YouTubeLongFormStudioMeta;
   integrationError?: string;
   seriesId?: string;
+  batchSeriesId?: string;
   /** Antecipação recomendada para iniciar produção (dias antes da data planejada) */
   productionLeadDays?: number;
   metrics?: EditorialCalendarMetrics;
   rescheduleHistory: RescheduleHistoryEntry[];
+  auditLog?: PublicationAuditEntry[];
   createdAt: string;
   updatedAt: string;
 }
@@ -201,6 +299,18 @@ export function canAutoPublishEvent(ev: EditorialCalendarEvent): { allowed: bool
     return {
       allowed: false,
       reason: 'Aprovação pendente na Sala de Revisão: vídeos não aprovados não podem ser publicados automaticamente.',
+    };
+  }
+  if (ev.qualityGates && !ev.qualityGates.allMandatoryPassed) {
+    return {
+      allowed: false,
+      reason: 'Gates de qualidade obrigatórios (Gate F/G/H) ainda não foram aprovados para publicação.',
+    };
+  }
+  if (ev.rightsVerification && !ev.rightsVerification.verified) {
+    return {
+      allowed: false,
+      reason: 'Verificação de direitos de uso do material pendente antes de autorizar a publicação.',
     };
   }
   return { allowed: true };
@@ -417,10 +527,19 @@ export class EditorialCalendarEngine {
   ): EditorialCalendarEvent {
     const now = new Date().toISOString();
     const tz = isValidIanaTimezone(input.timezone) ? input.timezone : this.snapshot.defaultTimezone;
-    const existingIdx = input.id ? this.snapshot.events.findIndex((e) => e.id === input.id) : -1;
+    const sharedPubId = input.publicationId ?? input.id;
+    const existingIdx = this.snapshot.events.findIndex(
+      (e) => (input.id && e.id === input.id) || (sharedPubId && (e.publicationId === sharedPubId || e.id === sharedPubId)),
+    );
 
     if (input.status === 'scheduled' && !input.reviewApproved) {
       throw new Error('review_approval_required: vídeos não aprovados na Sala de Revisão não podem ser agendados para publicação automática.');
+    }
+    if (input.status === 'scheduled' && input.qualityGates && !input.qualityGates.allMandatoryPassed) {
+      throw new Error('quality_gates_required: os Gates de qualidade obrigatórios precisam ser aprovados antes de agendar.');
+    }
+    if (input.status === 'scheduled' && input.rightsVerification && !input.rightsVerification.verified) {
+      throw new Error('rights_verification_required: conclua a verificação de direitos de uso antes de agendar.');
     }
 
     if (existingIdx >= 0) {
@@ -429,8 +548,10 @@ export class EditorialCalendarEngine {
         ...prev,
         ...input,
         id: prev.id,
+        publicationId: prev.publicationId ?? sharedPubId ?? prev.id,
         timezone: tz,
         rescheduleHistory: [...prev.rescheduleHistory],
+        auditLog: input.auditLog ?? prev.auditLog ?? [],
         updatedAt: now,
       };
       this.snapshot.events[existingIdx] = updated;
@@ -438,11 +559,22 @@ export class EditorialCalendarEngine {
       return updated;
     }
 
+    const canonicalId = input.id ?? sharedPubId ?? `cal_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const created: EditorialCalendarEvent = {
       ...input,
-      id: input.id ?? `cal_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: canonicalId,
+      publicationId: sharedPubId ?? canonicalId,
       timezone: tz,
       rescheduleHistory: [],
+      auditLog: input.auditLog ?? [
+        {
+          id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          timestampIso: now,
+          action: input.status === 'scheduled' ? 'scheduled' : 'created',
+          actor: 'user',
+          detail: `Evento criado no calendário unificado (${(input.platforms ?? [input.platform]).join(', ')}).`,
+        },
+      ],
       createdAt: now,
       updatedAt: now,
     };
@@ -517,10 +649,93 @@ export class EditorialCalendarEngine {
 
   deleteEvent(id: string): boolean {
     const before = this.snapshot.events.length;
-    this.snapshot.events = this.snapshot.events.filter((e) => e.id !== id);
+    this.snapshot.events = this.snapshot.events.filter((e) => e.id !== id && e.publicationId !== id);
     if (this.snapshot.events.length === before) return false;
     this.persist();
     return true;
+  }
+
+  cancelSchedule(input: {
+    id: string;
+    platform?: CalendarPlatform;
+    reason?: string;
+    confirmIrreversible?: boolean;
+  }): EditorialCalendarEvent {
+    const idx = this.snapshot.events.findIndex((e) => e.id === input.id || e.publicationId === input.id);
+    if (idx < 0) throw new Error(`not_found: evento ${input.id} não encontrado.`);
+    const prev = this.snapshot.events[idx]!;
+    const now = new Date().toISOString();
+
+    if (prev.status === 'published' && !input.confirmIrreversible) {
+      throw new Error('confirmation_required: confirmação explícita obrigatória para alterar uma publicação já enviada.');
+    }
+
+    if (input.platform && prev.platformTargets?.[input.platform]) {
+      const target = prev.platformTargets[input.platform]!;
+      if (target.status === 'published' && !input.confirmIrreversible) {
+        throw new Error(`confirmation_required: a publicação em ${input.platform} já foi enviada e exige confirmação explícita.`);
+      }
+      const nextTargets: Partial<Record<CalendarPlatform, PlatformDestinationState>> = {
+        ...prev.platformTargets,
+        [input.platform]: {
+          ...target,
+          status: 'cancelled',
+          updatedAtIso: now,
+        },
+      };
+      const remainingActive = Object.values(nextTargets).some(
+        (t) => t && (t.status === 'scheduled' || t.status === 'publishing' || t.status === 'published'),
+      );
+      const updated: EditorialCalendarEvent = {
+        ...prev,
+        platformTargets: nextTargets,
+        status: remainingActive ? prev.status : 'cancelled',
+        auditLog: [
+          ...(prev.auditLog ?? []),
+          {
+            id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            timestampIso: now,
+            action: 'platform_cancelled',
+            actor: 'user',
+            platform: input.platform,
+            detail: input.reason ?? `Agendamento cancelado para ${input.platform}.`,
+          },
+        ],
+        updatedAt: now,
+      };
+      this.snapshot.events[idx] = updated;
+      this.persist();
+      return updated;
+    }
+
+    const nextTargets: Partial<Record<CalendarPlatform, PlatformDestinationState>> | undefined = prev.platformTargets
+      ? Object.fromEntries(
+          Object.entries(prev.platformTargets).map(([k, v]) => [
+            k,
+            v && v.status !== 'published' ? { ...v, status: 'cancelled' as const, updatedAtIso: now } : v,
+          ]),
+        )
+      : undefined;
+
+    const updated: EditorialCalendarEvent = {
+      ...prev,
+      ...(nextTargets ? { platformTargets: nextTargets } : {}),
+      status: prev.status === 'published' ? 'published' : 'cancelled',
+      auditLog: [
+        ...(prev.auditLog ?? []),
+        {
+          id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          timestampIso: now,
+          action: 'cancelled',
+          actor: 'user',
+          detail: input.reason ?? 'Agendamento cancelado pelo usuário.',
+        },
+      ],
+      updatedAt: now,
+    };
+    this.snapshot.events[idx] = updated;
+    this.persist();
+    return updated;
   }
 
   upsertSeries(

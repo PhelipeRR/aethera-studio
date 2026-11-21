@@ -58,13 +58,24 @@ import {
   acquireResilientMediaFile,
   searchResilientMediaSources,
   EditorialCalendarEngine,
+  SocialPublishingHub,
+  YouTubeChapterGenerator,
   analyzeCalendarHealth,
+  generateMultiChapterRecapMetadata,
+  normalizeAndValidateYouTubeTags,
+  recalculateRecapChapterMarkersFromPlan,
   suggestSmartSchedule,
+  validateYouTubeChapters,
+  validateYouTubeThumbnailSpec,
+  type BatchRecapScheduleInput,
   type CalendarEventStatus,
   type CalendarFormat,
   type CalendarPlatform,
   type EditorialCalendarEvent,
+  type RecapChapterMarker,
   type RecurringSeriesRule,
+  type ScheduleMultiPlatformInput,
+  type YouTubeTimelineChapter,
   applyAudioMixerUpdates,
   applyColorGradingControls,
   applyPromptRevisionToPackage,
@@ -1936,6 +1947,7 @@ productionConsole,
   const editorialCalendar = new EditorialCalendarEngine(
     join(app.getPath('userData'), 'calendar', 'editorial-calendar-store.json'),
   );
+  const socialPublishingHub = new SocialPublishingHub(editorialCalendar);
   const AETHERA_VISION_CHAIN = ['local-vlm', 'claude-gateway', 'antigravity', 'claude', 'codex', 'local-siglip', 'ffmpeg-heuristics'] as const;
   // Scene frames are analysed as lean, project-less TaskEngine runs: the cinema scene/segment id is not a TaskEngine
   // project, and using it as one failed every Claude/Codex vision call with a tasks→projects FOREIGN KEY error.
@@ -4441,6 +4453,173 @@ productionConsole,
       ensureTrusted(event.senderFrame);
       const created = editorialCalendar.generateSeriesOccurrences(input.seriesId, input.weeksAhead ?? 4);
       return { created, calendar: buildCalendarPayload() };
+    },
+  );
+
+  // ─── Aethera Social Publishing Hub & YouTube Long-Form Studio IPC ─────────
+  ipcMain.handle(
+    'cinema:publishing-schedule',
+    async (event, input: ScheduleMultiPlatformInput) => {
+      ensureTrusted(event.senderFrame);
+      const saved = socialPublishingHub.schedulePublication(input);
+      return { event: saved, calendar: buildCalendarPayload(saved.timezone) };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:publishing-reschedule',
+    async (event, input: { publicationId: string; targetDateIso: string; reason?: string }) => {
+      ensureTrusted(event.senderFrame);
+      const moved = socialPublishingHub.reschedulePublication(input);
+      return { event: moved, calendar: buildCalendarPayload(moved.timezone) };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:publishing-cancel',
+    async (
+      event,
+      input: {
+        publicationId?: string;
+        batchSeriesId?: string;
+        platform?: CalendarPlatform;
+        reason?: string;
+        confirmIrreversible?: boolean;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      if (input.batchSeriesId) {
+        const cancelled = socialPublishingHub.cancelBatchSeries(input.batchSeriesId, input.reason);
+        return { cancelled, calendar: buildCalendarPayload() };
+      }
+      if (!input.publicationId) {
+        throw new Error('invalid: informe publicationId ou batchSeriesId.');
+      }
+      const updated = socialPublishingHub.cancelPublication({
+        publicationId: input.publicationId,
+        ...(input.platform ? { platform: input.platform } : {}),
+        ...(input.reason ? { reason: input.reason } : {}),
+        ...(input.confirmIrreversible !== undefined ? { confirmIrreversible: input.confirmIrreversible } : {}),
+      });
+      return { event: updated, calendar: buildCalendarPayload(updated.timezone) };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:publishing-batch-recap',
+    async (event, input: BatchRecapScheduleInput) => {
+      ensureTrusted(event.senderFrame);
+      const result = socialPublishingHub.scheduleBatchRecapChapters(input);
+      return { ...result, calendar: buildCalendarPayload(input.timezone) };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:publishing-generate-chapters',
+    async (
+      event,
+      input: {
+        mode: 'recap_markers' | 'manga_recap' | 'game_video' | 'edit';
+        markers?: RecapChapterMarker[];
+        segments?: Array<{
+          id: string;
+          title?: string;
+          startMs: number;
+          durationMs: number;
+          thumbnailUrl?: string;
+        }>;
+        chapters?: YouTubeTimelineChapter[];
+        action?:
+          | { type: 'edit'; id: string; title?: string; startMs?: number }
+          | { type: 'delete'; id: string }
+          | { type: 'add'; title: string; startMs: number };
+        totalVideoDurationMs: number;
+        baseDescription?: string;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const out =
+        input.mode === 'recap_markers'
+          ? YouTubeChapterGenerator.fromRecapChapterMarkers({
+              markers: input.markers ?? [],
+              totalVideoDurationMs: input.totalVideoDurationMs,
+            })
+          : input.mode === 'edit' && input.action
+            ? YouTubeChapterGenerator.updateChapters({
+                chapters: input.chapters ?? [],
+                action: input.action,
+                totalVideoDurationMs: input.totalVideoDurationMs,
+              })
+            : YouTubeChapterGenerator.fromRenderedTimeline({
+                mode: input.mode === 'game_video' ? 'game_video' : 'manga_recap',
+                segments: input.segments ?? [],
+                totalVideoDurationMs: input.totalVideoDurationMs,
+              });
+      const updatedDescription =
+        input.baseDescription !== undefined
+          ? YouTubeChapterGenerator.injectIntoDescription(
+              input.baseDescription,
+              out.chapters,
+              input.totalVideoDurationMs,
+            )
+          : undefined;
+      return { ...out, ...(updatedDescription !== undefined ? { updatedDescription } : {}) };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:publishing-generate-recap-metadata',
+    async (
+      event,
+      input: {
+        workTitle: string;
+        seriesProjectId?: string;
+        markers: RecapChapterMarker[];
+        arcSubtitle?: string;
+        customLinks?: Array<{ label: string; url: string }>;
+        sourceCredits?: string[];
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const storyMemory = input.seriesProjectId
+        ? loadStoryMemoryProject(recapWorkspace, input.seriesProjectId)
+        : null;
+      return generateMultiChapterRecapMetadata({
+        workTitle: input.workTitle,
+        markers: input.markers,
+        storyMemory,
+        ...(input.arcSubtitle ? { arcSubtitle: input.arcSubtitle } : {}),
+        ...(input.customLinks ? { customLinks: input.customLinks } : {}),
+        ...(input.sourceCredits ? { sourceCredits: input.sourceCredits } : {}),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:publishing-validate-thumbnail',
+    async (
+      event,
+      input: {
+        mimeType: string;
+        sizeBytes: number;
+        width?: number;
+        height?: number;
+        replacingApproved?: boolean;
+        confirmReplaceApproved?: boolean;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      return validateYouTubeThumbnailSpec(input);
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:publishing-reference-scenario',
+    async (event) => {
+      ensureTrusted(event.senderFrame);
+      const refInput = SocialPublishingHub.createReferenceScheduleInput();
+      const saved = socialPublishingHub.schedulePublication(refInput);
+      return { event: saved, calendar: buildCalendarPayload(saved.timezone) };
     },
   );
 

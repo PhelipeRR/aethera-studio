@@ -1143,6 +1143,246 @@ export function createAetheraApiApp(opts: CreateAppOptions = {}) {
     res.status(201).json(created);
   });
 
+  // --- Cloud Social Publishing Hub & Unified Calendar (Fly.io / SQLite persistent queue) ---
+  // Operates independently of Desktop and Remote Host availability.
+  app.get('/api/social-publishing/events', (_req, res) => {
+    res.json({
+      events: db.listSocialPublications(),
+      cloudSchedulerActive: true,
+      remoteHostRequired: false,
+    });
+  });
+
+  app.post('/api/social-publishing/schedule', (req, res) => {
+    const body = req.body as Record<string, unknown>;
+    const now = new Date().toISOString();
+    const id = String(body.publicationId ?? body.id ?? `pub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+    const existing = db.getSocialPublication(id);
+    const platforms = Array.isArray(body.platforms) && body.platforms.length > 0
+      ? [...new Set(body.platforms.map(String))]
+      : [String(body.platform ?? 'youtube')];
+    const status = String(body.status ?? (body.scheduledPublishAtIso ? 'scheduled' : 'draft'));
+
+    if ((status === 'scheduled' || status === 'publishing') && body.reviewApproved === false) {
+      res.status(400).json({ error: 'review_approval_required: aprovação final obrigatória antes de agendar.' });
+      return;
+    }
+    const qg = body.qualityGates as { allMandatoryPassed?: boolean } | undefined;
+    if ((status === 'scheduled' || status === 'publishing') && qg && qg.allMandatoryPassed === false) {
+      res.status(400).json({ error: 'quality_gates_required: Gates obrigatórios precisam estar aprovados.' });
+      return;
+    }
+    const rv = body.rightsVerification as { verified?: boolean } | undefined;
+    if ((status === 'scheduled' || status === 'publishing') && rv && rv.verified === false) {
+      res.status(400).json({ error: 'rights_verification_required: verificação de direitos obrigatória.' });
+      return;
+    }
+
+    const prevTargets = (existing?.platformTargets as Record<string, Record<string, unknown>> | undefined) ?? {};
+    const bodyTargets = (body.platformTargets as Record<string, Record<string, unknown>> | undefined) ?? {};
+    const platformTargets: Record<string, Record<string, unknown>> = {};
+    for (const p of platforms) {
+      platformTargets[p] = {
+        platform: p,
+        status,
+        title: String(bodyTargets[p]?.title ?? body.title ?? ''),
+        description: String(bodyTargets[p]?.description ?? body.description ?? ''),
+        hashtags: Array.isArray(bodyTargets[p]?.hashtags) ? bodyTargets[p]!.hashtags : [],
+        ...prevTargets[p],
+        ...bodyTargets[p],
+        updatedAtIso: now,
+      };
+    }
+
+    const auditLog = Array.isArray(existing?.auditLog) ? [...(existing!.auditLog as unknown[])] : [];
+    auditLog.push({
+      id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestampIso: now,
+      action: status === 'scheduled' ? 'scheduled' : 'created',
+      actor: 'user',
+      detail: `Agendamento unificado (${platforms.join(', ')}) salvo na nuvem.`,
+    });
+
+    const saved = db.upsertSocialPublication({
+      ...(existing ?? {}),
+      ...body,
+      id,
+      publicationId: id,
+      platform: platforms[0],
+      platforms,
+      platformTargets,
+      status,
+      timezone: String(body.timezone ?? 'America/Sao_Paulo'),
+      plannedDateIso: String(body.scheduledPublishAtIso ?? body.plannedDateIso ?? now),
+      rescheduleHistory: Array.isArray(existing?.rescheduleHistory) ? existing!.rescheduleHistory : [],
+      auditLog,
+      createdAt: String(existing?.createdAt ?? now),
+      updatedAt: now,
+    });
+    sse.broadcast('social_publication_updated', saved);
+    res.status(201).json({ event: saved, events: db.listSocialPublications() });
+  });
+
+  app.post('/api/social-publishing/reschedule', (req, res) => {
+    const { publicationId, targetDateIso, reason } = req.body as {
+      publicationId?: string;
+      targetDateIso?: string;
+      reason?: string;
+    };
+    if (!publicationId || !targetDateIso || Number.isNaN(Date.parse(targetDateIso))) {
+      res.status(400).json({ error: 'invalid: publicationId e targetDateIso válidos são obrigatórios.' });
+      return;
+    }
+    const existing = db.getSocialPublication(publicationId);
+    if (!existing) {
+      res.status(404).json({ error: `not_found: publicação ${publicationId} não encontrada.` });
+      return;
+    }
+    const now = new Date().toISOString();
+    const fromIso = String(existing.scheduledPublishAtIso ?? existing.plannedDateIso ?? now);
+    const rescheduleHistory = [
+      ...(Array.isArray(existing.rescheduleHistory) ? (existing.rescheduleHistory as unknown[]) : []),
+      { fromIso, toIso: targetDateIso, targetKind: 'scheduled', changedAt: now, ...(reason ? { reason } : {}) },
+    ];
+    const auditLog = [
+      ...(Array.isArray(existing.auditLog) ? (existing.auditLog as unknown[]) : []),
+      {
+        id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        timestampIso: now,
+        action: 'rescheduled',
+        actor: 'user',
+        detail: `Reagendado de ${fromIso} para ${targetDateIso}${reason ? ` (${reason})` : ''}.`,
+      },
+    ];
+    const updated = db.upsertSocialPublication({
+      ...existing,
+      scheduledPublishAtIso: targetDateIso,
+      plannedDateIso: targetDateIso,
+      rescheduleHistory,
+      auditLog,
+      updatedAt: now,
+    });
+    sse.broadcast('social_publication_updated', updated);
+    res.json({ event: updated, events: db.listSocialPublications() });
+  });
+
+  app.post('/api/social-publishing/cancel', (req, res) => {
+    const { publicationId, platform, reason, confirmIrreversible } = req.body as {
+      publicationId?: string;
+      platform?: string;
+      reason?: string;
+      confirmIrreversible?: boolean;
+    };
+    if (!publicationId) {
+      res.status(400).json({ error: 'invalid: publicationId obrigatório.' });
+      return;
+    }
+    const existing = db.getSocialPublication(publicationId);
+    if (!existing) {
+      res.status(404).json({ error: `not_found: publicação ${publicationId} não encontrada.` });
+      return;
+    }
+    if (existing.status === 'published' && !confirmIrreversible) {
+      res.status(409).json({ error: 'confirmation_required: confirme explicitamente para alterar publicação já enviada.' });
+      return;
+    }
+    const now = new Date().toISOString();
+    const targets = { ...((existing.platformTargets as Record<string, Record<string, unknown>>) ?? {}) };
+    if (platform && targets[platform]) {
+      targets[platform] = { ...targets[platform], status: 'cancelled', updatedAtIso: now };
+    } else {
+      for (const k of Object.keys(targets)) {
+        if (targets[k]?.status !== 'published') {
+          targets[k] = { ...targets[k], status: 'cancelled', updatedAtIso: now };
+        }
+      }
+    }
+    const anyStillActive = Object.values(targets).some(
+      (t) => t.status === 'scheduled' || t.status === 'publishing' || t.status === 'published',
+    );
+    const auditLog = [
+      ...(Array.isArray(existing.auditLog) ? (existing.auditLog as unknown[]) : []),
+      {
+        id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        timestampIso: now,
+        action: platform ? 'platform_cancelled' : 'cancelled',
+        actor: 'user',
+        ...(platform ? { platform } : {}),
+        detail: reason ?? (platform ? `Destino ${platform} cancelado.` : 'Agendamento cancelado.'),
+      },
+    ];
+    const updated = db.upsertSocialPublication({
+      ...existing,
+      platformTargets: targets,
+      status: anyStillActive ? existing.status : 'cancelled',
+      auditLog,
+      updatedAt: now,
+    });
+    sse.broadcast('social_publication_updated', updated);
+    res.json({ event: updated, events: db.listSocialPublications() });
+  });
+
+  app.post('/api/social-publishing/worker/tick', (req, res) => {
+    const { nowIso, simulatedOutcomes } = (req.body ?? {}) as {
+      nowIso?: string;
+      simulatedOutcomes?: Record<string, { ok: boolean; remoteId?: string; error?: string }>;
+    };
+    const nowMs = Date.parse(nowIso ?? new Date().toISOString());
+    const all = db.listSocialPublications();
+    const processed: Array<{ publicationId: string; platform: string; ok: boolean; error?: string }> = [];
+
+    for (const pub of all) {
+      if (pub.status !== 'scheduled' && pub.status !== 'publishing') continue;
+      const schedIso = String(pub.scheduledPublishAtIso ?? pub.plannedDateIso ?? '');
+      if (!schedIso || Number.isNaN(Date.parse(schedIso)) || Date.parse(schedIso) > nowMs) continue;
+
+      const pubId = String(pub.publicationId ?? pub.id);
+      const platforms = Array.isArray(pub.platforms) ? (pub.platforms as string[]) : [String(pub.platform ?? 'youtube')];
+      const targets = { ...((pub.platformTargets as Record<string, Record<string, unknown>>) ?? {}) };
+      const auditLog = Array.isArray(pub.auditLog) ? [...(pub.auditLog as unknown[])] : [];
+      let anyFailed = false;
+      let anyPublished = false;
+
+      for (const platform of platforms) {
+        const target = targets[platform] ?? { platform, status: 'scheduled' };
+        if (target.status === 'published' || target.status === 'cancelled') {
+          if (target.status === 'published') anyPublished = true;
+          continue;
+        }
+        const idempKey = `${pubId}:${platform}:${schedIso}`;
+        if (db.hasSocialIdempotencyKey(idempKey)) {
+          anyPublished = true;
+          continue;
+        }
+        const sim = simulatedOutcomes?.[platform];
+        const outcome = sim ?? { ok: true, remoteId: `cloud_${platform}_${Date.now()}` };
+        const doneAt = new Date().toISOString();
+        if (outcome.ok) {
+          db.recordSocialIdempotencyKey(idempKey, pubId, platform, outcome);
+          anyPublished = true;
+          targets[platform] = { ...target, status: 'published', remoteId: outcome.remoteId, publishedAtIso: doneAt, updatedAtIso: doneAt };
+          auditLog.push({ id: `aud_${Date.now()}_${platform}`, timestampIso: doneAt, action: 'platform_published', actor: 'cloud_worker', platform, detail: `Publicado em ${platform} (${outcome.remoteId ?? 'ok'}).` });
+          processed.push({ publicationId: pubId, platform, ok: true });
+        } else {
+          anyFailed = true;
+          targets[platform] = { ...target, status: 'failed', lastError: outcome.error ?? `Falha em ${platform}`, updatedAtIso: doneAt };
+          auditLog.push({ id: `aud_${Date.now()}_${platform}`, timestampIso: doneAt, action: 'platform_failed', actor: 'cloud_worker', platform, detail: outcome.error ?? `Falha em ${platform}` });
+          processed.push({ publicationId: pubId, platform, ok: false, error: outcome.error });
+        }
+      }
+
+      db.upsertSocialPublication({
+        ...pub,
+        platformTargets: targets,
+        status: anyFailed ? 'failed' : anyPublished ? 'published' : 'scheduled',
+        auditLog,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    res.json({ ok: true, processed, events: db.listSocialPublications() });
+  });
+
   // --- Preferences, Logs & Reset ---
   app.patch('/api/preferences', (req, res) => {
     const patch = req.body as Partial<StudioPreferences>;
