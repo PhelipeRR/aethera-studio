@@ -28,10 +28,13 @@ import {
   deriveAudiovisualTracks,
   derivePipelineTimeline,
   deriveQualityScorecard,
+  deriveQueueItemDisplayStatus,
+  deriveSeparatedImportAndProductionStatus,
   deriveWorkflowSteps,
   formatTimecodeMs,
   getStateMetadata,
   mergeActiveProjectIntoRecentList,
+  reconcileQueueWithSuccessfulImport,
   toAetheraMediaUrl,
   type MotionVelixKitStatusView,
   type MotionVelixRenderTelemetry,
@@ -403,6 +406,17 @@ interface RecapBridge {
   recapListProjects?: () => Promise<RecapProjectRecordView[]>;
   recapLoadProject?: (runId: string) => Promise<RecapProjectDetailResponse | null>;
   recapDeleteProject?: (runId: string) => Promise<{ ok: boolean; deleted?: string; removedPaths?: string[]; error?: string }>;
+  recapVerifyArchive?: (input: { archivePath: string }) => Promise<{
+    valid: boolean;
+    exists: boolean;
+    archivePath: string;
+    format: 'cbz' | 'pdf' | 'unknown';
+    pageCount: number;
+    sizeBytes: number;
+    workTitle?: string;
+    chapterNumber?: string;
+    error?: string;
+  }>;
   onRecapProductionProgress?: (listener: (event: unknown) => void) => () => void;
   cinemaCalendarUpsertEvent?: (input: Record<string, unknown>) => Promise<unknown>;
 }
@@ -1345,6 +1359,14 @@ export function RecapProductionPanel() {
   const [cdnImporting, setCdnImporting] = useState(false);
   const [cdnResult, setCdnResult] = useState<{ cbzPath: string; pageCount: number; workTitle: string; chapterNumber: string } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [archiveIntegrity, setArchiveIntegrity] = useState<{
+    archivePath: string;
+    checking: boolean;
+    valid: boolean;
+    pageCount: number;
+    sizeBytes: number;
+    error?: string;
+  } | null>(null);
 
   // Production configuration
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1427,36 +1449,6 @@ export function RecapProductionPanel() {
     return () => window.clearInterval(timer);
   }, [isRunning]);
 
-  const pipelineTimeline = useMemo(
-    () => derivePipelineTimeline(activeProject, statusNote),
-    [activeProject, statusNote],
-  );
-
-  const workflowSteps = useMemo(
-    () =>
-      deriveWorkflowSteps({
-        hasSeriesOrProject: Boolean(activeSeries || activeProject),
-        hasChapterSource: Boolean(
-          selectedFiles.length > 0 ||
-            activeProject?.archivePath ||
-            linkImportedCbz?.cbzPath ||
-            assistedResult?.archivePath ||
-            cdnResult?.cbzPath,
-        ),
-        isProducing: isRunning,
-        record: activeProject,
-        sceneCount: scenes.length,
-        hasLowConfidenceScenes: scenes.some(
-          (s) => s.reviewStatus === 'needs_review' || (s.confidence !== undefined && s.confidence < 0.5),
-        ),
-        gateGVerdict: activeGateG?.verdict ?? activeProject?.gateGVerdict ?? null,
-        gateHVerdict: activeGateH?.verdict ?? activeProject?.gateHVerdict ?? null,
-        hasAudiovisualPlan: Boolean(activePlan && activePlan.shots.length > 0),
-        hasRenderedVideo: Boolean(activeProject?.masterMp4Path || activeProject?.previewMp4Path),
-      }),
-    [activeSeries, activeProject, selectedFiles.length, linkImportedCbz?.cbzPath, cdnResult?.cbzPath, isRunning, scenes, activeGateG, activeGateH, activePlan],
-  );
-
   // Resolve active archive path across all origins or active project
   const resolvedArchivePath = useMemo(() => {
     if (origin === 'cbz' && selectedFiles[0]?.path) return selectedFiles[0].path;
@@ -1466,6 +1458,148 @@ export function RecapProductionPanel() {
     if (origin === 'link' && linkImportedCbz?.cbzPath) return linkImportedCbz.cbzPath;
     return activeProject?.archivePath ?? null;
   }, [origin, selectedFiles, assistedResult, cdnResult, linkImportedCbz, activeProject]);
+
+  // Requirement 7: Confirm physical existence and binary integrity of CBZ/PDF before marking Capítulos Ready or allowing advance
+  useEffect(() => {
+    if (!resolvedArchivePath) {
+      setArchiveIntegrity(null);
+      return;
+    }
+    let cancelled = false;
+    setArchiveIntegrity((prev) =>
+      prev?.archivePath === resolvedArchivePath
+        ? prev
+        : { archivePath: resolvedArchivePath, checking: true, valid: true, pageCount: 0, sizeBytes: 0 },
+    );
+    const bridge = getRecapBridge();
+    if (!bridge?.recapVerifyArchive) {
+      setArchiveIntegrity({
+        archivePath: resolvedArchivePath,
+        checking: false,
+        valid: true,
+        pageCount: 0,
+        sizeBytes: 0,
+      });
+      return;
+    }
+    void bridge
+      .recapVerifyArchive({ archivePath: resolvedArchivePath })
+      .then((res) => {
+        if (cancelled) return;
+        setArchiveIntegrity({
+          archivePath: resolvedArchivePath,
+          checking: false,
+          valid: res.valid,
+          pageCount: res.pageCount,
+          sizeBytes: res.sizeBytes,
+          ...(res.error ? { error: res.error } : {}),
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setArchiveIntegrity({
+          archivePath: resolvedArchivePath,
+          checking: false,
+          valid: false,
+          pageCount: 0,
+          sizeBytes: 0,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [resolvedArchivePath]);
+
+  const isImportingChapterNow =
+    linkImporting ||
+    assistedImporting ||
+    cdnImporting ||
+    (interactiveModalOpen &&
+      !['completed', 'access_denied', 'session_expired', 'cancelled'].includes(interactiveSession?.state ?? ''));
+
+  const isChapterArchiveValidated = Boolean(
+    resolvedArchivePath && (!archiveIntegrity || archiveIntegrity.valid),
+  );
+
+  const hasValidNarrationArtifacts = useMemo(
+    () =>
+      Boolean(
+        scenes.length > 0 &&
+          ((activePlan && activePlan.shots.length > 0) ||
+            Boolean(activeProject?.previewMp4Path || activeProject?.masterMp4Path)),
+      ),
+    [scenes.length, activePlan, activeProject?.previewMp4Path, activeProject?.masterMp4Path],
+  );
+
+  const separatedStatus = useMemo(
+    () =>
+      deriveSeparatedImportAndProductionStatus({
+        hasChapterSource: Boolean(resolvedArchivePath),
+        chapterArchiveValidated: isChapterArchiveValidated,
+        ...(archiveIntegrity?.pageCount ? { archivePageCount: archiveIntegrity.pageCount } : {}),
+        archiveLabel: linkImportedCbz?.label ?? null,
+        archiveError: archiveIntegrity?.valid === false ? (archiveIntegrity.error ?? 'Arquivo CBZ inválido') : null,
+        isImportingChapter: isImportingChapterNow,
+        importError,
+        isProducing: isRunning,
+        activeProject,
+        sceneCount: scenes.length,
+      }),
+    [
+      resolvedArchivePath,
+      isChapterArchiveValidated,
+      archiveIntegrity,
+      linkImportedCbz?.label,
+      isImportingChapterNow,
+      importError,
+      isRunning,
+      activeProject,
+      scenes.length,
+    ],
+  );
+
+  const pipelineTimeline = useMemo(
+    () => derivePipelineTimeline(activeProject, statusNote),
+    [activeProject, statusNote],
+  );
+
+  const workflowSteps = useMemo(
+    () =>
+      deriveWorkflowSteps({
+        hasSeriesOrProject: Boolean(activeSeries || activeProject),
+        hasChapterSource: Boolean(resolvedArchivePath),
+        chapterArchiveValidated: isChapterArchiveValidated,
+        isImportingChapter: isImportingChapterNow,
+        hasActiveImportError: Boolean(importError || archiveIntegrity?.valid === false),
+        isProducing: isRunning,
+        record: activeProject,
+        sceneCount: scenes.length,
+        hasLowConfidenceScenes: scenes.some(
+          (s) => s.reviewStatus === 'needs_review' || (s.confidence !== undefined && s.confidence < 0.5),
+        ),
+        hasValidNarrationArtifacts,
+        gateGVerdict: activeGateG?.verdict ?? activeProject?.gateGVerdict ?? null,
+        gateHVerdict: activeGateH?.verdict ?? activeProject?.gateHVerdict ?? null,
+        hasAudiovisualPlan: Boolean(activePlan && activePlan.shots.length > 0),
+        hasRenderedVideo: Boolean(activeProject?.masterMp4Path || activeProject?.previewMp4Path),
+      }),
+    [
+      activeSeries,
+      activeProject,
+      resolvedArchivePath,
+      isChapterArchiveValidated,
+      isImportingChapterNow,
+      importError,
+      archiveIntegrity?.valid,
+      isRunning,
+      scenes,
+      hasValidNarrationArtifacts,
+      activeGateG,
+      activeGateH,
+      activePlan,
+    ],
+  );
 
   // ─── Data Loading & Live IPC Subscription ────────────────────────────────
 
@@ -1645,8 +1779,10 @@ export function RecapProductionPanel() {
         refreshReadiness(),
         refreshStoryMemory(),
       ]);
-      if (list.length > 0 && !activeProject) {
-        await openProjectDetail(list[0]!, false);
+      // Only auto-bind the latest project if it is not a failed run; failed runs remain preserved in "Projetos Recentes" history without contaminating a new chapter import session.
+      const latestNonFailed = list.find((p) => p.state !== 'failed');
+      if (latestNonFailed && !activeProject) {
+        await openProjectDetail(latestNonFailed, false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1733,6 +1869,27 @@ export function RecapProductionPanel() {
     }
   };
 
+  /**
+   * Clears stale import errors and detaches any historical failed production record
+   * when a new chapter archive is successfully imported, keeping the failed run in
+   * `persistedProjects` ("Projetos Recentes") without contaminating the current session.
+   */
+  const clearStaleFailureOnSuccessfulImport = useCallback(() => {
+    setImportError(null);
+    setActiveProject((prev) => {
+      if (prev && prev.state === 'failed') {
+        setActiveScript(null);
+        setActivePlan(null);
+        setActiveGateG(null);
+        setActiveGateH(null);
+        setScenes([]);
+        setSelectedShotId(null);
+        return null;
+      }
+      return prev;
+    });
+  }, []);
+
   const handleSelectFiles = async () => {
     const bridge = getRecapBridge();
     if (!bridge?.recapSelectArchives) {
@@ -1742,7 +1899,7 @@ export function RecapProductionPanel() {
     const result = await bridge.recapSelectArchives();
     if (!result.canceled && result.files.length > 0) {
       setSelectedFiles(result.files);
-      setImportError(null);
+      clearStaleFailureOnSuccessfulImport();
       if (!workTitle.trim() && result.files[0]) {
         setWorkTitle(result.files[0].name.replace(/\.(cbz|pdf)$/i, ''));
       }
@@ -1814,6 +1971,9 @@ export function RecapProductionPanel() {
     const readyItems = current.items.filter((it) => it.libraryEntry?.cbzPath);
     if (readyItems.length > 0) {
       const firstReady = readyItems[0]!;
+      const totalPages = firstReady.pagesTotal || firstReady.pagesDone || 0;
+      const donePages = firstReady.pagesDone || totalPages;
+      clearStaleFailureOnSuccessfulImport();
       setLinkImportedCbz((prev) =>
         prev && readyItems.some((it) => it.libraryEntry?.cbzPath === prev.cbzPath)
           ? prev
@@ -1821,8 +1981,10 @@ export function RecapProductionPanel() {
               cbzPath: firstReady.libraryEntry!.cbzPath,
               label:
                 readyItems.length > 1
-                  ? `${readyItems.length} capítulos prontos (${firstReady.pagesDone}/${firstReady.pagesTotal} págs no selecionado)`
-                  : `${firstReady.pagesDone}/${firstReady.pagesTotal} páginas importadas`,
+                  ? `${readyItems.length} capítulos prontos (${donePages}/${totalPages} págs no selecionado)`
+                  : totalPages > 0
+                    ? `${donePages}/${totalPages} páginas importadas`
+                    : 'Capítulo importado e validado',
             },
       );
       if (!workTitle.trim()) {
@@ -1871,13 +2033,23 @@ export function RecapProductionPanel() {
 
       if (cur.state === 'completed' && cur.importedEntries.length > 0) {
         const first = cur.importedEntries[0]!;
+        clearStaleFailureOnSuccessfulImport();
         setLinkImportedCbz({
           cbzPath: first.cbzPath,
           label:
             cur.importedEntries.length > 1
               ? `${cur.importedEntries.length} capítulos importados (${first.pageCount} págs no cap. ${first.chapterNumber})`
-              : `Cap. ${first.chapterNumber} · ${first.pageCount} páginas`,
+              : `${first.pageCount}/${first.pageCount} páginas importadas`,
         });
+        setLinkImportJob((prev) =>
+          reconcileQueueWithSuccessfulImport(
+            prev,
+            cur.importedEntries.map((entry, idx) => ({
+              ...entry,
+              ...(cleaned[idx] ? { sourceUrl: cleaned[idx] } : {}),
+            })),
+          ),
+        );
         if (!workTitle.trim() && first.workTitle) {
           setWorkTitle(first.workTitle);
         }
@@ -1960,10 +2132,20 @@ export function RecapProductionPanel() {
         ...(activeSeries?.projectId ? { seriesProjectId: activeSeries.projectId } : {}),
       });
       setAssistedResult(res);
+      clearStaleFailureOnSuccessfulImport();
       setLinkImportedCbz({
         cbzPath: res.archivePath,
         label: `Assistida · ${res.pageCount} páginas validadas`,
       });
+      setLinkImportJob((prev) =>
+        reconcileQueueWithSuccessfulImport(prev, [
+          {
+            cbzPath: res.archivePath,
+            pageCount: res.pageCount,
+            ...(sourceUrl ? { sourceUrl } : {}),
+          },
+        ]),
+      );
       if (!workTitle.trim()) {
         setWorkTitle(effectiveTitle);
       }
@@ -2050,10 +2232,20 @@ export function RecapProductionPanel() {
         workTitle: workTitle.trim() || analyzedChapterPreview.workTitle,
         chapterNumber: analyzedChapterPreview.chapterNumber,
       });
+      clearStaleFailureOnSuccessfulImport();
       setLinkImportedCbz({
         cbzPath: res.cbzPath,
         label: `${res.pageCount} páginas revisadas (${analyzedChapterPreview.acquisitionMethodLabel})`,
       });
+      setLinkImportJob((prev) =>
+        reconcileQueueWithSuccessfulImport(prev, [
+          {
+            cbzPath: res.cbzPath,
+            pageCount: res.pageCount,
+            sourceUrl: analyzedChapterPreview.sourceUrl,
+          },
+        ]),
+      );
       setStatusNote(
         `CBZ criado após revisão de imagens: ${res.workTitle} Cap. ${res.chapterNumber} (${res.pageCount} páginas).`,
       );
@@ -2144,6 +2336,7 @@ export function RecapProductionPanel() {
       if (cdnWorkTitle.trim()) cdnInput.workTitle = cdnWorkTitle.trim();
       if (cdnChapterNumber.trim()) cdnInput.chapterNumber = cdnChapterNumber.trim();
       const res = await bridge.recapImportCdnDirect(cdnInput);
+      clearStaleFailureOnSuccessfulImport();
       setCdnResult(res);
       if (!workTitle.trim() && res.workTitle) setWorkTitle(res.workTitle);
     } catch (err) {
@@ -2584,7 +2777,7 @@ export function RecapProductionPanel() {
                   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                        {isCurrent && (
+                        {isCurrent && !separatedStatus.isHistoricalFailedRecord ? (
                           <span
                             style={{
                               fontSize: 10,
@@ -2599,7 +2792,23 @@ export function RecapProductionPanel() {
                           >
                             Atual
                           </span>
-                        )}
+                        ) : project.state === 'failed' ? (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 600,
+                              letterSpacing: '0.05em',
+                              textTransform: 'uppercase',
+                              color: T.inkMuted,
+                              background: T.surfaceSubtle,
+                              border: `1px solid ${T.border}`,
+                              padding: '2px 7px',
+                              borderRadius: 6,
+                            }}
+                          >
+                            Tentativa anterior
+                          </span>
+                        ) : null}
                         <span style={{ fontSize: 11, fontWeight: 600, color: c.fg }}>
                           {meta.label}
                         </span>
@@ -2687,6 +2896,119 @@ export function RecapProductionPanel() {
           </div>
         )}
       </BentoBlock>
+
+      {/* Separated Import Status vs General Production Status Strip (Requirement 4 & 9) */}
+      <div
+        role="region"
+        aria-label="Status separado de importação e produção"
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+          gap: 12,
+        }}
+      >
+        {(() => {
+          const impTone = toneColors(separatedStatus.importStatus.tone);
+          const prodTone = toneColors(separatedStatus.productionStatus.tone);
+          return (
+            <>
+              <div
+                style={{
+                  padding: '14px 18px',
+                  borderRadius: T.radiusInner,
+                  background: T.surface,
+                  border: `1px solid ${impTone.border}`,
+                  boxShadow: T.shadow,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: T.inkMuted }}>
+                    Status da Importação (CBZ / Capítulo)
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: T.ink, marginTop: 3 }}>
+                    {separatedStatus.importStatus.label}
+                  </div>
+                  <div style={{ fontSize: 12, color: T.inkMuted, marginTop: 2 }}>
+                    {separatedStatus.importStatus.detail}
+                  </div>
+                </div>
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: '4px 10px',
+                    borderRadius: T.radiusFull,
+                    background: impTone.bg,
+                    border: `1px solid ${impTone.border}`,
+                    color: impTone.fg,
+                    flexShrink: 0,
+                  }}
+                >
+                  {separatedStatus.importStatus.state === 'validated'
+                    ? 'CBZ Pronto'
+                    : separatedStatus.importStatus.state === 'importing'
+                      ? 'Em andamento'
+                      : separatedStatus.importStatus.state === 'error'
+                        ? 'Requer atenção'
+                        : 'Pendente'}
+                </span>
+              </div>
+
+              <div
+                style={{
+                  padding: '14px 18px',
+                  borderRadius: T.radiusInner,
+                  background: T.surface,
+                  border: `1px solid ${prodTone.border}`,
+                  boxShadow: T.shadow,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: T.inkMuted }}>
+                    Status Geral da Produção (Pipeline)
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: T.ink, marginTop: 3 }}>
+                    {separatedStatus.productionStatus.label}
+                  </div>
+                  <div style={{ fontSize: 12, color: T.inkMuted, marginTop: 2 }}>
+                    {separatedStatus.productionStatus.detail}
+                  </div>
+                </div>
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: '4px 10px',
+                    borderRadius: T.radiusFull,
+                    background: prodTone.bg,
+                    border: `1px solid ${prodTone.border}`,
+                    color: prodTone.fg,
+                    flexShrink: 0,
+                  }}
+                >
+                  {separatedStatus.productionStatus.state === 'ready_to_start'
+                    ? 'Liberado'
+                    : separatedStatus.productionStatus.state === 'running'
+                      ? 'Executando'
+                      : separatedStatus.productionStatus.state === 'completed'
+                        ? 'Finalizado'
+                        : separatedStatus.productionStatus.state === 'failed'
+                          ? 'Falhou'
+                          : 'Aguardando'}
+                </span>
+              </div>
+            </>
+          );
+        })()}
+      </div>
 
       {/* 8-Stage Workflow Stepper (UX/UI Pro Max + Apple Design Translucent Chrome) */}
       <RecapWorkflowStepper steps={workflowSteps} activeStep={subTab} onSelectStep={setSubTab} />
@@ -3232,31 +3554,15 @@ export function RecapProductionPanel() {
                   {linkImportJob.items.map((item, idx) => {
                     const cbzPath = item.libraryEntry?.cbzPath;
                     const isSelected = Boolean(cbzPath && linkImportedCbz?.cbzPath === cbzPath);
-                    const pct = item.pagesTotal > 0 ? Math.min(100, Math.round((item.pagesDone / item.pagesTotal) * 100)) : item.status === 'completed' || item.status === 'skipped' ? 100 : 0;
-                    const statusLabel =
-                      item.universalStateLabel && (item.status === 'failed' || item.status === 'analyzing' || item.status === 'downloading')
-                        ? item.universalStateLabel
-                        : item.status === 'completed'
-                          ? `Pronto (${item.pagesDone}/${item.pagesTotal} págs)`
-                          : item.status === 'skipped'
-                            ? 'Já importado'
-                            : item.status === 'downloading'
-                              ? `Importando ${item.pagesDone}/${item.pagesTotal || '?'}`
-                              : item.status === 'analyzing'
-                                ? 'Analisando página'
-                                : item.status === 'failed'
-                                  ? 'Falhou'
-                                  : item.status === 'cancelled'
-                                    ? 'Cancelado'
-                                    : 'Fonte reconhecida';
+                    const { isDone, pct, statusLabel } = deriveQueueItemDisplayStatus(item, linkImportJob.status);
                     return (
                       <div
                         key={`${item.url}-${idx}`}
                         style={{
                           padding: '8px 10px',
                           borderRadius: 8,
-                          background: isSelected ? T.successBg : T.surface,
-                          border: `1px solid ${isSelected ? T.successBorder : item.error ? T.errorBorder : T.border}`,
+                          background: isSelected || isDone ? T.successBg : T.surface,
+                          border: `1px solid ${isSelected || isDone ? T.successBorder : item.error ? T.errorBorder : T.border}`,
                           display: 'flex',
                           flexDirection: 'column',
                           gap: 5,
@@ -3282,7 +3588,14 @@ export function RecapProductionPanel() {
                               {item.acquisitionMethodLabel}
                             </span>
                           )}
-                          <span style={{ fontSize: 11, fontWeight: 600, color: item.error ? T.error : cbzPath ? T.success : T.inkMuted, flexShrink: 0 }}>
+                          <span
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 700,
+                              color: item.error && !isDone ? T.error : isDone || cbzPath ? T.success : T.inkMuted,
+                              flexShrink: 0,
+                            }}
+                          >
                             {statusLabel}
                           </span>
                           {cbzPath && (
@@ -3469,14 +3782,45 @@ export function RecapProductionPanel() {
             </div>
           )}
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          {archiveIntegrity && archiveIntegrity.valid === false && (
+            <div
+              role="alert"
+              style={{
+                padding: '12px 14px',
+                borderRadius: T.radiusInner,
+                background: T.errorBg,
+                border: `1px solid ${T.errorBorder}`,
+                color: T.error,
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            >
+              Validação de integridade do CBZ falhou: {archiveIntegrity.error ?? 'O arquivo CBZ não existe ou está corrompido.'}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            {archiveIntegrity?.valid && resolvedArchivePath ? (
+              <span style={{ fontSize: 12, fontWeight: 600, color: T.success, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <CheckCircle2 style={{ width: 15, height: 15 }} />
+                CBZ validado no disco
+                {archiveIntegrity.pageCount > 0 ? ` (${archiveIntegrity.pageCount} páginas íntegras)` : ''}
+                {archiveIntegrity.sizeBytes > 0 ? ` · ${formatBytes(archiveIntegrity.sizeBytes)}` : ''}
+              </span>
+            ) : (
+              <span />
+            )}
             <button
               type="button"
               onClick={() => setSubTab('analise')}
-              disabled={!resolvedArchivePath}
-              style={{ ...btnPrimary, opacity: !resolvedArchivePath ? 0.45 : 1 }}
+              disabled={!isChapterArchiveValidated || Boolean(archiveIntegrity?.checking)}
+              style={{
+                ...btnPrimary,
+                opacity: !isChapterArchiveValidated || Boolean(archiveIntegrity?.checking) ? 0.45 : 1,
+              }}
             >
-              Continuar para Produção <ChevronRight style={{ width: 15, height: 15 }} />
+              {archiveIntegrity?.checking ? 'Verificando integridade do CBZ…' : 'Continuar para Produção'}{' '}
+              <ChevronRight style={{ width: 15, height: 15 }} />
             </button>
           </div>
         </div>

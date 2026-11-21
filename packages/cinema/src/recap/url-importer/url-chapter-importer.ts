@@ -5,7 +5,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import AdmZip from 'adm-zip';
 import {
@@ -708,4 +708,190 @@ export function buildAndRegisterChapterCbz(input: {
 	};
 	registerLibraryEntry(input.libraryDir, entry);
 	return entry;
+}
+
+export interface ArchiveIntegrityResult {
+	valid: boolean;
+	exists: boolean;
+	archivePath: string;
+	format: 'cbz' | 'pdf' | 'unknown';
+	pageCount: number;
+	sizeBytes: number;
+	workTitle?: string;
+	chapterNumber?: string;
+	error?: string;
+}
+
+/**
+ * Verifies physical existence and internal binary integrity of a CBZ or PDF archive
+ * before allowing the UI to mark "02 · Capítulos" as Ready or advance to production.
+ */
+export function verifyChapterArchiveIntegrity(archivePath: string): ArchiveIntegrityResult {
+	const cleaned = (archivePath ?? '').trim();
+	if (!cleaned) {
+		return {
+			valid: false,
+			exists: false,
+			archivePath: '',
+			format: 'unknown',
+			pageCount: 0,
+			sizeBytes: 0,
+			error: 'Caminho do arquivo de capítulo vazio.',
+		};
+	}
+
+	if (!existsSync(cleaned)) {
+		return {
+			valid: false,
+			exists: false,
+			archivePath: cleaned,
+			format: 'unknown',
+			pageCount: 0,
+			sizeBytes: 0,
+			error: `Arquivo CBZ/PDF não encontrado no disco: ${cleaned}`,
+		};
+	}
+
+	let sizeBytes = 0;
+	try {
+		const st = statSync(cleaned);
+		if (!st.isFile() || st.size <= 0) {
+			return {
+				valid: false,
+				exists: true,
+				archivePath: cleaned,
+				format: 'unknown',
+				pageCount: 0,
+				sizeBytes: st.size,
+				error: 'Arquivo de capítulo está vazio (0 bytes).',
+			};
+		}
+		sizeBytes = st.size;
+	} catch (err) {
+		return {
+			valid: false,
+			exists: false,
+			archivePath: cleaned,
+			format: 'unknown',
+			pageCount: 0,
+			sizeBytes: 0,
+			error: `Não foi possível acessar o arquivo: ${err instanceof Error ? err.message : String(err)}`,
+		};
+	}
+
+	const lower = cleaned.toLowerCase();
+	if (lower.endsWith('.pdf')) {
+		try {
+			const header = readFileSync(cleaned).subarray(0, 16);
+			if (!header.toString('ascii', 0, 5).startsWith('%PDF-') || sizeBytes < 128) {
+				return {
+					valid: false,
+					exists: true,
+					archivePath: cleaned,
+					format: 'pdf',
+					pageCount: 0,
+					sizeBytes,
+					error: 'Arquivo PDF inválido ou corrompido (assinatura %PDF- ausente).',
+				};
+			}
+			return {
+				valid: true,
+				exists: true,
+				archivePath: cleaned,
+				format: 'pdf',
+				pageCount: 1,
+				sizeBytes,
+			};
+		} catch (err) {
+			return {
+				valid: false,
+				exists: true,
+				archivePath: cleaned,
+				format: 'pdf',
+				pageCount: 0,
+				sizeBytes,
+				error: `Falha ao validar PDF: ${err instanceof Error ? err.message : String(err)}`,
+			};
+		}
+	}
+
+	// Default: validate as CBZ / ZIP archive
+	try {
+		const zip = new AdmZip(cleaned);
+		const entries = zip.getEntries();
+		const imageEntries = entries.filter(
+			(e) =>
+				!e.isDirectory &&
+				!e.entryName.startsWith('__MACOSX') &&
+				/\.(?:webp|png|jpe?g|gif)$/i.test(e.entryName),
+		);
+
+		if (imageEntries.length === 0) {
+			return {
+				valid: false,
+				exists: true,
+				archivePath: cleaned,
+				format: 'cbz',
+				pageCount: 0,
+				sizeBytes,
+				error: 'O arquivo CBZ não contém nenhuma página de imagem válida (.webp, .png, .jpg).',
+			};
+		}
+
+		// Validate binary magic bytes of every image entry in the CBZ
+		for (const imgEntry of imageEntries) {
+			const data = imgEntry.getData();
+			const magic = validateImageMagicBytes(data);
+			if (!magic.valid) {
+				return {
+					valid: false,
+					exists: true,
+					archivePath: cleaned,
+					format: 'cbz',
+					pageCount: 0,
+					sizeBytes,
+					error: `Imagem corrompida dentro do CBZ (${imgEntry.entryName}): ${magic.reason ?? 'assinatura inválida'}`,
+				};
+			}
+		}
+
+		let workTitle: string | undefined;
+		let chapterNumber: string | undefined;
+		const metaEntry = entries.find(
+			(e) => e.entryName === 'aethera-source.json' || e.entryName === 'recap-source-metadata.json',
+		);
+		if (metaEntry) {
+			try {
+				const parsed = JSON.parse(metaEntry.getData().toString('utf-8')) as {
+					workTitle?: string;
+					chapterNumber?: string;
+				};
+				if (parsed.workTitle) workTitle = parsed.workTitle;
+				if (parsed.chapterNumber) chapterNumber = String(parsed.chapterNumber);
+			} catch {
+				// metadata is optional
+			}
+		}
+
+		return {
+			valid: true,
+			exists: true,
+			archivePath: cleaned,
+			format: 'cbz',
+			pageCount: imageEntries.length,
+			sizeBytes,
+			...(workTitle ? { workTitle } : {}),
+			...(chapterNumber ? { chapterNumber } : {}),
+		};
+	} catch (err) {
+		return {
+			valid: false,
+			exists: true,
+			archivePath: cleaned,
+			format: 'cbz',
+			pageCount: 0,
+			sizeBytes,
+			error: `Arquivo CBZ corrompido ou ilegível: ${err instanceof Error ? err.message : String(err)}`,
+		};
+	}
 }

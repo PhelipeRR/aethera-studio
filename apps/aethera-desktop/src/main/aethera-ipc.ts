@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
+import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -5834,6 +5834,11 @@ productionConsole,
   ipcMain.handle('recap:library-list', async (event) => {
     ensureTrusted(event.senderFrame);
     return listRecapLibrary(recapLibraryDir);
+  });
+
+  ipcMain.handle('recap:verify-archive', async (event, input: { archivePath: string }) => {
+    ensureTrusted(event.senderFrame);
+    return verifyChapterArchiveIntegrity(input?.archivePath ?? '');
   });
 
   ipcMain.handle('recap:open-in-browser', async (event, input: { url: string }) => {

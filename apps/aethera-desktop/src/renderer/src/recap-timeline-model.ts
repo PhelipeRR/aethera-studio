@@ -673,10 +673,18 @@ export interface RecapWorkflowStepState {
 export interface DeriveWorkflowStepsInput {
   hasSeriesOrProject: boolean;
   hasChapterSource: boolean;
+  /** True when the CBZ/PDF archive exists on disk and passed binary integrity validation. Defaults to hasChapterSource when omitted. */
+  chapterArchiveValidated?: boolean;
+  /** True when a chapter import job or interactive session is currently running. */
+  isImportingChapter?: boolean;
+  /** True when the current import attempt failed and no valid CBZ is active. */
+  hasActiveImportError?: boolean;
   isProducing: boolean;
   record: RecapProjectRecordView | null;
   sceneCount: number;
   hasLowConfidenceScenes: boolean;
+  /** True only when valid narration artifacts (measured TTS durations or audiovisual plan/master) exist for the current production. */
+  hasValidNarrationArtifacts?: boolean;
   gateGVerdict?: 'pass' | 'needs_review' | 'fail' | null;
   gateHVerdict?: 'pass' | 'needs_review' | 'fail' | null;
   hasAudiovisualPlan: boolean;
@@ -686,27 +694,44 @@ export interface DeriveWorkflowStepsInput {
 /**
  * Derives the honest real-time status of each of the 8 Recap workflow stages:
  * Projeto → Capítulos → Análise → Roteiro → Narração → Storyboard → Produção → Revisão
+ *
+ * Guarantees:
+ * - Once a valid CBZ is imported and verified, "02 · Capítulos" is marked 'ready' ("Pronta"),
+ *   even if a previous historical production record failed.
+ * - "05 · Narração" is NEVER marked 'ready' merely because a chapter CBZ exists; it requires
+ *   valid scenes and narration/audiovisual artifacts from the current production.
  */
 export function deriveWorkflowSteps(input: DeriveWorkflowStepsInput): RecapWorkflowStepState[] {
   const completed = new Set(input.record?.completedSteps ?? []);
   const state = input.record?.state ?? 'idle';
   const curStage = input.record?.currentStage ?? null;
 
+  const isArchiveValid =
+    input.hasChapterSource && (input.chapterArchiveValidated === undefined ? true : input.chapterArchiveValidated);
+  const isArchiveExplicitlyInvalid = input.hasChapterSource && input.chapterArchiveValidated === false;
+
+  // If a valid chapter archive is ready and the attached record is an old failed run with 0 scenes,
+  // treat the old failed record as historical so it does not contaminate the current session's stages.
+  const isStaleFailedImportRecord =
+    state === 'failed' && isArchiveValid && input.sceneCount === 0 && !input.isProducing;
+
   const stepProjeto: WorkflowStepStatus = input.hasSeriesOrProject ? 'ready' : 'pending';
 
   const stepCapitulos: WorkflowStepStatus =
-    state === 'importing'
+    input.isImportingChapter || state === 'importing'
       ? 'processing'
-      : state === 'failed' && (curStage === 'import' || curStage === 'gate-f')
+      : isArchiveExplicitlyInvalid || (input.hasActiveImportError && !isArchiveValid)
         ? 'error'
-        : input.hasChapterSource || completed.has('import')
+        : isArchiveValid || completed.has('import')
           ? 'ready'
-          : 'pending';
+          : state === 'failed' && (curStage === 'import' || curStage === 'gate-f')
+            ? 'error'
+            : 'pending';
 
   const stepAnalise: WorkflowStepStatus =
     (state === 'preflight' || (state === 'story_engine' && (curStage === 'vision' || curStage === 'continuity'))) && input.isProducing
       ? 'processing'
-      : state === 'failed' && (curStage === 'vision' || curStage === 'continuity')
+      : !isStaleFailedImportRecord && state === 'failed' && (curStage === 'vision' || curStage === 'continuity')
         ? 'error'
         : state === 'paused_provider_unavailable'
           ? 'needs_review'
@@ -719,7 +744,7 @@ export function deriveWorkflowSteps(input: DeriveWorkflowStepsInput): RecapWorkf
   const stepRoteiro: WorkflowStepStatus =
     state === 'story_engine' && (curStage === 'script' || curStage === 'humanize') && input.isProducing
       ? 'processing'
-      : input.gateGVerdict === 'fail' || (state === 'failed' && curStage === 'script')
+      : !isStaleFailedImportRecord && (input.gateGVerdict === 'fail' || (state === 'failed' && curStage === 'script'))
         ? 'error'
         : input.sceneCount > 0
           ? input.gateGVerdict === 'needs_review' || input.hasLowConfidenceScenes
@@ -727,16 +752,32 @@ export function deriveWorkflowSteps(input: DeriveWorkflowStepsInput): RecapWorkf
             : 'ready'
           : 'pending';
 
+  const hasNarrationArtifacts =
+    input.hasValidNarrationArtifacts !== undefined
+      ? input.hasValidNarrationArtifacts
+      : input.sceneCount > 0 &&
+        (input.hasAudiovisualPlan ||
+          completed.has('motion') ||
+          completed.has('audiovisual_preview') ||
+          completed.has('master_export') ||
+          state === 'completed');
+
   const stepNarracao: WorkflowStepStatus =
-    input.sceneCount > 0 || input.hasChapterSource ? 'ready' : 'pending';
+    input.isProducing && (state === 'audiovisual_preview' || curStage === 'motion') && !hasNarrationArtifacts
+      ? 'processing'
+      : !isStaleFailedImportRecord && state === 'failed' && curStage === 'motion' && input.sceneCount > 0
+        ? 'error'
+        : input.sceneCount > 0 && hasNarrationArtifacts
+          ? 'ready'
+          : 'pending';
 
   const stepStoryboard: WorkflowStepStatus =
-    input.hasAudiovisualPlan ? 'ready' : input.sceneCount > 0 ? 'pending' : 'pending';
+    input.hasAudiovisualPlan ? 'ready' : 'pending';
 
   const stepProducao: WorkflowStepStatus =
     input.isProducing && (state === 'audiovisual_preview' || state === 'master_export')
       ? 'processing'
-      : state === 'failed' && (curStage === 'motion' || curStage === 'gate-h')
+      : !isStaleFailedImportRecord && state === 'failed' && (curStage === 'motion' || curStage === 'gate-h')
         ? 'error'
         : input.hasRenderedVideo
           ? input.gateHVerdict === 'needs_review'
@@ -749,7 +790,7 @@ export function deriveWorkflowSteps(input: DeriveWorkflowStepsInput): RecapWorkf
       ? 'ready'
       : state === 'awaiting_preview_approval'
         ? 'needs_review'
-        : input.gateHVerdict === 'fail'
+        : !isStaleFailedImportRecord && input.gateHVerdict === 'fail'
           ? 'error'
           : input.hasRenderedVideo
             ? 'needs_review'
@@ -765,6 +806,291 @@ export function deriveWorkflowSteps(input: DeriveWorkflowStepsInput): RecapWorkf
     { id: 'producao', index: 7, label: 'Produção', shortLabel: 'Produção', status: stepProducao },
     { id: 'revisao', index: 8, label: 'Revisão', shortLabel: 'Revisão', status: stepRevisao },
   ];
+}
+
+export interface QueueItemViewLike {
+  url: string;
+  status: string;
+  pagesDone: number;
+  pagesTotal: number;
+  libraryEntry?: { cbzPath: string; pageCount?: number };
+  error?: string;
+  blockedByProtection?: boolean;
+  universalState?: string;
+  universalStateLabel?: string;
+  acquisitionMethod?: string;
+  acquisitionMethodLabel?: string;
+  adapterName?: string;
+  formatHint?: string;
+  importNotPermitted?: boolean;
+  contentNotRecognized?: boolean;
+}
+
+export interface QueueJobViewLike<TItem extends QueueItemViewLike = QueueItemViewLike> {
+  id: string;
+  status: string;
+  blockedByProtection?: boolean;
+  blockedUrl?: string;
+  items: TItem[];
+}
+
+/**
+ * Derives a consistent, non-contradictory display label and progress percentage for a queue item.
+ * Prevents items with status 'skipped_existing' or a valid `libraryEntry.cbzPath` from showing "Na fila"
+ * when the job is already COMPLETED.
+ */
+export function deriveQueueItemDisplayStatus(
+  item: QueueItemViewLike,
+  jobStatus?: string,
+): {
+  isDone: boolean;
+  pct: number;
+  statusLabel: string;
+} {
+  const hasCbz = Boolean(item.libraryEntry?.cbzPath);
+  const isCompletedOrSkipped =
+    item.status === 'completed' ||
+    item.status === 'skipped_existing' ||
+    item.status === 'skipped' ||
+    (hasCbz && !item.error) ||
+    (jobStatus === 'completed' && !item.error);
+
+  if (isCompletedOrSkipped) {
+    const total = item.pagesTotal || item.libraryEntry?.pageCount || item.pagesDone || 0;
+    const done = item.pagesDone || total;
+    const pageSuffix = total > 0 ? ` (${done}/${total} págs)` : '';
+    return {
+      isDone: true,
+      pct: 100,
+      statusLabel: `Importado${pageSuffix}`,
+    };
+  }
+
+  if (item.status === 'downloading' || item.status === 'packing_cbz') {
+    const pct = item.pagesTotal > 0 ? Math.min(99, Math.round((item.pagesDone / item.pagesTotal) * 100)) : 50;
+    return {
+      isDone: false,
+      pct,
+      statusLabel: `Importando ${item.pagesDone}/${item.pagesTotal || '?'}`,
+    };
+  }
+
+  if (item.status === 'analyzing') {
+    return {
+      isDone: false,
+      pct: 15,
+      statusLabel: item.universalStateLabel || 'Analisando página',
+    };
+  }
+
+  if (item.status === 'failed') {
+    return {
+      isDone: false,
+      pct: 0,
+      statusLabel: item.universalStateLabel || 'Falhou',
+    };
+  }
+
+  if (item.status === 'cancelled') {
+    return {
+      isDone: false,
+      pct: 0,
+      statusLabel: 'Cancelado',
+    };
+  }
+
+  return {
+    isDone: false,
+    pct: 0,
+    statusLabel: 'Na fila',
+  };
+}
+
+/**
+ * Reconciles an existing import queue job when a retry, Interactive Persistent Browser session,
+ * or Assisted Import succeeds for one or more chapters, clearing stale errors and updating
+ * queue items to 'completed' ("Importado").
+ */
+export function reconcileQueueWithSuccessfulImport<TItem extends QueueItemViewLike>(
+  job: QueueJobViewLike<TItem> | null,
+  importedEntries: ReadonlyArray<{
+    cbzPath: string;
+    pageCount: number;
+    sourceUrl?: string;
+    workTitle?: string;
+    chapterNumber?: string;
+  }>,
+): QueueJobViewLike<TItem> | null {
+  if (!job || importedEntries.length === 0) return job;
+
+  const nextItems = job.items.map((item, idx) => {
+    const matchedEntry =
+      importedEntries.find((e) => e.sourceUrl && e.sourceUrl.trim() === item.url.trim()) ??
+      (importedEntries.length === job.items.length ? importedEntries[idx] : undefined) ??
+      (job.items.length === 1 ? importedEntries[0] : undefined);
+
+    if (!matchedEntry) return item;
+
+    const updated: TItem = {
+      ...item,
+      status: 'completed',
+      pagesDone: matchedEntry.pageCount,
+      pagesTotal: matchedEntry.pageCount,
+      libraryEntry: {
+        cbzPath: matchedEntry.cbzPath,
+      },
+      blockedByProtection: false,
+      universalState: 'chapter_identified',
+      universalStateLabel: `Importado (${matchedEntry.pageCount}/${matchedEntry.pageCount} págs)`,
+    };
+    delete updated.error;
+    return updated;
+  });
+
+  const allResolved = nextItems.every(
+    (it) => it.status === 'completed' || it.status === 'skipped_existing' || it.status === 'skipped',
+  );
+  const anyBlocked = nextItems.some((it) => Boolean(it.blockedByProtection));
+
+  return {
+    ...job,
+    status: allResolved ? 'completed' : job.status,
+    blockedByProtection: anyBlocked,
+    ...(anyBlocked && job.blockedUrl ? { blockedUrl: job.blockedUrl } : {}),
+    items: nextItems,
+  };
+}
+
+export interface SeparatedImportAndProductionStatus {
+  importStatus: {
+    state: 'pending' | 'importing' | 'validated' | 'error';
+    label: string;
+    detail: string;
+    tone: 'neutral' | 'active' | 'success' | 'error';
+  };
+  productionStatus: {
+    state: 'awaiting_chapter' | 'ready_to_start' | 'running' | 'paused' | 'awaiting_approval' | 'completed' | 'failed';
+    label: string;
+    detail: string;
+    tone: 'neutral' | 'active' | 'warning' | 'success' | 'error';
+  };
+  isHistoricalFailedRecord: boolean;
+}
+
+/**
+ * Explicitly separates the status of the Chapter Import from the status of the Audiovisual Production,
+ * preventing previous failed production runs in history from marking a newly imported valid chapter as "Falhou".
+ */
+export function deriveSeparatedImportAndProductionStatus(input: {
+  hasChapterSource: boolean;
+  chapterArchiveValidated: boolean;
+  archivePageCount?: number;
+  archiveLabel?: string | null;
+  archiveError?: string | null;
+  isImportingChapter: boolean;
+  importError: string | null;
+  isProducing: boolean;
+  activeProject: RecapProjectRecordView | null;
+  sceneCount: number;
+}): SeparatedImportAndProductionStatus {
+  const isValidCbz = input.hasChapterSource && input.chapterArchiveValidated;
+
+  let importStatus: SeparatedImportAndProductionStatus['importStatus'];
+  if (input.isImportingChapter) {
+    importStatus = {
+      state: 'importing',
+      label: 'Importando capítulo…',
+      detail: 'Validando imagens e preparando pacote CBZ.',
+      tone: 'active',
+    };
+  } else if (isValidCbz) {
+    const pagesText =
+      input.archivePageCount && input.archivePageCount > 0
+        ? `${input.archivePageCount} páginas íntegras`
+        : input.archiveLabel || 'CBZ verificado';
+    importStatus = {
+      state: 'validated',
+      label: 'Importado e Validado',
+      detail: `CBZ íntegro no disco (${pagesText}).`,
+      tone: 'success',
+    };
+  } else if (input.archiveError || input.importError) {
+    importStatus = {
+      state: 'error',
+      label: 'Erro na Importação',
+      detail: input.archiveError || input.importError || 'Não foi possível validar o arquivo CBZ.',
+      tone: 'error',
+    };
+  } else {
+    importStatus = {
+      state: 'pending',
+      label: 'Aguardando Capítulo',
+      detail: 'Importe um link, use o navegador persistente ou selecione um CBZ/PDF.',
+      tone: 'neutral',
+    };
+  }
+
+  const projState = input.activeProject?.state ?? 'idle';
+  const isHistoricalFailedRecord =
+    projState === 'failed' && isValidCbz && input.sceneCount === 0 && !input.isProducing;
+
+  let productionStatus: SeparatedImportAndProductionStatus['productionStatus'];
+  if (input.isProducing || ['importing', 'preflight', 'story_engine', 'audiovisual_preview', 'master_export'].includes(projState)) {
+    productionStatus = {
+      state: 'running',
+      label: 'Em Produção',
+      detail: 'Executando pipeline Story Engine + MotionVelix.',
+      tone: 'active',
+    };
+  } else if (projState === 'completed') {
+    productionStatus = {
+      state: 'completed',
+      label: 'Produção Concluída',
+      detail: 'Vídeo Master renderizado e aprovado nos Release Gates.',
+      tone: 'success',
+    };
+  } else if (projState === 'awaiting_preview_approval') {
+    productionStatus = {
+      state: 'awaiting_approval',
+      label: 'Aguardando Aprovação',
+      detail: 'Prévia audiovisual pronta para revisão.',
+      tone: 'warning',
+    };
+  } else if (projState === 'paused_provider_unavailable') {
+    productionStatus = {
+      state: 'paused',
+      label: 'Produção Pausada',
+      detail: input.activeProject?.lastError || 'Aguardando provedor multimodal.',
+      tone: 'warning',
+    };
+  } else if (projState === 'failed' && !isHistoricalFailedRecord) {
+    productionStatus = {
+      state: 'failed',
+      label: 'Produção Falhou',
+      detail: input.activeProject?.lastError || 'Falha na tentativa de produção.',
+      tone: 'error',
+    };
+  } else if (isValidCbz) {
+    productionStatus = {
+      state: 'ready_to_start',
+      label: 'Pronto para Produzir',
+      detail: 'Capítulo validado. Avance para iniciar a Análise e Roteiro.',
+      tone: 'neutral',
+    };
+  } else {
+    productionStatus = {
+      state: 'awaiting_chapter',
+      label: 'Aguardando Capítulo',
+      detail: 'Conclua a importação do capítulo para liberar a produção.',
+      tone: 'neutral',
+    };
+  }
+
+  return {
+    importStatus,
+    productionStatus,
+    isHistoricalFailedRecord,
+  };
 }
 
 export function mergeActiveProjectIntoRecentList(

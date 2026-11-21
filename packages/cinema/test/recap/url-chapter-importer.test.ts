@@ -21,6 +21,7 @@ import {
 	buildAndRegisterChapterCbz,
 	listRecapLibrary,
 	RecapImportJobManager,
+	verifyChapterArchiveIntegrity,
 	importChapter,
 	type PageDiscoveryPort,
 	type ImageDownloadPort,
@@ -245,5 +246,82 @@ describe('Aethera Recap — URL Chapter Importer (Etapas 2–7)', () => {
 		// CAPTCHA / paywall detection without bypass
 		const restricted = asuraScansAdapter.detectAccessRestriction?.('<div class="cf-challenge">Just a moment...</div>');
 		expect(restricted).toContain('não realiza bypass');
+	});
+
+	it('11. verifies physical CBZ existence and binary image integrity before advancing, and recovers cleanly from failed import followed by retry success', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'recap-verify-cbz-'));
+		const libraryDir = join(dir, 'library');
+		try {
+			// 1. Non-existent archive fails integrity check
+			const missing = verifyChapterArchiveIntegrity(join(dir, 'missing-cap-1.cbz'));
+			expect(missing.valid).toBe(false);
+			expect(missing.exists).toBe(false);
+
+			// 2. Corrupted CBZ (contains HTML error bytes instead of valid image magic bytes) fails integrity check
+			const corruptedPath = join(dir, 'corrupted.cbz');
+			const badZip = new AdmZip();
+			badZip.addFile('001.webp', Buffer.from('<html><body>403 Forbidden</body></html>'));
+			badZip.writeZip(corruptedPath);
+			const corruptedCheck = verifyChapterArchiveIntegrity(corruptedPath);
+			expect(corruptedCheck.valid).toBe(false);
+			expect(corruptedCheck.error).toContain('Imagem corrompida');
+
+			// 3. Import attempt 1 fails -> Retry attempt 2 succeeds -> CBZ passes physical & binary integrity check
+			let shouldFailDiscovery = true;
+			const discoveryPort: PageDiscoveryPort = {
+				async discover() {
+					if (shouldFailDiscovery) {
+						throw new Error('Bloqueio Cloudflare / HTTP 403');
+					}
+					return {
+						pages: Array.from({ length: 24 }, (_, idx) => ({
+							pageNumber: idx + 1,
+							imageUrl: `https://cdn.example.com/ch1/${String(idx + 1).padStart(4, '0')}.png`,
+						})),
+						availableChapters: [],
+					};
+				},
+			};
+			const downloader: ImageDownloadPort = {
+				async fetchImage(url) {
+					const num = Number(/(\d+)\.png$/.exec(url)?.[1] ?? '1');
+					return makeValidPngBuffer(num + 10);
+				},
+			};
+
+			const manager = new RecapImportJobManager({
+				libraryDir,
+				discoveryPort,
+				downloader,
+				baseBackoffMs: 1,
+			});
+
+			const job = manager.createJob({ urls: [ASURA_URL] });
+			const failedSnap = await manager.waitForJob(job.id);
+			expect(failedSnap.status).toBe('failed');
+			expect(failedSnap.items[0]!.status).toBe('failed');
+			expect(failedSnap.items[0]!.error).toContain('403');
+
+			// Now allow discovery and retry the job
+			shouldFailDiscovery = false;
+			manager.retryJob(job.id);
+			const succeededSnap = await manager.waitForJob(job.id);
+			expect(succeededSnap.status).toBe('completed');
+			expect(succeededSnap.items[0]!.status).toBe('completed');
+			expect(succeededSnap.items[0]!.error).toBeUndefined();
+			expect(succeededSnap.items[0]!.pagesDone).toBe(24);
+			expect(succeededSnap.items[0]!.pagesTotal).toBe(24);
+
+			const cbzPath = succeededSnap.items[0]!.libraryEntry!.cbzPath;
+			const integrity = verifyChapterArchiveIntegrity(cbzPath);
+			expect(integrity.valid).toBe(true);
+			expect(integrity.exists).toBe(true);
+			expect(integrity.format).toBe('cbz');
+			expect(integrity.pageCount).toBe(24);
+			expect(integrity.workTitle).toBe('Nano Machine');
+			expect(integrity.chapterNumber).toBe('1');
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

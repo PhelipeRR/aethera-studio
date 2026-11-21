@@ -4,9 +4,13 @@ import {
   deriveAudiovisualTracks,
   derivePipelineTimeline,
   deriveQualityScorecard,
+  deriveQueueItemDisplayStatus,
+  deriveSeparatedImportAndProductionStatus,
+  deriveWorkflowSteps,
   formatTimecodeMs,
   getStateMetadata,
   mergeActiveProjectIntoRecentList,
+  reconcileQueueWithSuccessfulImport,
   toAetheraMediaUrl,
   type MotionVelixRenderTelemetry,
   type RecapAudiovisualPlanView,
@@ -292,4 +296,171 @@ test('formatTimecodeMs, toAetheraMediaUrl, and getStateMetadata behave determini
   assert.equal(toAetheraMediaUrl('aethera-media://local?path=x'), 'aethera-media://local?path=x');
   assert.equal(getStateMetadata('awaiting_preview_approval').tone, 'warning');
   assert.equal(getStateMetadata('completed').tone, 'success');
+});
+
+test('Synchronization across Import, Queue, Project History, and Workflow Steps (Failed attempt followed by 24/24 CBZ success)', () => {
+  // 1. Initial failed attempt: job item failed with Cloudflare 403, historical record failed at import
+  const failedRecord = makeRecord({
+    runId: 'run-failed-1',
+    workTitle: 'Nano Machine Cap. 1',
+    state: 'failed',
+    currentStage: 'import',
+    completedSteps: [],
+    lastError: 'Bloqueio Cloudflare / HTTP 403',
+  });
+
+  const failedQueueJob = {
+    id: 'imp-1',
+    status: 'failed',
+    blockedByProtection: true,
+    blockedUrl: 'https://asurascans.com/comics/nano-machine-7ba78ec7/chapter/1',
+    items: [
+      {
+        url: 'https://asurascans.com/comics/nano-machine-7ba78ec7/chapter/1',
+        status: 'failed',
+        pagesDone: 0,
+        pagesTotal: 0,
+        error: 'Bloqueio Cloudflare / HTTP 403',
+        blockedByProtection: true,
+      },
+    ],
+  };
+
+  // While failed and no valid CBZ exists yet: Capítulos is 'error', Narração is 'pending'
+  const stepsWhileFailed = deriveWorkflowSteps({
+    hasSeriesOrProject: true,
+    hasChapterSource: false,
+    chapterArchiveValidated: false,
+    hasActiveImportError: true,
+    isProducing: false,
+    record: failedRecord,
+    sceneCount: 0,
+    hasLowConfidenceScenes: false,
+    hasAudiovisualPlan: false,
+    hasRenderedVideo: false,
+  });
+  assert.equal(stepsWhileFailed.find((s) => s.id === 'capitulos')?.status, 'error');
+  assert.equal(stepsWhileFailed.find((s) => s.id === 'narracao')?.status, 'pending');
+
+  // 2. Subsequent successful import (24/24 pages CBZ generated via Interactive Persistent Browser)
+  const reconciledJob = reconcileQueueWithSuccessfulImport(failedQueueJob, [
+    {
+      cbzPath: 'C:\\Users\\Pheli\\AppData\\Roaming\\AetheraStudio\\recap-library\\nano-machine\\cap-1.cbz',
+      pageCount: 24,
+      sourceUrl: 'https://asurascans.com/comics/nano-machine-7ba78ec7/chapter/1',
+      workTitle: 'Nano Machine',
+      chapterNumber: '1',
+    },
+  ]);
+
+  assert.ok(reconciledJob);
+  assert.equal(reconciledJob.status, 'completed');
+  assert.equal(reconciledJob.blockedByProtection, false);
+  assert.equal(reconciledJob.items[0]?.status, 'completed');
+  assert.equal(reconciledJob.items[0]?.error, undefined);
+  assert.equal(reconciledJob.items[0]?.pagesDone, 24);
+  assert.equal(reconciledJob.items[0]?.pagesTotal, 24);
+
+  // Queue item display status for 'completed' and 'skipped_existing' MUST show "Importado (24/24 págs)", NEVER "Na fila"
+  const completedItemDisplay = deriveQueueItemDisplayStatus(reconciledJob.items[0]!, reconciledJob.status);
+  assert.equal(completedItemDisplay.isDone, true);
+  assert.equal(completedItemDisplay.pct, 100);
+  assert.equal(completedItemDisplay.statusLabel, 'Importado (24/24 págs)');
+
+  const skippedExistingDisplay = deriveQueueItemDisplayStatus(
+    {
+      url: 'https://asurascans.com/comics/nano-machine-7ba78ec7/chapter/1',
+      status: 'skipped_existing',
+      pagesDone: 24,
+      pagesTotal: 24,
+      libraryEntry: {
+        cbzPath: 'C:\\Users\\Pheli\\AppData\\Roaming\\AetheraStudio\\recap-library\\nano-machine\\cap-1.cbz',
+        pageCount: 24,
+      },
+    },
+    'completed',
+  );
+  assert.equal(skippedExistingDisplay.isDone, true);
+  assert.equal(skippedExistingDisplay.statusLabel, 'Importado (24/24 págs)');
+
+  // 3. Workflow steps after validated CBZ import:
+  // - Capítulos MUST be 'ready' ("Pronta"), even if the old failedRecord were still passed!
+  // - Análise (03), Roteiro (04), and Narração (05) MUST all be 'pending' ("Pendente")!
+  const stepsAfterValidImport = deriveWorkflowSteps({
+    hasSeriesOrProject: true,
+    hasChapterSource: true,
+    chapterArchiveValidated: true,
+    hasActiveImportError: false,
+    isProducing: false,
+    record: failedRecord,
+    sceneCount: 0,
+    hasLowConfidenceScenes: false,
+    hasAudiovisualPlan: false,
+    hasRenderedVideo: false,
+  });
+
+  assert.equal(stepsAfterValidImport.find((s) => s.id === 'projeto')?.status, 'ready');
+  assert.equal(stepsAfterValidImport.find((s) => s.id === 'capitulos')?.status, 'ready');
+  assert.equal(stepsAfterValidImport.find((s) => s.id === 'analise')?.status, 'pending');
+  assert.equal(stepsAfterValidImport.find((s) => s.id === 'roteiro')?.status, 'pending');
+  assert.equal(stepsAfterValidImport.find((s) => s.id === 'narracao')?.status, 'pending');
+  assert.equal(stepsAfterValidImport.find((s) => s.id === 'storyboard')?.status, 'pending');
+  assert.equal(stepsAfterValidImport.find((s) => s.id === 'producao')?.status, 'pending');
+  assert.equal(stepsAfterValidImport.find((s) => s.id === 'revisao')?.status, 'pending');
+
+  // 4. Separated Import vs Production status keeps the old failure as historical and reports current import as validated
+  const separated = deriveSeparatedImportAndProductionStatus({
+    hasChapterSource: true,
+    chapterArchiveValidated: true,
+    archivePageCount: 24,
+    isImportingChapter: false,
+    importError: null,
+    isProducing: false,
+    activeProject: failedRecord,
+    sceneCount: 0,
+  });
+  assert.equal(separated.importStatus.state, 'validated');
+  assert.equal(separated.importStatus.tone, 'success');
+  assert.equal(separated.productionStatus.state, 'ready_to_start');
+  assert.equal(separated.isHistoricalFailedRecord, true);
+
+  // 5. If CBZ integrity check fails (missing/corrupted on disk), Capítulos becomes 'error' and blocks ready state
+  const stepsCorruptedCbz = deriveWorkflowSteps({
+    hasSeriesOrProject: true,
+    hasChapterSource: true,
+    chapterArchiveValidated: false,
+    isProducing: false,
+    record: null,
+    sceneCount: 0,
+    hasLowConfidenceScenes: false,
+    hasAudiovisualPlan: false,
+    hasRenderedVideo: false,
+  });
+  assert.equal(stepsCorruptedCbz.find((s) => s.id === 'capitulos')?.status, 'error');
+
+  // 6. Narração only becomes 'ready' when valid scenes and narration/audiovisual artifacts exist
+  const stepsWithRealNarration = deriveWorkflowSteps({
+    hasSeriesOrProject: true,
+    hasChapterSource: true,
+    chapterArchiveValidated: true,
+    isProducing: false,
+    record: makeRecord({
+      state: 'awaiting_preview_approval',
+      completedSteps: ['import', 'gate-f', 'vision', 'continuity', 'script', 'humanize', 'motion', 'gate-h'],
+      gateFVerdict: 'pass',
+      gateGVerdict: 'pass',
+      gateHVerdict: 'pass',
+    }),
+    sceneCount: 6,
+    hasLowConfidenceScenes: false,
+    hasValidNarrationArtifacts: true,
+    gateGVerdict: 'pass',
+    gateHVerdict: 'pass',
+    hasAudiovisualPlan: true,
+    hasRenderedVideo: true,
+  });
+  assert.equal(stepsWithRealNarration.find((s) => s.id === 'analise')?.status, 'ready');
+  assert.equal(stepsWithRealNarration.find((s) => s.id === 'roteiro')?.status, 'ready');
+  assert.equal(stepsWithRealNarration.find((s) => s.id === 'narracao')?.status, 'ready');
+  assert.equal(stepsWithRealNarration.find((s) => s.id === 'storyboard')?.status, 'ready');
 });
