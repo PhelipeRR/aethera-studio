@@ -30,6 +30,8 @@ import type {
 import { buildRecapAudiovisualPlan } from './recap-visual-planner.js';
 import { runGateHAudiovisualQuality } from './recap-gate-h-quality.js';
 import { auditNarrationAudioClip } from './recap-tts-adapters.js';
+import { buildShotZoompanFilter, MOTIONVELIX_SFX_MAP, type MotionVelixRenderReport } from './recap-motionvelix.js';
+import type { RecapVfxSpec } from './recap-audiovisual-types.js';
 
 const execFileAsync = promisify(execFile);
 const PHASE3_CKPT_FILE = 'recap-phase3-checkpoint.json';
@@ -110,14 +112,6 @@ export function createDeterministicFallbackTtsPort(): RecapTtsSynthesisPort {
 }
 
 
-const MOTIONVELIX_SFX_MAP: Record<RecapSfxKind, string> = {
-	whoosh: 'whoosh.wav',
-	impact_hit: 'impacto.wav',
-	tension_riser: 'riser.wav',
-	page_turn: 'papel.wav',
-	emotional_swell: 'brilho.wav',
-};
-
 /**
  * Resolves a real MotionVelix SFX WAV file on disk if available.
  */
@@ -130,44 +124,28 @@ export function resolveMotionVelixSfxFile(sfxKind: RecapSfxKind, sfxDir: string)
  * Deterministic hash for partial per-shot rendering (Phase 3.4):
  * unchanged shots reuse their already-encoded MP4 clip.
  */
-export function computeShotRenderHash(shot: RecapPanelShot, width: number, height: number, fps: number): string {
+export function computeShotRenderHash(
+	shot: RecapPanelShot,
+	width: number,
+	height: number,
+	fps: number,
+	vfx?: RecapVfxSpec,
+): string {
 	return createHash('sha256')
 		.update(JSON.stringify({
 			imagePath: shot.imagePath,
 			durationMs: shot.durationMs,
 			motionStyle: shot.motionStyle,
+			transitionIn: shot.transitionIn,
 			focalStart: shot.focalStart,
 			focalEnd: shot.focalEnd,
+			vfx: vfx ?? null,
 			width,
 			height,
 			fps,
 		}))
 		.digest('hex')
 		.slice(0, 16);
-}
-
-function buildShotZoompanFilter(shot: RecapPanelShot, width: number, height: number, fps: number): string {
-	const frames = Math.max(1, Math.round((shot.durationMs / 1000) * fps));
-	const z0 = shot.focalStart.zoom;
-	const z1 = shot.focalEnd.zoom;
-	const zExpr = Math.abs(z1 - z0) < 0.001
-		? z0.toFixed(4)
-		: `${z0.toFixed(4)}+(${(z1 - z0).toFixed(4)})*(on/${Math.max(1, frames - 1)})`;
-
-	const y0 = shot.focalStart.y;
-	const y1 = shot.focalEnd.y;
-	const yExpr = Math.abs(y1 - y0) < 0.001
-		? `ih*${y0.toFixed(3)}-ih/zoom/2`
-		: `ih*(${y0.toFixed(3)}+(${(y1 - y0).toFixed(3)})*(on/${Math.max(1, frames - 1)}))-ih/zoom/2`;
-
-	// Scale & pad to aspect ratio first so vertical manga strips never distort, then apply smooth zoompan
-	return [
-		`scale=${width}:${height}:force_original_aspect_ratio=decrease`,
-		`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=#0b0b0f`,
-		`zoompan=z='${zExpr}':x='iw/2-(iw/zoom/2)':y='${yExpr}':d=${frames}:s=${width}x${height}:fps=${fps}`,
-		'setsar=1',
-		'format=yuv420p',
-	].join(',');
 }
 
 async function probeMp4(mp4Path: string): Promise<{ hasVideo: boolean; hasAudio: boolean; durationMs: number }> {
@@ -221,6 +199,7 @@ export interface RenderRecapVideoResult {
 	renderedShotsCount: number;
 	sfxAppliedCount: number;
 	subtitlesBurnedIn: boolean;
+	motionVelix: MotionVelixRenderReport;
 	warnings: string[];
 }
 
@@ -337,7 +316,21 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 	let reusedShotsCount = 0;
 	let renderedShotsCount = 0;
 	let sfxAppliedCount = 0;
+	const sfxKindsApplied = new Set<RecapSfxKind>();
+	let vfxAppliedShots = 0;
+	let transitionsApplied = 0;
 	let subtitlesBurnedIn = false;
+	const vfxByScene = new Map(plan.vfxSpecs.map((v) => [v.sceneId, v]));
+
+	for (const shot of plan.shots) {
+		const vfx = vfxByScene.get(shot.sceneId);
+		if (vfx && (vfx.contrastBoost > 1.01 || vfx.vignetteStrength > 0.05 || (vfx.shakeIntensity > 0 && !shot.balloonSafeZoneProtected))) {
+			vfxAppliedShots++;
+		}
+		if (shot.transitionIn !== 'cut') {
+			transitionsApplied++;
+		}
+	}
 
 	if (!dryRunRender) {
 		const targetFile = join(outputDir, renderTarget === 'master' ? 'recap-master.mp4' : 'recap-preview.mp4');
@@ -346,7 +339,8 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		for (const shot of plan.shots) {
 			const clipPath = join(shotsDir, `${shot.shotId}.mp4`);
 			const hashPath = join(shotsDir, `${shot.shotId}.hash`);
-			const expectedHash = computeShotRenderHash(shot, plan.width, plan.height, plan.fps);
+			const vfx = vfxByScene.get(shot.sceneId);
+			const expectedHash = computeShotRenderHash(shot, plan.width, plan.height, plan.fps, vfx);
 
 			// Partial render cache (Phase 3.4): skip re-encoding unchanged shots
 			if (existsSync(clipPath) && existsSync(hashPath) && readFileSync(hashPath, 'utf-8').trim() === expectedHash) {
@@ -355,7 +349,7 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 				continue;
 			}
 
-			const vf = buildShotZoompanFilter(shot, plan.width, plan.height, plan.fps);
+			const vf = buildShotZoompanFilter(shot, plan.width, plan.height, plan.fps, vfx);
 			await execFileAsync(
 				'ffmpeg',
 				[
@@ -435,6 +429,7 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 					`[${nextIdx}:a]aformat=sample_fmts=fltp:sample_rates=${mixSampleRate}:channel_layouts=stereo,volume=${cue.gainDb}dB,adelay=${delayMs}|${delayMs}[${label}]`,
 				);
 				sfxLabels.push(`[${label}]`);
+				sfxKindsApplied.add(cue.sfxKind);
 				sfxAppliedCount++;
 				nextIdx++;
 			}
@@ -554,6 +549,18 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 	const gateHPath = join(outputDir, 'gate-h-report.json');
 	writeFileSync(gateHPath, JSON.stringify(gateHReport, null, 2), 'utf-8');
 
+	const motionVelix: MotionVelixRenderReport = {
+		engine: 'ffmpeg_motionvelix_hybrid',
+		sfxDirUsed: input.sfxAssetsDir && existsSync(input.sfxAssetsDir) ? input.sfxAssetsDir : null,
+		sfxPlanned: plan.sfxCues.length,
+		sfxApplied: sfxAppliedCount,
+		sfxKindsApplied: [...sfxKindsApplied],
+		vfxAppliedShots,
+		transitionsApplied,
+		motionStylesUsed: [...new Set(plan.shots.map((s) => s.motionStyle))],
+		fallbackUsed: plan.sfxCues.length > 0 && sfxAppliedCount === 0,
+	};
+
 	return {
 		plan,
 		gateHReport,
@@ -566,6 +573,7 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		renderedShotsCount,
 		sfxAppliedCount,
 		subtitlesBurnedIn,
+		motionVelix,
 		warnings,
 	};
 }

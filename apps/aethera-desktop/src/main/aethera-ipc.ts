@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, createChainedRecapTtsPort, createElevenLabsRecapTtsPort, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, extractPanels, importChapter, importChapterFromCdnUrls, listRecapLibrary, planRecapRevisionImpact, RecapImportJobManager, runRecapProductionOrchestrator, type RecapScript, type RecapTtsSynthesisPort } from '@neuralbridge/cinema';
+import { AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, createChainedRecapTtsPort, createElevenLabsRecapTtsPort, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, extractPanels, importChapter, importChapterFromCdnUrls, listRecapLibrary, listRecapProjects, loadCheckpoint, loadRecapProjectDetail, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, runGateFPanelIntegrity, runRecapProductionOrchestrator, saveRecapProjectRecord, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -4914,58 +4914,115 @@ productionConsole,
   );
 
 
-  // ─── Aethera Recap IPC (Fases 4.2, 4.4 & 7.1) ──────────────────────────────
+  // ─── Aethera Recap IPC (Fases 4.2, 4.4, 5 & 7.1) ───────────────────────────
   const recapCircuitBreaker = new AgentCircuitBreaker();
+  const recapWorkspace = join(userDataDir, 'recap-workspace');
+  const legacyRecapCheckpointsRoot = join(userDataDir, 'recap-checkpoints');
+
+  const emitRecapProgress = (payload: RecapOrchestratorProgressEvent) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('recap:production-progress', payload);
+      }
+    }
+  };
+
+  const buildRecapProviders = () => {
+    const gwCfg = claudeGatewaySecretStore.load();
+    return [
+      {
+        id: 'claude',
+        label: 'Claude CLI',
+        detect: async () => {
+          const st = await claude.detect();
+          return st.installed && st.authenticated !== false && st.problems.length === 0
+            ? { available: true }
+            : { available: false, reason: st.problems[0] ?? 'Claude CLI não autenticado.' };
+        },
+      },
+      {
+        id: 'claude-gateway',
+        label: 'Claude Gateway',
+        detect: async () =>
+          gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl
+            ? { available: true }
+            : { available: false, reason: 'Claude Gateway não configurado nas configurações do Aethera.' },
+      },
+      {
+        id: 'codex',
+        label: 'Codex CLI',
+        detect: async () => {
+          const st = await codex.detect();
+          return st.installed && st.authenticated !== false && st.problems.length === 0
+            ? { available: true }
+            : { available: false, reason: st.problems[0] ?? 'Codex CLI não autenticado.' };
+        },
+      },
+      {
+        id: 'antigravity',
+        label: 'Antigravity CLI (agy)',
+        detect: async () => {
+          const st = await detectAntigravityCli();
+          return st.installed && st.problems.length === 0
+            ? { available: true }
+            : { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.' };
+        },
+      },
+    ];
+  };
+
+  const buildRecapTtsPort = (preferredProvider?: string) => {
+    const elevenLabsCreds = elevenLabsProvider.getSynthesisCredentials();
+    const ttsVoiceId = preferredProvider === 'elevenlabs_tts'
+      ? (process.env['NB_ELEVENLABS_VOICE_ID'] ?? 'pNInz6obpgDQGcFmaJgB')
+      : (process.env['NB_VOICESTUDIO_VOICE_ID'] ?? '9190edfa');
+    const ttsPorts: RecapTtsSynthesisPort[] = [];
+    if (preferredProvider === 'voicestudio_tts') {
+      ttsPorts.push(createVoiceStudioRecapTtsPort({ voiceId: ttsVoiceId, pauseAfterMs: 350 }));
+      if (elevenLabsCreds?.apiKey) {
+        ttsPorts.push(createElevenLabsRecapTtsPort({
+          apiKey: elevenLabsCreds.apiKey,
+          voiceId: process.env['NB_ELEVENLABS_VOICE_ID'] ?? 'pNInz6obpgDQGcFmaJgB',
+          modelId: elevenLabsCreds.modelId,
+          pauseAfterMs: 350,
+        }));
+      }
+    } else {
+      if (elevenLabsCreds?.apiKey) {
+        ttsPorts.push(createElevenLabsRecapTtsPort({
+          apiKey: elevenLabsCreds.apiKey,
+          voiceId: ttsVoiceId,
+          modelId: elevenLabsCreds.modelId,
+          pauseAfterMs: 350,
+        }));
+      }
+      ttsPorts.push(createVoiceStudioRecapTtsPort({ voiceId: ttsVoiceId, pauseAfterMs: 350 }));
+    }
+    if (process.platform === 'win32') {
+      ttsPorts.push(createWindowsSapiRecapTtsPort({ pauseAfterMs: 350 }));
+    }
+    return createChainedRecapTtsPort({
+      ports: ttsPorts,
+      allowDeterministicFallback: false,
+    });
+  };
+
+  ipcMain.handle('recap:get-motionvelix-status', async (event) => {
+    ensureTrusted(event.senderFrame);
+    return resolveMotionVelixKit();
+  });
 
   ipcMain.handle('recap:get-readiness', async (event, input?: { chapterId?: string }) => {
     ensureTrusted(event.senderFrame);
     const chapterId = input?.chapterId ?? 'nano-machine-cap-01';
-    const checkpointDir = join(userDataDir, 'recap-checkpoints', chapterId);
-    const gwCfg = claudeGatewaySecretStore.load();
+    const workspaceCheckpointDir = join(recapWorkspace, 'checkpoints', chapterId);
+    const legacyCheckpointDir = join(legacyRecapCheckpointsRoot, chapterId);
+    const checkpointDir = existsSync(workspaceCheckpointDir) ? workspaceCheckpointDir : legacyCheckpointDir;
 
     return checkRecapProductionReadiness({
       circuitBreaker: recapCircuitBreaker,
       checkpointDir,
-      providers: [
-        {
-          id: 'claude',
-          label: 'Claude CLI',
-          detect: async () => {
-            const st = await claude.detect();
-            return st.installed && st.authenticated !== false && st.problems.length === 0
-              ? { available: true }
-              : { available: false, reason: st.problems[0] ?? 'Claude CLI não autenticado.' };
-          },
-        },
-        {
-          id: 'claude-gateway',
-          label: 'Claude Gateway',
-          detect: async () =>
-            gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl
-              ? { available: true }
-              : { available: false, reason: 'Claude Gateway não configurado nas configurações do Aethera.' },
-        },
-        {
-          id: 'codex',
-          label: 'Codex CLI',
-          detect: async () => {
-            const st = await codex.detect();
-            return st.installed && st.authenticated !== false && st.problems.length === 0
-              ? { available: true }
-              : { available: false, reason: st.problems[0] ?? 'Codex CLI não autenticado.' };
-          },
-        },
-        {
-          id: 'antigravity',
-          label: 'Antigravity CLI (agy)',
-          detect: async () => {
-            const st = await detectAntigravityCli();
-            return st.installed && st.problems.length === 0
-              ? { available: true }
-              : { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.' };
-          },
-        },
-      ],
+      providers: buildRecapProviders(),
     });
   });
 
@@ -4978,143 +5035,252 @@ productionConsole,
     });
   });
 
-
   ipcMain.handle(
     'recap:start-production',
     async (
       event,
       input: {
+        runId?: string;
         archivePath: string;
         workTitle: string;
         language?: string;
         scriptStyle?: string;
         aspectRatio?: '16:9' | '9:16';
         ttsProvider?: string;
+        humorVolume?: number;
         enableOcr?: boolean;
         resumeCheckpoint?: boolean;
         masterApproved?: boolean;
       },
     ) => {
       ensureTrusted(event.senderFrame);
-      const chapterId = `${input.workTitle || 'recap'}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'recap-chapter';
-      const recapWorkspace = join(userDataDir, 'recap-workspace');
+      const workTitle = (input.workTitle || '').trim() || basename(input.archivePath).replace(/\.(cbz|pdf)$/i, '') || 'Aethera Recap';
+      const chapterId = workTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'recap-chapter';
+      const runId = input.runId?.trim() || `recap-${Date.now()}`;
       const importDir = join(recapWorkspace, 'import', chapterId);
-      const gwCfg = claudeGatewaySecretStore.load();
+      const createdAtIso = new Date().toISOString();
 
-      const imported = await importChapter({
-        chapterId,
-        archivePath: input.archivePath,
-        outputDir: importDir,
-        readingOrder: 'vertical',
-      });
-      const extracted = await extractPanels({
-        chapter: imported,
-        outputDir: importDir,
-        ...(input.enableOcr ? { ocrAdapter: createTesseractOcrAdapter({ languages: 'por+eng' }) } : {}),
-      });
-
-      // ─── Fase 2 & 5: Narração obrigatória + Motion Velix SFX ────────────────
-      // Constrói cadeia de provedores TTS reais; fallback determinístico só é
-      // autorizado explicitamente (allowDeterministicFallback: false) para que
-      // o pipeline nunca produza vídeo sem narração audível real.
-      // Lê credenciais do ElevenLabs do secret store da UI de configurações,
-      // NÃO de variáveis de ambiente (que estariam vazias no desktop).
-      const elevenLabsCreds = elevenLabsProvider.getSynthesisCredentials();
-      const ttsVoiceId = input.ttsProvider === 'elevenlabs_tts'
-        ? (process.env['NB_ELEVENLABS_VOICE_ID'] ?? 'pNInz6obpgDQGcFmaJgB')
-        : (process.env['NB_VOICESTUDIO_VOICE_ID'] ?? '9190edfa');
-      const ttsPorts: RecapTtsSynthesisPort[] = [];
-      if (elevenLabsCreds?.apiKey) {
-        ttsPorts.push(createElevenLabsRecapTtsPort({
-          apiKey: elevenLabsCreds.apiKey,
-          voiceId: ttsVoiceId,
-          modelId: elevenLabsCreds.modelId,
-          pauseAfterMs: 350,
-        }));
-      }
-      ttsPorts.push(createVoiceStudioRecapTtsPort({
-        voiceId: ttsVoiceId,
-        pauseAfterMs: 350,
-      }));
-      if (process.platform === 'win32') {
-        ttsPorts.push(createWindowsSapiRecapTtsPort({ pauseAfterMs: 350 }));
-      }
-      const chainedTtsPort = createChainedRecapTtsPort({
-        ports: ttsPorts,
-        allowDeterministicFallback: false,
-      });
-
-      // Resolve Motion Velix SFX assets directory (same convention as cinema-pipeline.ts)
-      const velixSfxRoot = process.env['NB_VELIX_DIR'] ?? join(homedir(), '.claude', 'skills', 'motionvelix', 'assets', 'sfx');
-      const sfxAssetsDir = existsSync(velixSfxRoot) ? velixSfxRoot : undefined;
-
-      const result = await runRecapProductionOrchestrator({
-        runId: `recap-${Date.now()}`,
-        chapterId,
-        workTitle: input.workTitle || 'Aethera Recap',
-        panels: extracted.panels.slice(0, 24),
-        workspaceDir: recapWorkspace,
-        circuitBreaker: recapCircuitBreaker,
-        ttsPort: chainedTtsPort,
-        ...(sfxAssetsDir ? { sfxAssetsDir } : {}),
-        plannerOptions: {
+      const persistAndEmit = (
+        state: RecapOrchestratorRecord['state'],
+        currentStage: RecapOrchestratorRecord['currentStage'],
+        completedSteps: string[],
+        message: string,
+        extra: Partial<RecapOrchestratorRecord> = {},
+      ): RecapOrchestratorRecord => {
+        const updatedAtIso = new Date().toISOString();
+        const rec: RecapOrchestratorRecord = {
+          schemaVersion: 1,
+          runId,
+          chapterId,
+          workTitle,
+          archivePath: input.archivePath,
+          ...(input.language ? { language: input.language } : {}),
+          ...(input.scriptStyle ? { scriptStyle: input.scriptStyle } : {}),
           aspectRatio: input.aspectRatio ?? '16:9',
-        },
-        ...(input.masterApproved ? { masterApproved: true } : {}),
-        providers: [
-          {
-            id: 'claude',
-            label: 'Claude CLI',
-            detect: async () => {
-              const st = await claude.detect();
-              return st.installed && st.authenticated !== false && st.problems.length === 0
-                ? { available: true }
-                : { available: false, reason: st.problems[0] ?? 'Claude CLI indisponível.' };
-            },
-          },
-          {
-            id: 'claude-gateway',
-            label: 'Claude Gateway',
-            detect: async () =>
-              gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl
-                ? { available: true }
-                : { available: false, reason: 'Claude Gateway não configurado.' },
-          },
-          {
-            id: 'codex',
-            label: 'Codex CLI',
-            detect: async () => {
-              const st = await codex.detect();
-              return st.installed && st.authenticated !== false && st.problems.length === 0
-                ? { available: true }
-                : { available: false, reason: st.problems[0] ?? 'Codex CLI indisponível.' };
-            },
-          },
-          {
-            id: 'antigravity',
-            label: 'Antigravity CLI (agy)',
-            detect: async () => {
-              const st = await detectAntigravityCli();
-              return st.installed && st.problems.length === 0
-                ? { available: true }
-                : { available: false, reason: st.problems[0] ?? 'Antigravity CLI indisponível.' };
-            },
-          },
-        ],
-      });
-
-      return {
-        ok: result.record.state !== 'failed' && result.record.state !== 'paused_provider_unavailable',
-        state: result.record.state,
-        message:
-          result.record.lastError ??
-          `Estado atual: ${result.record.state}${result.record.previewMp4Path ? ` (prévia pronta)` : ''}.`,
-        previewMp4Path: result.record.previewMp4Path ?? undefined,
-        exportBundleDir: result.record.exportBundleDir ?? undefined,
+          ...(input.ttsProvider ? { ttsProvider: input.ttsProvider } : {}),
+          ...(input.humorVolume !== undefined ? { humorVolume: input.humorVolume } : {}),
+          ...(input.enableOcr !== undefined ? { enableOcr: input.enableOcr } : {}),
+          state,
+          currentStage,
+          completedSteps,
+          createdAtIso,
+          updatedAtIso,
+          ...extra,
+        };
+        saveRecapProjectRecord(recapWorkspace, rec);
+        emitRecapProgress({
+          runId,
+          chapterId,
+          workTitle,
+          state,
+          currentStage: currentStage ?? null,
+          completedSteps,
+          message,
+          record: rec,
+          updatedAtIso,
+        });
+        return rec;
       };
+
+      // Immediately persist the active project so "Projetos Recentes" and the Timeline reflect it right away
+      persistAndEmit('importing', 'import', [], `Importando páginas de "${workTitle}"…`);
+
+      try {
+        const imported = await importChapter({
+          chapterId,
+          archivePath: input.archivePath,
+          outputDir: importDir,
+          readingOrder: 'vertical',
+        });
+        persistAndEmit('importing', 'gate-f', ['import'], `Capítulo importado (${imported.pages.length} páginas). Extraindo painéis e validando Gate F…`);
+
+        const extracted = await extractPanels({
+          chapter: imported,
+          outputDir: importDir,
+          ...(input.enableOcr ? { ocrAdapter: createTesseractOcrAdapter({ languages: 'por+eng' }) } : {}),
+        });
+        const panels = extracted.panels.slice(0, 24);
+        const gateFReport = runGateFPanelIntegrity({ chapter: imported, panels });
+        const initialSteps = gateFReport.verdict === 'fail' ? ['import'] : ['import', 'gate-f'];
+
+        if (gateFReport.verdict === 'fail') {
+          const errMsg = `Gate F falhou: ${gateFReport.reasons.join('; ')}`;
+          const failedRec = persistAndEmit('failed', 'gate-f', initialSteps, errMsg, {
+            panelCount: panels.length,
+            gateFVerdict: gateFReport.verdict,
+            lastError: errMsg,
+          });
+          return {
+            ok: false,
+            runId,
+            chapterId,
+            state: failedRec.state,
+            message: errMsg,
+            record: failedRec,
+          };
+        }
+
+        persistAndEmit('preflight', 'vision', initialSteps, `Gate F aprovado (${panels.length} painéis). Iniciando orquestrador…`, {
+          panelCount: panels.length,
+          gateFVerdict: gateFReport.verdict,
+        });
+
+        const chainedTtsPort = buildRecapTtsPort(input.ttsProvider);
+        const motionVelixKit = resolveMotionVelixKit();
+
+        const result = await runRecapProductionOrchestrator({
+          runId,
+          chapterId,
+          workTitle,
+          panels,
+          workspaceDir: recapWorkspace,
+          circuitBreaker: recapCircuitBreaker,
+          ttsPort: chainedTtsPort,
+          ...(motionVelixKit.sfxDir ? { sfxAssetsDir: motionVelixKit.sfxDir } : {}),
+          plannerOptions: {
+            aspectRatio: input.aspectRatio ?? '16:9',
+          },
+          ...(input.masterApproved ? { masterApproved: true } : {}),
+          archivePath: input.archivePath,
+          ...(input.language ? { language: input.language } : {}),
+          ...(input.scriptStyle ? { scriptStyle: input.scriptStyle } : {}),
+          ...(input.ttsProvider ? { ttsProvider: input.ttsProvider } : {}),
+          ...(input.humorVolume !== undefined ? { humorVolume: input.humorVolume } : {}),
+          ...(input.enableOcr !== undefined ? { enableOcr: input.enableOcr } : {}),
+          gateFVerdict: gateFReport.verdict,
+          initialCompletedSteps: initialSteps,
+          onProgress: (ev) => emitRecapProgress(ev),
+          providers: buildRecapProviders(),
+        });
+
+        return {
+          ok: result.record.state !== 'failed' && result.record.state !== 'paused_provider_unavailable',
+          runId: result.record.runId,
+          chapterId: result.record.chapterId,
+          state: result.record.state,
+          message:
+            result.record.lastError ??
+            `Estado atual: ${result.record.state}${result.record.previewMp4Path ? ' (prévia pronta)' : ''}.`,
+          record: result.record,
+          script: result.script ?? null,
+          plan: result.plan ?? null,
+          gateGReport: result.gateGReport ?? null,
+          gateHReport: result.gateHReport ?? null,
+          motionVelix: result.motionVelix ?? result.record.motionVelix ?? null,
+          previewMp4Path: result.record.previewMp4Path ?? undefined,
+          masterMp4Path: result.record.masterMp4Path ?? undefined,
+          exportBundleDir: result.record.exportBundleDir ?? undefined,
+        };
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const failedRec = persistAndEmit('failed', 'import', [], errMsg, { lastError: errMsg });
+        return {
+          ok: false,
+          runId,
+          chapterId,
+          state: 'failed',
+          message: errMsg,
+          record: failedRec,
+        };
+      }
     },
   );
 
+  ipcMain.handle('recap:approve-preview', async (event, input: { runId: string }) => {
+    ensureTrusted(event.senderFrame);
+    const detail = loadRecapProjectDetail(recapWorkspace, input.runId, legacyRecapCheckpointsRoot);
+    if (!detail) {
+      return { ok: false, message: 'Projeto não encontrado para aprovação.' };
+    }
+    if (!detail.script) {
+      return { ok: false, message: 'Roteiro salvo não encontrado para exportação master.' };
+    }
+
+    const checkpointDir = join(recapWorkspace, 'checkpoints', detail.record.chapterId);
+    const ckpt = loadCheckpoint(checkpointDir);
+    let panels = ckpt?.extractedPanels ?? [];
+
+    if (panels.length === 0 && detail.record.archivePath && existsSync(detail.record.archivePath)) {
+      const importDir = join(recapWorkspace, 'import', detail.record.chapterId);
+      const imported = await importChapter({
+        chapterId: detail.record.chapterId,
+        archivePath: detail.record.archivePath,
+        outputDir: importDir,
+        readingOrder: 'vertical',
+      });
+      const extracted = await extractPanels({ chapter: imported, outputDir: importDir });
+      panels = extracted.panels.slice(0, 24);
+    }
+
+    if (panels.length === 0) {
+      return { ok: false, message: 'Painéis extraídos não encontrados em disco para renderizar o master.' };
+    }
+
+    const motionVelixKit = resolveMotionVelixKit();
+    const chainedTtsPort = buildRecapTtsPort(detail.record.ttsProvider);
+
+    const result = await runRecapProductionOrchestrator({
+      runId: detail.record.runId,
+      chapterId: detail.record.chapterId,
+      workTitle: detail.record.workTitle,
+      panels,
+      workspaceDir: recapWorkspace,
+      circuitBreaker: recapCircuitBreaker,
+      existingScript: detail.script,
+      ttsPort: chainedTtsPort,
+      ...(motionVelixKit.sfxDir ? { sfxAssetsDir: motionVelixKit.sfxDir } : {}),
+      plannerOptions: {
+        aspectRatio: detail.record.aspectRatio ?? '16:9',
+      },
+      masterApproved: true,
+      ...(detail.record.archivePath ? { archivePath: detail.record.archivePath } : {}),
+      ...(detail.record.language ? { language: detail.record.language } : {}),
+      ...(detail.record.scriptStyle ? { scriptStyle: detail.record.scriptStyle } : {}),
+      ...(detail.record.ttsProvider ? { ttsProvider: detail.record.ttsProvider } : {}),
+      ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
+      ...(detail.record.enableOcr !== undefined ? { enableOcr: detail.record.enableOcr } : {}),
+      ...(detail.record.gateFVerdict ? { gateFVerdict: detail.record.gateFVerdict } : {}),
+      initialCompletedSteps: detail.record.completedSteps,
+      onProgress: (ev) => emitRecapProgress(ev),
+      providers: buildRecapProviders(),
+    });
+
+    return {
+      ok: result.record.state === 'completed',
+      runId: result.record.runId,
+      state: result.record.state,
+      message: result.record.lastError ?? 'Exportação master concluída e pacote de entrega salvo.',
+      record: result.record,
+      script: result.script ?? detail.script,
+      plan: result.plan ?? detail.plan,
+      gateGReport: result.gateGReport ?? detail.gateGReport,
+      gateHReport: result.gateHReport ?? detail.gateHReport,
+      motionVelix: result.motionVelix ?? result.record.motionVelix ?? null,
+      previewMp4Path: result.record.previewMp4Path ?? undefined,
+      masterMp4Path: result.record.masterMp4Path ?? undefined,
+      exportBundleDir: result.record.exportBundleDir ?? undefined,
+    };
+  });
 
   // ─── Aethera Recap URL Chapter Importer IPC (Etapas 2–6) ──────────────────
   const recapLibraryDir = join(userDataDir, 'recap-library');
@@ -5197,69 +5363,21 @@ productionConsole,
     return listRecapLibrary(recapLibraryDir);
   });
 
-  // ─── Recap Project Persistence (list & delete orchestrator states) ─────────
+  // ─── Recap Project Persistence (list, load & delete) ──────────────────────
   ipcMain.handle('recap:list-projects', async (event) => {
     ensureTrusted(event.senderFrame);
-    const stateRoot = join(userDataDir, 'recap-checkpoints');
-    if (!existsSync(stateRoot)) return [];
-    const entries = readdirSync(stateRoot, { withFileTypes: true });
-    const projects: Array<{
-      runId: string;
-      chapterId: string;
-      workTitle: string;
-      state: string;
-      completedSteps: string[];
-      previewMp4Path?: string | null;
-      updatedAtIso: string;
-    }> = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const stateFile = join(stateRoot, entry.name, 'recap-orchestrator-state.json');
-      if (!existsSync(stateFile)) continue;
-      try {
-        const raw = JSON.parse(readFileSync(stateFile, 'utf-8'));
-        if (raw && typeof raw === 'object' && raw.schemaVersion === 1) {
-          projects.push({
-            runId: raw.runId ?? entry.name,
-            chapterId: raw.chapterId ?? entry.name,
-            workTitle: raw.workTitle ?? entry.name,
-            state: raw.state ?? 'idle',
-            completedSteps: Array.isArray(raw.completedSteps) ? raw.completedSteps : [],
-            previewMp4Path: raw.previewMp4Path ?? null,
-            updatedAtIso: raw.updatedAtIso ?? new Date().toISOString(),
-          });
-        }
-      } catch {
-        // Skip corrupted state files
-      }
-    }
-    // Sort by most recently updated first
-    projects.sort((a, b) => b.updatedAtIso.localeCompare(a.updatedAtIso));
-    return projects;
+    return listRecapProjects(recapWorkspace, legacyRecapCheckpointsRoot);
+  });
+
+  ipcMain.handle('recap:load-project', async (event, runId: string) => {
+    ensureTrusted(event.senderFrame);
+    if (!runId || typeof runId !== 'string') return null;
+    return loadRecapProjectDetail(recapWorkspace, runId, legacyRecapCheckpointsRoot);
   });
 
   ipcMain.handle('recap:delete-project', async (event, runId: string) => {
     ensureTrusted(event.senderFrame);
-    if (!runId || typeof runId !== 'string') return { ok: false, error: 'Invalid runId' };
-    const stateRoot = join(userDataDir, 'recap-checkpoints');
-    // Find the directory containing this runId's state file
-    if (!existsSync(stateRoot)) return { ok: false, error: 'No projects directory' };
-    const entries = readdirSync(stateRoot, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const stateFile = join(stateRoot, entry.name, 'recap-orchestrator-state.json');
-      if (!existsSync(stateFile)) continue;
-      try {
-        const raw = JSON.parse(readFileSync(stateFile, 'utf-8'));
-        if (raw?.runId === runId || entry.name === runId) {
-          rmSync(join(stateRoot, entry.name), { recursive: true, force: true });
-          return { ok: true, deleted: entry.name };
-        }
-      } catch {
-        // Skip unreadable state files
-      }
-    }
-    return { ok: false, error: 'Project not found' };
+    return deleteRecapProject(recapWorkspace, runId, legacyRecapCheckpointsRoot);
   });
 
   // Keep unused imports referenced for proxy/agent orchestration readiness

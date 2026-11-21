@@ -233,9 +233,11 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   creativeImageEngineSettings: () => ipcRenderer.invoke('creative:image-engine-settings'),
   creativeSaveImageEngineSettings: (input: Record<string, unknown>) => ipcRenderer.invoke('creative:save-image-engine-settings', input),
   recapGetReadiness: (input?: { chapterId?: string }) => ipcRenderer.invoke('recap:get-readiness', input),
+  recapGetMotionVelixStatus: () => ipcRenderer.invoke('recap:get-motionvelix-status'),
   recapPlanRevision: (input: { prompt: string; script: unknown; availablePanelIds?: string[] }) => ipcRenderer.invoke('recap:plan-revision', input),
   recapSelectArchives: () => ipcRenderer.invoke('recap:select-archives'),
   recapStartProduction: (input: Record<string, unknown>) => ipcRenderer.invoke('recap:start-production', input),
+  recapApprovePreview: (input: { runId: string }) => ipcRenderer.invoke('recap:approve-preview', input),
   recapImportAnalyze: (input: { url: string }) => ipcRenderer.invoke('recap:import-analyze', input),
   recapImportCreateJob: (input: { urls: string[]; forceReimport?: boolean }) => ipcRenderer.invoke('recap:import-create-job', input),
   recapImportGetJob: (id: string) => ipcRenderer.invoke('recap:import-get-job', id),
@@ -244,5 +246,12 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   recapImportCdnDirect: (input: { imageUrls: string[]; chapterPageUrl: string; workTitle?: string; chapterNumber?: string }) => ipcRenderer.invoke('recap:import-cdn-direct', input),
   recapLibraryList: () => ipcRenderer.invoke('recap:library-list'),
   recapListProjects: () => ipcRenderer.invoke('recap:list-projects'),
+  recapLoadProject: (runId: string) => ipcRenderer.invoke('recap:load-project', runId),
   recapDeleteProject: (runId: string) => ipcRenderer.invoke('recap:delete-project', runId),
+  onRecapProductionProgress: (listener: (event: unknown) => void) => {
+    const wrapped = (_event: unknown, payload: unknown) => listener(payload);
+    ipcRenderer.on('recap:production-progress', wrapped);
+    return () => ipcRenderer.removeListener('recap:production-progress', wrapped);
+  },
 });
+

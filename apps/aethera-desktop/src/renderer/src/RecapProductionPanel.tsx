@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import {
+  AlertTriangle,
   BookOpen,
   Calendar as CalendarIcon,
   CheckCircle2,
   ChevronRight,
-  Clock,
   Download,
+  ExternalLink,
   Film,
+  FolderOpen,
+  Layers,
   Link as LinkIcon,
-  MoreHorizontal,
-  Pause,
+  PauseCircle,
   Play,
   Plus,
   RefreshCw,
@@ -17,8 +19,28 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  Volume2,
+  Wand2,
   X,
+  XCircle,
 } from 'lucide-react';
+import {
+  deriveAudiovisualTracks,
+  derivePipelineTimeline,
+  deriveQualityScorecard,
+  formatTimecodeMs,
+  getStateMetadata,
+  mergeActiveProjectIntoRecentList,
+  toAetheraMediaUrl,
+  type MotionVelixKitStatusView,
+  type MotionVelixRenderTelemetry,
+  type RecapAudiovisualPlanView,
+  type RecapGateReportView,
+  type RecapProjectRecordView,
+  type RecapScriptView,
+  type RecapStageId,
+  type StageVisualStatus,
+} from './recap-timeline-model.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -66,6 +88,7 @@ interface EditableSceneRow {
   narrationText: string;
   motionStyle: string;
   estimatedDurationSec: number;
+  emotion?: string;
 }
 
 interface SelectedArchiveFile {
@@ -74,8 +97,46 @@ interface SelectedArchiveFile {
   sizeBytes: number;
 }
 
+interface RecapProgressEventPayload {
+  runId: string;
+  chapterId: string;
+  workTitle: string;
+  state: string;
+  currentStage: RecapStageId | null;
+  completedSteps: string[];
+  message: string;
+  record: RecapProjectRecordView;
+  updatedAtIso: string;
+}
+
+interface RecapProjectDetailResponse {
+  record: RecapProjectRecordView;
+  script: RecapScriptView | null;
+  plan: RecapAudiovisualPlanView | null;
+  gateGReport: RecapGateReportView | null;
+  gateHReport: RecapGateReportView | null;
+}
+
+interface RecapProductionResponse {
+  ok: boolean;
+  runId?: string;
+  chapterId?: string;
+  state?: string;
+  message: string;
+  record?: RecapProjectRecordView;
+  script?: RecapScriptView | null;
+  plan?: RecapAudiovisualPlanView | null;
+  gateGReport?: RecapGateReportView | null;
+  gateHReport?: RecapGateReportView | null;
+  motionVelix?: MotionVelixRenderTelemetry | null;
+  previewMp4Path?: string;
+  masterMp4Path?: string;
+  exportBundleDir?: string;
+}
+
 interface RecapBridge {
   recapGetReadiness?: (input?: { chapterId?: string }) => Promise<RecapReadinessView>;
+  recapGetMotionVelixStatus?: () => Promise<MotionVelixKitStatusView>;
   recapPlanRevision?: (input: { prompt: string; script: unknown; availablePanelIds?: string[] }) => Promise<RecapRevisionPlanView>;
   recapSelectArchives?: () => Promise<{ canceled: boolean; files: SelectedArchiveFile[] }>;
   recapImportAnalyze?: (input: { url: string }) => Promise<{
@@ -106,270 +167,787 @@ interface RecapBridge {
     warnings: string[];
   }>;
   recapStartProduction?: (input: {
+    runId?: string;
     archivePath: string;
     workTitle: string;
     language: string;
     scriptStyle: string;
     aspectRatio: '16:9' | '9:16';
     ttsProvider: string;
+    humorVolume: number;
     enableOcr: boolean;
     resumeCheckpoint: boolean;
-  }) => Promise<{ ok: boolean; message: string; previewMp4Path?: string }>;
-  recapListProjects?: () => Promise<Array<{
-    runId: string;
-    chapterId: string;
-    workTitle: string;
-    state: string;
-    completedSteps: string[];
-    previewMp4Path?: string | null;
-    updatedAtIso: string;
-  }>>;
-  recapDeleteProject?: (runId: string) => Promise<{ ok: boolean; deleted?: string; error?: string }>;
+  }) => Promise<RecapProductionResponse>;
+  recapApprovePreview?: (input: { runId: string }) => Promise<RecapProductionResponse>;
+  recapListProjects?: () => Promise<RecapProjectRecordView[]>;
+  recapLoadProject?: (runId: string) => Promise<RecapProjectDetailResponse | null>;
+  recapDeleteProject?: (runId: string) => Promise<{ ok: boolean; deleted?: string; removedPaths?: string[]; error?: string }>;
+  onRecapProductionProgress?: (listener: (event: unknown) => void) => () => void;
+  cinemaCalendarUpsertEvent?: (input: Record<string, unknown>) => Promise<unknown>;
 }
 
 function getRecapBridge(): RecapBridge | undefined {
   return (window as unknown as { aetheraBridge?: RecapBridge }).aetheraBridge;
 }
 
-// ─── Pipeline Stages ────────────────────────────────────────────────────────
-
-const PIPELINE_STAGES = [
-  { id: 'import', label: 'Importação', icon: Download },
-  { id: 'gate-f', label: 'Integridade', icon: ShieldCheck },
-  { id: 'vision', label: 'Visão Multimodal', icon: Film },
-  { id: 'continuity', label: 'Continuidade', icon: RefreshCw },
-  { id: 'script', label: 'Roteiro', icon: BookOpen },
-  { id: 'humanize', label: 'Humanização', icon: Sparkles },
-  { id: 'motion', label: 'Motion & Áudio', icon: Play },
-  { id: 'gate-h', label: 'Qualidade Final', icon: CheckCircle2 },
-] as const;
-
-type StageId = typeof PIPELINE_STAGES[number]['id'];
-
-// ─── Design Tokens ──────────────────────────────────────────────────────────
+// ─── Light Bento Tokens (aligned with aethera-theme.css) ────────────────────
 
 const T = {
-  // Colors — Apple-inspired restraint with Aethera brand accents
-  bg: '#fafafa',
-  surface: '#ffffff',
-  surfaceHover: '#f5f5f7',
-  border: 'rgba(0, 0, 0, 0.06)',
-  borderStrong: 'rgba(0, 0, 0, 0.1)',
-  text: '#1d1d1f',
-  textSecondary: '#86868b',
-  textTertiary: '#aeaeb2',
-  accent: '#6a46d8',       // lavender base
-  accentSoft: '#efe9fd',
-  lime: '#d8fb4f',
-  limeDark: '#8fa832',
-  success: '#34c759',
-  warning: '#ff9f0a',
-  error: '#ff3b30',
-  // Spacing scale (4px base)
-  sp1: 4, sp2: 8, sp3: 12, sp4: 16, sp5: 20, sp6: 24, sp8: 32, sp10: 40, sp12: 48,
-  // Radius
-  radiusSm: 8, radiusMd: 12, radiusLg: 16, radiusXl: 20, radiusFull: 9999,
-  // Shadows — subtle depth, not heavy cards
-  shadowSm: '0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.06)',
-  shadowMd: '0 2px 8px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)',
-  shadowLg: '0 4px 12px rgba(0,0,0,0.04), 0 8px 32px rgba(0,0,0,0.08)',
+  surface: 'var(--card, #ffffff)',
+  surfaceSubtle: 'var(--secondary, #f4f4f6)',
+  border: 'var(--border, #e3e3e8)',
+  borderStrong: '#cfcfd6',
+  ink: 'var(--foreground, #111111)',
+  inkMuted: 'var(--muted-foreground, #52525b)',
+  inkSubtle: '#62626c',
+  accent: '#6a46d8',
+  accentSoft: 'var(--brand-lavender-soft, #efe9fd)',
+  accentInk: '#2a1d5c',
+  lime: 'var(--brand-lime, #d8fb4f)',
+  limeSoft: 'var(--brand-lime-soft, #f3fdd0)',
+  success: '#166534',
+  successBg: '#eaf7df',
+  successBorder: '#bbf7d0',
+  warning: '#9a6200',
+  warningBg: '#fef3c7',
+  warningBorder: '#fde68a',
+  error: '#b42840',
+  errorBg: '#fde7f3',
+  errorBorder: '#fbcfe8',
+  mono: 'var(--font-mono, "IBM Plex Mono", ui-monospace, monospace)',
+  radiusCard: 24,
+  radiusInner: 16,
+  radiusSm: 10,
+  radiusFull: 9999,
+  shadow: 'var(--elevation-1, 0 1px 2px rgba(17, 17, 17, 0.04))',
 } as const;
 
-// ─── Shared Styles ──────────────────────────────────────────────────────────
+const STAGE_ICONS: Record<RecapStageId, typeof Download> = {
+  import: Download,
+  'gate-f': ShieldCheck,
+  vision: Film,
+  continuity: RefreshCw,
+  script: BookOpen,
+  humanize: Sparkles,
+  motion: Wand2,
+  'gate-h': CheckCircle2,
+};
+
+const MOTION_LABELS: Record<string, string> = {
+  ken_burns_in: 'Ken Burns In',
+  ken_burns_out: 'Ken Burns Out',
+  pan_vertical: 'Pan Vertical',
+  pan_horizontal: 'Pan Horizontal',
+  static_focus: 'Foco Seguro (Balões)',
+  impact_push: 'Impact Push',
+  parallax: 'Parallax',
+};
+
+const TRANSITION_LABELS: Record<string, string> = {
+  cut: 'Corte seco',
+  crossfade: 'Crossfade',
+  flash_white: 'Flash Clímax',
+  dip_black: 'Dip Black',
+};
+
+const SFX_LABELS: Record<string, string> = {
+  whoosh: 'Whoosh',
+  impact_hit: 'Impacto',
+  tension_riser: 'Riser Tensão',
+  page_turn: 'Virada Página',
+  emotional_swell: 'Brilho Emocional',
+};
 
 const inputStyle: CSSProperties = {
   width: '100%',
-  padding: `${T.sp2}px ${T.sp3}px`,
+  padding: '10px 12px',
   borderRadius: T.radiusSm,
   border: `1px solid ${T.border}`,
-  background: T.surface,
-  color: T.text,
+  background: T.surfaceSubtle,
+  color: T.ink,
   fontSize: 13,
-  fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif',
+  fontFamily: 'inherit',
   outline: 'none',
-  transition: 'border-color 150ms ease, box-shadow 150ms ease',
   boxSizing: 'border-box',
 };
 
 const btnPrimary: CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: T.sp2,
-  padding: `${T.sp2}px ${T.sp5}px`,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 8,
+  padding: '10px 18px',
   borderRadius: T.radiusFull,
   border: 'none',
-  background: T.accent,
-  color: '#fff',
-  fontSize: 13, fontWeight: 600,
+  background: T.ink,
+  color: '#ffffff',
+  fontSize: 13,
+  fontWeight: 600,
   cursor: 'pointer',
-  transition: 'opacity 150ms ease, transform 100ms ease',
+  whiteSpace: 'nowrap',
   fontFamily: 'inherit',
+};
+
+const btnLime: CSSProperties = {
+  ...btnPrimary,
+  background: T.lime,
+  color: T.ink,
+  fontWeight: 700,
 };
 
 const btnSecondary: CSSProperties = {
   ...btnPrimary,
   background: T.surface,
-  color: T.text,
+  color: T.ink,
   border: `1px solid ${T.borderStrong}`,
 };
 
-const btnGhost: CSSProperties = {
+const btnDanger: CSSProperties = {
   ...btnPrimary,
-  background: 'transparent',
-  color: T.textSecondary,
-  padding: `${T.sp1}px ${T.sp3}px`,
+  background: T.error,
+  color: '#ffffff',
 };
 
-// ─── Sub-components ─────────────────────────────────────────────────────────
+const btnGhost: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 6,
+  padding: '6px 10px',
+  borderRadius: T.radiusSm,
+  border: 'none',
+  background: 'transparent',
+  color: T.inkMuted,
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+  fontFamily: 'inherit',
+};
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <span style={{
-      fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase',
-      color: T.textTertiary, marginBottom: T.sp2, display: 'block',
-    }}>
+    <span
+      style={{
+        display: 'block',
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: '0.12em',
+        textTransform: 'uppercase',
+        color: T.accent,
+        marginBottom: 8,
+      }}
+    >
       {children}
     </span>
   );
 }
 
-function Card({ children, style, onClick }: { children: React.ReactNode; style?: CSSProperties; onClick?: () => void }) {
+function BentoBlock({
+  children,
+  style,
+}: {
+  children: React.ReactNode;
+  style?: CSSProperties;
+}) {
   return (
-    <div
-      onClick={onClick}
+    <section
       style={{
         background: T.surface,
-        borderRadius: T.radiusLg,
+        borderRadius: T.radiusCard,
         border: `1px solid ${T.border}`,
-        padding: T.sp5,
-        boxShadow: T.shadowSm,
-        transition: 'box-shadow 200ms ease, border-color 200ms ease',
-        cursor: onClick ? 'pointer' : undefined,
+        padding: 20,
+        boxShadow: T.shadow,
         ...style,
       }}
     >
       {children}
-    </div>
+    </section>
   );
 }
 
-/** Horizontal pipeline progress bar with labeled stages */
-function PipelineTimeline({
-  activeStage,
-  stageProgress,
+function toneColors(tone: 'neutral' | 'active' | 'warning' | 'success' | 'error') {
+  switch (tone) {
+    case 'success':
+      return { fg: T.success, bg: T.successBg, border: T.successBorder };
+    case 'warning':
+      return { fg: T.warning, bg: T.warningBg, border: T.warningBorder };
+    case 'error':
+      return { fg: T.error, bg: T.errorBg, border: T.errorBorder };
+    case 'active':
+      return { fg: T.accent, bg: T.accentSoft, border: '#d8ccf9' };
+    default:
+      return { fg: T.inkMuted, bg: T.surfaceSubtle, border: T.border };
+  }
+}
+
+function stageColors(status: StageVisualStatus) {
+  switch (status) {
+    case 'completed':
+      return { bg: T.ink, fg: '#ffffff', border: T.ink, line: T.ink, label: T.ink };
+    case 'active':
+      return { bg: T.accentSoft, fg: T.accent, border: T.accent, line: T.accent, label: T.accent };
+    case 'paused':
+      return { bg: T.warningBg, fg: T.warning, border: T.warning, line: T.warning, label: T.warning };
+    case 'failed':
+      return { bg: T.errorBg, fg: T.error, border: T.error, line: T.error, label: T.error };
+    default:
+      return { bg: T.surfaceSubtle, fg: T.inkSubtle, border: T.borderStrong, line: T.border, label: T.inkSubtle };
+  }
+}
+
+function formatDateTimePt(iso: string): string {
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return '—';
+  return new Date(ts).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const idx = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${(bytes / Math.pow(1024, idx)).toFixed(idx > 0 ? 1 : 0)} ${units[idx]}`;
+}
+
+function scenesFromScript(script: RecapScriptView | null, plan: RecapAudiovisualPlanView | null): EditableSceneRow[] {
+  if (!script || !Array.isArray(script.scenes)) return [];
+  const motionByScene = new Map<string, string>();
+  for (const shot of plan?.shots ?? []) {
+    if (!motionByScene.has(shot.sceneId)) {
+      motionByScene.set(shot.sceneId, shot.motionStyle);
+    }
+  }
+  return script.scenes.map((scene) => ({
+    sceneId: scene.sceneId,
+    panelId: scene.panelIds?.[0] ?? '—',
+    narrationText: scene.narrationText,
+    motionStyle: motionByScene.get(scene.sceneId) ?? 'ken_burns_in',
+    estimatedDurationSec: Number(scene.estimatedDurationSec ?? 0),
+    ...(scene.emotion ? { emotion: scene.emotion } : {}),
+  }));
+}
+
+// ─── Sub-components ─────────────────────────────────────────────────────────
+
+function RealPipelineTimeline({
+  record,
+  liveMessage,
 }: {
-  activeStage: StageId | null;
-  stageProgress: Record<string, number>;
+  record: RecapProjectRecordView | null;
+  liveMessage: string | null;
 }) {
-  const activeIdx = activeStage ? PIPELINE_STAGES.findIndex((s) => s.id === activeStage) : -1;
+  const timeline = useMemo(() => derivePipelineTimeline(record, liveMessage), [record, liveMessage]);
+  const headerTone = toneColors(timeline.tone);
 
   return (
-    <div style={{ padding: `${T.sp4}px 0` }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginBottom: T.sp3 }}>
-        {PIPELINE_STAGES.map((stage, idx) => {
-          const isActive = idx === activeIdx;
-          const isComplete = idx < activeIdx || (stageProgress[stage.id] ?? 0) >= 100;
-          const progress = stageProgress[stage.id] ?? 0;
-          const Icon = stage.icon;
+    <BentoBlock>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        <div>
+          <SectionLabel>Timeline Real do Processo</SectionLabel>
+          <p style={{ margin: 0, fontSize: 13, color: T.ink, fontWeight: 500 }}>
+            {timeline.detailMessage}
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: headerTone.fg,
+              background: headerTone.bg,
+              border: `1px solid ${headerTone.border}`,
+              padding: '4px 10px',
+              borderRadius: T.radiusSm,
+            }}
+          >
+            {timeline.stateLabel}
+          </span>
+          <span
+            style={{
+              fontFamily: T.mono,
+              fontVariantNumeric: 'tabular-nums',
+              fontSize: 14,
+              fontWeight: 700,
+              color: T.ink,
+            }}
+          >
+            {timeline.completedCount}/{timeline.totalCount} · {timeline.overallProgressPct}%
+          </span>
+        </div>
+      </div>
 
+      {/* Linear bar */}
+      <div style={{ height: 6, borderRadius: T.radiusFull, background: T.surfaceSubtle, overflow: 'hidden', marginBottom: 18 }}>
+        <div
+          style={{
+            height: '100%',
+            width: `${timeline.overallProgressPct}%`,
+            background:
+              timeline.tone === 'error'
+                ? T.error
+                : timeline.tone === 'warning'
+                  ? T.warning
+                  : timeline.tone === 'success'
+                    ? T.success
+                    : T.ink,
+            borderRadius: T.radiusFull,
+            transition: 'width 240ms ease',
+          }}
+        />
+      </div>
+
+      {/* 8 Real Stages */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(8, minmax(0, 1fr))',
+          gap: 6,
+        }}
+      >
+        {timeline.stages.map((stage) => {
+          const Icon = STAGE_ICONS[stage.id];
+          const c = stageColors(stage.status);
           return (
-            <div key={stage.id} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: T.sp1, position: 'relative' }}>
-              {/* Connector line */}
-              {idx > 0 && (
-                <div style={{
-                  position: 'absolute', top: 14, right: '50%', width: '100%', height: 2,
-                  background: isComplete || isActive ? T.accent : T.border,
-                  zIndex: 0,
-                  transition: 'background 300ms ease',
-                }} />
-              )}
-
-              {/* Stage dot */}
-              <div style={{
-                width: 28, height: 28, borderRadius: T.radiusFull,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: isComplete ? T.accent : isActive ? T.accentSoft : T.surface,
-                border: `1.5px solid ${isComplete || isActive ? T.accent : T.borderStrong}`,
-                zIndex: 1,
-                transition: 'all 300ms ease',
-              }}>
-                <Icon style={{
-                  width: 14, height: 14,
-                  color: isComplete ? '#fff' : isActive ? T.accent : T.textTertiary,
-                }} />
+            <div
+              key={stage.id}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 6,
+                padding: '10px 6px',
+                borderRadius: T.radiusInner,
+                border: `1px solid ${stage.status === 'pending' ? T.border : c.border}`,
+                background: stage.status === 'pending' ? T.surface : stage.status === 'completed' ? T.surfaceSubtle : c.bg,
+              }}
+            >
+              <div
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: T.radiusFull,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: c.bg,
+                  color: c.fg,
+                  border: `1.5px solid ${c.border}`,
+                }}
+              >
+                {stage.status === 'active' ? (
+                  <RefreshCw className="animate-spin" style={{ width: 14, height: 14 }} />
+                ) : stage.status === 'failed' ? (
+                  <XCircle style={{ width: 14, height: 14 }} />
+                ) : stage.status === 'paused' ? (
+                  <PauseCircle style={{ width: 14, height: 14 }} />
+                ) : (
+                  <Icon style={{ width: 14, height: 14 }} />
+                )}
               </div>
-
-              {/* Label */}
-              <span style={{
-                fontSize: 10, fontWeight: isActive ? 600 : 400,
-                color: isActive ? T.accent : isComplete ? T.text : T.textTertiary,
-                textAlign: 'center', lineHeight: 1.2,
-                transition: 'color 300ms ease',
-              }}>
-                {stage.label}
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: stage.status === 'active' || stage.status === 'completed' ? 600 : 500,
+                  color: c.label,
+                  textAlign: 'center',
+                  lineHeight: 1.25,
+                }}
+              >
+                {stage.shortLabel}
               </span>
-
-              {/* Percentage badge */}
-              {(isActive || isComplete) && progress > 0 && (
-                <span style={{
-                  fontSize: 9, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
-                  color: isComplete ? T.success : T.accent,
-                }}>
-                  {Math.round(progress)}%
-                </span>
-              )}
+              <span
+                style={{
+                  fontSize: 10,
+                  fontFamily: T.mono,
+                  color: stage.status === 'completed' ? T.success : stage.status === 'failed' ? T.error : stage.status === 'paused' ? T.warning : T.inkSubtle,
+                }}
+              >
+                {stage.status === 'completed'
+                  ? 'OK'
+                  : stage.status === 'active'
+                    ? 'EXEC'
+                    : stage.status === 'failed'
+                      ? 'ERRO'
+                      : stage.status === 'paused'
+                        ? 'PAUSA'
+                        : '—'}
+              </span>
             </div>
           );
         })}
       </div>
-    </div>
+    </BentoBlock>
   );
 }
 
-/** Video preview player placeholder */
-function PreviewPlayer({ mp4Path, isProducing }: { mp4Path: string | null; isProducing: boolean }) {
+function AudiovisualTrackTimeline({
+  plan,
+  motionVelix,
+  selectedShotId,
+  onSelectShot,
+}: {
+  plan: RecapAudiovisualPlanView | null;
+  motionVelix?: MotionVelixRenderTelemetry | null;
+  selectedShotId: string | null;
+  onSelectShot: (shotId: string, sceneId: string) => void;
+}) {
+  const tracks = useMemo(() => deriveAudiovisualTracks(plan, motionVelix), [plan, motionVelix]);
+
+  if (!tracks.hasRealPlan) {
+    return (
+      <BentoBlock>
+        <SectionLabel>Timeline Audiovisual (Multifaixa Real)</SectionLabel>
+        <div
+          style={{
+            padding: '20px 16px',
+            borderRadius: T.radiusInner,
+            background: T.surfaceSubtle,
+            border: `1px dashed ${T.borderStrong}`,
+            textAlign: 'center',
+          }}
+        >
+          <Layers style={{ width: 22, height: 22, color: T.inkSubtle, margin: '0 auto 8px' }} />
+          <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: T.ink }}>
+            Nenhum plano audiovisual renderizado neste projeto ainda
+          </p>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: T.inkMuted }}>
+            Assim que a etapa MotionVelix &amp; Áudio concluir, os shots (V1), narração medida (A1), SFX MotionVelix (A2) e legendas (T1) aparecerão aqui com durações reais.
+          </p>
+        </div>
+      </BentoBlock>
+    );
+  }
+
+  const selectedShot = tracks.shots.find((s) => s.shotId === selectedShotId) ?? tracks.shots[0] ?? null;
+
   return (
-    <div style={{
-      aspectRatio: '16/9',
-      borderRadius: T.radiusLg,
-      background: '#000',
-      overflow: 'hidden',
-      position: 'relative',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }}>
+    <BentoBlock>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 12,
+          marginBottom: 14,
+        }}
+      >
+        <div>
+          <SectionLabel>Timeline Audiovisual Real (V1 / A1 / A2 / T1)</SectionLabel>
+          <p style={{ margin: 0, fontSize: 12, color: T.inkMuted }}>
+            Reflete o plano real gravado em disco ({tracks.renderTarget === 'master' ? 'Master' : 'Prévia'} · {tracks.resolutionLabel} · {tracks.fps} fps)
+          </p>
+        </div>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 14,
+            fontSize: 12,
+            fontFamily: T.mono,
+            fontVariantNumeric: 'tabular-nums',
+            color: T.ink,
+          }}
+        >
+          <span>Total: <strong>{formatTimecodeMs(tracks.totalDurationMs)}</strong></span>
+          <span>Narração: <strong>{formatTimecodeMs(tracks.measuredNarrationDurationMs)}</strong></span>
+          <span>Shots: <strong>{tracks.shots.length}</strong></span>
+          <span>SFX: <strong>{motionVelix?.sfxApplied ?? 0}/{tracks.sfxMarkers.length}</strong></span>
+          <span>Legendas: <strong>{tracks.captionCueCount}</strong></span>
+        </div>
+      </div>
+
+      {/* Multi-track grid */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {/* V1 Video & Motion Track */}
+        <div style={{ display: 'grid', gridTemplateColumns: '112px 1fr', gap: 10, alignItems: 'center' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.ink, fontFamily: T.mono }}>
+            V1 · Vídeo
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              gap: 3,
+              padding: 4,
+              borderRadius: T.radiusSm,
+              background: T.surfaceSubtle,
+              border: `1px solid ${T.border}`,
+              minHeight: 44,
+              overflowX: 'auto',
+            }}
+          >
+            {tracks.shots.map((shot) => {
+              const isSelected = selectedShot?.shotId === shot.shotId;
+              return (
+                <button
+                  key={shot.shotId}
+                  type="button"
+                  onClick={() => onSelectShot(shot.shotId, shot.sceneId)}
+                  title={`${shot.shotId} · ${MOTION_LABELS[shot.motionStyle] ?? shot.motionStyle} · ${formatTimecodeMs(shot.durationMs)}`}
+                  style={{
+                    flex: `${Math.max(1, shot.durationMs)} 1 0%`,
+                    minWidth: 56,
+                    padding: '6px 8px',
+                    borderRadius: 8,
+                    border: isSelected ? `2px solid ${T.ink}` : `1px solid ${shot.framingAtRisk ? T.warning : '#d8ccf9'}`,
+                    background: isSelected ? T.ink : shot.balloonSafeZoneProtected ? T.limeSoft : T.accentSoft,
+                    color: isSelected ? '#ffffff' : T.ink,
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div style={{ fontSize: 10, fontWeight: 700, fontFamily: T.mono, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {shot.shotId}
+                  </div>
+                  <div style={{ fontSize: 10, opacity: isSelected ? 0.85 : 0.75, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {MOTION_LABELS[shot.motionStyle] ?? shot.motionStyle}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* A1 Narration Audio Track */}
+        <div style={{ display: 'grid', gridTemplateColumns: '112px 1fr', gap: 10, alignItems: 'center' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.ink, fontFamily: T.mono }}>
+            A1 · Narração
+          </div>
+          <div
+            style={{
+              position: 'relative',
+              height: 28,
+              borderRadius: T.radiusSm,
+              background: T.surfaceSubtle,
+              border: `1px solid ${tracks.audioClipped ? T.error : T.border}`,
+              overflow: 'hidden',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '0 10px',
+            }}
+          >
+            <div
+              style={{
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: `${Math.min(100, (tracks.measuredNarrationDurationMs / tracks.totalDurationMs) * 100)}%`,
+                background: tracks.audioClipped ? T.errorBg : T.successBg,
+                borderRight: `2px solid ${tracks.audioClipped ? T.error : T.success}`,
+              }}
+            />
+            <span style={{ position: 'relative', zIndex: 1, fontSize: 11, fontFamily: T.mono, color: T.ink, fontWeight: 600 }}>
+              Audio-First Sync · {formatTimecodeMs(tracks.measuredNarrationDurationMs)}
+              {tracks.audioClipped ? ' (ATENÇÃO: corte detectado)' : ' (sem cortes)'}
+            </span>
+          </div>
+        </div>
+
+        {/* A2 MotionVelix SFX Track */}
+        <div style={{ display: 'grid', gridTemplateColumns: '112px 1fr', gap: 10, alignItems: 'center' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.ink, fontFamily: T.mono }}>
+            A2 · Velix SFX
+          </div>
+          <div
+            style={{
+              position: 'relative',
+              height: 30,
+              borderRadius: T.radiusSm,
+              background: T.surfaceSubtle,
+              border: `1px solid ${T.border}`,
+              overflow: 'hidden',
+            }}
+          >
+            {tracks.sfxMarkers.length === 0 ? (
+              <span style={{ fontSize: 11, color: T.inkSubtle, padding: '6px 10px', display: 'inline-block' }}>
+                Nenhum SFX planejado
+              </span>
+            ) : (
+              tracks.sfxMarkers.map((cue) => (
+                <div
+                  key={cue.cueId}
+                  title={`${SFX_LABELS[cue.sfxKind] ?? cue.sfxKind} @ ${formatTimecodeMs(cue.timeMs)} (${cue.gainDb} dB) · ${cue.applied ? 'Mixado do kit MotionVelix' : 'WAV ausente'}`}
+                  style={{
+                    position: 'absolute',
+                    left: `${cue.offsetPct}%`,
+                    top: 4,
+                    bottom: 4,
+                    padding: '0 6px',
+                    borderRadius: 6,
+                    background: cue.applied ? T.lime : T.warningBg,
+                    border: `1px solid ${cue.applied ? '#9cc21c' : T.warningBorder}`,
+                    color: T.ink,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    fontFamily: T.mono,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <Volume2 style={{ width: 10, height: 10 }} />
+                  {SFX_LABELS[cue.sfxKind] ?? cue.sfxKind}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* T1 Captions Track */}
+        <div style={{ display: 'grid', gridTemplateColumns: '112px 1fr', gap: 10, alignItems: 'center' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.ink, fontFamily: T.mono }}>
+            T1 · Legendas
+          </div>
+          <div
+            style={{
+              height: 26,
+              borderRadius: T.radiusSm,
+              background: T.surfaceSubtle,
+              border: `1px solid ${T.border}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0 10px',
+              fontSize: 11,
+              color: T.inkMuted,
+              fontFamily: T.mono,
+            }}
+          >
+            <span>ASS Smart Captions sincronizadas</span>
+            <strong>{tracks.captionCueCount} blocos · {tracks.vfxActiveCount} cenas com VFX</strong>
+          </div>
+        </div>
+      </div>
+
+      {/* Selected shot inspector */}
+      {selectedShot && (
+        <div
+          style={{
+            marginTop: 14,
+            padding: '10px 14px',
+            borderRadius: T.radiusInner,
+            background: T.surfaceSubtle,
+            border: `1px solid ${T.border}`,
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 10,
+            fontSize: 12,
+          }}
+        >
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center' }}>
+            <strong style={{ fontFamily: T.mono, color: T.ink }}>{selectedShot.shotId}</strong>
+            <span style={{ color: T.inkMuted }}>Cena: <strong style={{ color: T.ink }}>{selectedShot.sceneId}</strong></span>
+            <span style={{ color: T.inkMuted }}>Painel: <strong style={{ fontFamily: T.mono, color: T.ink }}>{selectedShot.panelId}</strong></span>
+            <span style={{ color: T.inkMuted }}>Motion: <strong style={{ color: T.ink }}>{MOTION_LABELS[selectedShot.motionStyle] ?? selectedShot.motionStyle}</strong></span>
+            <span style={{ color: T.inkMuted }}>Transição: <strong style={{ color: T.ink }}>{TRANSITION_LABELS[selectedShot.transitionIn] ?? selectedShot.transitionIn}</strong></span>
+          </div>
+          <div style={{ display: 'flex', gap: 10, fontFamily: T.mono, fontVariantNumeric: 'tabular-nums', color: T.ink }}>
+            <span>{formatTimecodeMs(selectedShot.startMs)} → {formatTimecodeMs(selectedShot.endMs)}</span>
+            {selectedShot.balloonSafeZoneProtected && (
+              <span style={{ color: T.success, fontWeight: 700 }}>Balões protegidos</span>
+            )}
+            {selectedShot.framingAtRisk && (
+              <span style={{ color: T.warning, fontWeight: 700 }}>Risco de corte</span>
+            )}
+          </div>
+        </div>
+      )}
+    </BentoBlock>
+  );
+}
+
+function PreviewPlayer({
+  mp4Path,
+  isProducing,
+  onError,
+}: {
+  mp4Path: string | null;
+  isProducing: boolean;
+  onError?: () => void;
+}) {
+  return (
+    <div
+      style={{
+        aspectRatio: '16/9',
+        borderRadius: T.radiusInner,
+        background: '#0f1014',
+        overflow: 'hidden',
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
       {mp4Path ? (
-        <video src={mp4Path} controls style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+        <video
+          key={mp4Path}
+          src={toAetheraMediaUrl(mp4Path)}
+          controls
+          onError={onError}
+          style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+        />
       ) : isProducing ? (
-        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.7)' }}>
-          <RefreshCw className="animate-spin" style={{ width: 32, height: 32, margin: '0 auto 12px', opacity: 0.6 }} />
-          <p style={{ fontSize: 13, fontWeight: 500 }}>Gerando preview…</p>
+        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.85)', padding: 24 }}>
+          <RefreshCw className="animate-spin" style={{ width: 28, height: 28, margin: '0 auto 10px' }} />
+          <p style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>Renderizando vídeo com MotionVelix + FFmpeg…</p>
         </div>
       ) : (
-        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.4)' }}>
-          <Film style={{ width: 40, height: 40, margin: '0 auto 12px', opacity: 0.5 }} />
-          <p style={{ fontSize: 13, fontWeight: 500 }}>Preview disponível após produção</p>
+        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.65)', padding: 24 }}>
+          <Film style={{ width: 34, height: 34, margin: '0 auto 10px', opacity: 0.7 }} />
+          <p style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>Nenhum MP4 gerado neste projeto ainda</p>
+          <p style={{ margin: '4px 0 0', fontSize: 12, opacity: 0.75 }}>
+            Inicie a produção na aba Produzir ou abra um projeto recente concluído.
+          </p>
         </div>
       )}
     </div>
   );
 }
 
-/** Quality scorecard ring */
-function ScoreRing({ score, label }: { score: number; label: string }) {
-  const circumference = 2 * Math.PI * 28;
-  const offset = circumference * (1 - score / 100);
-  const color = score >= 80 ? T.success : score >= 60 ? T.warning : T.error;
-
+function MetricScore({ score, label }: { score: number | null; label: string }) {
+  const color =
+    score === null ? T.inkSubtle : score >= 80 ? T.success : score >= 60 ? T.warning : T.error;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: T.sp1 }}>
-      <svg width={68} height={68} viewBox="0 0 68 68" style={{ transform: 'rotate(-90deg)' }}>
-        <circle cx={34} cy={34} r={28} fill="none" stroke={T.border} strokeWidth={4} />
-        <circle
-          cx={34} cy={34} r={28} fill="none" stroke={color} strokeWidth={4}
-          strokeDasharray={circumference} strokeDashoffset={offset} strokeLinecap="round"
-          style={{ transition: 'stroke-dashoffset 600ms ease' }}
-        />
-      </svg>
-      <span style={{ fontSize: 18, fontWeight: 700, color: T.text, marginTop: -4 }}>{score}</span>
-      <span style={{ fontSize: 10, color: T.textSecondary, fontWeight: 500 }}>{label}</span>
+    <div
+      style={{
+        padding: '12px 10px',
+        borderRadius: T.radiusInner,
+        background: T.surfaceSubtle,
+        border: `1px solid ${T.border}`,
+        textAlign: 'center',
+      }}
+    >
+      <div
+        style={{
+          fontSize: 22,
+          fontWeight: 700,
+          fontFamily: T.mono,
+          fontVariantNumeric: 'tabular-nums',
+          color,
+        }}
+      >
+        {score === null ? '—' : score}
+      </div>
+      <div style={{ fontSize: 11, fontWeight: 600, color: T.inkMuted, marginTop: 2 }}>{label}</div>
     </div>
   );
 }
@@ -378,78 +956,41 @@ function ScoreRing({ score, label }: { score: number; label: string }) {
 
 type SubTab = 'import' | 'produce' | 'preview';
 
-interface PersistedProject {
-  runId: string;
-  chapterId: string;
-  workTitle: string;
-  state: string;
-  completedSteps: string[];
-  previewMp4Path?: string | null;
-  updatedAtIso: string;
-}
-
 export function RecapProductionPanel() {
   const [subTab, setSubTab] = useState<SubTab>('import');
-  const [persistedProjects, setPersistedProjects] = useState<PersistedProject[]>([]);
+
+  // Recent & Active Project state
+  const [persistedProjects, setPersistedProjects] = useState<RecapProjectRecordView[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [activeProject, setActiveProject] = useState<RecapProjectRecordView | null>(null);
+  const [activeScript, setActiveScript] = useState<RecapScriptView | null>(null);
+  const [activePlan, setActivePlan] = useState<RecapAudiovisualPlanView | null>(null);
+  const [activeGateG, setActiveGateG] = useState<RecapGateReportView | null>(null);
+  const [activeGateH, setActiveGateH] = useState<RecapGateReportView | null>(null);
+  const [selectedShotId, setSelectedShotId] = useState<string | null>(null);
+  const [pendingDeleteProject, setPendingDeleteProject] = useState<RecapProjectRecordView | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
 
-  // Load persisted projects on mount
-  useEffect(() => {
-    const bridge = getRecapBridge();
-    if (bridge?.recapListProjects) {
-      void bridge.recapListProjects().then((projects) => {
-        setPersistedProjects(projects ?? []);
-      }).catch(() => { /* ignore — fallback to empty list */ });
-    }
-  }, []);
-
-  const handleDeleteProject = async (runId: string) => {
-    const bridge = getRecapBridge();
-    if (!bridge?.recapDeleteProject) return;
-    setDeletingProjectId(runId);
-    try {
-      const result = await bridge.recapDeleteProject(runId);
-      if (result.ok) {
-        setPersistedProjects((prev) => prev.filter((p) => p.runId !== runId));
-      }
-    } finally {
-      setDeletingProjectId(null);
-    }
-  };
-
-  const handleResumeProject = (project: PersistedProject) => {
-    setWorkTitle(project.workTitle);
-    if (project.previewMp4Path) {
-      setPreviewMp4(project.previewMp4Path);
-      setSubTab('preview');
-    } else {
-      setSubTab('produce');
-    }
-  };
+  // MotionVelix status
+  const [motionVelixStatus, setMotionVelixStatus] = useState<MotionVelixKitStatusView | null>(null);
 
   // Import state
   const [origin, setOrigin] = useState<'cbz' | 'link' | 'cdn'>('cbz');
   const [selectedFiles, setSelectedFiles] = useState<SelectedArchiveFile[]>([]);
   const [linkInputs, setLinkInputs] = useState<string[]>(['']);
+  const [linkImporting, setLinkImporting] = useState(false);
+  const [linkImportedCbz, setLinkImportedCbz] = useState<{ cbzPath: string; label: string } | null>(null);
   const [cdnImageUrls, setCdnImageUrls] = useState('');
   const [cdnChapterUrl, setCdnChapterUrl] = useState('');
   const [cdnWorkTitle, setCdnWorkTitle] = useState('');
   const [cdnChapterNumber, setCdnChapterNumber] = useState('');
   const [cdnImporting, setCdnImporting] = useState(false);
   const [cdnResult, setCdnResult] = useState<{ cbzPath: string; pageCount: number; workTitle: string; chapterNumber: string } | null>(null);
-  const [analyzedLinks, setAnalyzedLinks] = useState<Array<{
-    url: string; adapterName: string; meta: { workTitle: string; chapterNumber: string };
-    pagesCount: number; alreadyImported: { cbzPath: string } | null;
-  }>>([]);
-  const [importJob, setImportJob] = useState<{
-    id: string; status: string;
-    items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string }>;
-  } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
 
-  // Production state
-  const [productionMode, setProductionMode] = useState<'single' | 'individual'>('single');
-  const [startState, setStartState] = useState<'idle' | 'validating' | 'analyzing' | 'downloading' | 'generating-cbz' | 'preparing' | 'producing'>('idle');
+  // Production configuration
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
   const [workTitle, setWorkTitle] = useState('');
   const [language, setLanguage] = useState<'pt-BR' | 'en-US' | 'es-ES'>('pt-BR');
   const [humorVolume, setHumorVolume] = useState(35);
@@ -458,85 +999,425 @@ export function RecapProductionPanel() {
   const [ttsProvider, setTtsProvider] = useState('voicestudio_tts');
   const [enableOcr, setEnableOcr] = useState(false);
   const [readiness, setReadiness] = useState<RecapReadinessView>({
-    ready: false, operationalProviders: [], providers: [], checkpoint: { exists: false, chapterId: null, completedPanels: 0, totalPanels: 0, pendingPanels: 0, canResume: false, lastUpdatedAtIso: null },
-    autoResumeRecommended: false, summaryMessage: '', checkedAtIso: new Date().toISOString(),
+    ready: false,
+    operationalProviders: [],
+    providers: [],
+    checkpoint: {
+      exists: false,
+      chapterId: null,
+      completedPanels: 0,
+      totalPanels: 0,
+      pendingPanels: 0,
+      canResume: false,
+      lastUpdatedAtIso: null,
+    },
+    autoResumeRecommended: false,
+    summaryMessage: '',
+    checkedAtIso: new Date().toISOString(),
   });
-  const [loading, setLoading] = useState(false);
+  const [readinessLoading, setReadinessLoading] = useState(false);
   const [statusNote, setStatusNote] = useState<string | null>(null);
 
-  // Preview / Review state
+  // Preview & Review state
   const [scenes, setScenes] = useState<EditableSceneRow[]>([]);
   const [revisionPrompt, setRevisionPrompt] = useState('');
   const [impactPlan, setImpactPlan] = useState<RecapRevisionPlanView | null>(null);
-  const [previewMp4, setPreviewMp4] = useState<string | null>(null);
   const [scheduleDate, setScheduleDate] = useState('');
+  const [publishNote, setPublishNote] = useState<string | null>(null);
 
-  // Simulated pipeline progress for demo
-  const [stageProgress, setStageProgress] = useState<Record<string, number>>({});
-  const activeStage = useMemo<StageId | null>(() => {
-    if (startState === 'idle') return null;
-    if (startState === 'validating' || startState === 'analyzing' || startState === 'downloading' || startState === 'generating-cbz') return 'import';
-    if (startState === 'preparing') return 'gate-f';
-    if (startState === 'producing') return 'motion';
-    return null;
-  }, [startState]);
+  const recentProjects = useMemo(
+    () => mergeActiveProjectIntoRecentList(persistedProjects, activeProject),
+    [persistedProjects, activeProject],
+  );
 
-  // ─── IPC Handlers ─────────────────────────────────────────────────────────
+  const activeMediaPath = activeProject?.masterMp4Path ?? activeProject?.previewMp4Path ?? null;
+  const scorecard = useMemo(
+    () => deriveQualityScorecard(activeProject, activeGateG, activeGateH),
+    [activeProject, activeGateG, activeGateH],
+  );
 
-  const refreshReadiness = useCallback(async () => {
-    setLoading(true);
+  const isRunning =
+    isSubmitting ||
+    isApproving ||
+    activeProject?.state === 'importing' ||
+    activeProject?.state === 'preflight' ||
+    activeProject?.state === 'story_engine' ||
+    activeProject?.state === 'audiovisual_preview' ||
+    activeProject?.state === 'master_export';
+
+  // Resolve active archive path across all 3 origins or active project
+  const resolvedArchivePath = useMemo(() => {
+    if (origin === 'cbz' && selectedFiles[0]?.path) return selectedFiles[0].path;
+    if (origin === 'cdn' && cdnResult?.cbzPath) return cdnResult.cbzPath;
+    if (origin === 'link' && linkImportedCbz?.cbzPath) return linkImportedCbz.cbzPath;
+    return activeProject?.archivePath ?? null;
+  }, [origin, selectedFiles, cdnResult, linkImportedCbz, activeProject]);
+
+  // ─── Data Loading & Live IPC Subscription ────────────────────────────────
+
+  const refreshProjects = useCallback(async (): Promise<RecapProjectRecordView[]> => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapListProjects) return [];
+    setProjectsLoading(true);
+    try {
+      const list = await bridge.recapListProjects();
+      const normalized = Array.isArray(list) ? list : [];
+      setPersistedProjects(normalized);
+      return normalized;
+    } catch {
+      return [];
+    } finally {
+      setProjectsLoading(false);
+    }
+  }, []);
+
+  const refreshReadiness = useCallback(async (chapterId?: string) => {
+    setReadinessLoading(true);
     try {
       const bridge = getRecapBridge();
       if (bridge?.recapGetReadiness) {
-        setReadiness(await bridge.recapGetReadiness());
-      } else {
-        setStatusNote('Bridge IPC não conectado neste build.');
+        setReadiness(await bridge.recapGetReadiness(chapterId ? { chapterId } : undefined));
       }
     } catch (err) {
       setStatusNote(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      setReadinessLoading(false);
     }
   }, []);
 
-  useEffect(() => { void refreshReadiness(); }, [refreshReadiness]);
+  const refreshMotionVelixStatus = useCallback(async () => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapGetMotionVelixStatus) return;
+    try {
+      setMotionVelixStatus(await bridge.recapGetMotionVelixStatus());
+    } catch {
+      // keep previous status
+    }
+  }, []);
+
+  const openProjectDetail = useCallback(
+    async (project: RecapProjectRecordView, autoNavigate = true) => {
+      setActiveProject(project);
+      setWorkTitle(project.workTitle);
+      if (project.aspectRatio) setAspectRatio(project.aspectRatio);
+      if (project.language === 'pt-BR' || project.language === 'en-US' || project.language === 'es-ES') {
+        setLanguage(project.language);
+      }
+      if (project.scriptStyle) setScriptStyle(project.scriptStyle);
+      if (project.ttsProvider) setTtsProvider(project.ttsProvider);
+      if (typeof project.humorVolume === 'number') setHumorVolume(project.humorVolume);
+      if (typeof project.enableOcr === 'boolean') setEnableOcr(project.enableOcr);
+      setStatusNote(project.lastError ?? null);
+      setPublishNote(null);
+
+      const bridge = getRecapBridge();
+      if (bridge?.recapLoadProject) {
+        try {
+          const detail = await bridge.recapLoadProject(project.runId);
+          if (detail) {
+            setActiveProject(detail.record);
+            setActiveScript(detail.script);
+            setActivePlan(detail.plan);
+            setActiveGateG(detail.gateGReport);
+            setActiveGateH(detail.gateHReport);
+            setScenes(scenesFromScript(detail.script, detail.plan));
+            setSelectedShotId(detail.plan?.shots?.[0]?.shotId ?? null);
+          }
+        } catch {
+          // fallback to summary record
+        }
+      }
+
+      void refreshReadiness(project.chapterId);
+
+      if (autoNavigate) {
+        if (project.masterMp4Path || project.previewMp4Path) {
+          setSubTab('preview');
+        } else {
+          setSubTab('produce');
+        }
+      }
+    },
+    [refreshReadiness],
+  );
+
+  // Initial load: projects, MotionVelix kit, readiness
+  useEffect(() => {
+    void (async () => {
+      const [list] = await Promise.all([
+        refreshProjects(),
+        refreshMotionVelixStatus(),
+        refreshReadiness(),
+      ]);
+      if (list.length > 0 && !activeProject) {
+        await openProjectDetail(list[0]!, false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Subscribe to real-time production progress events from Electron main process
+  useEffect(() => {
+    const bridge = getRecapBridge();
+    if (!bridge?.onRecapProductionProgress) return;
+    return bridge.onRecapProductionProgress((raw) => {
+      const ev = raw as RecapProgressEventPayload;
+      if (!ev?.runId || !ev.record) return;
+      setActiveProject(ev.record);
+      setStatusNote(ev.message);
+      setPersistedProjects((prev) => mergeActiveProjectIntoRecentList(prev, ev.record));
+    });
+  }, []);
+
+  // Escape key closes delete confirmation modal
+  useEffect(() => {
+    if (!pendingDeleteProject) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !deletingProjectId) setPendingDeleteProject(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pendingDeleteProject, deletingProjectId]);
+
+  // ─── Actions ─────────────────────────────────────────────────────────────
+
+  const handleNewProject = () => {
+    setActiveProject(null);
+    setActiveScript(null);
+    setActivePlan(null);
+    setActiveGateG(null);
+    setActiveGateH(null);
+    setScenes([]);
+    setSelectedShotId(null);
+    setImpactPlan(null);
+    setStatusNote(null);
+    setPublishNote(null);
+    setImportError(null);
+    setWorkTitle('');
+    setSelectedFiles([]);
+    setCdnResult(null);
+    setLinkImportedCbz(null);
+    setSubTab('import');
+  };
+
+  const confirmDeleteProject = async () => {
+    const target = pendingDeleteProject;
+    if (!target) return;
+    const bridge = getRecapBridge();
+    if (!bridge?.recapDeleteProject) {
+      setStatusNote('IPC recap:delete-project indisponível neste build.');
+      setPendingDeleteProject(null);
+      return;
+    }
+    setDeletingProjectId(target.runId);
+    try {
+      const result = await bridge.recapDeleteProject(target.runId);
+      if (result.ok) {
+        setPersistedProjects((prev) => prev.filter((p) => p.runId !== target.runId));
+        if (activeProject?.runId === target.runId) {
+          setActiveProject(null);
+          setActiveScript(null);
+          setActivePlan(null);
+          setActiveGateG(null);
+          setActiveGateH(null);
+          setScenes([]);
+          setSelectedShotId(null);
+          setImpactPlan(null);
+        }
+        setStatusNote(`Projeto "${target.workTitle}" removido permanentemente.`);
+        void refreshProjects();
+      } else {
+        setStatusNote(result.error ?? 'Não foi possível excluir o projeto.');
+      }
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingProjectId(null);
+      setPendingDeleteProject(null);
+    }
+  };
 
   const handleSelectFiles = async () => {
     const bridge = getRecapBridge();
-    if (!bridge?.recapSelectArchives) { setImportError('Seletor disponível apenas no Aethera Desktop.'); return; }
+    if (!bridge?.recapSelectArchives) {
+      setImportError('Seletor de arquivos disponível apenas no Aethera Desktop.');
+      return;
+    }
     const result = await bridge.recapSelectArchives();
     if (!result.canceled && result.files.length > 0) {
       setSelectedFiles(result.files);
       setImportError(null);
-      if (!workTitle && result.files.length === 1) setWorkTitle(result.files[0]?.name.replace(/\.(cbz|pdf)$/i, '') ?? '');
+      if (!workTitle.trim() && result.files[0]) {
+        setWorkTitle(result.files[0].name.replace(/\.(cbz|pdf)$/i, ''));
+      }
+    }
+  };
+
+  const handleImportLinkChapters = async () => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapImportCreateJob || !bridge?.recapImportGetJob) {
+      setImportError('Importação por link indisponível neste build.');
+      return;
+    }
+    const urls = linkInputs.map((u) => u.trim()).filter(Boolean);
+    if (urls.length === 0) {
+      setImportError('Informe pelo menos uma URL de capítulo.');
+      return;
+    }
+    setImportError(null);
+    setLinkImporting(true);
+    setLinkImportedCbz(null);
+    try {
+      const job = await bridge.recapImportCreateJob({ urls });
+      let current = job;
+      for (let attempt = 0; attempt < 90; attempt++) {
+        if (current.status === 'completed' || current.status === 'failed' || current.status === 'cancelled') {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+        const polled = await bridge.recapImportGetJob(job.id);
+        if (!polled) break;
+        current = polled;
+      }
+      const importedItem = current.items.find((it) => it.libraryEntry?.cbzPath);
+      if (importedItem?.libraryEntry?.cbzPath) {
+        setLinkImportedCbz({
+          cbzPath: importedItem.libraryEntry.cbzPath,
+          label: `${importedItem.pagesDone}/${importedItem.pagesTotal} páginas importadas`,
+        });
+        if (!workTitle.trim()) {
+          const slug = importedItem.libraryEntry.cbzPath.split(/[/\\]/).pop()?.replace(/\.cbz$/i, '') ?? '';
+          if (slug) setWorkTitle(slug);
+        }
+      } else {
+        const firstErr = current.items.find((it) => it.error)?.error;
+        setImportError(firstErr ?? 'Não foi possível importar o capítulo a partir do link informado.');
+      }
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLinkImporting(false);
+    }
+  };
+
+  const handleImportCdn = async () => {
+    setImportError(null);
+    setCdnResult(null);
+    const bridge = getRecapBridge();
+    if (!bridge?.recapImportCdnDirect) {
+      setImportError('IPC recap:import-cdn-direct indisponível.');
+      return;
+    }
+    const urls = cdnImageUrls.split('\n').map((u) => u.trim()).filter(Boolean);
+    if (urls.length === 0) {
+      setImportError('Cole pelo menos uma URL de imagem.');
+      return;
+    }
+    if (!cdnChapterUrl.trim()) {
+      setImportError('Informe a URL do capítulo (referer).');
+      return;
+    }
+    setCdnImporting(true);
+    try {
+      const cdnInput: { imageUrls: string[]; chapterPageUrl: string; workTitle?: string; chapterNumber?: string } = {
+        imageUrls: urls,
+        chapterPageUrl: cdnChapterUrl.trim(),
+      };
+      if (cdnWorkTitle.trim()) cdnInput.workTitle = cdnWorkTitle.trim();
+      if (cdnChapterNumber.trim()) cdnInput.chapterNumber = cdnChapterNumber.trim();
+      const res = await bridge.recapImportCdnDirect(cdnInput);
+      setCdnResult(res);
+      if (!workTitle.trim() && res.workTitle) setWorkTitle(res.workTitle);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCdnImporting(false);
     }
   };
 
   const handleStart = async (resumeCheckpoint: boolean) => {
     const bridge = getRecapBridge();
-    if (!bridge?.recapStartProduction) { setStatusNote('IPC recap:start-production não conectado.'); return; }
+    if (!bridge?.recapStartProduction) {
+      setStatusNote('IPC recap:start-production não conectado.');
+      return;
+    }
     setImportError(null);
-    if (origin === 'cbz') {
-      if (selectedFiles.length === 0) { setImportError('Selecione pelo menos um arquivo CBZ ou PDF.'); return; }
-      setStartState('validating');
-      setStageProgress({ import: 30 });
-      setStartState('preparing');
-      setStageProgress((p) => ({ ...p, import: 100, 'gate-f': 50 }));
-      try {
-        const firstFile = selectedFiles[0];
-        if (!firstFile) { setImportError('Nenhum arquivo selecionado.'); return; }
-        const res = await bridge.recapStartProduction({
-          archivePath: firstFile.path, workTitle: workTitle || firstFile.name.replace(/\.(cbz|pdf)$/i, ''),
-          language, scriptStyle, aspectRatio, ttsProvider, enableOcr, resumeCheckpoint,
-        });
-        setStartState('producing');
-        setStageProgress((p) => ({ ...p, 'gate-f': 100, vision: 60, continuity: 40, script: 30, humanize: 20, motion: 10 }));
-        setStatusNote(res.message);
-        if (res.previewMp4Path) { setPreviewMp4(res.previewMp4Path); setSubTab('preview'); }
-      } catch (err) {
-        setStartState('idle');
-        setStatusNote(err instanceof Error ? err.message : String(err));
+    const archivePath = resolvedArchivePath;
+    if (!archivePath) {
+      setImportError('Selecione um arquivo CBZ/PDF ou conclua a importação por Link/CDN antes de iniciar.');
+      setSubTab('import');
+      return;
+    }
+
+    const effectiveTitle =
+      workTitle.trim() ||
+      selectedFiles[0]?.name.replace(/\.(cbz|pdf)$/i, '') ||
+      activeProject?.workTitle ||
+      'Aethera Recap';
+
+    setIsSubmitting(true);
+    setStatusNote(`Iniciando produção real de "${effectiveTitle}"…`);
+
+    try {
+      const res = await bridge.recapStartProduction({
+        ...(resumeCheckpoint && activeProject?.runId ? { runId: activeProject.runId } : {}),
+        archivePath,
+        workTitle: effectiveTitle,
+        language,
+        scriptStyle,
+        aspectRatio,
+        ttsProvider,
+        humorVolume,
+        enableOcr,
+        resumeCheckpoint,
+      });
+
+      setStatusNote(res.message);
+      if (res.record) setActiveProject(res.record);
+      if (res.script) {
+        setActiveScript(res.script);
+        setScenes(scenesFromScript(res.script, res.plan ?? null));
       }
+      if (res.plan) {
+        setActivePlan(res.plan);
+        setSelectedShotId(res.plan.shots?.[0]?.shotId ?? null);
+      }
+      if (res.gateGReport) setActiveGateG(res.gateGReport);
+      if (res.gateHReport) setActiveGateH(res.gateHReport);
+
+      await Promise.all([refreshProjects(), refreshReadiness(res.chapterId)]);
+
+      if (res.previewMp4Path || res.masterMp4Path) {
+        setSubTab('preview');
+      }
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+      await refreshProjects();
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleApprovePreview = async () => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapApprovePreview || !activeProject?.runId) {
+      setStatusNote('Nenhum projeto ativo com prévia pronta para aprovar.');
+      return;
+    }
+    setIsApproving(true);
+    setStatusNote('Exportando Master 1080p com MotionVelix + FFmpeg e gerando pacote de entrega…');
+    try {
+      const res = await bridge.recapApprovePreview({ runId: activeProject.runId });
+      setStatusNote(res.message);
+      if (res.record) setActiveProject(res.record);
+      if (res.plan) setActivePlan(res.plan);
+      if (res.gateHReport) setActiveGateH(res.gateHReport);
+      await refreshProjects();
+      if (res.ok) setSubTab('preview');
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsApproving(false);
     }
   };
 
@@ -545,369 +1426,694 @@ export function RecapProductionPanel() {
     if (!text) return;
     setRevisionPrompt(text);
     const bridge = getRecapBridge();
-    if (bridge?.recapPlanRevision) {
-      const planRes = await bridge.recapPlanRevision({
-        prompt: text,
-        script: { chapterId: workTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-'), title: workTitle, scenes: scenes.map((s) => ({ sceneId: s.sceneId, narrationText: s.narrationText })) },
-        availablePanelIds: ['panel-001', 'panel-002', 'panel-003'],
+    if (!bridge?.recapPlanRevision) {
+      setStatusNote('IPC recap:plan-revision indisponível.');
+      return;
+    }
+    const scriptPayload = activeScript ?? {
+      chapterId: activeProject?.chapterId ?? (workTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'recap'),
+      title: workTitle || activeProject?.workTitle || 'Recap',
+      scenes: scenes.map((s) => ({ sceneId: s.sceneId, narrationText: s.narrationText, panelIds: [s.panelId] })),
+    };
+    const panelIds = [...new Set(activePlan?.shots.map((s) => s.panelId) ?? scenes.map((s) => s.panelId).filter((id) => id !== '—'))];
+    const planRes = await bridge.recapPlanRevision({
+      prompt: text,
+      script: scriptPayload,
+      ...(panelIds.length > 0 ? { availablePanelIds: panelIds } : {}),
+    });
+    setImpactPlan(planRes);
+  };
+
+  const handleSchedulePublication = async () => {
+    if (!activeProject || !activeMediaPath) {
+      setPublishNote('Renderize e aprove o vídeo antes de agendar.');
+      return;
+    }
+    if (!scheduleDate) {
+      setPublishNote('Escolha uma data e hora de publicação.');
+      return;
+    }
+    const bridge = getRecapBridge();
+    if (!bridge?.cinemaCalendarUpsertEvent) {
+      setPublishNote('Integração de calendário indisponível neste build.');
+      return;
+    }
+    try {
+      await bridge.cinemaCalendarUpsertEvent({
+        title: `Mangá Recap: ${activeProject.workTitle}`,
+        platform: 'youtube',
+        format: activeProject.aspectRatio === '9:16' ? 'short' : 'long',
+        status: 'scheduled',
+        scheduledAtIso: new Date(scheduleDate).toISOString(),
+        projectId: activeProject.runId,
+        notes: activeProject.exportBundleDir ? `Pacote: ${activeProject.exportBundleDir}` : undefined,
       });
-      setImpactPlan(planRes);
-    } else {
-      setStatusNote('IPC recapPlanRevision indisponível.');
+      setPublishNote(`Agendado no Calendário Editorial para ${formatDateTimePt(new Date(scheduleDate).toISOString())}.`);
+    } catch (err) {
+      setPublishNote(err instanceof Error ? err.message : 'Erro ao agendar no calendário.');
     }
   };
-
-  const formatBytes = (bytes: number): string => {
-    if (bytes === 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
-  };
-
-  const overallProgress = useMemo(() => {
-    const values = Object.values(stageProgress);
-    if (values.length === 0) return 0;
-    return Math.round(values.reduce((a, b) => a + b, 0) / PIPELINE_STAGES.length);
-  }, [stageProgress]);
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <div style={{ maxWidth: 1200, margin: '0 auto', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif', color: T.text }}>
+    <div style={{ maxWidth: 1280, margin: '0 auto', color: T.ink, display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Top Studio Header */}
+      <BentoBlock style={{ padding: '20px 24px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <SectionLabel>Aethera Studio · Mangá Recap</SectionLabel>
+            <h1 style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.025em', margin: 0, color: T.ink }}>
+              {activeProject ? activeProject.workTitle : 'Mangá Recap'}
+            </h1>
+            <p style={{ fontSize: 13, color: T.inkMuted, margin: '6px 0 0', lineHeight: 1.5 }}>
+              {activeProject
+                ? `Projeto atual · ID ${activeProject.runId} · Atualizado em ${formatDateTimePt(activeProject.updatedAtIso)}`
+                : 'Importe capítulos CBZ/PDF, Links ou CDN, produza com MotionVelix + TTS real e valide nos Release Gates.'}
+            </p>
+          </div>
 
-      {/* Header */}
-      <header style={{ marginBottom: T.sp8 }}>
-        <SectionLabel>Aethera Studio</SectionLabel>
-        <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.02em', margin: 0, color: T.text }}>
-          Mangá Recap
-        </h1>
-        <p style={{ fontSize: 14, color: T.textSecondary, marginTop: T.sp1, lineHeight: 1.5 }}>
-          Importe capítulos, produza recaps com IA e revise a qualidade antes de publicar.
-        </p>
-      </header>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <button type="button" onClick={handleNewProject} style={btnSecondary}>
+              <Plus style={{ width: 14, height: 14 }} /> Novo Projeto
+            </button>
+            {activeProject && (
+              <button
+                type="button"
+                onClick={() => setPendingDeleteProject(activeProject)}
+                style={{ ...btnSecondary, color: T.error, borderColor: T.errorBorder }}
+              >
+                <Trash2 style={{ width: 14, height: 14 }} /> Excluir Projeto
+              </button>
+            )}
+          </div>
+        </div>
 
-      {/* Recent Projects */}
-      <section style={{ marginBottom: T.sp8 }}>
-        <SectionLabel>Projetos Recentes</SectionLabel>
-        {persistedProjects.length === 0 ? (
-          <p style={{ fontSize: 13, color: T.textTertiary, padding: `${T.sp4}px 0` }}>
-            Nenhum projeto salvo ainda. Inicie uma produção para vê-la aqui.
-          </p>
-        ) : (
-          <div style={{
-            display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: T.sp3,
-          }}>
-            {persistedProjects.map((project) => {
-              const stateLabel = project.state === 'completed' ? 'Concluído'
-                : project.state === 'awaiting_preview_approval' ? 'Aguardando aprovação'
-                : project.state === 'failed' ? 'Falhou'
-                : project.state === 'paused_provider_unavailable' ? 'Pausado'
-                : 'Em produção';
-              const stateColor = project.state === 'completed' ? T.success
-                : project.state === 'awaiting_preview_approval' ? T.warning
-                : project.state === 'failed' ? T.error
-                : T.accent;
-              const stateBg = project.state === 'completed' ? '#ecfdf3'
-                : project.state === 'awaiting_preview_approval' ? '#fffbeb'
-                : project.state === 'failed' ? '#fef2f2'
-                : T.accentSoft;
-              const progress = Math.round((project.completedSteps.length / PIPELINE_STAGES.length) * 100);
-              const dateStr = new Date(project.updatedAtIso).toLocaleDateString('pt-BR', { day: 'numeric', month: 'short' });
-              const isDeleting = deletingProjectId === project.runId;
-
-              return (
-                <Card
-                  key={project.runId}
-                  onClick={() => !isDeleting && handleResumeProject(project)}
+        {/* MotionVelix Engine Verification Strip */}
+        <div
+          style={{
+            marginTop: 16,
+            paddingTop: 14,
+            borderTop: `1px solid ${T.border}`,
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 12,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
+            <div
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: T.radiusSm,
+                background: motionVelixStatus?.installed ? T.limeSoft : T.warningBg,
+                border: `1px solid ${motionVelixStatus?.installed ? '#c3e85a' : T.warningBorder}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <Wand2 style={{ width: 16, height: 16, color: motionVelixStatus?.installed ? T.success : T.warning }} />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 700, color: T.ink }}>
+                <span>Motor de Edição: MotionVelix + FFmpeg Híbrido</span>
+                <span
                   style={{
-                    padding: `${T.sp3}px ${T.sp4}px`,
-                    display: 'flex', flexDirection: 'column', gap: T.sp2,
-                    cursor: isDeleting ? 'default' : 'pointer',
-                    opacity: isDeleting ? 0.5 : 1,
-                    transition: 'box-shadow 200ms ease, border-color 200ms ease',
+                    fontFamily: T.mono,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: motionVelixStatus?.installed ? T.success : T.warning,
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: T.sp3 }}>
-                    <div style={{
-                      width: 36, height: 36, borderRadius: T.radiusMd,
-                      background: stateBg,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                    }}>
-                      {project.state === 'completed' ? (
-                        <CheckCircle2 style={{ width: 18, height: 18, color: stateColor }} />
-                      ) : project.state === 'failed' ? (
-                        <X style={{ width: 18, height: 18, color: stateColor }} />
-                      ) : (
-                        <RefreshCw style={{ width: 18, height: 18, color: stateColor }} />
-                      )}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <p style={{ fontSize: 13, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', margin: 0 }}>
+                  {motionVelixStatus
+                    ? motionVelixStatus.installed
+                      ? `Kit ativo (${motionVelixStatus.availableSfx.length}/5 SFX)`
+                      : 'Kit SFX ausente'
+                    : 'Verificando kit…'}
+                </span>
+                {activeProject?.motionVelix && (
+                  <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkMuted }}>
+                    · Último render: {activeProject.motionVelix.sfxApplied}/{activeProject.motionVelix.sfxPlanned} SFX · {activeProject.motionVelix.vfxAppliedShots} VFX · {activeProject.motionVelix.transitionsApplied} transições
+                  </span>
+                )}
+              </div>
+              <p style={{ margin: '2px 0 0', fontSize: 11, color: T.inkMuted }}>
+                {motionVelixStatus?.sfxDir
+                  ? `SFX MotionVelix: ${motionVelixStatus.sfxDir}`
+                  : motionVelixStatus?.summary ?? 'Detectando diretório do kit MotionVelix…'}
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => void refreshMotionVelixStatus()}
+              style={{ ...btnGhost, border: `1px solid ${T.border}` }}
+              title="Reverificar kit MotionVelix"
+            >
+              <RefreshCw style={{ width: 12, height: 12 }} /> Verificar Kit
+            </button>
+            <a
+              href="#/video/remotion"
+              style={{
+                ...btnGhost,
+                border: `1px solid ${T.border}`,
+                textDecoration: 'none',
+                color: T.ink,
+              }}
+            >
+              MotionVelix Studio <ExternalLink style={{ width: 12, height: 12 }} />
+            </a>
+            <a
+              href="#/video"
+              style={{
+                ...btnGhost,
+                border: `1px solid ${T.border}`,
+                textDecoration: 'none',
+                color: T.ink,
+              }}
+            >
+              Editor Multifaixa <ExternalLink style={{ width: 12, height: 12 }} />
+            </a>
+          </div>
+        </div>
+      </BentoBlock>
+
+      {/* Recent Projects (Always includes Current Project + Latest Persisted Projects) */}
+      <BentoBlock>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+          <div>
+            <SectionLabel>Projetos Recentes ({recentProjects.length})</SectionLabel>
+            <p style={{ margin: 0, fontSize: 12, color: T.inkMuted }}>
+              Exibe o projeto atual e todas as produções salvas em ordem da mais recente para a mais antiga.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void refreshProjects()}
+            disabled={projectsLoading}
+            style={{ ...btnGhost, border: `1px solid ${T.border}` }}
+          >
+            <RefreshCw className={projectsLoading ? 'animate-spin' : undefined} style={{ width: 13, height: 13 }} />
+            {projectsLoading ? 'Atualizando…' : 'Atualizar'}
+          </button>
+        </div>
+
+        {recentProjects.length === 0 ? (
+          <div
+            style={{
+              padding: '22px 16px',
+              borderRadius: T.radiusInner,
+              background: T.surfaceSubtle,
+              border: `1px dashed ${T.borderStrong}`,
+              textAlign: 'center',
+            }}
+          >
+            <FolderOpen style={{ width: 22, height: 22, color: T.inkSubtle, margin: '0 auto 8px' }} />
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: T.ink }}>
+              Nenhum projeto Mangá Recap salvo ainda
+            </p>
+            <p style={{ margin: '4px 0 0', fontSize: 12, color: T.inkMuted }}>
+              Importe um arquivo CBZ/PDF ou link abaixo e clique em Iniciar Produção — ele aparecerá aqui imediatamente.
+            </p>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))', gap: 12 }}>
+            {recentProjects.map((project) => {
+              const isCurrent = activeProject?.runId === project.runId;
+              const isDeleting = deletingProjectId === project.runId;
+              const derived = derivePipelineTimeline(project);
+              const meta = getStateMetadata(project.state);
+              const c = toneColors(meta.tone);
+
+              return (
+                <div
+                  key={project.runId}
+                  onClick={() => !isDeleting && void openProjectDetail(project)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if ((e.key === 'Enter' || e.key === ' ') && !isDeleting) {
+                      e.preventDefault();
+                      void openProjectDetail(project);
+                    }
+                  }}
+                  style={{
+                    padding: 14,
+                    borderRadius: T.radiusInner,
+                    border: isCurrent ? `2px solid ${T.ink}` : `1px solid ${T.border}`,
+                    background: isCurrent ? '#fbfbfe' : T.surface,
+                    cursor: isDeleting ? 'default' : 'pointer',
+                    opacity: isDeleting ? 0.5 : 1,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 10,
+                    transition: 'border-color 150ms ease, background-color 150ms ease',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                        {isCurrent && (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              letterSpacing: '0.06em',
+                              textTransform: 'uppercase',
+                              color: T.ink,
+                              background: T.lime,
+                              padding: '2px 7px',
+                              borderRadius: 6,
+                            }}
+                          >
+                            Atual
+                          </span>
+                        )}
+                        <span style={{ fontSize: 11, fontWeight: 600, color: c.fg }}>
+                          {meta.label}
+                        </span>
+                      </div>
+                      <p
+                        style={{
+                          margin: 0,
+                          fontSize: 14,
+                          fontWeight: 700,
+                          color: T.ink,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
                         {project.workTitle}
-                </p>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: T.sp2, marginTop: T.sp1 }}>
-                        <span style={{
-                          fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: T.radiusFull,
-                          background: stateBg, color: stateColor,
-                        }}>{stateLabel}</span>
-                        <span style={{ fontSize: 10, color: T.textTertiary }}>{dateStr}</span>
+                      </p>
+                      <div
+                        style={{
+                          marginTop: 4,
+                          fontSize: 11,
+                          color: T.inkSubtle,
+                          fontFamily: T.mono,
+                          fontVariantNumeric: 'tabular-nums',
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: 8,
+                        }}
+                      >
+                        <span>{formatDateTimePt(project.updatedAtIso)}</span>
+                        {project.totalDurationMs ? <span>· {formatTimecodeMs(project.totalDurationMs)}</span> : null}
+                        {project.motionVelix ? (
+                          <span>· SFX {project.motionVelix.sfxApplied}/{project.motionVelix.sfxPlanned}</span>
+                        ) : null}
                       </div>
                     </div>
+
                     <button
                       type="button"
-                      onClick={(e) => { e.stopPropagation(); void handleDeleteProject(project.runId); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPendingDeleteProject(project);
+                      }}
                       disabled={isDeleting}
-                      title="Excluir projeto"
+                      title={`Excluir ${project.workTitle}`}
+                      aria-label={`Excluir projeto ${project.workTitle}`}
                       style={{
-                        ...btnGhost, padding: T.sp1, color: T.error, opacity: isDeleting ? 0.4 : 0.6,
-                        transition: 'opacity 150ms ease',
+                        ...btnGhost,
+                        padding: 6,
+                        color: T.error,
+                        border: `1px solid transparent`,
                       }}
                     >
-                      <Trash2 style={{ width: 14, height: 14 }} />
+                      <Trash2 style={{ width: 15, height: 15 }} />
                     </button>
                   </div>
-                  {/* Progress bar */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: T.sp2 }}>
-                    <div style={{ flex: 1, height: 4, borderRadius: T.radiusFull, background: T.border, overflow: 'hidden' }}>
-                      <div style={{
-                        height: '100%', borderRadius: T.radiusFull, background: stateColor,
-                        width: `${Math.min(100, progress)}%`, transition: 'width 300ms ease',
-                      }} />
+
+                  {/* Real progress bar */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ flex: 1, height: 5, borderRadius: T.radiusFull, background: T.surfaceSubtle, overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          height: '100%',
+                          width: `${derived.overallProgressPct}%`,
+                          background: meta.tone === 'error' ? T.error : meta.tone === 'success' ? T.success : T.ink,
+                          borderRadius: T.radiusFull,
+                        }}
+                      />
                     </div>
-                    <span style={{ fontSize: 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: T.textSecondary }}>
-                      {progress}%
+                    <span
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        fontFamily: T.mono,
+                        fontVariantNumeric: 'tabular-nums',
+                        color: T.inkMuted,
+                      }}
+                    >
+                      {derived.completedCount}/{derived.totalCount}
                     </span>
                   </div>
-                </Card>
+                </div>
               );
             })}
           </div>
         )}
-      </section>
+      </BentoBlock>
 
-      {/* Sub-tab Navigation */}
-      <nav style={{
-        display: 'inline-flex', gap: 2, padding: 3,
-        borderRadius: T.radiusFull, background: 'rgba(0,0,0,0.04)',
-        marginBottom: T.sp6,
-      }}>
-        {([
-          ['import', 'Importar', Download],
-          ['produce', 'Produzir', Sparkles],
-          ['preview', 'Preview & Revisão', Film],
-        ] as const).map(([id, label, Icon]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setSubTab(id)}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: T.sp2,
-              padding: `${T.sp2}px ${T.sp4}px`,
-              borderRadius: T.radiusFull,
-              border: 'none',
-              background: subTab === id ? T.surface : 'transparent',
-              color: subTab === id ? T.text : T.textSecondary,
-              fontSize: 13, fontWeight: subTab === id ? 600 : 500,
-              cursor: 'pointer',
-              boxShadow: subTab === id ? T.shadowSm : 'none',
-              transition: 'all 200ms ease',
-              fontFamily: 'inherit',
-            }}
-          >
-            <Icon style={{ width: 14, height: 14 }} />
-            {label}
-          </button>
-        ))}
+      {/* Sub-tab Navigation (Light Bento pill bar) */}
+      <nav
+        role="tablist"
+        aria-label="Etapas do Mangá Recap"
+        style={{
+          display: 'inline-flex',
+          alignSelf: 'flex-start',
+          gap: 4,
+          padding: 4,
+          borderRadius: T.radiusFull,
+          background: T.surface,
+          border: `1px solid ${T.border}`,
+        }}
+      >
+        {(
+          [
+            ['import', '1. Importar', Download],
+            ['produce', '2. Produzir & Timeline', Sparkles],
+            ['preview', '3. Preview & Revisão', Film],
+          ] as const
+        ).map(([id, label, Icon]) => {
+          const active = subTab === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setSubTab(id)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '9px 18px',
+                borderRadius: T.radiusFull,
+                border: 'none',
+                background: active ? T.ink : 'transparent',
+                color: active ? '#ffffff' : T.inkMuted,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              <Icon style={{ width: 14, height: 14 }} />
+              {label}
+            </button>
+          );
+        })}
       </nav>
 
-      {/* ─── IMPORT TAB ─────────────────────────────────────────────────── */}
+      {/* ─── TAB 1: IMPORT ──────────────────────────────────────────────── */}
       {subTab === 'import' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: T.sp5 }}>
-
-          {/* Origin selector */}
-          <Card>
-            <SectionLabel>Origem dos capítulos</SectionLabel>
-            <div style={{ display: 'flex', gap: T.sp3 }}>
-              {([
-                ['cbz', 'CBZ / PDF', Upload],
-                ['link', 'Link', LinkIcon],
-                ['cdn', 'CDN Direto', Download],
-              ] as const).map(([id, label, Icon]) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => setOrigin(id)}
-                  style={{
-                    flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: T.sp2,
-                    padding: T.sp4, borderRadius: T.radiusMd,
-                    border: `1.5px solid ${origin === id ? T.accent : T.border}`,
-                    background: origin === id ? T.accentSoft : T.surface,
-                    color: origin === id ? T.accent : T.textSecondary,
-                    fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                    transition: 'all 200ms ease', fontFamily: 'inherit',
-                  }}
-                >
-                  <Icon style={{ width: 20, height: 20 }} />
-                  {label}
-                </button>
-              ))}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <BentoBlock>
+            <SectionLabel>Origem dos Capítulos</SectionLabel>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+              {(
+                [
+                  ['cbz', 'Arquivo Local (CBZ / PDF)', 'Selecione capítulos já baixados no computador', Upload],
+                  ['link', 'Link de Capítulo', 'Baixa e empacota automaticamente em CBZ', LinkIcon],
+                  ['cdn', 'CDN Direto (URLs)', 'Importa lista direta de URLs de páginas', Download],
+                ] as const
+              ).map(([id, label, desc, Icon]) => {
+                const selected = origin === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setOrigin(id)}
+                    style={{
+                      textAlign: 'left',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 6,
+                      padding: 16,
+                      borderRadius: T.radiusInner,
+                      border: selected ? `2px solid ${T.ink}` : `1px solid ${T.border}`,
+                      background: selected ? T.accentSoft : T.surfaceSubtle,
+                      color: T.ink,
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    <Icon style={{ width: 18, height: 18, color: selected ? T.accent : T.inkMuted }} />
+                    <span style={{ fontSize: 13, fontWeight: 700 }}>{label}</span>
+                    <span style={{ fontSize: 12, color: T.inkMuted, lineHeight: 1.4 }}>{desc}</span>
+                  </button>
+                );
+              })}
             </div>
-          </Card>
+          </BentoBlock>
 
-          {/* CBZ file picker */}
           {origin === 'cbz' && (
-            <Card>
-              <SectionLabel>Arquivos</SectionLabel>
-              <button type="button" onClick={() => void handleSelectFiles()} style={{
-                ...btnSecondary, width: '100%', justifyContent: 'center',
-                borderStyle: 'dashed', padding: T.sp6,
-              }}>
+            <BentoBlock>
+              <SectionLabel>Arquivos Selecionados</SectionLabel>
+              <button
+                type="button"
+                onClick={() => void handleSelectFiles()}
+                style={{
+                  ...btnSecondary,
+                  width: '100%',
+                  borderStyle: 'dashed',
+                  padding: '22px 16px',
+                  borderRadius: T.radiusInner,
+                }}
+              >
                 <Upload style={{ width: 16, height: 16 }} />
                 Selecionar arquivos (.cbz, .pdf)
               </button>
               {selectedFiles.length > 0 && (
-                <div style={{ marginTop: T.sp3, display: 'flex', flexDirection: 'column', gap: T.sp2 }}>
+                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {selectedFiles.map((file, idx) => (
-                    <div key={file.path} style={{
-                      display: 'flex', alignItems: 'center', gap: T.sp3,
-                      padding: `${T.sp2}px ${T.sp3}px`, borderRadius: T.radiusSm,
-                      background: T.surfaceHover, fontSize: 12,
-                    }}>
-                      <span style={{ flex: 1, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div
+                      key={file.path}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                        padding: '10px 12px',
+                        borderRadius: T.radiusSm,
+                        background: T.surfaceSubtle,
+                        border: `1px solid ${T.border}`,
+                        fontSize: 13,
+                      }}
+                    >
+                      <span style={{ flex: 1, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {idx + 1}. {file.name}
                       </span>
-                      <span style={{ color: T.textTertiary, fontSize: 11 }}>{formatBytes(file.sizeBytes)}</span>
-                      <button type="button" onClick={() => setSelectedFiles(selectedFiles.filter((_, i) => i !== idx))}
-                        style={{ ...btnGhost, padding: T.sp1, color: T.error }}>
+                      <span style={{ fontFamily: T.mono, fontSize: 12, color: T.inkMuted }}>
+                        {formatBytes(file.sizeBytes)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFiles(selectedFiles.filter((_, i) => i !== idx))}
+                        style={{ ...btnGhost, color: T.error, padding: 4 }}
+                        aria-label={`Remover ${file.name}`}
+                      >
                         <X style={{ width: 14, height: 14 }} />
                       </button>
                     </div>
                   ))}
                 </div>
               )}
-            </Card>
+            </BentoBlock>
           )}
 
-          {/* Link inputs */}
           {origin === 'link' && (
-            <Card>
-              <SectionLabel>Links dos capítulos</SectionLabel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: T.sp2 }}>
+            <BentoBlock>
+              <SectionLabel>Links dos Capítulos</SectionLabel>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {linkInputs.map((url, idx) => (
-                  <div key={idx} style={{ display: 'flex', gap: T.sp2, alignItems: 'center' }}>
-                    <input value={url} onChange={(e) => { const n = [...linkInputs]; n[idx] = e.target.value; setLinkInputs(n); }}
-                      placeholder="https://exemplo.com/manga/capitulo/1" style={{ ...inputStyle, flex: 1 }} />
+                  <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      value={url}
+                      onChange={(e) => {
+                        const next = [...linkInputs];
+                        next[idx] = e.target.value;
+                        setLinkInputs(next);
+                      }}
+                      placeholder="https://exemplo.com/manga/capitulo/1"
+                      style={{ ...inputStyle, flex: 1 }}
+                    />
                     {linkInputs.length > 1 && (
-                      <button type="button" onClick={() => setLinkInputs(linkInputs.filter((_, i) => i !== idx))}
-                        style={{ ...btnGhost, color: T.error }}><X style={{ width: 14, height: 14 }} /></button>
+                      <button
+                        type="button"
+                        onClick={() => setLinkInputs(linkInputs.filter((_, i) => i !== idx))}
+                        style={{ ...btnGhost, color: T.error }}
+                      >
+                        <X style={{ width: 14, height: 14 }} />
+                      </button>
                     )}
                   </div>
                 ))}
               </div>
-              <button type="button" onClick={() => setLinkInputs([...linkInputs, ''])}
-                style={{ ...btnGhost, marginTop: T.sp3, fontSize: 12 }}>
-                <Plus style={{ width: 14, height: 14 }} /> Adicionar link
-              </button>
-            </Card>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginTop: 12 }}>
+                <button type="button" onClick={() => setLinkInputs([...linkInputs, ''])} style={btnGhost}>
+                  <Plus style={{ width: 14, height: 14 }} /> Adicionar outro link
+                </button>
+                <button
+                  type="button"
+                  disabled={linkImporting}
+                  onClick={() => void handleImportLinkChapters()}
+                  style={{ ...btnPrimary, opacity: linkImporting ? 0.6 : 1 }}
+                >
+                  {linkImporting ? 'Baixando capítulo…' : 'Baixar e Preparar CBZ'}
+                </button>
+              </div>
+              {linkImportedCbz && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    padding: '10px 12px',
+                    borderRadius: T.radiusSm,
+                    background: T.successBg,
+                    border: `1px solid ${T.successBorder}`,
+                    color: T.success,
+                    fontSize: 12,
+                    fontWeight: 600,
+                  }}
+                >
+                  Capítulo pronto: {linkImportedCbz.label} ({linkImportedCbz.cbzPath})
+                </div>
+              )}
+            </BentoBlock>
           )}
 
-          {/* CDN Direct */}
           {origin === 'cdn' && (
-            <Card>
-              <SectionLabel>Importação direta CDN</SectionLabel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: T.sp3 }}>
-                <textarea value={cdnImageUrls} onChange={(e) => setCdnImageUrls(e.target.value)}
-                  placeholder="Cole as URLs das imagens, uma por linha" rows={4}
-                  style={{ ...inputStyle, resize: 'vertical', fontFamily: '"SF Mono", "Menlo", monospace', fontSize: 12 }} />
-                <input value={cdnChapterUrl} onChange={(e) => setCdnChapterUrl(e.target.value)}
-                  placeholder="URL do capítulo (referer)" style={inputStyle} />
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: T.sp3 }}>
-                  <input value={cdnWorkTitle} onChange={(e) => setCdnWorkTitle(e.target.value)}
-                    placeholder="Título da obra (opcional)" style={inputStyle} />
-                  <input value={cdnChapterNumber} onChange={(e) => setCdnChapterNumber(e.target.value)}
-                    placeholder="Número do capítulo (opcional)" style={inputStyle} />
+            <BentoBlock>
+              <SectionLabel>Importação Direta CDN</SectionLabel>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <textarea
+                  value={cdnImageUrls}
+                  onChange={(e) => setCdnImageUrls(e.target.value)}
+                  placeholder="Cole as URLs das imagens, uma por linha"
+                  rows={4}
+                  style={{ ...inputStyle, resize: 'vertical', fontFamily: T.mono, fontSize: 12 }}
+                />
+                <input
+                  value={cdnChapterUrl}
+                  onChange={(e) => setCdnChapterUrl(e.target.value)}
+                  placeholder="URL do capítulo (referer)"
+                  style={inputStyle}
+                />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <input
+                    value={cdnWorkTitle}
+                    onChange={(e) => setCdnWorkTitle(e.target.value)}
+                    placeholder="Título da obra (opcional)"
+                    style={inputStyle}
+                  />
+                  <input
+                    value={cdnChapterNumber}
+                    onChange={(e) => setCdnChapterNumber(e.target.value)}
+                    placeholder="Número do capítulo (opcional)"
+                    style={inputStyle}
+                  />
                 </div>
-                <button type="button" disabled={cdnImporting} onClick={() => void (async () => {
-                  setImportError(null); setCdnResult(null);
-                  const bridge = getRecapBridge();
-                  if (!bridge?.recapImportCdnDirect) { setImportError('IPC indisponível.'); return; }
-                  const urls = cdnImageUrls.split('\n').map((u) => u.trim()).filter(Boolean);
-                  if (urls.length === 0) { setImportError('Cole pelo menos uma URL.'); return; }
-                  if (!cdnChapterUrl.trim()) { setImportError('Informe a URL do capítulo.'); return; }
-                  setCdnImporting(true);
-                  try {
-                    const cdnInput: { imageUrls: string[]; chapterPageUrl: string; workTitle?: string; chapterNumber?: string } = { imageUrls: urls, chapterPageUrl: cdnChapterUrl.trim() };
- const trimmedTitle = cdnWorkTitle.trim();
- const trimmedChapter = cdnChapterNumber.trim();
- if (trimmedTitle) cdnInput.workTitle = trimmedTitle;
- if (trimmedChapter) cdnInput.chapterNumber = trimmedChapter;
- const res = await bridge.recapImportCdnDirect(cdnInput);
-                    setCdnResult(res);
-                    if (!workTitle && res.workTitle) setWorkTitle(res.workTitle);
-                  } catch (err) { setImportError(err instanceof Error ? err.message : String(err)); }
-                  finally { setCdnImporting(false); }
-                })()} style={{ ...btnPrimary, opacity: cdnImporting ? 0.6 : 1 }}>
-                  {cdnImporting ? 'Importando…' : 'Importar via CDN'}
-                </button>
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <button
+                    type="button"
+                    disabled={cdnImporting}
+                    onClick={() => void handleImportCdn()}
+                    style={{ ...btnPrimary, opacity: cdnImporting ? 0.6 : 1 }}
+                  >
+                    {cdnImporting ? 'Importando…' : 'Importar via CDN'}
+                  </button>
+                </div>
                 {cdnResult && (
-                  <div style={{ padding: T.sp3, borderRadius: T.radiusSm, background: '#ecfdf3', color: '#0f5132', fontSize: 12 }}>
-                    ✓ {cdnResult.pageCount} páginas importadas · {cdnResult.workTitle} Cap. {cdnResult.chapterNumber}
+                  <div
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: T.radiusSm,
+                      background: T.successBg,
+                      border: `1px solid ${T.successBorder}`,
+                      color: T.success,
+                      fontSize: 12,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {cdnResult.pageCount} páginas importadas · {cdnResult.workTitle} Cap. {cdnResult.chapterNumber}
                   </div>
                 )}
               </div>
-            </Card>
+            </BentoBlock>
           )}
 
           {importError && (
-            <div style={{ padding: T.sp3, borderRadius: T.radiusSm, background: '#fef2f2', color: '#991b1b', fontSize: 12, fontWeight: 500 }}>
+            <div
+              role="alert"
+              style={{
+                padding: '12px 14px',
+                borderRadius: T.radiusInner,
+                background: T.errorBg,
+                border: `1px solid ${T.errorBorder}`,
+                color: T.error,
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            >
               {importError}
             </div>
           )}
 
-          {/* Continue button */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: T.sp2 }}>
-            <button type="button" onClick={() => setSubTab('produce')}
-              disabled={origin === 'cbz' && selectedFiles.length === 0}
-              style={{ ...btnPrimary, opacity: origin === 'cbz' && selectedFiles.length === 0 ? 0.4 : 1 }}>
-              Continuar para Produção <ChevronRight style={{ width: 14, height: 14 }} />
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              onClick={() => setSubTab('produce')}
+              disabled={!resolvedArchivePath}
+              style={{ ...btnPrimary, opacity: !resolvedArchivePath ? 0.45 : 1 }}
+            >
+              Continuar para Produção <ChevronRight style={{ width: 15, height: 15 }} />
             </button>
           </div>
         </div>
       )}
 
-      {/* ─── PRODUCE TAB ────────────────────────────────────────────────── */}
+      {/* ─── TAB 2: PRODUCE & TIMELINE ──────────────────────────────────── */}
       {subTab === 'produce' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: T.sp5 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <RealPipelineTimeline record={activeProject} liveMessage={statusNote} />
 
-          {/* Pipeline Timeline */}
-          <Card style={{ padding: `${T.sp4}px ${T.sp5}px` }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: T.sp3 }}>
-              <SectionLabel>Pipeline de Produção</SectionLabel>
-              {overallProgress > 0 && (
-                <span style={{ fontSize: 13, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: T.accent }}>
-                  {overallProgress}% concluído
-                </span>
-              )}
-            </div>
-            <PipelineTimeline activeStage={activeStage} stageProgress={stageProgress} />
-          </Card>
+          <AudiovisualTrackTimeline
+            plan={activePlan}
+            motionVelix={activeProject?.motionVelix}
+            selectedShotId={selectedShotId}
+            onSelectShot={(shotId) => setSelectedShotId(shotId)}
+          />
 
-          {/* Configuration */}
-          <Card>
-            <SectionLabel>Configuração</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: T.sp4 }}>
-              <label style={{ fontSize: 12, color: T.textSecondary, display: 'flex', flexDirection: 'column', gap: T.sp1 }}>
+          <BentoBlock>
+            <SectionLabel>Configuração da Produção</SectionLabel>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 14 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 Título da obra
-                <input value={workTitle} onChange={(e) => setWorkTitle(e.target.value)} style={inputStyle} placeholder="Ex: Solo Leveling" />
+                <input
+                  value={workTitle}
+                  onChange={(e) => setWorkTitle(e.target.value)}
+                  style={inputStyle}
+                  placeholder="Ex: Solo Leveling Cap. 01"
+                />
               </label>
-              <label style={{ fontSize: 12, color: T.textSecondary, display: 'flex', flexDirection: 'column', gap: T.sp1 }}>
+
+              <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 Formato
                 <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value as '16:9' | '9:16')} style={inputStyle}>
                   <option value="16:9">16:9 Horizontal (YouTube)</option>
-                  <option value="9:16">9:16 Vertical (Shorts)</option>
+                  <option value="9:16">9:16 Vertical (Shorts / Reels)</option>
                 </select>
               </label>
-              <label style={{ fontSize: 12, color: T.textSecondary, display: 'flex', flexDirection: 'column', gap: T.sp1 }}>
+
+              <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 Voz (TTS)
                 <select value={ttsProvider} onChange={(e) => setTtsProvider(e.target.value)} style={inputStyle}>
                   <option value="voicestudio_tts">VoiceStudio Local</option>
@@ -915,18 +2121,29 @@ export function RecapProductionPanel() {
                   <option value="windows_sapi_tts">Windows SAPI</option>
                 </select>
               </label>
-              <label style={{ fontSize: 12, color: T.textSecondary, display: 'flex', flexDirection: 'column', gap: T.sp1 }}>
-                Idioma do vídeo
+
+              <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                Idioma da narração
                 <select value={language} onChange={(e) => setLanguage(e.target.value as 'pt-BR' | 'en-US' | 'es-ES')} style={inputStyle}>
                   <option value="pt-BR">Português (BR)</option>
                   <option value="en-US">English (US)</option>
                   <option value="es-ES">Español (ES)</option>
                 </select>
               </label>
-              <div style={{ fontSize: 12, color: T.textSecondary, display: 'flex', flexDirection: 'column', gap: T.sp1 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+
+              <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                Estilo de roteiro
+                <select value={scriptStyle} onChange={(e) => setScriptStyle(e.target.value)} style={inputStyle}>
+                  <option value="cinematic_recap">Recap Cinematográfico</option>
+                  <option value="narrative_summary">Resumo Narrativo</option>
+                  <option value="dramatic_retelling">Retelling Dramático</option>
+                </select>
+              </label>
+
+              <div style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span>Volume de humor</span>
-                  <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: T.accent }}>{humorVolume}%</span>
+                  <span style={{ fontFamily: T.mono, color: T.accent }}>{humorVolume}%</span>
                 </div>
                 <input
                   type="range"
@@ -935,257 +2152,484 @@ export function RecapProductionPanel() {
                   step={1}
                   value={humorVolume}
                   onChange={(e) => setHumorVolume(Number(e.target.value))}
-                  style={{ width: '100%', accentColor: T.accent, cursor: 'pointer' }}
+                  style={{ width: '100%', accentColor: T.accent, cursor: 'pointer', marginTop: 4 }}
                 />
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: T.textTertiary }}>
-                  <span>Sério (0%)</span>
-                  <span>Padrão (35%)</span>
-                  <span>Máximo (100%)</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: T.inkSubtle }}>
+                  <span>Sério</span>
+                  <span>Equilibrado</span>
+                  <span>Máximo</span>
                 </div>
               </div>
-              <label style={{ fontSize: 12, color: T.textSecondary, display: 'flex', flexDirection: 'column', gap: T.sp1 }}>
-                Estilo de roteiro
-                <select value={scriptStyle} onChange={(e) => setScriptStyle(e.target.value)} style={inputStyle}>
-                  <option value="cinematic_recap">Recap Cinematográfico</option>
-                  <option value="narrative_summary">Resumo Narrativo</option>
-                  <option value="dramatic_retelling">Retelling Dramático</option>
-                </select>
-              </label>
             </div>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: T.sp2, marginTop: T.sp4, fontSize: 12, color: T.textSecondary, cursor: 'pointer' }}>
-              <input type="checkbox" checked={enableOcr} onChange={(e) => setEnableOcr(e.target.checked)}
-                style={{ accentColor: T.accent }} />
-              Executar OCR (Tesseract) na extração
-            </label>
-          </Card>
 
-          {/* Actions */}
-          <div style={{ display: 'flex', gap: T.sp3, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button type="button" disabled={startState !== 'idle'} onClick={() => void handleStart(false)}
-              style={{ ...btnPrimary, background: T.lime, color: '#1d1d1f', opacity: startState !== 'idle' ? 0.5 : 1 }}>
-              {startState === 'idle' ? 'Iniciar Produção' : startState === 'producing' ? 'Produzindo…' : 'Processando…'}
-            </button>
-            {readiness.checkpoint.canResume && (
-              <button type="button" disabled={startState !== 'idle'} onClick={() => void handleStart(true)}
-                style={btnSecondary}>
-                Retomar ({readiness.checkpoint.completedPanels}/{readiness.checkpoint.totalPanels})
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: T.ink, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={enableOcr}
+                  onChange={(e) => setEnableOcr(e.target.checked)}
+                  style={{ accentColor: T.accent }}
+                />
+                Executar OCR (Tesseract) na extração dos painéis
+              </label>
+
+              <span style={{ fontSize: 12, fontFamily: T.mono, color: T.inkSubtle }}>
+                {resolvedArchivePath ? `Fonte: ${resolvedArchivePath.split(/[/\\]/).pop()}` : 'Nenhuma fonte selecionada'}
+              </span>
+            </div>
+
+            {/* Primary Actions */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginTop: 16 }}>
+              <button
+                type="button"
+                disabled={isRunning}
+                onClick={() => void handleStart(false)}
+                style={{ ...btnLime, opacity: isRunning ? 0.55 : 1 }}
+              >
+                {isRunning ? (
+                  <>
+                    <RefreshCw className="animate-spin" style={{ width: 14, height: 14 }} /> Produzindo…
+                  </>
+                ) : (
+                  <>
+                    <Play style={{ width: 14, height: 14 }} /> Iniciar Produção
+                  </>
+                )}
               </button>
-            )}
-            {statusNote && <span style={{ fontSize: 12, color: T.textSecondary }}>{statusNote}</span>}
-          </div>
 
-          {/* Preview Approval Gate */}
-          {startState === 'producing' && statusNote?.includes('awaiting_preview_approval') && (
-            <Card style={{ border: `1.5px solid ${T.accent}`, background: T.accentSoft }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: T.sp3, marginBottom: T.sp4 }}>
-                <div style={{
-                  width: 40, height: 40, borderRadius: T.radiusFull,
-                  background: T.accent, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  <Film style={{ width: 20, height: 20, color: '#fff' }} />
-                </div>
+              {readiness.checkpoint.canResume && (
+                <button
+                  type="button"
+                  disabled={isRunning}
+                  onClick={() => void handleStart(true)}
+                  style={{ ...btnSecondary, opacity: isRunning ? 0.55 : 1 }}
+                >
+                  Retomar Checkpoint ({readiness.checkpoint.completedPanels}/{readiness.checkpoint.totalPanels})
+                </button>
+              )}
+
+              <button
+                type="button"
+                disabled={readinessLoading}
+                onClick={() => void refreshReadiness(activeProject?.chapterId)}
+                style={btnGhost}
+              >
+                <RefreshCw className={readinessLoading ? 'animate-spin' : undefined} style={{ width: 13, height: 13 }} />
+                Verificar Provedores
+              </button>
+            </div>
+          </BentoBlock>
+
+          {/* Preview Approval Gate (Real IPC wired to recap:approve-preview) */}
+          {activeProject?.state === 'awaiting_preview_approval' && (
+            <BentoBlock style={{ border: `2px solid ${T.ink}`, background: '#fbfbfe' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 14 }}>
                 <div>
-                  <h3 style={{ fontSize: 15, fontWeight: 700, color: T.text, margin: 0 }}>Prévia pronta para revisão</h3>
-                  <p style={{ fontSize: 12, color: T.textSecondary, margin: 0 }}>
-                    Assista ao vídeo e aprove para continuar com a exportação final.
+                  <SectionLabel>Gate de Aprovação Humana</SectionLabel>
+                  <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: T.ink }}>
+                    Prévia auditada pronta para aprovação
+                  </h3>
+                  <p style={{ margin: '4px 0 0', fontSize: 13, color: T.inkMuted }}>
+                    Assista ao vídeo abaixo e aprove para renderizar o Master final (1080p) e gerar o pacote de release.
                   </p>
                 </div>
               </div>
 
-              <div style={{ marginBottom: T.sp4, borderRadius: T.radiusMd, overflow: 'hidden', background: '#000', position: 'relative' }}>
-                {previewMp4 ? (
-                  <video
-                    src={previewMp4.startsWith('aethera-media://') || previewMp4.startsWith('file://') || previewMp4.startsWith('http') ? previewMp4 : `aethera-media://local?path=${encodeURIComponent(previewMp4)}`}
-                    controls
-                    autoPlay
-                    style={{ width: '100%', display: 'block', minHeight: 200 }}
-                    onError={(e) => { console.error('[RecapPreview] Video load error:', e); setStatusNote('Erro ao carregar vídeo de prévia. Verifique se o arquivo existe.'); }}
-                  />
-                ) : (
-                  <div style={{ padding: `${T.sp8}px 0`, textAlign: 'center', color: 'rgba(255,255,255,0.5)' }}>
-                    <RefreshCw className="animate-spin" style={{ width: 32, height: 32, margin: '0 auto 12px', opacity: 0.6 }} />
-                    <p style={{ fontSize: 13, fontWeight: 500 }}>Carregando prévia…</p>
-                  </div>
-                )}
+              <div style={{ marginBottom: 14 }}>
+                <PreviewPlayer
+                  mp4Path={activeProject.previewMp4Path ?? null}
+                  isProducing={isApproving}
+                  onError={() => setStatusNote('Erro ao carregar vídeo de prévia. Verifique se o arquivo MP4 existe em disco.')}
+                />
               </div>
 
-              <div style={{ display: 'flex', gap: T.sp3 }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
                 <button
                   type="button"
-                  onClick={() => {
-                    setStartState('idle');
-                    setStatusNote('Prévia aprovada! Iniciando exportação master…');
-                    setStageProgress((p) => ({ ...p, motion: 100, 'gate-h': 80 }));
-                    // TODO: call bridge.recapApprovePreview() when IPC is wired
-                  }}
-                  style={{ ...btnPrimary, flex: 1, justifyContent: 'center', background: T.lime, color: '#1d1d1f' }}
+                  disabled={isApproving}
+                  onClick={() => void handleApprovePreview()}
+                  style={{ ...btnLime, flex: 1, opacity: isApproving ? 0.6 : 1 }}
                 >
-                  <CheckCircle2 style={{ width: 16, height: 16 }} /> Aprovar e Exportar
+                  <CheckCircle2 style={{ width: 15, height: 15 }} />
+                  {isApproving ? 'Exportando Master…' : 'Aprovar e Exportar Master'}
                 </button>
                 <button
                   type="button"
+                  disabled={isApproving}
                   onClick={() => {
-                    setStartState('idle');
-                    setStatusNote('Prévia rejeitada. Ajuste as cenas e reinicie a produção.');
+                    setStatusNote('Prévia enviada para revisão. Edite o roteiro ou solicite ajustes na aba Preview & Revisão.');
                     setSubTab('preview');
                   }}
-                  style={{ ...btnSecondary, flex: 1, justifyContent: 'center' }}
+                  style={{ ...btnSecondary, flex: 1 }}
                 >
-                  <X style={{ width: 16, height: 16 }} /> Rejeitar e Revisar
+                  <X style={{ width: 15, height: 15 }} /> Revisar Cenas
                 </button>
               </div>
-            </Card>
+            </BentoBlock>
           )}
         </div>
       )}
 
-      {/* ─── PREVIEW & REVIEW TAB ───────────────────────────────────────── */}
+      {/* ─── TAB 3: PREVIEW & REVIEW ────────────────────────────────────── */}
       {subTab === 'preview' && (
-        <div style={{ display: 'grid', gap: T.sp5, gridTemplateColumns: '1fr 340px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <AudiovisualTrackTimeline
+            plan={activePlan}
+            motionVelix={activeProject?.motionVelix}
+            selectedShotId={selectedShotId}
+            onSelectShot={(shotId) => setSelectedShotId(shotId)}
+          />
 
-          {/* Left column: Preview + Editor */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: T.sp5 }}>
-            <Card style={{ padding: 0, overflow: 'hidden' }}>
-              <PreviewPlayer mp4Path={previewMp4} isProducing={startState === 'producing'} />
-            </Card>
-
-            {/* Humanized Script Review */}
-            <Card>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: T.sp3 }}>
-                <SectionLabel>Roteiro Humanizado</SectionLabel>
-                <span style={{ fontSize: 10, color: T.textTertiary }}>
-                  {language === 'pt-BR' ? 'PT-BR' : language === 'en-US' ? 'EN-US' : 'ES-ES'} · Humor {humorVolume}%
-                </span>
-              </div>
-              {scenes.length === 0 ? (
-                <div style={{ padding: `${T.sp6}px 0`, textAlign: 'center' }}>
-                  <BookOpen style={{ width: 32, height: 32, color: T.textTertiary, margin: '0 auto 12px', opacity: 0.5 }} />
-                  <p style={{ fontSize: 13, color: T.textTertiary, margin: 0 }}>
-                    O roteiro humanizado aparecerá aqui após a etapa de humanização.
-                  </p>
-                  <p style={{ fontSize: 11, color: T.textTertiary, margin: `${T.sp1}px 0 0`, opacity: 0.7 }}>
-                    Cada cena inclui a narração adaptada ao idioma e nível de humor selecionados.
-                  </p>
+          <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'minmax(0, 1fr) 360px', alignItems: 'start' }}>
+            {/* Left: Video + Humanized Script + Prompt Revision */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <BentoBlock style={{ padding: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, padding: '0 4px' }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: T.ink }}>
+                    {activeProject?.masterMp4Path ? 'MP4 Master Final' : activeProject?.previewMp4Path ? 'MP4 de Prévia' : 'Player de Vídeo'}
+                  </span>
+                  {activeProject?.exportBundleDir && (
+                    <span style={{ fontSize: 11, fontFamily: T.mono, color: T.success }}>
+                      Pacote exportado
+                    </span>
+                  )}
                 </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: T.sp3 }}>
-                  {scenes.map((row, idx) => (
-                    <div key={row.sceneId} style={{
-                      padding: T.sp3, borderRadius: T.radiusMd,
-                      border: `1px solid ${T.border}`, background: T.surface,
-                    }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: T.sp2 }}>
-                        <span style={{
-                          fontSize: 10, fontWeight: 700, color: T.accent,
-                          padding: '2px 8px', borderRadius: T.radiusFull, background: T.accentSoft,
-                        }}>
-                          Cena {idx + 1} · {row.sceneId}
-                        </span>
-                        <span style={{ fontSize: 11, color: T.textTertiary, fontVariantNumeric: 'tabular-nums' }}>
-                          {row.estimatedDurationSec}s
+                <PreviewPlayer
+                  mp4Path={activeMediaPath}
+                  isProducing={isRunning}
+                  onError={() => setStatusNote('Erro ao reproduzir o MP4 salvo. Verifique se o arquivo existe no disco.')}
+                />
+              </BentoBlock>
+
+              {/* Humanized Script Review */}
+              <BentoBlock>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+                  <SectionLabel>Roteiro Real ({scenes.length} cenas)</SectionLabel>
+                  <span style={{ fontSize: 11, fontFamily: T.mono, color: T.inkMuted }}>
+                    {language} · Humor {humorVolume}%
+                  </span>
+                </div>
+                {scenes.length === 0 ? (
+                  <div
+                    style={{
+                      padding: '24px 16px',
+                      borderRadius: T.radiusInner,
+                      background: T.surfaceSubtle,
+                      textAlign: 'center',
+                    }}
+                  >
+                    <BookOpen style={{ width: 24, height: 24, color: T.inkSubtle, margin: '0 auto 8px' }} />
+                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: T.ink }}>
+                      Nenhuma cena carregada neste projeto ainda
+                    </p>
+                    <p style={{ margin: '4px 0 0', fontSize: 12, color: T.inkMuted }}>
+                      As cenas reais geradas pelo Story Engine aparecerão aqui assim que o roteiro for concluído.
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {scenes.map((row, idx) => {
+                      const highlighted = activePlan?.shots.some(
+                        (s) => s.shotId === selectedShotId && s.sceneId === row.sceneId,
+                      );
+                      return (
+                        <div
+                          key={row.sceneId}
+                          style={{
+                            padding: 12,
+                            borderRadius: T.radiusInner,
+                            border: highlighted ? `2px solid ${T.ink}` : `1px solid ${T.border}`,
+                            background: highlighted ? '#fbfbfe' : T.surface,
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                              <strong style={{ fontFamily: T.mono, color: T.accent }}>
+                                #{idx + 1} · {row.sceneId}
+                              </strong>
+                              <span style={{ color: T.inkSubtle }}>
+                                {MOTION_LABELS[row.motionStyle] ?? row.motionStyle}
+                              </span>
+                            </div>
+                            <span style={{ fontSize: 11, fontFamily: T.mono, color: T.inkMuted }}>
+                              {row.estimatedDurationSec}s
+                            </span>
+                          </div>
+                          <textarea
+                            value={row.narrationText}
+                            onChange={(e) => {
+                              const next = [...scenes];
+                              next[idx] = { ...row, narrationText: e.target.value };
+                              setScenes(next);
+                            }}
+                            rows={3}
+                            style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.55 }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </BentoBlock>
+
+              {/* Prompt Revision */}
+              <BentoBlock>
+                <SectionLabel>Revisão Incremental por Prompt</SectionLabel>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    value={revisionPrompt}
+                    onChange={(e) => setRevisionPrompt(e.target.value)}
+                    placeholder="Ex: Deixe a cena 2 mais dramática ou reduza a música…"
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <button type="button" onClick={() => void handlePlanRevision()} style={btnPrimary}>
+                    Simular Impacto
+                  </button>
+                </div>
+                {impactPlan && (
+                  <div
+                    style={{
+                      marginTop: 12,
+                      padding: 12,
+                      borderRadius: T.radiusInner,
+                      background: T.surfaceSubtle,
+                      border: `1px solid ${T.border}`,
+                      fontSize: 12,
+                    }}
+                  >
+                    <strong style={{ color: T.ink }}>{impactPlan.summary}</strong>
+                    <p style={{ margin: '6px 0 0', color: T.inkMuted, fontFamily: T.mono }}>
+                      Reprocessar: {impactPlan.reprocessStages.join(', ') || 'nenhuma'} · Reaproveitar: {impactPlan.reusedStages.join(', ')}
+                    </p>
+                  </div>
+                )}
+              </BentoBlock>
+            </div>
+
+            {/* Right: Real Quality Scorecard + Publication + Providers */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <BentoBlock>
+                <SectionLabel>Release Gates (Real)</SectionLabel>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, marginBottom: 12 }}>
+                  <MetricScore score={scorecard.technicalScore} label="Técnica" />
+                  <MetricScore score={scorecard.narrativeScore} label="Narrativa" />
+                  <MetricScore score={scorecard.audioScore} label="Áudio" />
+                </div>
+
+                <div
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: T.radiusSm,
+                    background: !scorecard.evaluated
+                      ? T.surfaceSubtle
+                      : scorecard.approvedForRelease
+                        ? T.successBg
+                        : T.warningBg,
+                    border: `1px solid ${
+                      !scorecard.evaluated ? T.border : scorecard.approvedForRelease ? T.successBorder : T.warningBorder
+                    }`,
+                    color: !scorecard.evaluated ? T.inkMuted : scorecard.approvedForRelease ? T.success : T.warning,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}
+                >
+                  {scorecard.approvedForRelease ? (
+                    <ShieldCheck style={{ width: 15, height: 15, flexShrink: 0 }} />
+                  ) : (
+                    <AlertTriangle style={{ width: 15, height: 15, flexShrink: 0 }} />
+                  )}
+                  <span>{scorecard.summary}</span>
+                </div>
+
+                {scorecard.evaluated && (
+                  <div
+                    style={{
+                      marginTop: 10,
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      fontSize: 11,
+                      fontFamily: T.mono,
+                      color: T.inkMuted,
+                    }}
+                  >
+                    <span>Gate F: <strong style={{ color: T.ink }}>{scorecard.gateFVerdict ?? '—'}</strong></span>
+                    <span>Gate G: <strong style={{ color: T.ink }}>{scorecard.gateGVerdict ?? '—'}</strong></span>
+                    <span>Gate H: <strong style={{ color: T.ink }}>{scorecard.gateHVerdict ?? '—'}</strong></span>
+                  </div>
+                )}
+
+                {scorecard.reasons.length > 0 && (
+                  <ul style={{ margin: '10px 0 0', paddingLeft: 18, fontSize: 12, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {scorecard.reasons.slice(0, 5).map((reason, idx) => (
+                      <li key={idx}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
+              </BentoBlock>
+
+              {/* Publication */}
+              <BentoBlock>
+                <SectionLabel>Publicação</SectionLabel>
+                <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  Data de agendamento
+                  <input
+                    type="datetime-local"
+                    value={scheduleDate}
+                    onChange={(e) => setScheduleDate(e.target.value)}
+                    style={inputStyle}
+                  />
+                </label>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  <button
+                    type="button"
+                    disabled={!activeMediaPath}
+                    onClick={() => void handleSchedulePublication()}
+                    style={{ ...btnLime, flex: 1, opacity: activeMediaPath ? 1 : 0.45 }}
+                  >
+                    <CalendarIcon style={{ width: 14, height: 14 }} /> Agendar
+                  </button>
+                  <a
+                    href="#/aethera/calendar"
+                    style={{ ...btnSecondary, flex: 1, textDecoration: 'none' }}
+                  >
+                    Calendário
+                  </a>
+                </div>
+                {publishNote && (
+                  <p style={{ margin: '10px 0 0', fontSize: 12, color: T.inkMuted }}>{publishNote}</p>
+                )}
+              </BentoBlock>
+
+              {/* Provider Readiness */}
+              <BentoBlock>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                  <SectionLabel>Provedores Multimodais</SectionLabel>
+                  <button
+                    type="button"
+                    disabled={readinessLoading}
+                    onClick={() => void refreshReadiness(activeProject?.chapterId)}
+                    style={{ ...btnGhost, padding: '4px 8px' }}
+                  >
+                    <RefreshCw className={readinessLoading ? 'animate-spin' : undefined} style={{ width: 12, height: 12 }} />
+                  </button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {readiness.providers.length === 0 ? (
+                    <p style={{ margin: 0, fontSize: 12, color: T.inkSubtle }}>
+                      Clique em atualizar para verificar provedores locais.
+                    </p>
+                  ) : (
+                    readiness.providers.map((p) => (
+                      <div
+                        key={p.providerId}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          fontSize: 12,
+                          padding: '6px 0',
+                          borderBottom: `1px solid ${T.border}`,
+                        }}
+                      >
+                        <span style={{ fontWeight: 600, color: T.ink }}>{p.label}</span>
+                        <span
+                          style={{
+                            fontFamily: T.mono,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            color: p.status === 'available' ? T.success : p.status === 'circuit_open' ? T.error : T.inkSubtle,
+                          }}
+                        >
+                          {p.status === 'available' ? 'ONLINE' : p.code ?? 'OFF'}
                         </span>
                       </div>
-                      <textarea
-                        value={row.narrationText}
-                        onChange={(e) => { const n = [...scenes]; n[idx] = { ...row, narrationText: e.target.value }; setScenes(n); }}
-                        rows={3}
-                        style={{
-                          ...inputStyle, resize: 'vertical', lineHeight: 1.6, fontSize: 13,
-                          fontFamily: '"SF Pro Text", "Inter", system-ui, sans-serif',
-                        }}
-                      />
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
-              )}
-            </Card>
-
-            {/* Revision prompt */}
-            <Card>
-              <SectionLabel>Revisão por Prompt</SectionLabel>
-              <div style={{ display: 'flex', gap: T.sp2 }}>
-                <input value={revisionPrompt} onChange={(e) => setRevisionPrompt(e.target.value)}
-                  placeholder="Ex: Reduza a música e destaque a narração na cena 2…" style={{ ...inputStyle, flex: 1 }} />
-                <button type="button" onClick={() => void handlePlanRevision()} style={btnPrimary}>
-                  Simular Impacto
-                </button>
-              </div>
-              {impactPlan && (
-                <div style={{ marginTop: T.sp3, padding: T.sp3, borderRadius: T.radiusSm, background: T.surfaceHover, fontSize: 12 }}>
-                  <strong>{impactPlan.summary}</strong>
-                  <p style={{ marginTop: T.sp1, color: T.textSecondary }}>
-                    Reprocessar: {impactPlan.reprocessStages.join(', ') || 'nenhuma'} · Reaproveitar: {impactPlan.reusedStages.join(', ')}
-                  </p>
-                </div>
-              )}
-            </Card>
+              </BentoBlock>
+            </div>
           </div>
+        </div>
+      )}
 
-          {/* Right column: Quality + Schedule */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: T.sp5 }}>
+      {/* Delete Project Confirmation Modal (In-App, Accessible, Never window.confirm) */}
+      {pendingDeleteProject && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="recap-delete-modal-title"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 60,
+            background: 'rgba(17, 17, 17, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 20,
+          }}
+          onClick={() => !deletingProjectId && setPendingDeleteProject(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '100%',
+              maxWidth: 440,
+              background: T.surface,
+              borderRadius: T.radiusCard,
+              border: `1px solid ${T.border}`,
+              padding: 24,
+              boxShadow: '0 24px 60px rgba(17, 17, 17, 0.22)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <div
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: T.radiusSm,
+                  background: T.errorBg,
+                  color: T.error,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Trash2 style={{ width: 18, height: 18 }} />
+              </div>
+              <h2 id="recap-delete-modal-title" style={{ margin: 0, fontSize: 17, fontWeight: 700, color: T.ink }}>
+                Excluir projeto Mangá Recap?
+              </h2>
+            </div>
 
-            {/* Quality Scorecard */}
-            <Card>
-              <SectionLabel>Qualidade</SectionLabel>
-              <div style={{ display: 'flex', justifyContent: 'space-around', padding: `${T.sp3}px 0` }}>
-                <ScoreRing score={85} label="Técnica" />
-                <ScoreRing score={72} label="Narrativa" />
-                <ScoreRing score={90} label="Áudio" />
-              </div>
-              <div style={{
-                marginTop: T.sp3, padding: T.sp3, borderRadius: T.radiusSm,
-                background: '#ecfdf3', color: '#0f5132', fontSize: 12, fontWeight: 500,
-                display: 'flex', alignItems: 'center', gap: T.sp2,
-              }}>
-                <ShieldCheck style={{ width: 14, height: 14 }} />
-                Aprovável nos Release Gates
-              </div>
-            </Card>
+            <p style={{ margin: '0 0 8px', fontSize: 13, color: T.ink, lineHeight: 1.5 }}>
+              Você está prestes a excluir <strong>{pendingDeleteProject.workTitle}</strong>.
+            </p>
+            <p style={{ margin: '0 0 18px', fontSize: 12, color: T.inkMuted, lineHeight: 1.5 }}>
+              O registro do projeto (<code style={{ fontFamily: T.mono }}>{pendingDeleteProject.runId}</code>), checkpoints e prévia renderizada vinculados somente a este capítulo serão removidos do disco. Os arquivos CBZ/PDF originais fora do workspace não serão apagados.
+            </p>
 
-            {/* Schedule & Publish */}
-            <Card>
-              <SectionLabel>Publicação</SectionLabel>
-              <label style={{ fontSize: 12, color: T.textSecondary, display: 'flex', flexDirection: 'column', gap: T.sp1 }}>
-                Data de publicação
-                <input type="datetime-local" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} style={inputStyle} />
-              </label>
-              <div style={{ display: 'flex', gap: T.sp2, marginTop: T.sp3 }}>
-                <button type="button" style={{ ...btnPrimary, flex: 1, justifyContent: 'center', background: T.lime, color: '#1d1d1f' }}>
-                  <CalendarIcon style={{ width: 14, height: 14 }} /> Agendar
-                </button>
-                <button type="button" style={{ ...btnSecondary, flex: 1, justifyContent: 'center' }}>
-                  Publicar Agora
-                </button>
-              </div>
-            </Card>
-
-            {/* Provider status (collapsed) */}
-            <details style={{ borderRadius: T.radiusLg, border: `1px solid ${T.border}`, overflow: 'hidden' }}>
-              <summary style={{
-                padding: `${T.sp3}px ${T.sp4}px`, fontSize: 12, fontWeight: 600, color: T.textSecondary,
-                cursor: 'pointer', background: T.surfaceHover, listStyle: 'none',
-                display: 'flex', alignItems: 'center', gap: T.sp2,
-              }}>
-                <MoreHorizontal style={{ width: 14, height: 14 }} />
-                Status dos Provedores
-              </summary>
-              <div style={{ padding: T.sp4, display: 'flex', flexDirection: 'column', gap: T.sp2 }}>
-                {readiness.providers.length === 0 ? (
-                  <p style={{ fontSize: 12, color: T.textTertiary }}>Clique em Verificar Prontidão na aba Produzir.</p>
-                ) : readiness.providers.map((p) => (
-                  <div key={p.providerId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
-                    <span style={{ fontWeight: 500 }}>{p.label}</span>
-                    <span style={{
-                      fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: T.radiusFull,
-                      background: p.status === 'available' ? '#d1fae5' : p.status === 'circuit_open' ? '#fee2e2' : '#e5e7eb',
-                      color: p.status === 'available' ? '#065f46' : p.status === 'circuit_open' ? '#991b1b' : '#374151',
-                    }}>
-                      {p.status === 'available' ? 'ONLINE' : p.code ?? 'OFF'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </details>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button
+                type="button"
+                disabled={Boolean(deletingProjectId)}
+                onClick={() => setPendingDeleteProject(null)}
+                style={btnSecondary}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(deletingProjectId)}
+                onClick={() => void confirmDeleteProject()}
+                style={{ ...btnDanger, opacity: deletingProjectId ? 0.6 : 1 }}
+              >
+                {deletingProjectId ? 'Excluindo…' : 'Excluir Projeto'}
+              </button>
+            </div>
           </div>
         </div>
       )}

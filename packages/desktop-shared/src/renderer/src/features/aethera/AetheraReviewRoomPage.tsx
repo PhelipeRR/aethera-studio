@@ -101,6 +101,20 @@ interface CinemaBridge {
       retryQuery?: string;
     }>;
   }) => Promise<{ pendingMedia?: PendingMediaGapView[] } | null>;
+  recapListProjects?: () => Promise<Array<{
+    runId: string;
+    chapterId: string;
+    workTitle: string;
+    state: string;
+    completedSteps: string[];
+    gateFVerdict?: string;
+    gateGVerdict?: string;
+    gateHVerdict?: string;
+    motionVelix?: { sfxApplied: number; sfxPlanned: number };
+    previewMp4Path?: string | null;
+    masterMp4Path?: string | null;
+    updatedAtIso: string;
+  }>>;
 }
 
 function getBridge(): CinemaBridge | undefined {
@@ -123,6 +137,19 @@ export function AetheraReviewRoomPage() {
   const [pkg, setPkg] = useState<ReviewPackageView | null>(null);
   const [realAudit, setRealAudit] = useState<RealRenderAuditView | null>(null);
   const [busy, setBusy] = useState(false);
+  const [latestRecap, setLatestRecap] = useState<{
+    runId: string;
+    workTitle: string;
+    state: string;
+    completedSteps: string[];
+    gateFVerdict?: string;
+    gateGVerdict?: string;
+    gateHVerdict?: string;
+    motionVelix?: { sfxApplied: number; sfxPlanned: number };
+    previewMp4Path?: string | null;
+    masterMp4Path?: string | null;
+    updatedAtIso: string;
+  } | null>(null);
 
   const projects = useQuery({
     queryKey: ['aethera-content-projects', 'default'],
@@ -136,12 +163,20 @@ export function AetheraReviewRoomPage() {
 
   useEffect(() => {
     const api = getBridge();
-    if (!api?.cinemaListProjects) return;
-    void api.cinemaListProjects().then((list) => {
-      if (!Array.isArray(list)) return;
-      setCinemaProjects(list);
-      setSelectedProjectId((prev) => prev || list[0]?.projectId || '');
-    }).catch(() => {});
+    if (api?.cinemaListProjects) {
+      void api.cinemaListProjects().then((list) => {
+        if (!Array.isArray(list)) return;
+        setCinemaProjects(list);
+        setSelectedProjectId((prev) => prev || list[0]?.projectId || '');
+      }).catch(() => {});
+    }
+    if (api?.recapListProjects) {
+      void api.recapListProjects().then((list) => {
+        if (Array.isArray(list) && list.length > 0) {
+          setLatestRecap(list[0] ?? null);
+        }
+      }).catch(() => {});
+    }
   }, []);
 
   useEffect(() => {
@@ -434,95 +469,117 @@ export function AetheraReviewRoomPage() {
             </pre>
           )}
 
-          {tab === 'recap' && (
-            <div className="space-y-4">
-              <div className="flex items-center gap-3 rounded-2xl border border-purple-500/30 bg-purple-500/10 p-4">
-                <BookOpen className="size-6 text-purple-400" />
-                <div>
-                  <h3 className="text-sm font-semibold text-foreground">Mangá Recap — Preview & Revisão</h3>
-                  <p className="text-xs text-muted-foreground">
-                    Acompanhe o progresso da produção, visualize o preview e revise a qualidade antes de publicar.
+          {tab === 'recap' && (() => {
+            const recapStages = [
+              { id: 'import', label: 'Importação' },
+              { id: 'gate-f', label: 'Gate F' },
+              { id: 'vision', label: 'Visão Multimodal' },
+              { id: 'continuity', label: 'Continuidade' },
+              { id: 'script', label: 'Roteiro (Gate G)' },
+              { id: 'humanize', label: 'Humanização' },
+              { id: 'motion', label: 'MotionVelix & Áudio' },
+              { id: 'gate-h', label: 'Qualidade (Gate H)' },
+            ] as const;
+            const completedSet = new Set(latestRecap?.completedSteps ?? []);
+            const isStageDone = (id: string) => {
+              if (!latestRecap) return false;
+              if (latestRecap.state === 'completed') return true;
+              if (completedSet.has(id)) return true;
+              if ((id === 'vision' || id === 'continuity' || id === 'script') && completedSet.has('story_engine')) return true;
+              if (id === 'motion' && (completedSet.has('audiovisual_preview') || completedSet.has('master_export'))) return true;
+              if (id === 'gate-h' && latestRecap.state === 'awaiting_preview_approval') return true;
+              return false;
+            };
+            const doneCount = recapStages.filter((s) => isStageDone(s.id)).length;
+            const pct = Math.round((doneCount / recapStages.length) * 100);
+            const mediaPath = latestRecap?.masterMp4Path ?? latestRecap?.previewMp4Path ?? null;
+            const mediaSrc = mediaPath
+              ? (mediaPath.startsWith('aethera-media://') || mediaPath.startsWith('file://') || mediaPath.startsWith('http')
+                ? mediaPath
+                : `aethera-media://local?path=${encodeURIComponent(mediaPath)}`)
+              : null;
+
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card p-4">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <BookOpen className="size-6 shrink-0 text-purple-400" />
+                    <div className="min-w-0">
+                      <h3 className="truncate text-sm font-semibold text-foreground">
+                        {latestRecap ? `Mangá Recap — ${latestRecap.workTitle}` : 'Mangá Recap — Preview & Revisão'}
+                      </h3>
+                      <p className="text-xs text-muted-foreground">
+                        {latestRecap
+                          ? `Estado real: ${latestRecap.state}${latestRecap.motionVelix ? ` · MotionVelix SFX ${latestRecap.motionVelix.sfxApplied}/${latestRecap.motionVelix.sfxPlanned}` : ''}`
+                          : 'Nenhum projeto Mangá Recap encontrado ainda.'}
+                      </p>
+                    </div>
+                  </div>
+                  <Link
+                    to="/aethera/recap"
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-primary px-3.5 py-1.5 text-xs font-semibold text-primary-foreground"
+                  >
+                    Abrir Mangá Recap <ChevronRight className="size-3.5" />
+                  </Link>
+                </div>
+
+                {/* Real Pipeline Progress */}
+                <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Pipeline Real</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {recapStages.map((stage) => {
+                      const done = isStageDone(stage.id);
+                      return (
+                        <span
+                          key={stage.id}
+                          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium ${
+                            done
+                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-secondary text-muted-foreground border border-border'
+                          }`}
+                        >
+                          {done && <CheckCircle2 className="size-3" />}
+                          {stage.label}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                    <div className="h-full rounded-full bg-purple-500 transition-all duration-300" style={{ width: `${pct}%` }} />
+                  </div>
+                  <p className="font-mono text-[11px] text-muted-foreground">
+                    {doneCount} de {recapStages.length} etapas concluídas · {pct}%
                   </p>
                 </div>
-              </div>
 
-              {/* Pipeline Progress */}
-              <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Pipeline de Produção</h4>
-                <div className="flex flex-wrap gap-2">
+                {/* Real Video Preview */}
+                <div className="aspect-video w-full overflow-hidden rounded-2xl border border-border bg-black/90 flex items-center justify-center">
+                  {mediaSrc ? (
+                    <video src={mediaSrc} controls className="h-full w-full object-contain" />
+                  ) : (
+                    <div className="text-center px-4">
+                      <Film className="mx-auto size-10 text-white/40" />
+                      <p className="mt-3 text-sm font-medium text-white/70">Nenhum MP4 renderizado no projeto mais recente</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Real Gate Verdicts */}
+                <div className="grid grid-cols-3 gap-3">
                   {[
-                    { label: 'Importação', done: true },
-                    { label: 'Integridade', done: true },
-                    { label: 'Visão Multimodal', done: true },
-                    { label: 'Continuidade', done: false },
-                    { label: 'Roteiro', done: false },
-                    { label: 'Humanização', done: false },
-                    { label: 'Motion & Áudio', done: false },
-                    { label: 'Qualidade Final', done: false },
-                  ].map((stage) => (
-                    <span
-                      key={stage.label}
-                      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium ${
-                        stage.done
-                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                          : 'bg-secondary text-muted-foreground border border-border'
-                      }`}
-                    >
-                      {stage.done && <CheckCircle2 className="size-3" />}
-                      {stage.label}
-                    </span>
+                    { label: 'Gate F (Painéis)', verdict: latestRecap?.gateFVerdict ?? '—' },
+                    { label: 'Gate G (Narrativa)', verdict: latestRecap?.gateGVerdict ?? '—' },
+                    { label: 'Gate H (Audiovisual)', verdict: latestRecap?.gateHVerdict ?? '—' },
+                  ].map((item) => (
+                    <div key={item.label} className="rounded-xl border border-border bg-card p-3 text-center">
+                      <p className="font-mono text-sm font-bold uppercase text-foreground">{item.verdict}</p>
+                      <p className="mt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{item.label}</p>
+                    </div>
                   ))}
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
-                  <div className="h-full rounded-full bg-purple-500 transition-all duration-500" style={{ width: '37%' }} />
-                </div>
-                <p className="text-[11px] text-muted-foreground">3 de 8 etapas concluídas · 37%</p>
               </div>
-
-              {/* Preview Placeholder */}
-              <div className="aspect-video w-full overflow-hidden rounded-2xl border border-border bg-black/90 flex items-center justify-center">
-                <div className="text-center">
-                  <Film className="mx-auto size-10 text-white/30" />
-                  <p className="mt-3 text-sm font-medium text-white/50">Preview disponível após produção</p>
-                </div>
-              </div>
-
-              {/* Quality Scorecard */}
-              <div className="grid grid-cols-3 gap-3">
-                {[
-                  { label: 'Técnica', score: 85, color: 'emerald' },
-                  { label: 'Narrativa', score: 72, color: 'amber' },
-                  { label: 'Áudio', score: 90, color: 'emerald' },
-                ].map((item) => (
-                  <div key={item.label} className="rounded-xl border border-border bg-card p-3 text-center">
-                    <p className="text-2xl font-bold text-foreground">{item.score}</p>
-                    <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{item.label}</p>
-                  </div>
-                ))}
-              </div>
-
-              {/* Schedule & Publish */}
-              <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Publicação</h4>
-                <div className="flex gap-3">
-                  <button type="button" className="flex-1 rounded-full border border-primary/60 bg-primary/20 px-4 py-2 text-xs font-semibold text-foreground transition hover:bg-primary/30">
-                    Agendar no Calendário
-                  </button>
-                  <button type="button" className="flex-1 rounded-full border border-border bg-card px-4 py-2 text-xs font-semibold text-muted-foreground transition hover:text-foreground">
-                    Publicar Agora
-                  </button>
-                </div>
-              </div>
-
-              {/* Link to full Recap page */}
-              <Link
-                to="/aethera/recap"
-                className="inline-flex items-center gap-2 text-xs font-medium text-purple-400 underline-offset-4 hover:underline"
-              >
-                Abrir Mangá Recap completo <ChevronRight className="size-3" />
-              </Link>
-            </div>
-          )}
+            );
+          })()}
         </section>
 
         <aside className="space-y-4 xl:col-span-4">

@@ -17,8 +17,12 @@ import { checkRecapProductionReadiness, type ReadinessProviderProbe, type RecapP
 import { AgentCircuitBreaker } from '../vision-circuit-breaker.js';
 import { runStoryEngine } from '../story-engine.js';
 
+import type { MotionVelixRenderReport } from '../phase3/recap-motionvelix.js';
+import { getRecapProjectDir, saveRecapProjectRecord, type RecapProjectArtifacts } from './recap-project-store.js';
+
 export type RecapOrchestratorState =
 	| 'idle'
+	| 'importing'
 	| 'preflight'
 	| 'story_engine'
 	| 'audiovisual_preview'
@@ -28,21 +32,57 @@ export type RecapOrchestratorState =
 	| 'paused_provider_unavailable'
 	| 'failed';
 
+export type RecapPipelineStageId =
+	| 'import'
+	| 'gate-f'
+	| 'vision'
+	| 'continuity'
+	| 'script'
+	| 'humanize'
+	| 'motion'
+	| 'gate-h';
+
+export interface RecapOrchestratorProgressEvent {
+	runId: string;
+	chapterId: string;
+	workTitle: string;
+	state: RecapOrchestratorState;
+	currentStage: RecapPipelineStageId | null;
+	completedSteps: string[];
+	message: string;
+	record: RecapOrchestratorRecord;
+	updatedAtIso: string;
+}
+
 export interface RecapOrchestratorRecord {
 	schemaVersion: 1;
 	runId: string;
 	chapterId: string;
 	workTitle: string;
+	archivePath?: string;
+	language?: string;
+	scriptStyle?: string;
+	aspectRatio?: '16:9' | '9:16';
+	ttsProvider?: string;
+	humorVolume?: number;
+	enableOcr?: boolean;
+	panelCount?: number;
+	sceneCount?: number;
+	shotCount?: number;
+	totalDurationMs?: number;
 	state: RecapOrchestratorState;
+	currentStage?: RecapPipelineStageId | null;
 	completedSteps: string[];
 	readiness?: RecapProductionReadinessReport;
 	gateFVerdict?: GateFReport['verdict'];
 	gateGVerdict?: GateGReport['verdict'];
 	gateHVerdict?: GateHReport['verdict'];
+	motionVelix?: MotionVelixRenderReport;
 	previewMp4Path?: string | null;
 	masterMp4Path?: string | null;
 	exportBundleDir?: string;
 	lastError?: string;
+	createdAtIso?: string;
 	updatedAtIso: string;
 }
 
@@ -83,6 +123,16 @@ export interface RunRecapProductionOrchestratorInput {
 	/** Set to true after reviewing preview to authorize master export. */
 	masterApproved?: boolean;
 	dryRunRender?: boolean;
+	/** Project metadata persisted for recent projects listing & resume. */
+	archivePath?: string;
+	language?: string;
+	scriptStyle?: string;
+	ttsProvider?: string;
+	humorVolume?: number;
+	enableOcr?: boolean;
+	gateFVerdict?: GateFReport['verdict'];
+	initialCompletedSteps?: readonly string[];
+	onProgress?: (event: RecapOrchestratorProgressEvent) => void;
 }
 
 export interface RunRecapProductionOrchestratorResult {
@@ -91,42 +141,98 @@ export interface RunRecapProductionOrchestratorResult {
 	plan?: RecapAudiovisualPlan;
 	gateGReport?: GateGReport;
 	gateHReport?: GateHReport;
+	motionVelix?: MotionVelixRenderReport;
 }
 
 export async function runRecapProductionOrchestrator(
 	input: RunRecapProductionOrchestratorInput,
 ): Promise<RunRecapProductionOrchestratorResult> {
-	const stateDir = join(input.workspaceDir, 'state');
+	const projectDir = getRecapProjectDir(input.workspaceDir, input.runId);
 	const checkpointDir = join(input.workspaceDir, 'checkpoints', input.chapterId);
 	const renderDir = join(input.workspaceDir, 'render', input.chapterId);
-	mkdirSync(stateDir, { recursive: true });
+	mkdirSync(projectDir, { recursive: true });
 	mkdirSync(checkpointDir, { recursive: true });
 	mkdirSync(renderDir, { recursive: true });
 
 	const circuitBreaker = input.circuitBreaker ?? new AgentCircuitBreaker();
-	const prev = loadOrchestratorState(stateDir);
-	const completedSteps = new Set<string>(prev?.completedSteps ?? []);
+	// Only reuse previous orchestrator state if it belongs to THIS exact runId
+	const prevSameRun = loadOrchestratorState(projectDir);
+	const prev = prevSameRun && prevSameRun.runId === input.runId ? prevSameRun : null;
+	const createdAtIso = prev?.createdAtIso ?? new Date().toISOString();
+	const completedSteps = new Set<string>([
+		...(prev?.completedSteps ?? []),
+		...(input.initialCompletedSteps ?? []),
+	]);
 
-	const persist = (state: RecapOrchestratorState, extra: Partial<RecapOrchestratorRecord> = {}): RecapOrchestratorRecord => {
+	let latestRecord: RecapOrchestratorRecord | null = prev;
+
+	const persist = (
+		state: RecapOrchestratorState,
+		currentStage: RecapPipelineStageId | null,
+		message: string,
+		extra: Partial<RecapOrchestratorRecord> = {},
+		artifacts?: RecapProjectArtifacts,
+	): RecapOrchestratorRecord => {
+		const updatedAtIso = new Date().toISOString();
+		const base = latestRecord;
 		const rec: RecapOrchestratorRecord = {
 			schemaVersion: 1,
 			runId: input.runId,
 			chapterId: input.chapterId,
 			workTitle: input.workTitle,
+			...(input.archivePath ?? base?.archivePath ? { archivePath: input.archivePath ?? base?.archivePath } : {}),
+			...(input.language ?? base?.language ? { language: input.language ?? base?.language } : {}),
+			...(input.scriptStyle ?? base?.scriptStyle ? { scriptStyle: input.scriptStyle ?? base?.scriptStyle } : {}),
+			...(input.plannerOptions?.aspectRatio ?? base?.aspectRatio
+				? { aspectRatio: input.plannerOptions?.aspectRatio ?? base?.aspectRatio }
+				: {}),
+			...(input.ttsProvider ?? base?.ttsProvider ? { ttsProvider: input.ttsProvider ?? base?.ttsProvider } : {}),
+			...(input.humorVolume !== undefined
+				? { humorVolume: input.humorVolume }
+				: base?.humorVolume !== undefined
+					? { humorVolume: base.humorVolume }
+					: {}),
+			...(input.enableOcr !== undefined
+				? { enableOcr: input.enableOcr }
+				: base?.enableOcr !== undefined
+					? { enableOcr: base.enableOcr }
+					: {}),
+			panelCount: input.panels.length,
+			...(base?.sceneCount !== undefined ? { sceneCount: base.sceneCount } : {}),
+			...(base?.shotCount !== undefined ? { shotCount: base.shotCount } : {}),
+			...(base?.totalDurationMs !== undefined ? { totalDurationMs: base.totalDurationMs } : {}),
 			state,
+			currentStage,
 			completedSteps: [...completedSteps],
-			...(prev?.gateGVerdict ? { gateGVerdict: prev.gateGVerdict } : {}),
-			...(prev?.gateHVerdict ? { gateHVerdict: prev.gateHVerdict } : {}),
-			...(prev?.previewMp4Path ? { previewMp4Path: prev.previewMp4Path } : {}),
-			...(prev?.masterMp4Path ? { masterMp4Path: prev.masterMp4Path } : {}),
+			...(input.gateFVerdict ?? base?.gateFVerdict ? { gateFVerdict: input.gateFVerdict ?? base?.gateFVerdict } : {}),
+			...(base?.gateGVerdict ? { gateGVerdict: base.gateGVerdict } : {}),
+			...(base?.gateHVerdict ? { gateHVerdict: base.gateHVerdict } : {}),
+			...(base?.motionVelix ? { motionVelix: base.motionVelix } : {}),
+			...(base?.previewMp4Path ? { previewMp4Path: base.previewMp4Path } : {}),
+			...(base?.masterMp4Path ? { masterMp4Path: base.masterMp4Path } : {}),
+			...(base?.exportBundleDir ? { exportBundleDir: base.exportBundleDir } : {}),
 			...extra,
-			updatedAtIso: new Date().toISOString(),
+			createdAtIso,
+			updatedAtIso,
 		};
-		saveOrchestratorState(stateDir, rec);
+		saveRecapProjectRecord(input.workspaceDir, rec, artifacts);
+		latestRecord = rec;
+		input.onProgress?.({
+			runId: rec.runId,
+			chapterId: rec.chapterId,
+			workTitle: rec.workTitle,
+			state: rec.state,
+			currentStage: rec.currentStage ?? null,
+			completedSteps: rec.completedSteps,
+			message,
+			record: rec,
+			updatedAtIso,
+		});
 		return rec;
 	};
 
 	// ─── Step 1: Preflight (circuit breakers + checkpoint inspection) ─────────
+	persist('preflight', 'vision', 'Verificando provedores multimodais e checkpoints…');
 	const readiness = await checkRecapProductionReadiness({
 		providers: input.providers,
 		circuitBreaker,
@@ -141,7 +247,7 @@ export async function runRecapProductionOrchestrator(
 
 	if (!script) {
 		if (!readiness.ready) {
-			const paused = persist('paused_provider_unavailable', {
+			const paused = persist('paused_provider_unavailable', 'vision', readiness.summaryMessage, {
 				readiness,
 				lastError: readiness.summaryMessage,
 			});
@@ -149,79 +255,206 @@ export async function runRecapProductionOrchestrator(
 		}
 
 		// ─── Step 2: Story Engine (resumes checkpoint idempotently) ───────────
-		persist('story_engine', { readiness });
-		const storyResult = await runStoryEngine({
-			chapterId: input.chapterId,
-			panels: input.panels,
-			outputDir: join(input.workspaceDir, 'story'),
-			checkpointDir,
-			...(input.visionAdapter ? { visionAdapter: input.visionAdapter } : {}),
-		});
-		script = storyResult.script;
-		gateGReport = storyResult.gateGReport;
-		completedSteps.add('story_engine');
-		if (gateGReport.verdict === 'fail') {
-			const failed = persist('failed', {
-				readiness,
-				gateGVerdict: gateGReport.verdict,
-				lastError: `Gate G falhou: ${gateGReport.reasons.join('; ')}`,
+		persist('story_engine', 'vision', 'Analisando painéis, continuidade e gerando roteiro…', { readiness });
+		try {
+			const storyResult = await runStoryEngine({
+				chapterId: input.chapterId,
+				panels: input.panels,
+				outputDir: join(input.workspaceDir, 'story'),
+				checkpointDir,
+				...(input.visionAdapter ? { visionAdapter: input.visionAdapter } : {}),
 			});
-			return { record: failed, script, gateGReport };
+			script = storyResult.script;
+			gateGReport = storyResult.gateGReport;
+			completedSteps.add('vision');
+			completedSteps.add('continuity');
+			completedSteps.add('script');
+			if (storyResult.humanizeResult) {
+				completedSteps.add('humanize');
+			}
+			completedSteps.add('story_engine');
+			if (gateGReport.verdict === 'fail') {
+				const errMsg = `Gate G falhou: ${gateGReport.reasons.join('; ')}`;
+				const failed = persist(
+					'failed',
+					'script',
+					errMsg,
+					{
+						readiness,
+						sceneCount: script.scenes.length,
+						gateGVerdict: gateGReport.verdict,
+						lastError: errMsg,
+					},
+					{ script, gateGReport },
+				);
+				return { record: failed, script, gateGReport };
+			}
+			persist(
+				'story_engine',
+				'humanize',
+				`Roteiro concluído (${script.scenes.length} cenas) · Gate G: ${gateGReport.verdict}.`,
+				{
+					readiness,
+					sceneCount: script.scenes.length,
+					gateGVerdict: gateGReport.verdict,
+				},
+				{ script, gateGReport },
+			);
+		} catch (err) {
+			const errMsg = err instanceof Error ? err.message : String(err);
+			const failed = persist('failed', 'vision', errMsg, {
+				readiness,
+				lastError: errMsg,
+			});
+			return { record: failed };
 		}
+	} else {
+		completedSteps.add('vision');
+		completedSteps.add('continuity');
+		completedSteps.add('script');
+		completedSteps.add('story_engine');
 	}
 
 	// ─── Step 3: Phase 3 Audiovisual Preview Render ──────────────────────────
-	persist('audiovisual_preview', {
-		readiness,
-		...(gateGReport ? { gateGVerdict: gateGReport.verdict } : {}),
-	});
+	persist(
+		'audiovisual_preview',
+		'motion',
+		'Sintetizando narração, planejando shots e renderizando com MotionVelix + FFmpeg…',
+		{
+			readiness,
+			sceneCount: script.scenes.length,
+			...(gateGReport ? { gateGVerdict: gateGReport.verdict } : {}),
+		},
+		{ script, ...(gateGReport ? { gateGReport } : {}) },
+	);
 
-	const previewResult = await renderRecapVideo({
-		script,
-		panels: input.panels,
-		outputDir: renderDir,
-		checkpointDir: join(checkpointDir, 'phase3'),
-		...(input.ttsPort ? { ttsPort: input.ttsPort } : {}),
-		...(input.sfxAssetsDir ? { sfxAssetsDir: input.sfxAssetsDir } : {}),
-		plannerOptions: { ...input.plannerOptions, renderTarget: 'preview' },
-		...(input.dryRunRender ? { dryRunRender: true } : {}),
-	});
+	let previewResult: Awaited<ReturnType<typeof renderRecapVideo>>;
+	try {
+		previewResult = await renderRecapVideo({
+			script,
+			panels: input.panels,
+			outputDir: renderDir,
+			checkpointDir: join(checkpointDir, 'phase3'),
+			...(input.ttsPort ? { ttsPort: input.ttsPort } : {}),
+			...(input.sfxAssetsDir ? { sfxAssetsDir: input.sfxAssetsDir } : {}),
+			plannerOptions: { ...input.plannerOptions, renderTarget: 'preview' },
+			...(input.dryRunRender ? { dryRunRender: true } : {}),
+		});
+	} catch (err) {
+		const errMsg = err instanceof Error ? err.message : String(err);
+		const failed = persist(
+			'failed',
+			'motion',
+			errMsg,
+			{
+				readiness,
+				sceneCount: script.scenes.length,
+				lastError: errMsg,
+			},
+			{ script, ...(gateGReport ? { gateGReport } : {}) },
+		);
+		return { record: failed, script, ...(gateGReport ? { gateGReport } : {}) };
+	}
+
+	completedSteps.add('motion');
 	completedSteps.add('audiovisual_preview');
 
 	if (previewResult.gateHReport.verdict === 'fail') {
-		const failed = persist('failed', {
-			readiness,
-			gateHVerdict: previewResult.gateHReport.verdict,
-			previewMp4Path: previewResult.mp4Path,
-			lastError: `Gate H falhou na prévia: ${previewResult.gateHReport.reasons.join('; ')}`,
-		});
-		return { record: failed, script, plan: previewResult.plan, ...(gateGReport ? { gateGReport } : {}), gateHReport: previewResult.gateHReport };
+		const errMsg = `Gate H falhou na prévia: ${previewResult.gateHReport.reasons.join('; ')}`;
+		const failed = persist(
+			'failed',
+			'gate-h',
+			errMsg,
+			{
+				readiness,
+				sceneCount: script.scenes.length,
+				shotCount: previewResult.plan.shots.length,
+				totalDurationMs: previewResult.plan.totalDurationMs,
+				gateHVerdict: previewResult.gateHReport.verdict,
+				motionVelix: previewResult.motionVelix,
+				previewMp4Path: previewResult.mp4Path,
+				lastError: errMsg,
+			},
+			{
+				script,
+				plan: previewResult.plan,
+				...(gateGReport ? { gateGReport } : {}),
+				gateHReport: previewResult.gateHReport,
+			},
+		);
+		return {
+			record: failed,
+			script,
+			plan: previewResult.plan,
+			...(gateGReport ? { gateGReport } : {}),
+			gateHReport: previewResult.gateHReport,
+			motionVelix: previewResult.motionVelix,
+		};
 	}
+
+	completedSteps.add('gate-h');
 
 	// Human review gate before master export
 	if (!input.masterApproved) {
-		const awaiting = persist('awaiting_preview_approval', {
-			readiness,
-			...(gateGReport ? { gateGVerdict: gateGReport.verdict } : {}),
-			gateHVerdict: previewResult.gateHReport.verdict,
-			previewMp4Path: previewResult.mp4Path,
-		});
-		return { record: awaiting, script, plan: previewResult.plan, ...(gateGReport ? { gateGReport } : {}), gateHReport: previewResult.gateHReport };
+		const awaiting = persist(
+			'awaiting_preview_approval',
+			'gate-h',
+			'Prévia pronta e auditada pelo Gate H. Aguardando aprovação para exportação master.',
+			{
+				readiness,
+				sceneCount: script.scenes.length,
+				shotCount: previewResult.plan.shots.length,
+				totalDurationMs: previewResult.plan.totalDurationMs,
+				...(gateGReport ? { gateGVerdict: gateGReport.verdict } : {}),
+				gateHVerdict: previewResult.gateHReport.verdict,
+				motionVelix: previewResult.motionVelix,
+				previewMp4Path: previewResult.mp4Path,
+				lastError: undefined,
+			},
+			{
+				script,
+				plan: previewResult.plan,
+				...(gateGReport ? { gateGReport } : {}),
+				gateHReport: previewResult.gateHReport,
+			},
+		);
+		return {
+			record: awaiting,
+			script,
+			plan: previewResult.plan,
+			...(gateGReport ? { gateGReport } : {}),
+			gateHReport: previewResult.gateHReport,
+			motionVelix: previewResult.motionVelix,
+		};
 	}
 
 	// ─── Step 4: Master Export & Release Bundle (Phase 7.3) ──────────────────
-	persist('master_export', { readiness, previewMp4Path: previewResult.mp4Path });
-	const masterResult = await renderRecapVideo({
-		script,
-		panels: input.panels,
-		outputDir: join(renderDir, 'master'),
-		checkpointDir: join(checkpointDir, 'phase3-master'),
-		...(input.ttsPort ? { ttsPort: input.ttsPort } : {}),
-		...(input.sfxAssetsDir ? { sfxAssetsDir: input.sfxAssetsDir } : {}),
-		plannerOptions: { ...input.plannerOptions, renderTarget: 'master' },
-		masterApproved: true,
-		...(input.dryRunRender ? { dryRunRender: true } : {}),
+	persist('master_export', 'motion', 'Renderizando exportação Master e gerando pacote de entrega…', {
+		readiness,
+		previewMp4Path: previewResult.mp4Path,
 	});
+	let masterResult: Awaited<ReturnType<typeof renderRecapVideo>>;
+	try {
+		masterResult = await renderRecapVideo({
+			script,
+			panels: input.panels,
+			outputDir: join(renderDir, 'master'),
+			checkpointDir: join(checkpointDir, 'phase3-master'),
+			...(input.ttsPort ? { ttsPort: input.ttsPort } : {}),
+			...(input.sfxAssetsDir ? { sfxAssetsDir: input.sfxAssetsDir } : {}),
+			plannerOptions: { ...input.plannerOptions, renderTarget: 'master' },
+			masterApproved: true,
+			...(input.dryRunRender ? { dryRunRender: true } : {}),
+		});
+	} catch (err) {
+		const errMsg = err instanceof Error ? err.message : String(err);
+		const failed = persist('failed', 'motion', errMsg, {
+			readiness,
+			previewMp4Path: previewResult.mp4Path,
+			lastError: errMsg,
+		});
+		return { record: failed, script, plan: previewResult.plan, ...(gateGReport ? { gateGReport } : {}), gateHReport: previewResult.gateHReport };
+	}
 	completedSteps.add('master_export');
 
 	const bundleDir = exportRecapReleaseBundle({
@@ -239,14 +472,30 @@ export async function runRecapProductionOrchestrator(
 	});
 	completedSteps.add('release_bundle');
 
-	const completed = persist('completed', {
-		readiness,
-		...(gateGReport ? { gateGVerdict: gateGReport.verdict } : {}),
-		gateHVerdict: masterResult.gateHReport.verdict,
-		previewMp4Path: previewResult.mp4Path,
-		masterMp4Path: masterResult.mp4Path,
-		exportBundleDir: bundleDir,
-	});
+	const completed = persist(
+		'completed',
+		'gate-h',
+		'Exportação master concluída e pacote de release salvo.',
+		{
+			readiness,
+			sceneCount: script.scenes.length,
+			shotCount: masterResult.plan.shots.length,
+			totalDurationMs: masterResult.plan.totalDurationMs,
+			...(gateGReport ? { gateGVerdict: gateGReport.verdict } : {}),
+			gateHVerdict: masterResult.gateHReport.verdict,
+			motionVelix: masterResult.motionVelix,
+			previewMp4Path: previewResult.mp4Path,
+			masterMp4Path: masterResult.mp4Path,
+			exportBundleDir: bundleDir,
+			lastError: undefined,
+		},
+		{
+			script,
+			plan: masterResult.plan,
+			...(gateGReport ? { gateGReport } : {}),
+			gateHReport: masterResult.gateHReport,
+		},
+	);
 
 	return {
 		record: completed,
@@ -254,6 +503,7 @@ export async function runRecapProductionOrchestrator(
 		plan: masterResult.plan,
 		...(gateGReport ? { gateGReport } : {}),
 		gateHReport: masterResult.gateHReport,
+		motionVelix: masterResult.motionVelix,
 	};
 }
 
