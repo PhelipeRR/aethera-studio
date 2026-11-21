@@ -3,6 +3,7 @@ import { resolve, dirname } from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'electron-vite';
+import { transformAetheraShellBrand } from './scripts/aethera-shell-brand-transform';
 
 const WORKSPACE_PACKAGES = [
   '@neuralbridge/shared',
@@ -106,6 +107,8 @@ export default defineConfig({
   renderer: {
     resolve: {
       alias: {
+        // Ensure all shared screens (VelixPage, AetheraProductionWorkspace, etc.) use the exact Web prism logo.
+        '@/app/AetheraMark': resolve('src/renderer/src/AetheraMark.tsx'),
         '@': resolve('../../packages/desktop-shared/src/renderer/src'),
         '@neuralbridge/cinema/browser': resolve('../../packages/cinema/src/browser.ts'),
         // The renderer must never pull the Node/FFmpeg barrel into the browser bundle.
@@ -113,6 +116,18 @@ export default defineConfig({
         '@neuralbridge/creative-studio': resolve('../../packages/creative-studio/src/index.ts'),
       },
     },
-    plugins: [neuralbridgeExportsResolver(), react(), tailwindcss()],
+    plugins: [
+      neuralbridgeExportsResolver(),
+      {
+        name: 'aethera-web-brand-parity',
+        enforce: 'pre',
+        transform(code, id) {
+          const transformed = transformAetheraShellBrand(code, id);
+          return transformed ? { code: transformed, map: null } : null;
+        },
+      },
+      react(),
+      tailwindcss(),
+    ],
   },
 });

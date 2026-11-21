@@ -14,6 +14,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(__dirname, '..');
 const asarPath = resolve(appDir, '../../dist/aethera/win-unpacked/resources/app.asar');
 
+// Passo 0: Garantir que os ícones canônicos do Aethera existam antes do empacotamento
+const iconIcoPath = resolve(appDir, 'build/icon.ico');
+const iconPngPath = resolve(appDir, 'build/icon.png');
+if (!existsSync(iconIcoPath) || !existsSync(iconPngPath)) {
+ console.log('🎨 Gerando ícones canônicos Aethera (icon.ico / icon.png)...');
+ execSync('node scripts/generate-icon.mjs', { cwd: appDir, stdio: 'inherit' });
+}
+
 // Passo 1: Executar electron-builder
 console.log('🔨 Executando electron-builder...');
 try {

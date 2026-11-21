@@ -23,6 +23,9 @@ process.on('uncaughtException', (error) => {
   );
 });
 app.setName('Aethera Studio');
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.singularity.aethera');
+}
 app.setPath('userData', join(app.getPath('appData'), 'AetheraStudio'));
 
 protocol.registerSchemesAsPrivileged([
@@ -52,15 +55,35 @@ function resolveDiscoveryDir(): string {
   return join(app.getPath('appData'), 'SingularityEcosystem', 'discovery');
 }
 
+function resolveAppIconPath(): string | undefined {
+  const preferred = process.platform === 'win32' ? ['icon.ico', 'icon.png'] : ['icon.png', 'icon.ico'];
+  const roots = [
+    join(app.getAppPath(), 'build'),
+    join(process.resourcesPath, 'build'),
+    join(dirname(__dirname), '..', 'build'),
+    join(process.cwd(), 'build'),
+  ];
+  for (const file of preferred) {
+    for (const root of roots) {
+      const candidate = join(root, file);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
 function createWindow() {
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null);
   }
 
+  const appIconPath = resolveAppIconPath();
+
   const win = new BrowserWindow({
     width: 1280,
     height: 840,
     title: 'Aethera Studio',
+    ...(appIconPath ? { icon: appIconPath } : {}),
     backgroundColor: '#ececee',
     autoHideMenuBar: true,
     webPreferences: {

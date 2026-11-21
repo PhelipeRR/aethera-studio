@@ -10,6 +10,7 @@ files:
   - out/**/*
   - package.json
   - build/icon.ico
+  - build/icon.png
   - '!**/onnxruntime-node/bin/napi-v6/linux/**'
   - '!**/onnxruntime-node/bin/napi-v6/darwin/**'
 asar: true
@@ -31,6 +32,7 @@ extraResources:
   - from: ../../packages/database/migrations
     to: migrations
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch:
@@ -43,3 +45,6 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Aethera Studio
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
