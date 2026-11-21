@@ -260,6 +260,7 @@ export async function runRecapProductionOrchestrator(
 	// If no existing script and no operational multimodal agent -> pause cleanly (never invent)
 	let script = input.existingScript;
 	let gateGReport: GateGReport | undefined;
+	let panelAnalyses: import('../recap-types.js').PanelAnalysis[] | undefined;
 
 	if (!script) {
 		if (!readiness.ready) {
@@ -301,6 +302,7 @@ export async function runRecapProductionOrchestrator(
 			});
 			script = storyResult.script;
 			gateGReport = storyResult.gateGReport;
+			panelAnalyses = storyResult.analyses;
 			completedSteps.add('vision');
 			completedSteps.add('continuity');
 			completedSteps.add('script');
@@ -368,6 +370,7 @@ export async function runRecapProductionOrchestrator(
 		previewResult = await renderRecapVideo({
 			script,
 			panels: input.panels,
+			...(panelAnalyses ? { analyses: panelAnalyses } : {}),
 			outputDir: renderDir,
 			checkpointDir: join(checkpointDir, 'phase3'),
 			...(input.ttsPort ? { ttsPort: input.ttsPort } : {}),
@@ -498,6 +501,7 @@ export async function runRecapProductionOrchestrator(
 		masterResult = await renderRecapVideo({
 			script,
 			panels: input.panels,
+			...(panelAnalyses ? { analyses: panelAnalyses } : {}),
 			outputDir: join(renderDir, 'master'),
 			checkpointDir: join(checkpointDir, 'phase3-master'),
 			...(input.ttsPort ? { ttsPort: input.ttsPort } : {}),

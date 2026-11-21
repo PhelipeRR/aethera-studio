@@ -4,4 +4,5 @@ export * from './recap-gate-h-quality.js';
 export * from './recap-mp4-renderer.js';
 export * from './recap-tts-adapters.js';
 export * from './recap-motionvelix.js';
+export * from './recap-semantic-alignment.js';
 

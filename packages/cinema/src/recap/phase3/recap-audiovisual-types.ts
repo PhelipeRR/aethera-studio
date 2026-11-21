@@ -108,6 +108,20 @@ export interface RecapAudiovisualPlan {
 	ducking: RecapAudioDuckingConfig;
 	captions: SmartCaptionArtifact;
 	durationAudit: AudioFirstDurationAudit;
+	/** Optional semantic event-level alignments synced to real WAV speech boundaries (Phases 2–3). */
+	beatAlignments?: Array<{
+		beatIndex: number;
+		sceneId: string;
+		clauseText: string;
+		panelId: string;
+		semanticScore: number;
+		matchedTerms: string[];
+		speechStartMs: number;
+		speechEndMs: number;
+		displayStartMs: number;
+		displayEndMs: number;
+		alignmentMethod: 'wav_pause_aligned' | 'speech_envelope_aligned';
+	}>;
 	createdAtIso: string;
 }
 
@@ -117,6 +131,11 @@ export interface SynthesizedSceneAudio {
 	speechDurationMs: number;
 	pauseAfterMs: number;
 	provider: string;
+	voiceId?: string;
+	modelId?: string;
+	speed?: number;
+	language?: string;
+	sessionMode?: 'single_session' | 'chunked';
 	isFallback: boolean;
 }
 
@@ -131,6 +150,13 @@ export interface RecapTtsSynthesisPort {
 		sceneId: string;
 		text: string;
 		emotion: Emotion;
+		estimatedDurationSec: number;
+		outputPath: string;
+	}): Promise<SynthesizedSceneAudio>;
+	/** Optional continuous single-session synthesis for consistent voice identity across the full video. */
+	synthesizeContinuous?(input: {
+		chapterId: string;
+		fullText: string;
 		estimatedDurationSec: number;
 		outputPath: string;
 	}): Promise<SynthesizedSceneAudio>;

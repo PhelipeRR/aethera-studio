@@ -28,6 +28,7 @@ import type {
 	RecapVfxSpec,
 	RecapVisualPlannerOptions,
 } from './recap-audiovisual-types.js';
+import type { AlignedBeatInterval } from './recap-semantic-alignment.js';
 
 function selectMotionForScene(
 	scene: Scene,
@@ -212,9 +213,11 @@ export function buildRecapAudiovisualPlan(input: {
 	script: RecapScript;
 	panels: readonly ExtractedPanel[];
 	measuredSegments?: readonly MeasuredNarrationSegment[];
+	/** Real audio-aligned narrative beats (Phases 2, 3 & 7). When provided, drives panel cuts directly instead of equal-split. */
+	alignedBeats?: readonly AlignedBeatInterval[];
 	options?: RecapVisualPlannerOptions;
 }): RecapAudiovisualPlan {
-	const { script, panels, options = {} } = input;
+	const { script, panels, alignedBeats, options = {} } = input;
 	if (script.scenes.length === 0) {
 		throw new Error('RecapScript não possui cenas para planejamento audiovisual.');
 	}
@@ -236,6 +239,10 @@ export function buildRecapAudiovisualPlan(input: {
 	for (const p of panels) panelMap.set(p.panelId, p);
 
 	// 1. Audio-First clock (reusing audio-first-timeline.ts)
+	// When real audio is measured (via alignedBeats or measuredSegments), the timeline duration
+	// MUST follow the real speech duration (no artificial silent tail inflation from word-count estimates).
+	const hasAlignedBeats = Boolean(alignedBeats && alignedBeats.length > 0);
+	const hasMeasuredSegments = Boolean(input.measuredSegments && input.measuredSegments.length > 0);
 	const plannedDurationMs = Math.round(
 		script.scenes.reduce((sum, s) => sum + Math.max(1, s.estimatedDurationSec) * 1000, 0),
 	);
@@ -251,13 +258,22 @@ export function buildRecapAudiovisualPlan(input: {
 	});
 
 	const measuredTimeline = measureNarrationSegmentsWithPauses(segmentInputs);
+	const measuredNarrationTotalMs = hasAlignedBeats
+		? Math.max(1000, alignedBeats![alignedBeats!.length - 1]!.displayEndMs)
+		: hasMeasuredSegments
+			? Math.max(
+				1000,
+				input.measuredSegments!.reduce((sum, seg) => sum + seg.speechDurationMs + seg.pauseAfterMs, 0),
+			)
+			: measuredTimeline.totalDurationMs;
+
 	const durationAudit = buildAudioFirstDurationAudit({
-		plannedTimelineDurationMs: plannedDurationMs,
-		measuredNarrationDurationMs: measuredTimeline.totalDurationMs,
+		plannedTimelineDurationMs: hasAlignedBeats || hasMeasuredSegments ? measuredNarrationTotalMs : plannedDurationMs,
+		measuredNarrationDurationMs: measuredNarrationTotalMs,
 	});
 	const totalDurationMs = durationAudit.finalTimelineDurationMs;
 
-	// 2. Visual shot planning, SFX & VFX per scene (zero gaps, no consecutive duplicates)
+	// 2. Visual shot planning, SFX & VFX (zero gaps, no consecutive duplicates)
 	const shots: RecapPanelShot[] = [];
 	const sfxCues: RecapSfxCue[] = [];
 	const vfxSpecs: RecapVfxSpec[] = [];
@@ -265,74 +281,178 @@ export function buildRecapAudiovisualPlan(input: {
 	const keywords = new Set<string>();
 	let lastPanelId: string | null = null;
 
-	for (let sIdx = 0; sIdx < script.scenes.length; sIdx++) {
-		const scene = script.scenes[sIdx]!;
-		const timing = measuredTimeline.segments[sIdx]!;
-		const isLastScene = sIdx === script.scenes.length - 1;
-		// Extend final scene tail if planned timeline exceeded measured narration
-		const sceneStartMs = timing.startMs;
-		const sceneEndMs = isLastScene ? totalDurationMs : timing.endMs;
-		const sceneDurationMs = Math.max(100, sceneEndMs - sceneStartMs);
-
-		for (const char of scene.characters) {
-			if (char.trim().length >= 3) keywords.add(char.trim());
+	if (hasAlignedBeats) {
+		const sceneById = new Map(script.scenes.map((s, idx) => [s.sceneId, { scene: s, index: idx }]));
+		for (const scene of script.scenes) {
+			for (const char of scene.characters) {
+				if (char.trim().length >= 3) keywords.add(char.trim());
+			}
+			const hasDialoguePanel = scene.panelIds.some((pid) => panelMap.get(pid)?.metadata.classification === 'dialogue');
+			vfxSpecs.push(buildVfxForScene(scene, hasDialoguePanel));
 		}
 
-		// Deduplicate consecutive panel references within and across scene boundaries
-		const candidatePanelIds = scene.panelIds.filter((pid, idx) => idx === 0 || pid !== scene.panelIds[idx - 1]);
-		let effectivePanelIds = candidatePanelIds;
-		if (effectivePanelIds.length > 1 && effectivePanelIds[0] === lastPanelId) {
-			effectivePanelIds = effectivePanelIds.slice(1);
+		// Group consecutive beats mapped to the same panelId so each shot has zero consecutive duplicates
+		// and holds strictly for the real spoken interval of its events.
+		interface BeatShotGroup {
+			panelId: string;
+			sceneId: string;
+			sceneIndex: number;
+			startMs: number;
+			endMs: number;
 		}
-		if (effectivePanelIds.length === 0) {
-			effectivePanelIds = [scene.panelIds[0]!];
+		const groups: BeatShotGroup[] = [];
+		let maxSceneIdx = 0;
+
+		for (const beat of alignedBeats!) {
+			const sceneEntry = sceneById.get(beat.sceneId) ?? { scene: script.scenes[0]!, index: 0 };
+			const monotonicSceneIndex = Math.max(maxSceneIdx, sceneEntry.index);
+			maxSceneIdx = monotonicSceneIndex;
+			const monotonicSceneId = script.scenes[monotonicSceneIndex]!.sceneId;
+
+			const prev = groups[groups.length - 1];
+			if (prev && prev.panelId === beat.panelId) {
+				prev.endMs = Math.max(prev.endMs, beat.displayEndMs);
+			} else {
+				groups.push({
+					panelId: beat.panelId,
+					sceneId: monotonicSceneId,
+					sceneIndex: monotonicSceneIndex,
+					startMs: groups.length === 0 ? 0 : prev!.endMs,
+					endMs: Math.max((groups.length === 0 ? 0 : prev!.endMs) + 200, beat.displayEndMs),
+				});
+			}
 		}
 
-		const hasDialoguePanel = effectivePanelIds.some((pid) => panelMap.get(pid)?.metadata.classification === 'dialogue');
-		vfxSpecs.push(buildVfxForScene(scene, hasDialoguePanel));
+		// Distribute caption words without duplicating when a single clause spans consecutive panels
+		for (let bIdx = 0; bIdx < alignedBeats!.length; ) {
+			const startBeat = alignedBeats![bIdx]!;
+			let endIdx = bIdx;
+			while (
+				endIdx + 1 < alignedBeats!.length &&
+				alignedBeats![endIdx + 1]!.clauseText === startBeat.clauseText
+			) {
+				endIdx++;
+			}
+			const endBeat = alignedBeats![endIdx]!;
+			const beatWords = distributeWordsOverWindow(
+				startBeat.clauseText,
+				startBeat.speechStartMs,
+				Math.min(Math.max(startBeat.speechStartMs + 120, endBeat.speechEndMs), totalDurationMs),
+			);
+			captionWords.push(...beatWords);
+			bIdx = endIdx + 1;
+		}
 
-		const sfx = selectSfxForScene(scene, sceneStartMs, sIdx);
-		if (sfx) sfxCues.push(sfx);
+		// Ensure exact contiguous coverage [0, totalDurationMs]
+		if (groups.length > 0) {
+			groups[0]!.startMs = 0;
+			groups[groups.length - 1]!.endMs = totalDurationMs;
+		}
 
-		const shotCount = effectivePanelIds.length;
-		const baseShotMs = Math.floor(sceneDurationMs / shotCount);
-		let shotCursor = sceneStartMs;
-
-		for (let pIdx = 0; pIdx < shotCount; pIdx++) {
-			const panelId = effectivePanelIds[pIdx]!;
-			const panel = panelMap.get(panelId);
-			const imagePath = panel?.croppedImagePath ?? scene.croppedImagePaths[pIdx] ?? panel?.pagePath ?? '';
-			const shotStartMs = shotCursor;
-			const shotEndMs = pIdx === shotCount - 1 ? sceneEndMs : shotCursor + baseShotMs;
+		const seenScenesForSfx = new Set<number>();
+		for (let gIdx = 0; gIdx < groups.length; gIdx++) {
+			const group = groups[gIdx]!;
+			const scene = script.scenes[group.sceneIndex]!;
+			const panel = panelMap.get(group.panelId);
+			const imagePath = panel?.croppedImagePath ?? panel?.pagePath ?? scene.croppedImagePaths[0] ?? '';
 			const motion = selectMotionForScene(scene, panel);
+			const isFirstShotOfScene = !seenScenesForSfx.has(group.sceneIndex);
+
+			if (isFirstShotOfScene) {
+				seenScenesForSfx.add(group.sceneIndex);
+				const sfx = selectSfxForScene(scene, group.startMs, group.sceneIndex);
+				if (sfx) sfxCues.push(sfx);
+			}
 
 			shots.push({
-				shotId: `shot-${sIdx + 1}-${pIdx + 1}`,
-				sceneId: scene.sceneId,
-				sceneIndex: sIdx,
-				panelId,
-				pageNumber: panel?.metadata.pageNumber ?? sIdx,
+				shotId: `shot-${group.sceneIndex + 1}-${gIdx + 1}`,
+				sceneId: group.sceneId,
+				sceneIndex: group.sceneIndex,
+				panelId: group.panelId,
+				pageNumber: panel?.metadata.pageNumber ?? group.sceneIndex,
 				imagePath,
-				startMs: shotStartMs,
-				endMs: shotEndMs,
-				durationMs: Math.max(1, shotEndMs - shotStartMs),
+				startMs: group.startMs,
+				endMs: group.endMs,
+				durationMs: Math.max(1, group.endMs - group.startMs),
 				motionStyle: motion.motionStyle,
 				focalStart: motion.focalStart,
 				focalEnd: motion.focalEnd,
-				transitionIn: pIdx === 0 ? selectTransitionForScene(scene, sIdx) : 'cut',
+				transitionIn: isFirstShotOfScene ? selectTransitionForScene(scene, group.sceneIndex) : 'cut',
 				balloonSafeZoneProtected: motion.balloonSafeZoneProtected,
 				framingCropRisk: detectFramingCropRisk({ panel, viewportWidth: width, viewportHeight: height, focalStart: motion.focalStart, focalEnd: motion.focalEnd }),
 				emotion: scene.emotion,
 				narrativeIntent: scene.narrativeIntent,
 			});
-
-			shotCursor = shotEndMs;
-			lastPanelId = panelId;
 		}
+	} else {
+		for (let sIdx = 0; sIdx < script.scenes.length; sIdx++) {
+			const scene = script.scenes[sIdx]!;
+			const timing = measuredTimeline.segments[sIdx]!;
+			const isLastScene = sIdx === script.scenes.length - 1;
+			const sceneStartMs = timing.startMs;
+			const sceneEndMs = isLastScene ? totalDurationMs : timing.endMs;
+			const sceneDurationMs = Math.max(100, sceneEndMs - sceneStartMs);
 
-		// Words synchronized strictly to [timing.startMs, timing.speechEndMs]
-		const sceneWords = distributeWordsOverWindow(scene.narrationText, timing.startMs, Math.min(timing.speechEndMs, totalDurationMs));
-		captionWords.push(...sceneWords);
+			for (const char of scene.characters) {
+				if (char.trim().length >= 3) keywords.add(char.trim());
+			}
+
+			// Deduplicate consecutive panel references within and across scene boundaries
+			const candidatePanelIds = scene.panelIds.filter((pid, idx) => idx === 0 || pid !== scene.panelIds[idx - 1]);
+			let effectivePanelIds = candidatePanelIds;
+			if (effectivePanelIds.length > 1 && effectivePanelIds[0] === lastPanelId) {
+				effectivePanelIds = effectivePanelIds.slice(1);
+			}
+			if (effectivePanelIds.length === 0) {
+				effectivePanelIds = [scene.panelIds[0]!];
+			}
+
+			const hasDialoguePanel = effectivePanelIds.some((pid) => panelMap.get(pid)?.metadata.classification === 'dialogue');
+			vfxSpecs.push(buildVfxForScene(scene, hasDialoguePanel));
+
+			const sfx = selectSfxForScene(scene, sceneStartMs, sIdx);
+			if (sfx) sfxCues.push(sfx);
+
+			const shotCount = effectivePanelIds.length;
+			const baseShotMs = Math.floor(sceneDurationMs / shotCount);
+			let shotCursor = sceneStartMs;
+
+			for (let pIdx = 0; pIdx < shotCount; pIdx++) {
+				const panelId = effectivePanelIds[pIdx]!;
+				const panel = panelMap.get(panelId);
+				const imagePath = panel?.croppedImagePath ?? scene.croppedImagePaths[pIdx] ?? panel?.pagePath ?? '';
+				const shotStartMs = shotCursor;
+				const shotEndMs = pIdx === shotCount - 1 ? sceneEndMs : shotCursor + baseShotMs;
+				const motion = selectMotionForScene(scene, panel);
+
+				shots.push({
+					shotId: `shot-${sIdx + 1}-${pIdx + 1}`,
+					sceneId: scene.sceneId,
+					sceneIndex: sIdx,
+					panelId,
+					pageNumber: panel?.metadata.pageNumber ?? sIdx,
+					imagePath,
+					startMs: shotStartMs,
+					endMs: shotEndMs,
+					durationMs: Math.max(1, shotEndMs - shotStartMs),
+					motionStyle: motion.motionStyle,
+					focalStart: motion.focalStart,
+					focalEnd: motion.focalEnd,
+					transitionIn: pIdx === 0 ? selectTransitionForScene(scene, sIdx) : 'cut',
+					balloonSafeZoneProtected: motion.balloonSafeZoneProtected,
+					framingCropRisk: detectFramingCropRisk({ panel, viewportWidth: width, viewportHeight: height, focalStart: motion.focalStart, focalEnd: motion.focalEnd }),
+					emotion: scene.emotion,
+					narrativeIntent: scene.narrativeIntent,
+				});
+
+				shotCursor = shotEndMs;
+				lastPanelId = panelId;
+			}
+
+			// Words synchronized strictly to [timing.startMs, timing.speechEndMs]
+			const sceneWords = distributeWordsOverWindow(scene.narrationText, timing.startMs, Math.min(timing.speechEndMs, totalDurationMs));
+			captionWords.push(...sceneWords);
+		}
 	}
 
 	// 3. Synchronized Smart Captions (reusing captions/smart-captions.ts)
@@ -383,6 +503,7 @@ export function buildRecapAudiovisualPlan(input: {
 		ducking,
 		captions,
 		durationAudit,
+		...(hasAlignedBeats ? { beatAlignments: [...alignedBeats!] } : {}),
 		createdAtIso: new Date().toISOString(),
 	};
 }

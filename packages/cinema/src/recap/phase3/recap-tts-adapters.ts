@@ -128,38 +128,70 @@ export function createVoiceStudioRecapTtsPort(options: {
 	baseUrl?: string;
 	voiceId: string;
 	modelId?: string;
+	speed?: number;
+	language?: string;
 	pauseAfterMs?: number;
 }): RecapTtsSynthesisPort {
 	const baseUrl = (options.baseUrl ?? process.env['NB_VOICESTUDIO_URL'] ?? 'http://127.0.0.1:3900').replace(/\/+$/, '');
 	const pauseAfterMs = options.pauseAfterMs ?? 300;
+	const modelId = options.modelId ?? 'tts-1';
+	const speed = options.speed ?? 1.0;
+	const language = options.language ?? 'pt-BR';
+
+	const callVoiceStudio = async (text: string, outputPath: string) => {
+		const res = await fetch(`${baseUrl}/v1/audio/speech`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				model: modelId,
+				voice: options.voiceId,
+				input: text,
+				speed,
+				response_format: 'wav',
+			}),
+			signal: AbortSignal.timeout(120_000),
+		});
+		if (!res.ok) {
+			throw new Error(`VoiceStudio HTTP ${res.status}`);
+		}
+		const arr = Buffer.from(await res.arrayBuffer());
+		writeFileSync(outputPath, arr);
+		const speechDurationMs = await measureAudioFileDurationMs(outputPath);
+		if (speechDurationMs <= 0) throw new Error('VoiceStudio retornou WAV sem duração válida.');
+		return speechDurationMs;
+	};
 
 	return {
 		name: `voicestudio-tts[${options.voiceId}]`,
 		async synthesizeScene(input): Promise<SynthesizedSceneAudio> {
-			const res = await fetch(`${baseUrl}/v1/audio/speech`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					model: options.modelId ?? 'tts-1',
-					voice: options.voiceId,
-					input: input.text,
-					response_format: 'wav',
-				}),
-				signal: AbortSignal.timeout(60_000),
-			});
-			if (!res.ok) {
-				throw new Error(`VoiceStudio HTTP ${res.status}`);
-			}
-			const arr = Buffer.from(await res.arrayBuffer());
-			writeFileSync(input.outputPath, arr);
-			const speechDurationMs = await measureAudioFileDurationMs(input.outputPath);
-			if (speechDurationMs <= 0) throw new Error('VoiceStudio retornou WAV sem duração válida.');
+			const speechDurationMs = await callVoiceStudio(input.text, input.outputPath);
 			return {
 				sceneId: input.sceneId,
 				audioPath: input.outputPath,
 				speechDurationMs,
 				pauseAfterMs,
 				provider: 'voicestudio_tts',
+				voiceId: options.voiceId,
+				modelId,
+				speed,
+				language,
+				sessionMode: 'chunked',
+				isFallback: false,
+			};
+		},
+		async synthesizeContinuous(input): Promise<SynthesizedSceneAudio> {
+			const speechDurationMs = await callVoiceStudio(input.fullText, input.outputPath);
+			return {
+				sceneId: `${input.chapterId}_continuous`,
+				audioPath: input.outputPath,
+				speechDurationMs,
+				pauseAfterMs,
+				provider: 'voicestudio_tts',
+				voiceId: options.voiceId,
+				modelId,
+				speed,
+				language,
+				sessionMode: 'single_session',
 				isFallback: false,
 			};
 		},
@@ -173,6 +205,7 @@ export function createElevenLabsRecapTtsPort(options: {
 	pauseAfterMs?: number;
 }): RecapTtsSynthesisPort {
 	const pauseAfterMs = options.pauseAfterMs ?? 300;
+	const modelId = options.modelId ?? 'eleven_multilingual_v2';
 	return {
 		name: `elevenlabs-tts[${options.voiceId}]`,
 		async synthesizeScene(input): Promise<SynthesizedSceneAudio> {
@@ -181,7 +214,7 @@ export function createElevenLabsRecapTtsPort(options: {
 				voiceId: options.voiceId,
 				text: input.text,
 				outWavPath: input.outputPath,
-				...(options.modelId ? { modelId: options.modelId } : {}),
+				modelId,
 			});
 			const speechDurationMs = await measureAudioFileDurationMs(input.outputPath);
 			return {
@@ -190,6 +223,34 @@ export function createElevenLabsRecapTtsPort(options: {
 				speechDurationMs: speechDurationMs > 0 ? speechDurationMs : Math.round(input.estimatedDurationSec * 1000),
 				pauseAfterMs,
 				provider: 'elevenlabs_tts',
+				voiceId: options.voiceId,
+				modelId,
+				speed: 1.0,
+				language: 'pt-BR',
+				sessionMode: 'chunked',
+				isFallback: false,
+			};
+		},
+		async synthesizeContinuous(input): Promise<SynthesizedSceneAudio> {
+			await synthesizeElevenLabsWav({
+				apiKey: options.apiKey,
+				voiceId: options.voiceId,
+				text: input.fullText,
+				outWavPath: input.outputPath,
+				modelId,
+			});
+			const speechDurationMs = await measureAudioFileDurationMs(input.outputPath);
+			return {
+				sceneId: `${input.chapterId}_continuous`,
+				audioPath: input.outputPath,
+				speechDurationMs: speechDurationMs > 0 ? speechDurationMs : Math.round(input.estimatedDurationSec * 1000),
+				pauseAfterMs,
+				provider: 'elevenlabs_tts',
+				voiceId: options.voiceId,
+				modelId,
+				speed: 1.0,
+				language: 'pt-BR',
+				sessionMode: 'single_session',
 				isFallback: false,
 			};
 		},
@@ -202,29 +263,58 @@ export function createWindowsSapiRecapTtsPort(options?: {
 	pauseAfterMs?: number;
 }): RecapTtsSynthesisPort {
 	const pauseAfterMs = options?.pauseAfterMs ?? 300;
+	const voiceLabel = options?.voiceName ?? 'windows-sapi-default';
+	const rate = options?.rate ?? 0;
+
+	const speakToWav = async (text: string, outputPath: string) => {
+		if (process.platform !== 'win32') {
+			throw new Error('Windows SAPI TTS disponível apenas no Windows (win32).');
+		}
+		const escapedText = text.replaceAll("'", "''");
+		const escapedOut = outputPath.replaceAll("'", "''");
+		const voiceCmd = options?.voiceName ? `$s.SelectVoice('${options.voiceName.replaceAll("'", "''")}');` : '';
+		const rateCmd = `$s.Rate = ${Math.max(-10, Math.min(10, Math.round(rate)))};`;
+		const script = `Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; ${voiceCmd} ${rateCmd} $s.SetOutputToWaveFile('${escapedOut}'); $s.Speak('${escapedText}'); $s.Dispose();`;
+		await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+			timeout: 90_000,
+			windowsHide: true,
+		});
+		const speechDurationMs = await measureAudioFileDurationMs(outputPath);
+		if (speechDurationMs <= 0) throw new Error('Windows SAPI não gerou WAV válido.');
+		return speechDurationMs;
+	};
+
 	return {
 		name: 'windows-sapi-tts',
 		async synthesizeScene(input): Promise<SynthesizedSceneAudio> {
-			if (process.platform !== 'win32') {
-				throw new Error('Windows SAPI TTS disponível apenas no Windows (win32).');
-			}
-			const escapedText = input.text.replaceAll("'", "''");
-			const escapedOut = input.outputPath.replaceAll("'", "''");
-			const voiceCmd = options?.voiceName ? `$s.SelectVoice('${options.voiceName.replaceAll("'", "''")}');` : '';
-			const rateCmd = options?.rate !== undefined ? `$s.Rate = ${Math.max(-10, Math.min(10, Math.round(options.rate)))};` : '';
-			const script = `Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; ${voiceCmd} ${rateCmd} $s.SetOutputToWaveFile('${escapedOut}'); $s.Speak('${escapedText}'); $s.Dispose();`;
-			await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
-				timeout: 60_000,
-				windowsHide: true,
-			});
-			const speechDurationMs = await measureAudioFileDurationMs(input.outputPath);
-			if (speechDurationMs <= 0) throw new Error('Windows SAPI não gerou WAV válido.');
+			const speechDurationMs = await speakToWav(input.text, input.outputPath);
 			return {
 				sceneId: input.sceneId,
 				audioPath: input.outputPath,
 				speechDurationMs,
 				pauseAfterMs,
 				provider: 'windows_sapi_tts',
+				voiceId: voiceLabel,
+				modelId: 'sapi',
+				speed: 1.0,
+				language: 'pt-BR',
+				sessionMode: 'chunked',
+				isFallback: false,
+			};
+		},
+		async synthesizeContinuous(input): Promise<SynthesizedSceneAudio> {
+			const speechDurationMs = await speakToWav(input.fullText, input.outputPath);
+			return {
+				sceneId: `${input.chapterId}_continuous`,
+				audioPath: input.outputPath,
+				speechDurationMs,
+				pauseAfterMs,
+				provider: 'windows_sapi_tts',
+				voiceId: voiceLabel,
+				modelId: 'sapi',
+				speed: 1.0,
+				language: 'pt-BR',
+				sessionMode: 'single_session',
 				isFallback: false,
 			};
 		},
@@ -232,29 +322,54 @@ export function createWindowsSapiRecapTtsPort(options?: {
 }
 
 /**
- * Chained TTS port: tries configured real providers in priority order,
- * falling back to deterministic audio ONLY when explicitly authorized.
+ * Chained TTS port with STRICT single-provider locking per video (Phase 4):
+ * Once a real provider succeeds for the video, it is locked for all subsequent blocks —
+ * NEVER silently mixes two different TTS voices/providers in the same video.
  */
 export function createChainedRecapTtsPort(input: {
 	ports: readonly RecapTtsSynthesisPort[];
 	allowDeterministicFallback?: boolean;
 }): RecapTtsSynthesisPort {
 	const fallback = createDeterministicFallbackTtsPort();
+	let lockedPort: RecapTtsSynthesisPort | null = null;
+
 	return {
 		name: `chained-tts[${input.ports.map((p) => p.name).join(',')}]`,
 		async synthesizeScene(req): Promise<SynthesizedSceneAudio> {
+			if (lockedPort) {
+				// Never silently switch to a different voice mid-video
+				return lockedPort.synthesizeScene(req);
+			}
 			const errors: string[] = [];
 			for (const port of input.ports) {
 				try {
-					return await port.synthesizeScene(req);
+					const result = await port.synthesizeScene(req);
+					lockedPort = port;
+					return result;
 				} catch (err) {
 					errors.push(`${port.name}: ${err instanceof Error ? err.message : String(err)}`);
 				}
 			}
 			if (input.allowDeterministicFallback) {
+				lockedPort = fallback;
 				return fallback.synthesizeScene(req);
 			}
 			throw new Error(`Nenhum provedor TTS disponível: ${errors.join(' | ')}`);
+		},
+		async synthesizeContinuous(req): Promise<SynthesizedSceneAudio> {
+			const candidates = lockedPort ? [lockedPort] : input.ports;
+			const errors: string[] = [];
+			for (const port of candidates) {
+				if (!port.synthesizeContinuous) continue;
+				try {
+					const result = await port.synthesizeContinuous(req);
+					lockedPort = port;
+					return result;
+				} catch (err) {
+					errors.push(`${port.name}: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
+			throw new Error(`Nenhum provedor TTS contínuo disponível: ${errors.join(' | ')}`);
 		},
 	};
 }
