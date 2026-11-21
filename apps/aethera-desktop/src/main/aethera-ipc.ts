@@ -5400,16 +5400,45 @@ productionConsole,
   };
 
   const buildRecapHumanizePort = () => {
-    try {
-      return createTaskEngineTextEnhancementAdapter({
-        taskEngine: engine,
-        agent: 'claude',
-        model: '',
-        projectId: null,
-      });
-    } catch {
-      return undefined;
-    }
+    const candidateAgents = ['claude-gateway', 'claude', 'antigravity', 'codex'] as const;
+    const ports = candidateAgents.flatMap((agentId) => {
+      try {
+        return [{
+          agentId,
+          port: createTaskEngineTextEnhancementAdapter({
+            taskEngine: engine,
+            agent: agentId,
+            model: '',
+            projectId: null,
+          }),
+        }];
+      } catch {
+        return [];
+      }
+    });
+    if (ports.length === 0) return undefined;
+    let preferredIndex = 0;
+    return {
+      async enhance(request: Parameters<typeof ports[0]['port']['enhance']>[0]) {
+        const ordered = [
+          ...ports.slice(preferredIndex),
+          ...ports.slice(0, preferredIndex),
+        ];
+        let lastError: unknown;
+        for (const candidate of ordered) {
+          try {
+            const res = await candidate.port.enhance(request);
+            if (res?.text?.trim()) {
+              preferredIndex = ports.findIndex((p) => p.agentId === candidate.agentId);
+              return res;
+            }
+          } catch (err) {
+            lastError = err;
+          }
+        }
+        throw lastError instanceof Error ? lastError : new Error('Nenhum agente de texto disponível para reescrever a narração.');
+      },
+    };
   };
 
   const buildRecapTtsPort = (preferredProvider?: string) => {
@@ -5914,8 +5943,10 @@ productionConsole,
       if (!detail) {
         return { ok: false, message: 'Projeto não encontrado.' };
       }
-      const checkpointDir = join(recapWorkspace, 'checkpoints', detail.record.chapterId);
-      if (input.invalidateCache) {
+      const workspaceCheckpointDir = join(recapWorkspace, 'checkpoints', detail.record.chapterId);
+      const legacyCheckpointDir = join(legacyRecapCheckpointsRoot, detail.record.chapterId);
+      const checkpointDir = existsSync(workspaceCheckpointDir) ? workspaceCheckpointDir : legacyCheckpointDir;
+      if (input.invalidateCache === true) {
         invalidateCheckpointCache(checkpointDir);
       }
       const ckpt = loadCheckpoint(checkpointDir);
@@ -5927,9 +5958,22 @@ productionConsole,
       const resolvedStyle: ScriptStyle =
         detail.record.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(detail.record.scriptStyle)
           ? (detail.record.scriptStyle as ScriptStyle)
-          : 'narrative_recap';
+          : 'natural_recap';
       const visionAdapter = buildRecapVisionAdapter(recapWorkspace);
       const humanizePort = buildRecapHumanizePort();
+
+      let seriesMemory: ReturnType<typeof loadStoryMemoryProject> | undefined;
+      try {
+        const memoryProjects = listStoryMemoryProjects(recapWorkspace);
+        const matched = memoryProjects.find(
+          (m) => m.workTitle.toLowerCase() === detail.record.workTitle.toLowerCase(),
+        );
+        if (matched) {
+          seriesMemory = loadStoryMemoryProject(recapWorkspace, matched.projectId) ?? undefined;
+        }
+      } catch {
+        // Non-blocking: regenerate even if Story Memory is absent
+      }
 
       try {
         const storyRes = await runStoryEngine({
@@ -5940,6 +5984,7 @@ productionConsole,
           checkpointDir,
           visionAdapter,
           scriptStyle: resolvedStyle,
+          ...(seriesMemory ? { seriesMemory } : {}),
           ...(detail.record.language ? { language: detail.record.language } : {}),
           ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
           ...(humanizePort ? { humanize: { enabled: true, style: resolvedStyle, port: humanizePort } } : {}),
@@ -5954,12 +5999,14 @@ productionConsole,
           script: storyRes.script,
           gateGReport: storyRes.gateGReport,
         });
+        const humanizedCount = storyRes.humanizeResult?.diffs.filter((d) => !d.reverted && d.humanizedText !== d.originalText).length ?? 0;
+        const humanizeSummary = humanizedCount > 0 ? ` · ${humanizedCount} cenas reescritas por IA` : '';
         return {
           ok: storyRes.gateGReport.verdict !== 'fail',
           script: storyRes.script,
           gateGReport: storyRes.gateGReport,
           record: updatedRecord,
-          message: `Roteiro regenerado (${storyRes.script.scenes.length} cenas) · Gate G: ${storyRes.gateGReport.verdict}.`,
+          message: `Roteiro regenerado (${storyRes.script.scenes.length} cenas${humanizeSummary}) · Gate G: ${storyRes.gateGReport.verdict}.`,
         };
       } catch (err) {
         return { ok: false, message: err instanceof Error ? err.message : String(err) };

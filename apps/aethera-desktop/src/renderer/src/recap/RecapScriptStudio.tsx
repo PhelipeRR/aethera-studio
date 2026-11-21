@@ -47,6 +47,7 @@ export interface RecapScriptStudioProps {
   savingSceneId: string | null;
   regeneratingSceneId: string | null;
   regeneratingScript: boolean;
+  regenerateFeedback?: { ok: boolean; message: string } | null;
   onChangeNarration: (index: number, nextText: string) => void;
   onSaveScene: (sceneId: string, narrationText: string) => void;
   onRegenerateScene: (sceneId: string) => void;
@@ -63,6 +64,7 @@ export function RecapScriptStudio({
   savingSceneId,
   regeneratingSceneId,
   regeneratingScript,
+  regenerateFeedback,
   onChangeNarration,
   onSaveScene,
   onRegenerateScene,
@@ -207,12 +209,50 @@ export function RecapScriptStudio({
                   opacity: regeneratingScript ? 0.6 : 1,
                 }}
               >
-                <RefreshCw style={{ width: 13, height: 13 }} aria-hidden="true" />
+                <RefreshCw
+                  style={{
+                    width: 13,
+                    height: 13,
+                    animation: regeneratingScript ? 'spin 1s linear infinite' : undefined,
+                  }}
+                  aria-hidden="true"
+                />
                 {regeneratingScript ? 'Regenerando…' : 'Regenerar roteiro'}
               </button>
             )}
           </div>
         </div>
+
+        {(regeneratingScript || regenerateFeedback) && (
+          <div
+            role="status"
+            style={{
+              padding: '9px 12px',
+              borderRadius: 12,
+              fontSize: 12,
+              fontWeight: 500,
+              border: regeneratingScript
+                ? '1px solid #d4d4d8'
+                : regenerateFeedback?.ok
+                  ? '1px solid #bbf7d0'
+                  : '1px solid #fecaca',
+              background: regeneratingScript
+                ? '#f4f4f5'
+                : regenerateFeedback?.ok
+                  ? '#f0fdf4'
+                  : '#fef2f2',
+              color: regeneratingScript
+                ? '#27272a'
+                : regenerateFeedback?.ok
+                  ? '#166534'
+                  : '#991b1b',
+            }}
+          >
+            {regeneratingScript
+              ? 'Reescrevendo o roteiro a partir das análises visuais já prontas (filtrando ruído de OCR e linguagem técnica)…'
+              : regenerateFeedback?.message}
+          </div>
+        )}
 
         {/* Fast Scene Strip (avoids scrolling massive textareas) */}
         {viewMode === 'focus' && (

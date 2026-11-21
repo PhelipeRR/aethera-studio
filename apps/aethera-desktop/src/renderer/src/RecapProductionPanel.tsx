@@ -1577,6 +1577,7 @@ export function RecapProductionPanel() {
   const [savingSceneId, setSavingSceneId] = useState<string | null>(null);
   const [regeneratingSceneId, setRegeneratingSceneId] = useState<string | null>(null);
   const [regeneratingScript, setRegeneratingScript] = useState(false);
+  const [regenerateFeedback, setRegenerateFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const [expandedVisualScenes, setExpandedVisualScenes] = useState<Record<string, boolean>>({});
   const [selectedPanelIdxByScene, setSelectedPanelIdxByScene] = useState<Record<string, number>>({});
   const [revisionPrompt, setRevisionPrompt] = useState('');
@@ -2753,17 +2754,26 @@ export function RecapProductionPanel() {
   const handleRegenerateScript = async (invalidateCache = false) => {
     const bridge = getRecapBridge();
     if (!bridge?.recapRegenerateScript || !activeProject?.runId) {
-      setStatusNote('IPC recap:regenerate-script indisponível neste build.');
+      const msg = 'IPC recap:regenerate-script indisponível ou nenhum projeto salvo selecionado.';
+      setStatusNote(msg);
+      setRegenerateFeedback({ ok: false, message: msg });
       return;
     }
     setRegeneratingScript(true);
-    setStatusNote('Regenerando o roteiro completo com visão multimodal e continuidade narrativa…');
+    setRegenerateFeedback(null);
+    setStatusNote(
+      invalidateCache
+        ? 'Reanalisando painéis e regenerando o roteiro completo…'
+        : 'Regenerando o roteiro com as análises visuais salvas e continuidade narrativa…',
+    );
     try {
       const res = await bridge.recapRegenerateScript({
         runId: activeProject.runId,
         invalidateCache,
       });
-      setStatusNote(res.message ?? (res.ok ? 'Roteiro completo regenerado.' : 'Falha ao regenerar roteiro.'));
+      const msg = res.message ?? (res.ok ? 'Roteiro completo regenerado.' : 'Falha ao regenerar roteiro.');
+      setStatusNote(msg);
+      setRegenerateFeedback({ ok: Boolean(res.ok), message: msg });
       if (res.record) setActiveProject(res.record);
       if (res.script) {
         setActiveScript(res.script);
@@ -2772,7 +2782,9 @@ export function RecapProductionPanel() {
       if (res.gateGReport) setActiveGateG(res.gateGReport);
       await refreshProjects();
     } catch (err) {
-      setStatusNote(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusNote(msg);
+      setRegenerateFeedback({ ok: false, message: msg });
     } finally {
       setRegeneratingScript(false);
     }
@@ -4519,6 +4531,7 @@ export function RecapProductionPanel() {
           savingSceneId={savingSceneId}
           regeneratingSceneId={regeneratingSceneId}
           regeneratingScript={regeneratingScript}
+          regenerateFeedback={regenerateFeedback}
           onChangeNarration={(idx, nextText) => {
             const next = [...scenes];
             const row = next[idx];
@@ -4533,7 +4546,7 @@ export function RecapProductionPanel() {
           }}
           onSaveScene={(sceneId, narrationText) => void handleSaveSceneEdit(sceneId, narrationText)}
           onRegenerateScene={(sceneId) => void handleRegenerateScene(sceneId)}
-          onRegenerateScript={() => void handleRegenerateScript(true)}
+          onRegenerateScript={() => void handleRegenerateScript(false)}
         />
       )}
 
@@ -4592,7 +4605,7 @@ export function RecapProductionPanel() {
                     <button
                       type="button"
                       disabled={regeneratingScript || regeneratingSceneId !== null}
-                      onClick={() => void handleRegenerateScript(true)}
+                      onClick={() => void handleRegenerateScript(false)}
                       style={{
                         ...btnSecondary,
                         padding: '6px 12px',

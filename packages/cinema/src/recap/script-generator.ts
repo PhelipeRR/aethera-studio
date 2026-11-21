@@ -13,6 +13,7 @@ import type {
 	TextEnhancementPort,
 } from './recap-types.js';
 import { sceneSchema, recapScriptSchema } from './recap-types.js';
+import { isLikelyOcrGarbage } from './dialogue-extractor.js';
 
 export interface ScriptGeneratorOptions {
 	sequence: NarrativeSequence;
@@ -83,14 +84,23 @@ function ensureSentenceEnding(text: string): string {
 
 const VISUAL_ANALYSIS_NOISE_PATTERNS: readonly RegExp[] = [
 	/\b(em\s+)?plano\s+(geral|m[ée]dio|fechado|superfechado|detalhe)(\s+vertical|\s+frontal|\s+visto\s+de\s+cima)?(\s*\([^)]+\))?(\s+de\s+ambienta[çc][ãa]o\s+noturna)?(\s+mostrando)?[,:]?\s*/gi,
-	/\bem\s+um\s+painel(\s+vertical)?(\s+longo)?(\s+de\s+sequ[êe]ncia\s+de\s+movimento)?[,:]?\s*/gi,
-	/\b(o\s+painel\s+apresenta|a\s+imagem\s+(mostra|sugere|exibe)|[ée]\s+poss[íi]vel\s+observar|nota-se\s+que)\b[,:]?\s*/gi,
-	/n[ãa]o\s+h[áa]\s+personagens\s+nem\s+bal[õo]es\s+de\s+texto\s+vis[íi]veis\.?/gi,
+	/\b(?:em\s+um\s+|um\s+|o\s+)?painel(\s+vertical|\s+horizontal|\s+longo|\s+estreito|\s+de\s+p[áa]gina\s+inteira|\s+de\s+sequ[êe]ncia\s+de\s+movimento)*\s+(retratando|mostrando|exibindo|apresentando|capturando|destacando)\s+/gi,
+	/\bem\s+um\s+painel(\s+vertical|\s+horizontal)?(\s+longo)?(\s+de\s+sequ[êe]ncia\s+de\s+movimento)?[,:]?\s*/gi,
+	/\b(o\s+painel\s+apresenta|a\s+imagem\s+(mostra|sugere|exibe|retrata)|a\s+cena\s+(mostra|retrata|exibe|apresenta)|[ée]\s+poss[íi]vel\s+observar|nota-se\s+que)\b[,:]?\s*/gi,
+	/\bem\s+estilo\s+de\s+pintura\s+digital\b/gi,
+	/n[ãa]o\s+h[áa]\s+personagens(?:[,\s]+nem|\s*,\s*)?\s+bal[õo]es\s+de\s+texto[^.]*\.?/gi,
 	/galhos\s+e\s+folhagens\s+escuras\s+em\s+silhueta\s+emolduram\s+toda\s+a\s+cena[^.]*\.?/gi,
 	/no\s+primeiro\s+plano\s+inferior[^.]*\.?/gi,
 	/a\s+express[ãa]o\s+de\s+[^.]+\s+refor[çc]a\s+o\s+clima\s+da\s+cena\.?/gi,
-	/\bno\s+canto\s+(superior|inferior)\s+(esquerdo|direito)[^.]*\./gi,
+	/\b(?:no|do|ao)\s+(?:canto|quadrante)\s+(superior|inferior)\s+(esquerdo|direito)[^.,;]*[.,;]?/gi,
+	/\b(?:na|pela)\s+lateral\s+(esquerda|direita)[^.,;]*[.,;]?/gi,
+	/\b(?:e\s+)?um\s+efeito\s+sonoro\s+(?:coreano|japon[êe]s|chin[êe]s)?[^.,;]*[.,;]?/gi,
+	/\bo\s+fundo\s+(?:apresenta|mostra|exibe|est[áa])[^.]*\.?/gi,
+	/\benquanto\s+fragmentos\s+escuros\s+se\s+espalham\s+pelo\s+fundo[^.,;]*/gi,
+	/\b(?:pelo|no|com)\s+fundo\s+(?:texturizado|cinza[-\s]azul(?:ado)?|escuro|borrado)[^.,;]*/gi,
+	/\b(?:em\s+)?tons\s+de\s+cinza[-\s]azul(?:ado)?\b/gi,
 	/\blinhas(\s+verticais)?\s+de\s+velocidade(\s+radiais)?[^,.]*/gi,
+	/\bcortad[oa]s?\s+pela\s+borda\s+da\s+imagem\b/gi,
 ];
 
 function toNaturalCharacterLabel(rawName: string): string {
@@ -113,21 +123,29 @@ function toNaturalCharacterLabel(rawName: string): string {
 
 function simplifyVisualForNaturalRecap(rawVisual: string): string {
 	let text = rawVisual.trim();
+	text = text.replace(/\batravessa\s+diagonalmente\s+o\s+painel\b/gi, 'atravessa o caminho');
+	text = text.replace(/\bdo\s+topo\s+(?:do\s+painel|da\s+imagem)\b/gi, 'de cima');
+	text = text.replace(/\bdescendo\s+do\s+topo\b/gi, 'descendo de cima');
 	for (const re of VISUAL_ANALYSIS_NOISE_PATTERNS) {
 		text = text.replace(re, ' ');
 	}
-	text = text.replace(/\s+/g, ' ').replace(/\s+([.,!?])/g, '$1').trim();
+	text = text
+		.replace(/\s*;\s*(?=[.,!?]|$)/g, '')
+		.replace(/\s*,\s*(?=[.,!?]|$)/g, '')
+		.replace(/\s+/g, ' ')
+		.replace(/\s+([.,!?;])/g, '$1')
+		.trim();
 	// Keep at most the 2 most informative sentences to stay concise and natural
 	const sentences = text
 		.split(/(?<=[.!?])\s+/)
-		.map((s) => s.trim())
+		.map((s) => s.replace(/^[,;:\-\s]+/, '').trim())
 		.filter((s) => s.length >= 12);
 	// Keep first sentence + last major action sentence if beat spans multiple panels
 	const picked =
 		sentences.length <= 2
 			? sentences.join(' ')
 			: `${sentences[0]} ${sentences[sentences.length - 1]}`;
-	const finalStr = (picked || text).replace(/^[,;:\-\s]+/, '').trim();
+	const finalStr = (picked || text).replace(/^[,;:\-\s]+/, '').replace(/[;,\s]+$/, '').trim();
 	if (!finalStr) return '';
 	return finalStr.charAt(0).toUpperCase() + finalStr.slice(1);
 }
@@ -138,6 +156,7 @@ function isSubstantiveSpokenLine(entry: DialogueEntry): boolean {
 	const kind = entry.kind ?? (entry.isNarration ? 'narration' : 'dialogue');
 	if (kind === 'sfx') return false;
 	const clean = (entry.translatedText?.trim() || entry.text.trim()).replace(/^["“”]+|["“”]+$/g, '');
+	if (isLikelyOcrGarbage(clean, entry.uncertainty)) return false;
 	const alphaChars = clean.replace(/[^A-Za-zÀ-ú0-9]/g, '');
 	if (alphaChars.length < 3) return false;
 	// Filter non-verbal pain/effort screams like "AAARGH...!!", "ARGH!!!", "EUAACK!!"
@@ -146,12 +165,17 @@ function isSubstantiveSpokenLine(entry: DialogueEntry): boolean {
 	return true;
 }
 
-function formatDialogueSentence(entry: DialogueEntry, fallbackCharacters: readonly string[], naturalMode = false): string {
+function formatDialogueSentence(
+	entry: DialogueEntry,
+	fallbackCharacters: readonly string[],
+	naturalMode = false,
+	dialogueIndexInScene = 0,
+): string {
 	const quote = (entry.translatedText?.trim() || entry.text.trim()).replace(/^["“”]+|["“”]+$/g, '');
 	if (!quote) return '';
 	const kind = entry.kind ?? (entry.isNarration ? 'narration' : 'dialogue');
 	if (kind === 'sfx') return '';
-	if (naturalMode && !isSubstantiveSpokenLine(entry)) return '';
+	if (!isSubstantiveSpokenLine(entry)) return '';
 
 	const rawSpeaker = entry.speaker?.trim();
 	const speaker = rawSpeaker ? (naturalMode ? toNaturalCharacterLabel(rawSpeaker) : rawSpeaker) : undefined;
@@ -168,16 +192,44 @@ function formatDialogueSentence(entry: DialogueEntry, fallbackCharacters: readon
 	const isQuestion = quote.endsWith('?');
 	const isExclamation = quote.endsWith('!');
 	const verb = isQuestion ? 'pergunta' : isExclamation ? 'grita' : 'diz';
-	if (speaker) {
-		const prefix = naturalMode ? `Nesse momento, ${speaker}` : speaker;
-		return `${prefix} ${verb}: "${quote}".`;
+	const followupVerb = isQuestion ? 'questiona' : isExclamation ? 'exclama' : 'completa';
+	const resolvedSpeaker = speaker ?? (fallbackCharacters.length === 1
+		? (naturalMode ? toNaturalCharacterLabel(fallbackCharacters[0]!) : fallbackCharacters[0]!)
+		: undefined);
+
+	if (resolvedSpeaker) {
+		if (naturalMode && dialogueIndexInScene === 0) {
+			return `Nesse momento, ${resolvedSpeaker} ${verb}: "${quote}".`;
+		}
+		if (naturalMode && dialogueIndexInScene > 0) {
+			const capSpeaker = resolvedSpeaker.charAt(0).toUpperCase() + resolvedSpeaker.slice(1);
+			return `${capSpeaker} ${followupVerb}: "${quote}".`;
+		}
+		return `${resolvedSpeaker} ${verb}: "${quote}".`;
 	}
-	if (fallbackCharacters.length === 1) {
-		const fallback = naturalMode ? toNaturalCharacterLabel(fallbackCharacters[0]!) : fallbackCharacters[0]!;
-		const prefix = naturalMode ? `Nesse momento, ${fallback}` : fallback;
-		return `${prefix} ${verb}: "${quote}".`;
+	if (dialogueIndexInScene === 0) {
+		return `Nesse momento, alguém ${verb}: "${quote}".`;
 	}
-	return `Nesse momento, alguém ${verb}: "${quote}".`;
+	return `Em seguida, uma voz ${followupVerb}: "${quote}".`;
+}
+
+function combineConnectorAndVisual(connector: string, visualText: string, beatIndex: number, style: ScriptStyle): string {
+	const cleaned = visualText.trim();
+	if (!cleaned) return '';
+	if (style === 'natural_recap' && beatIndex === 0) {
+		// Avoid broken grammar like "A história começa quando uma paisagem montanhosa..."
+		const startsWithSettingNoun = /^(uma?\s+paisagem|montanhas|picos|noite|c[ée]u|floresta|vila|templo|castelo|academia|florestas|neblina)/i.test(cleaned);
+		if (startsWithSettingNoun) {
+			const lowerFirst = cleaned.charAt(0).toLowerCase() + cleaned.slice(1);
+			return ensureSentenceEnding(`A história começa em ${lowerFirst}`);
+		}
+		const startsWithArticleOnly = /^(uma?\s+perna|um\s+galho|folhas|silhuetas?)/i.test(cleaned);
+		if (startsWithArticleOnly) {
+			return ensureSentenceEnding(cleaned);
+		}
+	}
+	if (!connector) return ensureSentenceEnding(cleaned);
+	return ensureSentenceEnding(`${connector} ${cleaned.charAt(0).toLowerCase()}${cleaned.slice(1)}`);
 }
 
 function selectTransitionConnector(beat: StoryBeat, beatIndex: number, style: ScriptStyle): string {
@@ -257,14 +309,9 @@ function generateGroundedNarrationText(
 	// 1. Visual description condensed into natural storytelling (no camera/frame analysis jargon in natural_recap)
 	const rawVisual = beat.visualSummary?.trim();
 	if (rawVisual) {
-		const cleanedVisual = isNatural ? simplifyVisualForNaturalRecap(rawVisual) : rawVisual;
+		const cleanedVisual = simplifyVisualForNaturalRecap(rawVisual);
 		if (cleanedVisual) {
-			const visualSentence = ensureSentenceEnding(
-				connector
-					? `${connector} ${cleanedVisual.charAt(0).toLowerCase()}${cleanedVisual.slice(1)}`
-					: cleanedVisual,
-			);
-			parts.push(visualSentence);
+			parts.push(combineConnectorAndVisual(connector, cleanedVisual, beatIndex, style));
 		}
 	} else {
 		const introParts: string[] = [];
@@ -289,16 +336,15 @@ function generateGroundedNarrationText(
 	}
 
 	// 2. Incorporate essential speech bubbles (dialogue, thought, narration) preserving reading order
-	const substantiveDialogues = (beat.dialogues ?? []).filter((d) =>
-		isNatural
-			? isSubstantiveSpokenLine(d)
-			: (d.kind ?? (d.isNarration ? 'narration' : 'dialogue')) !== 'sfx' && d.text.trim().length > 0,
-	);
+	// Always filter out SFX and garbled OCR noise (e.g. "a k ie pe", "1 - y g")
+	const substantiveDialogues = (beat.dialogues ?? []).filter((d) => isSubstantiveSpokenLine(d));
 	const incorporated = substantiveDialogues.slice(0, isNatural ? 3 : 4);
+	let dialogueIdx = 0;
 	for (const entry of incorporated) {
-		const sentence = formatDialogueSentence(entry, beat.characters, isNatural);
+		const sentence = formatDialogueSentence(entry, beat.characters, isNatural, dialogueIdx);
 		if (sentence && !parts.join(' ').includes(entry.text.trim())) {
 			parts.push(sentence);
+			dialogueIdx += 1;
 		}
 	}
 

@@ -27,20 +27,31 @@ import type {
 } from './recap-types.js';
 import { runGateGNarrativeFidelity } from './gate-g-narrative-fidelity.js';
 import { isGenericNarration, isReviewRequiredPlaceholder, estimateNarrationDurationSec } from './script-generator.js';
+import { isLikelyOcrGarbage } from './dialogue-extractor.js';
 
 // ─── System Prompt Template ──────────────────────────────────────────────────
 
-const HUMANIZE_SYSTEM_PROMPT = `Você é um criador de conteúdo brasileiro contando a história de um mangá/manhwa de forma simples, conversacional, fluida e cronológica.
+const HUMANIZE_SYSTEM_PROMPT = `Você é um roteirista e narrador brasileiro especialista em vídeos de recap de mangá e manhwa no YouTube.
+Seu trabalho é transformar a descrição bruta de uma cena em uma narração envolvente, fluida, natural e cinematográfica em português brasileiro falado.
 
 REGRAS OBRIGATÓRIAS:
-1. Priorize ações, acontecimentos, diálogos reais e continuidade. Não invente nada novo.
-2. Preserve TODOS os acontecimentos principais, nomes confirmados e diálogos relevantes entre aspas na ordem cronológica.
-3. Mantenha o estilo "{style}" ({styleDescription}).
-4. Remova detalhes supérfluos (névoa, roupas, cabelo, poeira, folhas, iluminação, expressões) quando não forem importantes para entender a história, e elimine qualquer linguagem de análise visual ("o painel apresenta", "plano geral", "a imagem sugere").
-5. Não estabeleça um limite artificial de palavras nem infle o texto: conte toda a história da cena sem enrolação, deixando o tamanho ser consequência natural dos acontecimentos e diálogos.
-6. Use conectivos conversacionais naturais ("então", "mas", "nesse momento", "logo depois") sem repetir o mesmo fato com palavras diferentes.
-7. NÃO altere IDs, referências a painéis ou metadados estruturais.
-8. Se não conseguir melhorar sem alterar fatos, retorne o texto original.
+1. CONTE A HISTÓRIA — NUNCA DESCREVA A IMAGEM COMO ALT-TEXT:
+   - É PROIBIDO usar linguagem técnica de desenho, layout ou câmera: "painel", "painel vertical", "página inteira", "quadrante", "lateral esquerda/direita", "plano geral/médio/fechado", "enquadramento", "pintura digital", "fundo cinza-azul", "fundo texturizado", "efeito sonoro coreano", "em pincelada", "borda da imagem", "balões de texto", "silhueta no canto".
+   - Ruim: "A história começa quando painel vertical de página inteira retratando uma paisagem montanhosa noturna em estilo de pintura digital."
+   - Bom: "A história começa sob o céu noturno, em meio a montanhas íngremes cobertas pela névoa."
+   - Ruim: "Logo depois, painel vertical mostrando uma perna pálida descendo do topo e pisando contra um galho que atravessa diagonalmente o painel com um efeito sonoro coreano no quadrante inferior direito."
+   - Bom: "De repente, alguém pisa com força em um galho no meio da mata noturna, estalando a madeira."
+2. ZERO RUÍDO DE OCR:
+   - Se o texto original contiver fragmentos ilegíveis de OCR (ex.: "a k ie pe", "o. pia ; + : ae pe nia", "1 - y g"), IGNORE-OS completamente. Nunca narre texto corrompido como se fosse fala de personagem.
+3. FIDELIDADE TOTAL AOS FATOS:
+   - Não invente eventos, nomes ou falas que não existam na cena.
+   - Preserve todos os acontecimentos reais, nomes confirmados e diálogos verdadeiros relevantes entre aspas, na ordem cronológica.
+4. RITMO DE NARRAÇÃO HUMANA:
+   - Estilo "{style}" ({styleDescription}).
+   - Nunca repita conectivos robóticos ("Nesse momento, o jovem diz:" várias vezes seguidas) e nunca gere gramática quebrada ("A história começa quando uma paisagem...").
+   - Remova detalhes visuais irrelevantes (folhas, poeira, texturas, cores de fundo, roupas repetidas) quando não ajudam a entender a ação.
+   - Seja direto, natural e envolvente como um narrador humano contando a cena em voz alta.
+5. NÃO altere IDs, referências a painéis ou metadados estruturais.
 
 Responda APENAS com JSON no formato: {"humanizedText": "..."}
 `;
@@ -126,11 +137,12 @@ function checkStructuralIntegrity(original: Scene, humanizedText: string, isNatu
 		return { ok: false, reason: 'Humanized text introduced dialogue quotes not present in original.' };
 	}
 
-	// Verify essential extracted dialogues were not dropped (ignore SFX & non-verbal screams)
+	// Verify essential extracted dialogues were not dropped (ignore SFX, OCR garbage & non-verbal screams)
 	const essentialDialogues = (original.extractedDialogues ?? []).filter((d) => {
 		const kind = d.kind ?? (d.isNarration ? 'narration' : 'dialogue');
 		if (kind === 'sfx') return false;
 		const clean = (d.translatedText ?? d.text).trim();
+		if (isLikelyOcrGarbage(clean, d.uncertainty)) return false;
 		const alpha = clean.replace(/[^A-Za-zÀ-ú0-9]/g, '');
 		if (alpha.length < 4 || clean.length < 8) return false;
 		const words = clean.split(/\s+/).filter(Boolean);

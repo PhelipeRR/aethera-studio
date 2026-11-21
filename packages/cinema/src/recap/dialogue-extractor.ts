@@ -63,6 +63,60 @@ function detectTextUncertainty(text: string, confidence?: number): string | unde
 	return undefined;
 }
 
+const VOWEL_PATTERN = /[aeiouáéíóúâêîôûãõàüy]/i;
+
+/**
+ * Detects garbled OCR noise (e.g. "a k ie pe", "o. pia ; + : ae pe nia", "1 - y g")
+ * that results from Tesseract/fallback OCR misreading artwork, foliage, or stylized SFX.
+ */
+export function isLikelyOcrGarbage(text: string, uncertainty?: string): boolean {
+	const trimmed = text.trim();
+	if (!trimmed) return true;
+
+	const tokens = trimmed.split(/\s+/).filter(Boolean);
+	if (tokens.length === 0) return true;
+
+	const cleanWordTokens = tokens
+		.map((t) => t.replace(/^[^A-Za-zÀ-ú0-9]+|[^A-Za-zÀ-ú0-9]+$/g, ''))
+		.filter(Boolean);
+
+	if (cleanWordTokens.length === 0) return true;
+
+	// Count real alphabetic words (>= 3 letters with at least one vowel)
+	const realWords = cleanWordTokens.filter(
+		(t) => /^[A-Za-zÀ-ú]{3,}$/.test(t) && VOWEL_PATTERN.test(t),
+	);
+	const tinyFragments = tokens.filter((t) => t.replace(/[^A-Za-zÀ-ú0-9]/g, '').length <= 2);
+	const symbolOnlyTokens = tokens.filter((t) => /^[^A-Za-zÀ-ú0-9]+$/.test(t));
+
+	// Multiple stray symbol-only tokens (e.g. "o. pia ; + : ae pe nia", "1 - y g")
+	if (symbolOnlyTokens.length >= 2) return true;
+	if (/[+|=^_\\<>]/.test(trimmed) && realWords.length < 2) return true;
+
+	// Mostly 1-2 character fragments (e.g. "a k ie pe", "1 - y g")
+	if (tokens.length >= 3 && tinyFragments.length / tokens.length >= 0.6 && realWords.length <= 1) {
+		return true;
+	}
+	if (tokens.length >= 2 && realWords.length === 0) {
+		// Allow short valid PT/EN interjections like "Oi!", "Não!", "Sim!", "Quem?", "Ei!"
+		const alphaOnly = trimmed.replace(/[^A-Za-zÀ-ú\s]/g, '').trim().toLowerCase();
+		if (!/^(oi|ei|n[ãa]o|sim|ok|t[áa]|h[ãa]|eu|tu|ele|ela|j[áa]|v[áa]|vem|vai)(\s+(n[ãa]o|sim|eu|ele|ela|j[áa]|v[áa]))?$/i.test(alphaOnly)) {
+			return true;
+		}
+	}
+
+	// Low-confidence OCR flag from Tesseract + few real words => almost certainly background noise
+	const isLowConfidence = Boolean(
+		uncertainty && /(baixa confian[çc]a|ru[íi]do visual\/ocr|parcialmente ileg[íi]vel)/i.test(uncertainty),
+	);
+	if (isLowConfidence) {
+		if (realWords.length < 2) return true;
+		if (tinyFragments.length / tokens.length >= 0.45) return true;
+	}
+
+	return false;
+}
+
 /**
  * Extracts structured DialogueEntry items from OCR metadata on an ExtractedPanel.
  * Preserves reading order, distinguishes dialogue/thought/narration/SFX, and
@@ -104,6 +158,10 @@ export function extractStructuredOcrDialogues(panel: ExtractedPanel): {
 		if (!cleaned) continue;
 
 		const uncertainty = detectTextUncertainty(cleaned, panel.metadata.ocrConfidence);
+		if (isLikelyOcrGarbage(cleaned, uncertainty)) {
+			// Skip pure OCR noise (e.g. background foliage/mountains misread by Tesseract)
+			continue;
+		}
 		if (uncertainty) {
 			uncertainties.push(`Balão #${i + 1} (${panel.panelId}): ${uncertainty}`);
 		}
