@@ -28,6 +28,7 @@ import {
   deriveAudiovisualTracks,
   derivePipelineTimeline,
   deriveQualityScorecard,
+  deriveWorkflowSteps,
   formatTimecodeMs,
   getStateMetadata,
   mergeActiveProjectIntoRecentList,
@@ -40,8 +41,12 @@ import {
   type RecapProjectRecordView,
   type RecapScriptView,
   type RecapStageId,
+  type RecapWorkflowStepId,
   type StageVisualStatus,
 } from './recap-timeline-model.js';
+import { RecapWorkflowStepper } from './recap/RecapWorkflowStepper.js';
+import { RecapScriptStudio } from './recap/RecapScriptStudio.js';
+import { RecapVisualStoryboard } from './recap/RecapVisualStoryboard.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -1098,10 +1103,12 @@ function MetricScore({ score, label }: { score: number | null; label: string }) 
 
 // ─── Main Component ─────────────────────────────────────────────────────────
 
-type SubTab = 'import' | 'produce' | 'preview' | 'universe';
+type SubTab = RecapWorkflowStepId;
 
 export function RecapProductionPanel() {
-  const [subTab, setSubTab] = useState<SubTab>('import');
+  const [subTab, setSubTab] = useState<SubTab>('projeto');
+  const [productionElapsedSec, setProductionElapsedSec] = useState(0);
+  const [showTechDiagnostics, setShowTechDiagnostics] = useState(false);
 
   // Recent & Active Project state
   const [persistedProjects, setPersistedProjects] = useState<RecapProjectRecordView[]>([]);
@@ -1201,6 +1208,37 @@ export function RecapProductionPanel() {
     activeProject?.state === 'audiovisual_preview' ||
     activeProject?.state === 'master_export';
 
+  useEffect(() => {
+    if (!isRunning) {
+      setProductionElapsedSec(0);
+      return;
+    }
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      setProductionElapsedSec(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isRunning]);
+
+  const workflowSteps = useMemo(
+    () =>
+      deriveWorkflowSteps({
+        hasSeriesOrProject: Boolean(activeSeries || activeProject),
+        hasChapterSource: Boolean(selectedFiles.length > 0 || activeProject?.archivePath || importedLibrary.length > 0),
+        isProducing: isRunning,
+        record: activeProject,
+        sceneCount: scenes.length,
+        hasLowConfidenceScenes: scenes.some(
+          (s) => s.reviewStatus === 'needs_review' || (s.confidence !== undefined && s.confidence < 0.5),
+        ),
+        gateGVerdict: activeGateG?.verdict ?? activeProject?.gateGVerdict ?? null,
+        gateHVerdict: activeGateH?.verdict ?? activeProject?.gateHVerdict ?? null,
+        hasAudiovisualPlan: Boolean(activePlan && activePlan.shots.length > 0),
+        hasRenderedVideo: Boolean(activeProject?.masterMp4Path || activeProject?.previewMp4Path),
+      }),
+    [activeSeries, activeProject, selectedFiles.length, importedLibrary.length, isRunning, scenes, activeGateG, activeGateH, activePlan],
+  );
+
   // Resolve active archive path across all 3 origins or active project
   const resolvedArchivePath = useMemo(() => {
     if (origin === 'cbz' && selectedFiles[0]?.path) return selectedFiles[0].path;
@@ -1288,9 +1326,9 @@ export function RecapProductionPanel() {
 
       if (autoNavigate) {
         if (project.masterMp4Path || project.previewMp4Path) {
-          setSubTab('preview');
+          setSubTab('revisao');
         } else {
-          setSubTab('produce');
+          setSubTab('producao');
         }
       }
     },
@@ -1435,7 +1473,7 @@ export function RecapProductionPanel() {
     setSelectedFiles([]);
     setCdnResult(null);
     setLinkImportedCbz(null);
-    setSubTab('import');
+    setSubTab('capitulos');
   };
 
   const confirmDeleteProject = async () => {
@@ -1583,7 +1621,7 @@ export function RecapProductionPanel() {
     const archivePath = resolvedArchivePath;
     if (!archivePath) {
       setImportError('Selecione um arquivo CBZ/PDF ou conclua a importação por Link/CDN antes de iniciar.');
-      setSubTab('import');
+      setSubTab('capitulos');
       return;
     }
 
@@ -1627,7 +1665,7 @@ export function RecapProductionPanel() {
       await Promise.all([refreshProjects(), refreshReadiness(res.chapterId)]);
 
       if (res.previewMp4Path || res.masterMp4Path) {
-        setSubTab('preview');
+        setSubTab('revisao');
       }
     } catch (err) {
       setStatusNote(err instanceof Error ? err.message : String(err));
@@ -1652,7 +1690,7 @@ export function RecapProductionPanel() {
       if (res.plan) setActivePlan(res.plan);
       if (res.gateHReport) setActiveGateH(res.gateHReport);
       await refreshProjects();
-      if (res.ok) setSubTab('preview');
+      if (res.ok) setSubTab('revisao');
     } catch (err) {
       setStatusNote(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2108,60 +2146,11 @@ export function RecapProductionPanel() {
         )}
       </BentoBlock>
 
-      {/* Sub-tab Navigation (Light Bento pill bar) */}
-      <nav
-        role="tablist"
-        aria-label="Etapas do Mangá Recap"
-        style={{
-          display: 'inline-flex',
-          alignSelf: 'flex-start',
-          gap: 4,
-          padding: 4,
-          borderRadius: T.radiusFull,
-          background: T.surface,
-          border: `1px solid ${T.border}`,
-        }}
-      >
-        {(
-          [
-            ['import', '1. Importar', Download],
-            ['produce', '2. Produzir & Timeline', Sparkles],
-            ['preview', '3. Preview & Revisão', Film],
-            ['universe', '4. Universo da História', BookOpen],
-          ] as const
-        ).map(([id, label, Icon]) => {
-          const active = subTab === id;
-          return (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => setSubTab(id)}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '9px 18px',
-                borderRadius: T.radiusFull,
-                border: 'none',
-                background: active ? T.ink : 'transparent',
-                color: active ? '#ffffff' : T.inkMuted,
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
-              <Icon style={{ width: 14, height: 14 }} />
-              {label}
-            </button>
-          );
-        })}
-      </nav>
+      {/* 8-Stage Workflow Stepper (UX/UI Pro Max + Apple Design Translucent Chrome) */}
+      <RecapWorkflowStepper steps={workflowSteps} activeStep={subTab} onSelectStep={setSubTab} />
 
-      {/* ─── TAB 1: IMPORT ──────────────────────────────────────────────── */}
-      {subTab === 'import' && (
+      {/* ─── STEP 2: CAPÍTULOS (IMPORT CBZ / PDF / URL) ─────────────────── */}
+      {subTab === 'capitulos' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <BentoBlock>
             <SectionLabel>Origem dos Capítulos</SectionLabel>
@@ -2396,7 +2385,7 @@ export function RecapProductionPanel() {
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <button
               type="button"
-              onClick={() => setSubTab('produce')}
+              onClick={() => setSubTab('analise')}
               disabled={!resolvedArchivePath}
               style={{ ...btnPrimary, opacity: !resolvedArchivePath ? 0.45 : 1 }}
             >
@@ -2406,9 +2395,86 @@ export function RecapProductionPanel() {
         </div>
       )}
 
-      {/* ─── TAB 2: PRODUCE & TIMELINE ──────────────────────────────────── */}
-      {subTab === 'produce' && (
+      {/* ─── STEP 3: ANÁLISE · STEP 5: NARRAÇÃO · STEP 7: PRODUÇÃO ──────── */}
+      {(subTab === 'analise' || subTab === 'narracao' || subTab === 'producao') && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {subTab === 'producao' && (
+            <BentoBlock>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+                <div>
+                  <SectionLabel>Acompanhamento Real da Produção</SectionLabel>
+                  <p style={{ margin: '4px 0 0', fontSize: 12, color: T.inkMuted }}>
+                    {pipelineTimeline.detailMessage}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: T.mono, fontSize: 12 }}>
+                  {isRunning && (
+                    <span style={{ padding: '4px 10px', borderRadius: T.radiusFull, background: T.accentSoft, color: T.accentInk, fontWeight: 700 }}>
+                      Tempo decorrido: {Math.floor(productionElapsedSec / 60)}m {String(productionElapsedSec % 60).padStart(2, '0')}s
+                    </span>
+                  )}
+                  <span style={{ padding: '4px 10px', borderRadius: T.radiusFull, background: T.surfaceSubtle, color: T.ink, fontWeight: 700 }}>
+                    {pipelineTimeline.overallProgressPct}% real ({pipelineTimeline.completedCount}/{pipelineTimeline.totalCount})
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', marginBottom: 14 }}>
+                <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Narração (TTS)</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4 }}>
+                    {ttsProvider === 'voicestudio_tts' ? 'VoiceStudio' : ttsProvider === 'elevenlabs_tts' ? 'ElevenLabs' : 'Windows SAPI'}
+                  </div>
+                </div>
+                <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Motion Velix</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4 }}>
+                    {activeProject?.motionVelix
+                      ? `${activeProject.motionVelix.sfxApplied}/${activeProject.motionVelix.sfxPlanned} SFX · ${activeProject.motionVelix.vfxAppliedShots} VFX`
+                      : motionVelixStatus?.installed
+                        ? 'Kit pronto'
+                        : 'Aguardando'}
+                  </div>
+                </div>
+                <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Renderização</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4 }}>
+                    {activeProject?.masterMp4Path ? 'Master concluído' : activeProject?.previewMp4Path ? 'Prévia pronta' : isRunning ? 'Renderizando…' : 'Pendente'}
+                  </div>
+                </div>
+                <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Release Gates</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4, fontFamily: T.mono }}>
+                    F:{activeProject?.gateFVerdict ?? '—'} · G:{activeGateG?.verdict ?? activeProject?.gateGVerdict ?? '—'} · H:{activeGateH?.verdict ?? activeProject?.gateHVerdict ?? '—'}
+                  </div>
+                </div>
+              </div>
+
+              <details
+                open={showTechDiagnostics}
+                onToggle={(e) => setShowTechDiagnostics((e.target as HTMLDetailsElement).open)}
+                style={{
+                  borderRadius: T.radiusSm,
+                  border: `1px solid ${T.border}`,
+                  background: T.surfaceSubtle,
+                  padding: '8px 12px',
+                  fontSize: 12,
+                }}
+              >
+                <summary style={{ cursor: 'pointer', fontWeight: 600, color: T.ink }}>
+                  Diagnóstico técnico (provedores, checkpoints e logs detalhados)
+                </summary>
+                <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6, fontFamily: T.mono, fontSize: 11, color: T.inkMuted }}>
+                  <div>Run ID: {activeProject?.runId ?? 'nenhum'}</div>
+                  <div>Capítulo: {activeProject?.chapterId ?? '—'} · Painéis: {activeProject?.panelCount ?? 0} · Cenas: {scenes.length}</div>
+                  <div>Provedores operacionais: {readiness?.operationalProviders?.join(', ') || 'verificando…'}</div>
+                  {activeProject?.lastError && <div style={{ color: T.error }}>Último erro: {activeProject.lastError}</div>}
+                </div>
+              </details>
+            </BentoBlock>
+          )}
+
+          {/* Existing RealPipelineTimeline + Production Settings */}
           <RealPipelineTimeline record={activeProject} liveMessage={statusNote} />
 
           <AudiovisualTrackTimeline
@@ -2587,7 +2653,7 @@ export function RecapProductionPanel() {
                   disabled={isApproving}
                   onClick={() => {
                     setStatusNote('Prévia enviada para revisão. Edite o roteiro ou solicite ajustes na aba Preview & Revisão.');
-                    setSubTab('preview');
+                    setSubTab('roteiro');
                   }}
                   style={{ ...btnSecondary, flex: 1 }}
                 >
@@ -2599,8 +2665,55 @@ export function RecapProductionPanel() {
         </div>
       )}
 
-      {/* ─── TAB 3: PREVIEW & REVIEW ────────────────────────────────────── */}
-      {subTab === 'preview' && (
+      {/* ─── STEP 4: ROTEIRO REAL (REDESIGN STUDIO) ─────────────────────── */}
+      {subTab === 'roteiro' && (
+        <RecapScriptStudio
+          scenes={scenes}
+          language={language}
+          humorVolume={humorVolume}
+          scriptStyleLabel={
+            scriptStyle === 'natural_recap'
+              ? 'Narração Natural'
+              : scriptStyle === 'cinematic_recap'
+                ? 'Cinematográfico'
+                : scriptStyle
+          }
+          gateG={activeGateG}
+          canRegenerate={Boolean(activeProject?.runId)}
+          savingSceneId={savingSceneId}
+          regeneratingSceneId={regeneratingSceneId}
+          regeneratingScript={regeneratingScript}
+          onChangeNarration={(idx, nextText) => {
+            const next = [...scenes];
+            const row = next[idx];
+            if (!row) return;
+            next[idx] = {
+              ...row,
+              narrationText: nextText,
+              estimatedDurationSec: estimateTextDurationSec(nextText),
+              dirty: true,
+            };
+            setScenes(next);
+          }}
+          onSaveScene={(sceneId, narrationText) => void handleSaveSceneEdit(sceneId, narrationText)}
+          onRegenerateScene={(sceneId) => void handleRegenerateScene(sceneId)}
+          onRegenerateScript={() => void handleRegenerateScript(true)}
+        />
+      )}
+
+      {/* ─── STEP 6: STORYBOARD & TIMELINE MULTIPISTA ───────────────────── */}
+      {subTab === 'storyboard' && (
+        <RecapVisualStoryboard
+          scenes={scenes}
+          plan={activePlan}
+          motionVelix={activeProject?.motionVelix}
+          selectedShotId={selectedShotId}
+          onSelectShot={(shotId) => setSelectedShotId(shotId)}
+        />
+      )}
+
+      {/* ─── STEP 8: REVISÃO & APROVAÇÃO FINAL ──────────────────────────── */}
+      {subTab === 'revisao' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <AudiovisualTrackTimeline
             plan={activePlan}
@@ -3230,8 +3343,8 @@ export function RecapProductionPanel() {
         </div>
       )}
 
-      {/* ─── TAB 4: STORY MEMORY — UNIVERSO DA HISTÓRIA (PHASE 8) ───────── */}
-      {subTab === 'universe' && (
+      {/* ─── STEP 1: PROJETO & STORY MEMORY — UNIVERSO DA HISTÓRIA ──────── */}
+      {subTab === 'projeto' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <BentoBlock>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
@@ -3345,7 +3458,7 @@ export function RecapProductionPanel() {
                       onClick={() => {
                         setWorkTitle(`${activeSeries.workTitle} Cap. ${chapterNumber}`);
                         setScriptStyle('natural_recap');
-                        setSubTab('import');
+                        setSubTab('capitulos');
                         setStatusNote(`Continuando "${activeSeries.workTitle}" no Capítulo ${chapterNumber} com memória narrativa carregada.`);
                       }}
                       style={btnLime}

@@ -649,6 +649,124 @@ export function deriveQualityScorecard(
  * Ensures the currently active/in-flight project is always present and up to date
  * in the "Projetos Recentes" list, deduplicated by `runId` and sorted newest-first.
  */
+export type RecapWorkflowStepId =
+  | 'projeto'
+  | 'capitulos'
+  | 'analise'
+  | 'roteiro'
+  | 'narracao'
+  | 'storyboard'
+  | 'producao'
+  | 'revisao';
+
+export type WorkflowStepStatus = 'pending' | 'processing' | 'ready' | 'needs_review' | 'error';
+
+export interface RecapWorkflowStepState {
+  id: RecapWorkflowStepId;
+  index: number;
+  label: string;
+  shortLabel: string;
+  status: WorkflowStepStatus;
+  hint?: string;
+}
+
+export interface DeriveWorkflowStepsInput {
+  hasSeriesOrProject: boolean;
+  hasChapterSource: boolean;
+  isProducing: boolean;
+  record: RecapProjectRecordView | null;
+  sceneCount: number;
+  hasLowConfidenceScenes: boolean;
+  gateGVerdict?: 'pass' | 'needs_review' | 'fail' | null;
+  gateHVerdict?: 'pass' | 'needs_review' | 'fail' | null;
+  hasAudiovisualPlan: boolean;
+  hasRenderedVideo: boolean;
+}
+
+/**
+ * Derives the honest real-time status of each of the 8 Recap workflow stages:
+ * Projeto → Capítulos → Análise → Roteiro → Narração → Storyboard → Produção → Revisão
+ */
+export function deriveWorkflowSteps(input: DeriveWorkflowStepsInput): RecapWorkflowStepState[] {
+  const completed = new Set(input.record?.completedSteps ?? []);
+  const state = input.record?.state ?? 'idle';
+  const curStage = input.record?.currentStage ?? null;
+
+  const stepProjeto: WorkflowStepStatus = input.hasSeriesOrProject ? 'ready' : 'pending';
+
+  const stepCapitulos: WorkflowStepStatus =
+    state === 'importing'
+      ? 'processing'
+      : state === 'failed' && (curStage === 'import' || curStage === 'gate-f')
+        ? 'error'
+        : input.hasChapterSource || completed.has('import')
+          ? 'ready'
+          : 'pending';
+
+  const stepAnalise: WorkflowStepStatus =
+    (state === 'preflight' || (state === 'story_engine' && (curStage === 'vision' || curStage === 'continuity'))) && input.isProducing
+      ? 'processing'
+      : state === 'failed' && (curStage === 'vision' || curStage === 'continuity')
+        ? 'error'
+        : state === 'paused_provider_unavailable'
+          ? 'needs_review'
+          : completed.has('vision') || completed.has('story_engine') || input.sceneCount > 0
+            ? input.record?.gateFVerdict === 'needs_review'
+              ? 'needs_review'
+              : 'ready'
+            : 'pending';
+
+  const stepRoteiro: WorkflowStepStatus =
+    state === 'story_engine' && (curStage === 'script' || curStage === 'humanize') && input.isProducing
+      ? 'processing'
+      : input.gateGVerdict === 'fail' || (state === 'failed' && curStage === 'script')
+        ? 'error'
+        : input.sceneCount > 0
+          ? input.gateGVerdict === 'needs_review' || input.hasLowConfidenceScenes
+            ? 'needs_review'
+            : 'ready'
+          : 'pending';
+
+  const stepNarracao: WorkflowStepStatus =
+    input.sceneCount > 0 || input.hasChapterSource ? 'ready' : 'pending';
+
+  const stepStoryboard: WorkflowStepStatus =
+    input.hasAudiovisualPlan ? 'ready' : input.sceneCount > 0 ? 'pending' : 'pending';
+
+  const stepProducao: WorkflowStepStatus =
+    input.isProducing && (state === 'audiovisual_preview' || state === 'master_export')
+      ? 'processing'
+      : state === 'failed' && (curStage === 'motion' || curStage === 'gate-h')
+        ? 'error'
+        : input.hasRenderedVideo
+          ? input.gateHVerdict === 'needs_review'
+            ? 'needs_review'
+            : 'ready'
+          : 'pending';
+
+  const stepRevisao: WorkflowStepStatus =
+    state === 'completed'
+      ? 'ready'
+      : state === 'awaiting_preview_approval'
+        ? 'needs_review'
+        : input.gateHVerdict === 'fail'
+          ? 'error'
+          : input.hasRenderedVideo
+            ? 'needs_review'
+            : 'pending';
+
+  return [
+    { id: 'projeto', index: 1, label: 'Projeto', shortLabel: 'Projeto', status: stepProjeto },
+    { id: 'capitulos', index: 2, label: 'Capítulos', shortLabel: 'Capítulos', status: stepCapitulos },
+    { id: 'analise', index: 3, label: 'Análise', shortLabel: 'Análise', status: stepAnalise },
+    { id: 'roteiro', index: 4, label: 'Roteiro', shortLabel: 'Roteiro', status: stepRoteiro },
+    { id: 'narracao', index: 5, label: 'Narração', shortLabel: 'Narração', status: stepNarracao },
+    { id: 'storyboard', index: 6, label: 'Storyboard', shortLabel: 'Storyboard', status: stepStoryboard },
+    { id: 'producao', index: 7, label: 'Produção', shortLabel: 'Produção', status: stepProducao },
+    { id: 'revisao', index: 8, label: 'Revisão', shortLabel: 'Revisão', status: stepRevisao },
+  ];
+}
+
 export function mergeActiveProjectIntoRecentList(
   persisted: readonly RecapProjectRecordView[],
   activeRecord: RecapProjectRecordView | null,
