@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
+  BookOpen,
   Bot,
   Calendar,
   Clapperboard,
@@ -39,6 +40,7 @@ import { ContentProjectPage } from '@/features/aethera/ContentProjectPage';
 import { ContentQueuePage } from '@/features/aethera/ContentQueuePage';
 import { ContentVariantsPage } from '@/features/aethera/ContentVariantsPage';
 import { CreativeStudioPanel } from './CreativeStudioPanel';
+import { RecapProductionPanel } from './RecapProductionPanel';
 import '@/styles.css';
 import './aethera-theme.css';
 
@@ -50,6 +52,7 @@ const AETHERA_ROUTES: readonly AppRoute[] = [
   { path: '/aethera', label: 'Home', icon: Home, group: 'Trabalho', description: 'Centro de produção audiovisual.' },
   { path: '/aethera/projects', label: 'Projeto Manual', icon: FolderKanban, group: 'Trabalho', description: 'Gerenciamento manual de produções.' },
   { path: '/aethera/cinema', label: 'Produção com IA', icon: Clapperboard, group: 'Trabalho', description: 'Direção criativa, storyboard e humor pontual.' },
+  { path: '/aethera/recap', label: 'Mangá Recap', icon: BookOpen, group: 'Trabalho', description: 'Gerador de recap de mangá/manhwa e importação por link.' },
   { path: '/aethera/console', label: 'Console Geral', icon: SquareTerminal, group: 'Trabalho', description: 'Eventos de todas as produções e serviços.' },
   { path: '/aethera/creative', label: 'Thumbs & Artes', icon: ImagePlus, group: 'Trabalho', description: 'Creative Studio: thumbnails, banners, avatar e marca d’água.' },
   { path: '/video', label: 'Editor', icon: Film, group: 'Trabalho', description: 'Editor profissional com timeline multifaixa.' },
@@ -124,6 +127,7 @@ const router = createHashRouter([
           { index: true, element: <AetheraStudioHome /> },
           { path: 'projects', element: <AetheraProjectsPage /> },
           { path: 'cinema', element: <CinemaDirectorPanel /> },
+          { path: 'recap', element: <div className="mx-auto max-w-[1600px] p-4 lg:p-6"><RecapProductionPanel /></div> },
           { path: 'console', element: <GeneralConsolePage /> },
           { path: 'creative', element: <div className="mx-auto max-w-[1600px] p-4 lg:p-6"><CreativeStudioPanel /></div> },
           { path: 'editor', element: <AetheraStudioEditor /> },
