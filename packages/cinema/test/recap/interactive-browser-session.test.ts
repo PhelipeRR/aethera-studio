@@ -59,6 +59,31 @@ beforeAll(async () => {
 			return;
 		}
 
+		// 2b. Scenario A: Immediately accessible chapter (NO challenge, NO login required),
+		// even though the page template contains a hidden navbar <input type="password">,
+		// a comment-widget recaptcha script reference, and lazy-loaded reader images without [data-page]!
+		if (urlPath === '/public/chapter/1') {
+			res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+			res.end(`<html><head><title>Nano Machine Chapter 1</title>
+				<script>/* comment widget recaptcha config */ window.__RECAPTCHA_SITE_KEY = 'demo';</script>
+			</head><body>
+				<nav style="display:none"><input type="password" name="navbar_pw" /></nav>
+				<img src="/assets/logo.png" alt="logo" width="40" height="40" />
+				<main class="reading-content">
+					<img data-src="/public-img/p1.png" alt="chapter page 1" width="800" height="1200" />
+					<img src="/public-img/p2.png" alt="chapter page 2" width="800" height="1200" />
+				</main>
+			</body></html>`);
+			return;
+		}
+
+		if (urlPath === '/public-img/p1.png' || urlPath === '/public-img/p2.png') {
+			const seed = urlPath.includes('p1') ? 71 : 72;
+			res.writeHead(200, { 'Content-Type': 'image/png' });
+			res.end(makePng(seed));
+			return;
+		}
+
 		// 3. Protected chapters (require authenticated session)
 		const chMatch = /^\/comics\/demo-manga\/chapter\/(\d+)$/.exec(urlPath);
 		if (chMatch) {
@@ -131,8 +156,44 @@ function makeDemoRegistry(): SiteAdapterRegistry {
 	return new SiteAdapterRegistry([adapter]);
 }
 
-describe('Interactive Persistent Browser Session (Tests 1–7)', () => {
-	test('Tests 1, 2, 3 & 4: interactive login, persistent session reuse, multi-chapter import, and valid CBZ', async () => {
+describe('Interactive Persistent Browser Session (Tests 1–7 + Scenarios A & B)', () => {
+	test('Scenario A: chapter accessible immediately without Cloudflare challenge never gets stuck in awaiting_user_verification', async () => {
+		const statesSeen: string[] = [];
+		let awaitingCallbackTriggered = false;
+
+		const mgr = new InteractiveRecapBrowserSessionManager({
+			profilesRootDir: join(tempDir, 'profiles-scenario-a'),
+			libraryDir: join(tempDir, 'library-scenario-a'),
+			registry: makeDemoRegistry(),
+			headless: true,
+			allowLocalhostForTests: true,
+			pollIntervalMs: 150,
+			onAwaitingVerificationForTest: async () => {
+				awaitingCallbackTriggered = true;
+			},
+		});
+
+		const s = mgr.startInteractiveImport({
+			urls: [`http://127.0.0.1:${demoPort}/public/chapter/1`],
+			workTitle: 'Nano Machine',
+			seriesProjectId: 'nano-machine',
+		});
+		mgr.subscribe(s.sessionId, (snap) => statesSeen.push(snap.state));
+		const end = await mgr.waitForSessionEnd(s.sessionId);
+
+		// MUST NOT get stuck in awaiting_user_verification when chapter images are already accessible!
+		expect(awaitingCallbackTriggered).toBe(false);
+		expect(statesSeen).not.toContain('awaiting_user_verification');
+		expect(statesSeen).toContain('verifying_access');
+		expect(statesSeen).toContain('access_authorized');
+		expect(statesSeen).toContain('importing_chapters');
+		expect(statesSeen).toContain('preparing_cbz');
+		expect(end.state).toBe('completed');
+		expect(end.completedChapters).toBe(1);
+		expect(end.importedEntries[0]!.pageCount).toBe(2);
+	}, 20_000);
+
+	test('Scenario B + Tests 1, 2, 3 & 4: initially blocked page waits for manual verification, persists session, and imports multi-chapter CBZs', async () => {
 		const profilesRootDir = join(tempDir, 'profiles');
 		const libraryDir = join(tempDir, 'library-1');
 		const statesSeen: string[] = [];

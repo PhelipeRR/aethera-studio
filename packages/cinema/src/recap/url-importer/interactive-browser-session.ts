@@ -146,6 +146,33 @@ interface PlaywrightModuleLike {
 const LOGIN_URL_PATTERNS = [/\/login\b/i, /\/signin\b/i, /\/sign-in\b/i, /\/auth\b/i, /\/account\/login/i];
 const LOGIN_DOM_PATTERNS = [/<input[^>]+type\s*=\s*["']password["']/i, /data-aethera-auth-required/i];
 
+const INTERSTITIAL_TITLE_PATTERNS = [
+	/just a moment\.\.\./i,
+	/attention required!\s*\|\s*cloudflare/i,
+	/checking your browser/i,
+	/verify you are human/i,
+	/security check/i,
+];
+
+const INTERSTITIAL_DOM_PATTERNS = [
+	/id\s*=\s*["'](?:cf-challenge-running|challenge-running|challenge-stage|cf-wrapper|cf-error-details)["']/i,
+	/class\s*=\s*["'][^"']*cf-browser-verification[^"']*["']/i,
+	/<form[^>]+id\s*=\s*["']challenge-form["']/i,
+	/data-aethera-challenge-interstitial/i,
+];
+
+const NON_CHAPTER_IMAGE_URL_PATTERNS = [
+	/(?:^|[/_.-])(?:logo|avatar|favicon|banner|icon|badge|emoji|spinner|loader|placeholder|ads?|analytics|pixel)(?:[/_.-]|\.[a-z0-9]+$)/i,
+	/\.svg(?:[?#]|$)/i,
+	/google-analytics|doubleclick|facebook\.com\/tr/i,
+];
+
+function isLikelyNonChapterAsset(imageUrl: string, altText?: string): boolean {
+	if (NON_CHAPTER_IMAGE_URL_PATTERNS.some((re) => re.test(imageUrl))) return true;
+	if (altText && /^(?:logo|avatar|icon|discord|patreon|ko-fi|banner)$/i.test(altText.trim())) return true;
+	return false;
+}
+
 function sanitizeDiagnosticPath(raw: string): string {
 	return raw
 		.replace(/[A-Za-z]:\\Users\\[^\\/\s]+/gi, '<USER_HOME>')
@@ -282,18 +309,38 @@ function classifyBrowserLaunchError(err: unknown): InteractiveBrowserError {
 	);
 }
 
-function classifyPageState(input: {
+export function classifyPageState(input: {
 	statusCode: number;
 	currentUrl: string;
 	html: string;
 	title: string;
 	adapter: ChapterSiteAdapter;
-}): 'accessible' | 'needs_login' | 'needs_challenge' | 'access_denied' {
+	discoveredChapterImagesCount?: number;
+}): 'accessible' | 'needs_login' | 'needs_challenge' | 'access_denied' | 'hydrating' {
+	const hasChapterImages = (input.discoveredChapterImagesCount ?? 0) > 0;
+
+	// 1. Dedicated login route or HTTP 401 always requires authentication
+	if (input.statusCode === 401) return 'needs_login';
+	if (LOGIN_URL_PATTERNS.some((p) => p.test(input.currentUrl))) return 'needs_login';
+
+	// 2. Full-page Cloudflare / anti-bot interstitial title (never a valid chapter)
+	if (INTERSTITIAL_TITLE_PATTERNS.some((p) => p.test(input.title))) {
+		return 'needs_challenge';
+	}
+
+	// 3. If real chapter images are already present and rendered on the page,
+	// DO NOT let a hidden navbar login input or comment recaptcha script false-positive as blocked!
+	if (hasChapterImages) {
+		return 'accessible';
+	}
+
+	// 4. When zero chapter images are present, check for active interstitial challenge or login form
+	if (INTERSTITIAL_DOM_PATTERNS.some((p) => p.test(input.html))) {
+		return 'needs_challenge';
+	}
 	const cfReason = detectCloudflareOrChallengeContent({ html: input.html, title: input.title });
 	if (cfReason) return 'needs_challenge';
 
-	if (input.statusCode === 401) return 'needs_login';
-	if (LOGIN_URL_PATTERNS.some((p) => p.test(input.currentUrl))) return 'needs_login';
 	if (LOGIN_DOM_PATTERNS.some((p) => p.test(input.html))) return 'needs_login';
 
 	if (input.statusCode === 403) return 'access_denied';
@@ -303,16 +350,19 @@ function classifyPageState(input: {
 		return /login|assinatura|paywall|auth/i.test(adapterRestriction) ? 'needs_login' : 'access_denied';
 	}
 
-	return 'accessible';
+	// HTTP 200 without challenge/login/403, but images haven't hydrated in DOM yet
+	return 'hydrating';
 }
 
 function extractPagesFromAuthorizedHtml(
 	html: string,
 	pageUrl: URL,
-	adapter: ChapterSiteAdapter,
+	adapter?: ChapterSiteAdapter,
 ): DiscoveredPage[] {
-	const adapterPages = adapter.extractPagesFromHtml(html, pageUrl);
-	if (adapterPages.length > 0) return adapterPages;
+	if (adapter) {
+		const adapterPages = adapter.extractPagesFromHtml(html, pageUrl);
+		if (adapterPages.length > 0) return adapterPages;
+	}
 
 	// Fallback generic <img> extraction for permitted sources without [data-page]
 	const pages: DiscoveredPage[] = [];
@@ -326,19 +376,165 @@ function extractPagesFromAuthorizedHtml(
 			return am?.[1] ?? am?.[2] ?? '';
 		};
 		const src = (getAttr('data-current-src') || getAttr('data-src') || getAttr('data-lazy-src') || getAttr('src')).trim();
+		const alt = getAttr('alt').trim();
 		if (!src || src.startsWith('data:') || src.startsWith('blob:')) continue;
 		try {
 			const resolved = new URL(src, pageUrl);
 			if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') continue;
 			const abs = resolved.toString();
-			if (seen.has(abs)) continue;
+			if (seen.has(abs) || isLikelyNonChapterAsset(abs, alt)) continue;
 			seen.add(abs);
-			pages.push({ pageNumber: pages.length + 1, imageUrl: abs });
+			pages.push({ pageNumber: pages.length + 1, imageUrl: abs, ...(alt ? { alt } : {}) });
 		} catch {
 			// skip invalid
 		}
 	}
 	return pages;
+}
+
+/**
+ * Extracts chapter images from BOTH the site adapter's HTML parser and the live rendered DOM
+ * inside Playwright, ensuring dynamic Next.js/React/lazy-loaded images are detected.
+ */
+async function extractChapterPagesFromLivePage(
+	page: PlaywrightPageLike,
+	html: string,
+	pageUrl: URL,
+	adapter: ChapterSiteAdapter,
+): Promise<DiscoveredPage[]> {
+	// 1. Prefer explicit [data-page] adapter extraction when available
+	const fromAdapter = adapter.extractPagesFromHtml(html, pageUrl);
+	if (fromAdapter.length > 0) return fromAdapter;
+
+	// 2. Inspect live rendered DOM for [data-page] or reader images
+	try {
+		const liveImgs = await page.evaluate(() => {
+			const doc = (globalThis as unknown as {
+				document?: {
+					querySelectorAll: (sel: string) => Iterable<{
+						dataset?: { page?: string };
+						tagName?: string;
+						currentSrc?: string;
+						src?: string;
+						alt?: string;
+						naturalWidth?: number;
+						naturalHeight?: number;
+						width?: number;
+						height?: number;
+						getAttribute: (name: string) => string | null;
+						querySelector: (sel: string) => {
+							currentSrc?: string;
+							src?: string;
+							alt?: string;
+							getAttribute: (name: string) => string | null;
+						} | null;
+					}>;
+				};
+			}).document;
+			if (!doc) return [] as Array<{ src: string; alt: string; dataPage: number | null }>;
+
+			const dataPageNodes = [...doc.querySelectorAll('[data-page]')];
+			if (dataPageNodes.length > 0) {
+				dataPageNodes.sort((a, b) => Number(a.dataset?.page ?? 0) - Number(b.dataset?.page ?? 0));
+				const list: Array<{ src: string; alt: string; dataPage: number | null }> = [];
+				for (const node of dataPageNodes) {
+					const img = node.tagName?.toLowerCase() === 'img' ? node : node.querySelector('img');
+					if (!img) continue;
+					const raw =
+						img.currentSrc ||
+						img.src ||
+						img.getAttribute('data-current-src') ||
+						img.getAttribute('data-src') ||
+						img.getAttribute('data-lazy-src') ||
+						'';
+					if (raw && !raw.startsWith('data:') && !raw.startsWith('blob:')) {
+						list.push({ src: raw, alt: img.alt || '', dataPage: Number(node.dataset?.page ?? 0) });
+					}
+				}
+				if (list.length > 0) return list;
+			}
+
+			// Fallback: all <img> in reading containers or main document body, excluding tiny UI icons
+			const allImgs = [...doc.querySelectorAll('main img, article img, .reading-content img, img')];
+			const out: Array<{ src: string; alt: string; dataPage: number | null }> = [];
+			for (const img of allImgs) {
+				const nw = img.naturalWidth ?? 0;
+				const nh = img.naturalHeight ?? 0;
+				const w = img.width ?? 0;
+				const h = img.height ?? 0;
+				// Skip known tiny loaded icons/avatars (< 140x140)
+				if (nw > 0 && nh > 0 && nw < 140 && nh < 140) continue;
+				if (w > 0 && h > 0 && w < 100 && h < 100) continue;
+				const raw =
+					img.currentSrc ||
+					img.src ||
+					img.getAttribute('data-current-src') ||
+					img.getAttribute('data-src') ||
+					img.getAttribute('data-lazy-src') ||
+					'';
+				if (raw && !raw.startsWith('data:') && !raw.startsWith('blob:')) {
+					out.push({ src: raw, alt: img.alt || '', dataPage: null });
+				}
+			}
+			return out;
+		});
+
+		if (liveImgs.length > 0) {
+			const pages: DiscoveredPage[] = [];
+			const seen = new Set<string>();
+			for (const item of liveImgs) {
+				try {
+					const resolved = new URL(item.src.trim(), pageUrl);
+					if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') continue;
+					const abs = resolved.toString();
+					if (seen.has(abs) || isLikelyNonChapterAsset(abs, item.alt)) continue;
+					seen.add(abs);
+					pages.push({
+						pageNumber: pages.length + 1,
+						imageUrl: abs,
+						...(item.alt ? { alt: item.alt } : {}),
+					});
+				} catch {
+					// skip invalid
+				}
+			}
+			if (pages.length > 0) return pages;
+		}
+	} catch {
+		// fall back to static HTML extraction
+	}
+
+	return extractPagesFromAuthorizedHtml(html, pageUrl);
+}
+
+/**
+ * Performs a bounded progressive scroll to hydrate lazy-loaded chapter images
+ * without blocking indefinitely (max ~3.5s).
+ */
+async function scrollPageForLazyImagesBounded(page: PlaywrightPageLike, maxMs = 3500): Promise<void> {
+	try {
+		await page.evaluate(async () => {
+			const win = globalThis as unknown as {
+				innerHeight?: number;
+				scrollBy?: (x: number, y: number) => void;
+				scrollTo?: (x: number, y: number) => void;
+				document?: { body?: { scrollHeight?: number } };
+			};
+			if (!win.scrollBy || !win.document?.body) return;
+			const step = Math.max(450, Math.floor((win.innerHeight || 800) * 0.85));
+			const maxSteps = 22;
+			for (let i = 0; i < maxSteps; i++) {
+				const totalH = win.document.body.scrollHeight || 0;
+				win.scrollBy(0, step);
+				await new Promise((r) => setTimeout(r, 90));
+				if ((i + 1) * step >= totalH + step) break;
+			}
+			win.scrollTo?.(0, 0);
+		});
+		await page.waitForTimeout(Math.min(400, maxMs));
+	} catch {
+		// ignore if page navigated
+	}
 }
 
 function getOriginKey(rawUrl: string): string {
@@ -556,15 +752,43 @@ export class InteractiveRecapBrowserSessionManager {
 
 			const resp = await page.goto(firstUrlObj.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
 			let statusCode = resp ? resp.status() : 200;
+			this.update(sessionId, {
+				state: 'verifying_access',
+				statusMessage: 'Verificando conteúdo e imagens do capítulo…',
+			});
+
 			let html = await page.content();
 			let title = await page.title().catch(() => '');
+			let initialPages = await extractChapterPagesFromLivePage(page, html, firstUrlObj, firstAdapter);
 			let pageState = classifyPageState({
 				statusCode,
 				currentUrl: page.url(),
 				html,
 				title,
 				adapter: firstAdapter,
+				discoveredChapterImagesCount: initialPages.length,
 			});
+
+			// If page returned HTTP 200 without challenge/login/403 but dynamic JS images haven't hydrated yet,
+			// wait briefly (bounded to ~3.2s) and scroll gently before deciding.
+			if (pageState === 'hydrating') {
+				for (let hAttempt = 0; hAttempt < 4; hAttempt++) {
+					if (this.cancelFlags.has(sessionId)) return;
+					await scrollPageForLazyImagesBounded(page, 600);
+					html = await page.content().catch(() => html);
+					title = await page.title().catch(() => title);
+					initialPages = await extractChapterPagesFromLivePage(page, html, firstUrlObj, firstAdapter);
+					pageState = classifyPageState({
+						statusCode,
+						currentUrl: page.url(),
+						html,
+						title,
+						adapter: firstAdapter,
+						discoveredChapterImagesCount: initialPages.length,
+					});
+					if (pageState !== 'hydrating') break;
+				}
+			}
 
 			// If user login or manual verification is required, wait passively — NEVER automate CAPTCHA/Cloudflare
 			if (pageState === 'needs_login' || pageState === 'needs_challenge') {
@@ -581,7 +805,7 @@ export class InteractiveRecapBrowserSessionManager {
 				}
 
 				const deadline = Date.now() + (this.options.verificationTimeoutMs ?? 300_000);
-				const pollMs = this.options.pollIntervalMs ?? 1200;
+				const pollMs = this.options.pollIntervalMs ?? 1000;
 
 				while (Date.now() < deadline) {
 					if (this.cancelFlags.has(sessionId)) return;
@@ -591,35 +815,50 @@ export class InteractiveRecapBrowserSessionManager {
 					html = await page.content().catch(() => '');
 					title = await page.title().catch(() => '');
 					const curUrl = page.url();
+					let pollUrlObj = firstUrlObj;
+					try {
+						pollUrlObj = new URL(curUrl);
+					} catch {
+						pollUrlObj = firstUrlObj;
+					}
+					const livePages = await extractChapterPagesFromLivePage(page, html, pollUrlObj, firstAdapter);
 					const currentCheck = classifyPageState({
 						statusCode: 200,
 						currentUrl: curUrl,
 						html,
 						title,
 						adapter: firstAdapter,
+						discoveredChapterImagesCount: livePages.length,
 					});
 
-					if (currentCheck === 'accessible') {
+					if (currentCheck === 'accessible' || currentCheck === 'hydrating') {
 						this.update(sessionId, {
 							state: 'verifying_access',
 							statusMessage: 'Verificando acesso ao capítulo solicitado…',
 						});
-						// Re-verify the exact requested chapter URL once user completed login/verification
-						const verifyResp = await page.goto(firstUrlObj.toString(), {
-							waitUntil: 'domcontentloaded',
-							timeout: 25_000,
-						});
-						statusCode = verifyResp ? verifyResp.status() : 200;
+						// Re-verify the exact requested chapter URL if user was on a different login/challenge URL
+						if (curUrl !== firstUrlObj.toString()) {
+							const verifyResp = await page.goto(firstUrlObj.toString(), {
+								waitUntil: 'domcontentloaded',
+								timeout: 25_000,
+							});
+							statusCode = verifyResp ? verifyResp.status() : 200;
+						} else {
+							statusCode = 200;
+						}
+						await scrollPageForLazyImagesBounded(page, 1200);
 						html = await page.content();
 						title = await page.title().catch(() => '');
+						initialPages = await extractChapterPagesFromLivePage(page, html, firstUrlObj, firstAdapter);
 						pageState = classifyPageState({
 							statusCode,
 							currentUrl: page.url(),
 							html,
 							title,
 							adapter: firstAdapter,
+							discoveredChapterImagesCount: initialPages.length,
 						});
-						break;
+						if (pageState === 'accessible') break;
 					}
 				}
 			}
@@ -633,7 +872,9 @@ export class InteractiveRecapBrowserSessionManager {
 						? 'O site retornou acesso negado (HTTP 403) mesmo na sessão interativa. Nenhum contorno é realizado — utilize a Importação Assistida por arquivos (WEBP/PNG/JPG/ZIP/CBZ/PDF).'
 						: pageState === 'needs_challenge'
 							? 'A verificação do site não foi concluída ou o acesso automatizado continua bloqueado. Utilize a Importação Assistida por arquivos.'
-							: 'A autenticação não foi concluída dentro do tempo limite.';
+							: pageState === 'hydrating'
+								? 'A página abriu, mas nenhuma imagem de capítulo foi encontrada no DOM. Utilize a Importação Assistida por arquivos.'
+								: 'A autenticação não foi concluída dentro do tempo limite.';
 				this.update(sessionId, {
 					state: pageState === 'needs_login' ? 'session_expired' : 'access_denied',
 					statusMessage: reason,
@@ -672,14 +913,17 @@ export class InteractiveRecapBrowserSessionManager {
 					if (delay > 0) await page.waitForTimeout(delay);
 					const chResp = await page.goto(targetUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
 					statusCode = chResp ? chResp.status() : 200;
+					await scrollPageForLazyImagesBounded(page, 1800);
 					html = await page.content();
 					title = await page.title().catch(() => '');
+					const chPagesCheck = await extractChapterPagesFromLivePage(page, html, targetUrl, adapter);
 					pageState = classifyPageState({
 						statusCode,
 						currentUrl: page.url(),
 						html,
 						title,
 						adapter,
+						discoveredChapterImagesCount: chPagesCheck.length,
 					});
 
 					if (pageState === 'needs_login') {
@@ -702,9 +946,13 @@ export class InteractiveRecapBrowserSessionManager {
 						});
 						return;
 					}
+				} else {
+					// Hydrate lazy-loaded images on the first chapter before final extraction
+					await scrollPageForLazyImagesBounded(page, 1800);
+					html = await page.content().catch(() => html);
 				}
 
-				const discoveredPages = extractPagesFromAuthorizedHtml(html, targetUrl, adapter);
+				const discoveredPages = await extractChapterPagesFromLivePage(page, html, targetUrl, adapter);
 				if (discoveredPages.length === 0) {
 					warnings.push(`Nenhuma imagem válida encontrada em ${targetUrl.pathname}.`);
 					continue;
