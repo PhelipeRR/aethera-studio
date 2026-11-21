@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createElevenLabsRecapTtsPort, createOrLoadStoryMemoryProject, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importChapter, importChapterFromCdnUrls, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
+import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importChapter, importChapterFromCdnUrls, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -5693,9 +5693,69 @@ productionConsole,
     },
   );
 
-  // ─── Aethera Recap URL Chapter Importer IPC (Etapas 2–6) ──────────────────
+  // ─── Aethera Recap URL Chapter Importer IPC (Etapas 2–6 + Firecrawl Local) ──
   const recapLibraryDir = join(userDataDir, 'recap-library');
-  const recapImportJobs = new RecapImportJobManager({ libraryDir: recapLibraryDir });
+  mkdirSync(recapLibraryDir, { recursive: true });
+  const firecrawlConfigPath = join(recapLibraryDir, 'firecrawl-config.json');
+
+  let savedFirecrawlCfg: { apiUrl?: string; enabled?: boolean } = {};
+  if (existsSync(firecrawlConfigPath)) {
+    try {
+      savedFirecrawlCfg = JSON.parse(readFileSync(firecrawlConfigPath, 'utf-8')) as { apiUrl?: string; enabled?: boolean };
+    } catch {
+      savedFirecrawlCfg = {};
+    }
+  }
+
+  const recapFirecrawlProvider = createFirecrawlSelfHostedProvider({
+    ...(savedFirecrawlCfg.apiUrl ? { apiUrl: savedFirecrawlCfg.apiUrl } : {}),
+    ...(typeof savedFirecrawlCfg.enabled === 'boolean' ? { enabled: savedFirecrawlCfg.enabled } : {}),
+  });
+  const recapDirectFetchProvider = createDirectFetchAcquisitionProvider();
+  const recapAcquisitionRouter = new AcquisitionRouter({
+    providerPriority: ['firecrawl-self-hosted', 'direct-fetch'],
+  });
+  recapAcquisitionRouter.registerProvider(recapFirecrawlProvider);
+  recapAcquisitionRouter.registerProvider(recapDirectFetchProvider);
+
+  const recapImportJobs = new RecapImportJobManager({
+    libraryDir: recapLibraryDir,
+    discoveryPort: recapAcquisitionRouter,
+  });
+
+  ipcMain.handle('recap:firecrawl-status', async (event) => {
+    ensureTrusted(event.senderFrame);
+    const health = await recapFirecrawlProvider.checkHealth();
+    const cfg = recapFirecrawlProvider.getConfig();
+    return {
+      ...cfg,
+      available: health.available,
+      lastCheckAtIso: health.lastCheckAtIso,
+      lastError: health.lastError ?? null,
+      responseTimeMs: health.responseTimeMs ?? null,
+    };
+  });
+
+  ipcMain.handle('recap:firecrawl-config', async (event, input: { apiUrl?: string; enabled?: boolean }) => {
+    ensureTrusted(event.senderFrame);
+    const updated = recapFirecrawlProvider.updateConfig({
+      ...(input.apiUrl !== undefined ? { apiUrl: input.apiUrl } : {}),
+      ...(typeof input.enabled === 'boolean' ? { enabled: input.enabled } : {}),
+    });
+    writeFileSync(
+      firecrawlConfigPath,
+      JSON.stringify({ apiUrl: updated.apiUrl, enabled: updated.enabled }, null, 2),
+      'utf-8',
+    );
+    const health = await recapFirecrawlProvider.checkHealth();
+    return {
+      ...updated,
+      available: health.available,
+      lastCheckAtIso: health.lastCheckAtIso,
+      lastError: health.lastError ?? null,
+      responseTimeMs: health.responseTimeMs ?? null,
+    };
+  });
 
   ipcMain.handle('recap:select-archives', async (event) => {
     ensureTrusted(event.senderFrame);
@@ -5730,7 +5790,7 @@ productionConsole,
 
   ipcMain.handle('recap:import-analyze', async (event, input: { url: string }) => {
     ensureTrusted(event.senderFrame);
-    return analyzeChapterUrl({ url: input.url, libraryDir: recapLibraryDir });
+    return analyzeChapterUrl({ url: input.url, libraryDir: recapLibraryDir, discoveryPort: recapAcquisitionRouter });
   });
 
   ipcMain.handle('recap:import-create-job', async (event, input: { urls: string[]; forceReimport?: boolean }) => {

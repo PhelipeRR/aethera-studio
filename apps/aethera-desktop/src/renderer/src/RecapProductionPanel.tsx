@@ -238,6 +238,26 @@ interface RecapBridge {
     chapterNumber: string;
     warnings: string[];
   }>;
+  recapFirecrawlStatus?: () => Promise<{
+    enabled: boolean;
+    apiUrl: string;
+    hasApiKey: boolean;
+    timeoutMs: number;
+    available: boolean;
+    lastCheckAtIso: string;
+    lastError: string | null;
+    responseTimeMs: number | null;
+  }>;
+  recapFirecrawlConfig?: (input: { apiUrl?: string; enabled?: boolean }) => Promise<{
+    enabled: boolean;
+    apiUrl: string;
+    hasApiKey: boolean;
+    timeoutMs: number;
+    available: boolean;
+    lastCheckAtIso: string;
+    lastError: string | null;
+    responseTimeMs: number | null;
+  }>;
   recapStartProduction?: (input: {
     runId?: string;
     archivePath: string;
@@ -1136,6 +1156,15 @@ export function RecapProductionPanel() {
     items: Array<{ url: string; status: string; pagesDone: number; pagesTotal: number; libraryEntry?: { cbzPath: string }; error?: string }>;
   } | null>(null);
   const [linkImportedCbz, setLinkImportedCbz] = useState<{ cbzPath: string; label: string } | null>(null);
+  const [firecrawlStatus, setFirecrawlStatus] = useState<{
+    enabled: boolean;
+    apiUrl: string;
+    available: boolean;
+    lastError: string | null;
+    responseTimeMs: number | null;
+  } | null>(null);
+  const [firecrawlEndpointInput, setFirecrawlEndpointInput] = useState('http://127.0.0.1:3002');
+  const [firecrawlChecking, setFirecrawlChecking] = useState(false);
   const [cdnImageUrls, setCdnImageUrls] = useState('');
   const [cdnChapterUrl, setCdnChapterUrl] = useState('');
   const [cdnWorkTitle, setCdnWorkTitle] = useState('');
@@ -1543,6 +1572,46 @@ export function RecapProductionPanel() {
       }
     }
   };
+
+  const refreshFirecrawlStatus = useCallback(async () => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapFirecrawlStatus) return;
+    setFirecrawlChecking(true);
+    try {
+      const status = await bridge.recapFirecrawlStatus();
+      setFirecrawlStatus(status);
+      setFirecrawlEndpointInput(status.apiUrl);
+    } catch {
+      // non-fatal
+    } finally {
+      setFirecrawlChecking(false);
+    }
+  }, []);
+
+  const handleSaveFirecrawlConfig = async (nextEnabled?: boolean) => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapFirecrawlConfig) return;
+    setFirecrawlChecking(true);
+    setImportError(null);
+    try {
+      const updated = await bridge.recapFirecrawlConfig({
+        apiUrl: firecrawlEndpointInput.trim() || 'http://127.0.0.1:3002',
+        ...(typeof nextEnabled === 'boolean' ? { enabled: nextEnabled } : {}),
+      });
+      setFirecrawlStatus(updated);
+      setFirecrawlEndpointInput(updated.apiUrl);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFirecrawlChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    if (origin === 'link' && !firecrawlStatus) {
+      void refreshFirecrawlStatus();
+    }
+  }, [origin, firecrawlStatus, refreshFirecrawlStatus]);
 
   const pollLinkImportJob = async (
     bridge: NonNullable<ReturnType<typeof getRecapBridge>>,
@@ -2315,7 +2384,69 @@ export function RecapProductionPanel() {
 
           {origin === 'link' && (
             <BentoBlock>
-              <SectionLabel>Links dos Capítulos</SectionLabel>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                <SectionLabel>Links dos Capítulos</SectionLabel>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      padding: '3px 9px',
+                      borderRadius: T.radiusFull,
+                      background: firecrawlStatus?.available ? T.successBg : T.surfaceSubtle,
+                      border: `1px solid ${firecrawlStatus?.available ? T.successBorder : T.border}`,
+                      color: firecrawlStatus?.available ? T.success : T.inkMuted,
+                    }}
+                  >
+                    {firecrawlChecking
+                      ? 'Verificando Firecrawl Local…'
+                      : !firecrawlStatus
+                        ? 'Firecrawl Local'
+                        : !firecrawlStatus.enabled
+                          ? 'Firecrawl Local: Desabilitado'
+                          : firecrawlStatus.available
+                            ? `Firecrawl Local: Online (${firecrawlStatus.responseTimeMs ?? 0}ms)`
+                            : 'Firecrawl Local: Indisponível (fallback direto)'}
+                  </span>
+                </div>
+              </div>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  flexWrap: 'wrap',
+                  padding: '8px 10px',
+                  marginBottom: 12,
+                  borderRadius: T.radiusSm,
+                  background: T.surfaceSubtle,
+                  border: `1px solid ${T.border}`,
+                }}
+              >
+                <span style={{ fontSize: 11, fontWeight: 600, color: T.inkMuted }}>Endpoint Firecrawl Local:</span>
+                <input
+                  value={firecrawlEndpointInput}
+                  onChange={(e) => setFirecrawlEndpointInput(e.target.value)}
+                  placeholder="http://127.0.0.1:3002"
+                  style={{ ...inputStyle, flex: 1, minWidth: 180, padding: '6px 10px', fontSize: 12, fontFamily: T.mono }}
+                />
+                <button
+                  type="button"
+                  disabled={firecrawlChecking}
+                  onClick={() => void handleSaveFirecrawlConfig(firecrawlStatus ? !firecrawlStatus.enabled : true)}
+                  style={{ ...btnGhost, padding: '6px 10px', fontSize: 11 }}
+                >
+                  {firecrawlStatus?.enabled === false ? 'Ativar' : 'Desativar'}
+                </button>
+                <button
+                  type="button"
+                  disabled={firecrawlChecking}
+                  onClick={() => void handleSaveFirecrawlConfig()}
+                  style={{ ...btnGhost, padding: '6px 10px', fontSize: 11 }}
+                >
+                  <RefreshCw style={{ width: 12, height: 12 }} /> Testar / Salvar
+                </button>
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {linkInputs.map((url, idx) => (
                   <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

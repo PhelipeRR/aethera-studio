@@ -26,18 +26,31 @@ import { AcquisitionError } from './acquisition-router.js';
 import type { ChapterSiteAdapter } from './site-adapters.js';
 import type { DiscoveredPage, DiscoveredChapterLink } from './site-adapters.js';
 import { validateExternalChapterUrl } from './url-security.js';
+import { createPlaywrightPageDiscoveryPort } from './url-chapter-importer.js';
 
 export interface FirecrawlProviderOptions {
-	/** Override the API URL. Defaults to env FIRECRAWL_API_URL or http://localhost:3002. */
+	/** Override the API URL. Defaults to env FIRECRAWL_API_URL or http://127.0.0.1:3002. */
 	apiUrl?: string;
 	/** Optional API key for local auth. Defaults to env FIRECRAWL_API_KEY. */
 	apiKey?: string;
-	/** Whether Firecrawl integration is enabled. Defaults to env FIRECRAWL_ENABLED === 'true'. */
+	/**
+	 * Whether Firecrawl integration is enabled.
+	 * Defaults to `true` (auto-detect mode) unless `FIRECRAWL_ENABLED=false` is explicitly set.
+	 */
 	enabled?: boolean;
 	/** Request timeout in ms. Default: 30000. */
 	timeoutMs?: number;
 	/** Allow HTTP URLs (for local Firecrawl). Default: true (needed for localhost). */
 	allowHttpForLocalhost?: boolean;
+	/** Allow localhost target URLs (for controlled local tests only). Default: false. */
+	allowLocalhostTarget?: boolean;
+}
+
+export interface FirecrawlProviderConfigView {
+	enabled: boolean;
+	apiUrl: string;
+	hasApiKey: boolean;
+	timeoutMs: number;
 }
 
 interface FirecrawlScrapeResponse {
@@ -50,22 +63,50 @@ interface FirecrawlScrapeResponse {
 	error?: string;
 }
 
+const CLOUDFLARE_CHALLENGE_PATTERNS: readonly RegExp[] = [
+	/cf-challenge/i,
+	/challenge-platform/i,
+	/just a moment\.\.\./i,
+	/attention required!\s*\|\s*cloudflare/i,
+	/checking your browser before accessing/i,
+	/cf-turnstile/i,
+	/verify you are human/i,
+	/\bhcaptcha\b|\brecaptcha\b/i,
+];
+
+export function detectCloudflareOrChallengeContent(input: {
+	html?: string;
+	markdown?: string;
+	title?: string;
+}): string | null {
+	const combined = `${input.title ?? ''}\n${input.html ?? ''}\n${input.markdown ?? ''}`;
+	for (const pattern of CLOUDFLARE_CHALLENGE_PATTERNS) {
+		if (pattern.test(combined)) {
+			return 'Bloqueio Cloudflare / desafio anti-bot detectado na resposta — página ignorada (não é um capítulo válido; sem bypass).';
+		}
+	}
+	return null;
+}
+
 function resolveConfig(options?: FirecrawlProviderOptions): {
 	enabled: boolean;
 	apiUrl: string;
 	apiKey: string | null;
 	timeoutMs: number;
+	allowLocalhostTarget: boolean;
 } {
-	const enabled = options?.enabled ?? (typeof process !== 'undefined' && process.env?.FIRECRAWL_ENABLED === 'true');
+	const envEnabled = typeof process !== 'undefined' ? process.env?.FIRECRAWL_ENABLED : undefined;
+	const enabled = options?.enabled ?? (envEnabled === 'false' ? false : true);
 	const apiUrl = options?.apiUrl
 		?? (typeof process !== 'undefined' ? process.env?.FIRECRAWL_API_URL : undefined)
-		?? 'http://localhost:3002';
+		?? 'http://127.0.0.1:3002';
 	const apiKey = options?.apiKey
 		?? (typeof process !== 'undefined' ? process.env?.FIRECRAWL_API_KEY : undefined)
 		?? null;
 	const timeoutMs = options?.timeoutMs ?? 30_000;
+	const allowLocalhostTarget = options?.allowLocalhostTarget ?? false;
 
-	return { enabled, apiUrl: apiUrl.replace(/\/+$/, ''), apiKey, timeoutMs };
+	return { enabled, apiUrl: apiUrl.replace(/\/+$/, ''), apiKey, timeoutMs, allowLocalhostTarget };
 }
 
 /**
@@ -162,8 +203,9 @@ export class FirecrawlSelfHostedProvider implements AcquisitionProvider {
 		maxConcurrency: 3,
 	};
 
-	private readonly config: ReturnType<typeof resolveConfig>;
+	private config: ReturnType<typeof resolveConfig>;
 	private lastHealthCheckAt: string | null = null;
+	private lastHealthCheckMs = 0;
 	private lastHealthError: string | null = null;
 	private cachedAvailable: boolean | null = null;
 
@@ -171,13 +213,46 @@ export class FirecrawlSelfHostedProvider implements AcquisitionProvider {
 		this.config = resolveConfig(options);
 	}
 
+	getConfig(): FirecrawlProviderConfigView {
+		return {
+			enabled: this.config.enabled,
+			apiUrl: this.config.apiUrl,
+			hasApiKey: Boolean(this.config.apiKey),
+			timeoutMs: this.config.timeoutMs,
+		};
+	}
+
+	updateConfig(patch: { apiUrl?: string; enabled?: boolean; apiKey?: string | null }): FirecrawlProviderConfigView {
+		if (typeof patch.apiUrl === 'string' && patch.apiUrl.trim()) {
+			const normalized = patch.apiUrl.trim().replace(/\/+$/, '');
+			const parsed = new URL(normalized);
+			if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+				throw new Error('Endpoint Firecrawl inválido: utilize http:// ou https://.');
+			}
+			this.config.apiUrl = normalized;
+		}
+		if (typeof patch.enabled === 'boolean') {
+			this.config.enabled = patch.enabled;
+		}
+		if (patch.apiKey !== undefined) {
+			this.config.apiKey = patch.apiKey ? patch.apiKey.trim() : null;
+		}
+		// Invalidate health cache so next check probes the new endpoint immediately
+		this.cachedAvailable = null;
+		this.lastHealthCheckMs = 0;
+		this.lastHealthError = null;
+		return this.getConfig();
+	}
+
 	async checkHealth(): Promise<AcquisitionProviderHealth> {
-		const now = new Date().toISOString();
+		const startedAt = Date.now();
+		const now = new Date(startedAt).toISOString();
 
 		if (!this.config.enabled) {
 			this.cachedAvailable = false;
 			this.lastHealthCheckAt = now;
-			this.lastHealthError = 'Firecrawl desabilitado via configuração.';
+			this.lastHealthCheckMs = startedAt;
+			this.lastHealthError = 'Firecrawl Local desabilitado nas configurações do Recap.';
 			return {
 				providerId: this.id,
 				available: false,
@@ -190,7 +265,7 @@ export class FirecrawlSelfHostedProvider implements AcquisitionProvider {
 
 		try {
 			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), Math.min(this.config.timeoutMs, 5000));
+			const timer = setTimeout(() => controller.abort(), Math.min(this.config.timeoutMs, 2500));
 
 			const headers: Record<string, string> = {
 				'Content-Type': 'application/json',
@@ -199,7 +274,7 @@ export class FirecrawlSelfHostedProvider implements AcquisitionProvider {
 				headers['Authorization'] = `Bearer ${this.config.apiKey}`;
 			}
 
-			// Probe with a lightweight health check — try GET on root or /health
+			// Probe lightweight root endpoint — any HTTP < 500 proves Firecrawl Local is reachable
 			const probeUrl = `${this.config.apiUrl}/`;
 			const res = await fetch(probeUrl, {
 				method: 'GET',
@@ -208,10 +283,10 @@ export class FirecrawlSelfHostedProvider implements AcquisitionProvider {
 			});
 			clearTimeout(timer);
 
-			// Any response (even 404) means the service is running
 			if (res.status < 500) {
 				this.cachedAvailable = true;
 				this.lastHealthCheckAt = now;
+				this.lastHealthCheckMs = startedAt;
 				this.lastHealthError = null;
 				return {
 					providerId: this.id,
@@ -219,14 +294,15 @@ export class FirecrawlSelfHostedProvider implements AcquisitionProvider {
 					lastCheckAtIso: now,
 					consecutiveFailures: 0,
 					circuitState: 'closed',
-					responseTimeMs: Date.now() - new Date(now).getTime(),
+					responseTimeMs: Date.now() - startedAt,
 				};
 			}
 
-			throw new Error(`HTTP ${res.status} from Firecrawl server.`);
+			throw new Error(`HTTP ${res.status} no servidor Firecrawl Local.`);
 		} catch (err) {
 			this.cachedAvailable = false;
 			this.lastHealthCheckAt = now;
+			this.lastHealthCheckMs = startedAt;
 			this.lastHealthError = err instanceof Error ? err.message : String(err);
 			return {
 				providerId: this.id,
@@ -247,14 +323,34 @@ export class FirecrawlSelfHostedProvider implements AcquisitionProvider {
 		if (!this.config.enabled) {
 			throw new AcquisitionError(
 				'provider_unavailable',
-				'Firecrawl está desabilitado. Habilite via FIRECRAWL_ENABLED=true.',
+				'Firecrawl Local está desabilitado nas configurações.',
 				this.id,
 				true,
 			);
 		}
 
-		// Validate URL against SSRF (but allow localhost for the Firecrawl API call itself)
-		validateExternalChapterUrl(input.url.toString());
+		// Auto-detect availability (15s cache) so offline local Firecrawl falls back cleanly without blocking
+		if (this.cachedAvailable === null || Date.now() - this.lastHealthCheckMs > 15_000) {
+			const health = await this.checkHealth();
+			if (!health.available) {
+				throw new AcquisitionError(
+					'provider_unavailable',
+					`Firecrawl Local indisponível em ${this.config.apiUrl}: ${health.lastError ?? 'sem resposta'}.`,
+					this.id,
+					true,
+				);
+			}
+		} else if (!this.cachedAvailable) {
+			throw new AcquisitionError(
+				'provider_unavailable',
+				`Firecrawl Local indisponível em ${this.config.apiUrl}.`,
+				this.id,
+				true,
+			);
+		}
+
+		// Validate target URL against SSRF (localhost allowed only when explicitly opted-in for local tests)
+		validateExternalChapterUrl(input.url.toString(), { allowLocalhost: this.config.allowLocalhostTarget });
 
 		const scrapeUrl = `${this.config.apiUrl}/v1/scrape`;
 		const headers: Record<string, string> = {
@@ -277,71 +373,136 @@ export class FirecrawlSelfHostedProvider implements AcquisitionProvider {
 				signal: combinedSignal,
 				body: JSON.stringify({
 					url: input.url.toString(),
-					formats: ['markdown', 'html'],
-					waitFor: 3000,
+					formats: ['html', 'markdown'],
+					waitFor: 2500,
 				}),
 			});
 			clearTimeout(timer);
 
 			if (!res.ok) {
 				const body = await res.text().catch(() => '');
+				const cfFromBody = detectCloudflareOrChallengeContent({ html: body });
+				if (cfFromBody) {
+					throw new AcquisitionError('captcha_detected', cfFromBody, this.id, false);
+				}
+				if (res.status === 401) {
+					throw new AcquisitionError(
+						'paywall_detected',
+						`Autenticação necessária no Firecrawl ou na fonte (HTTP 401).`,
+						this.id,
+						false,
+					);
+				}
+				if (res.status === 403) {
+					throw new AcquisitionError(
+						'access_denied_403',
+						`Acesso negado pela fonte via Firecrawl (HTTP 403).`,
+						this.id,
+						false,
+					);
+				}
 				throw new AcquisitionError(
-					res.status === 403 ? 'access_denied_403' : 'network_error',
-					`Firecrawl retornou HTTP ${res.status}: ${body.slice(0, 200)}`,
+					res.status === 429 ? 'rate_limited_429' : 'network_error',
+					`Firecrawl retornou HTTP ${res.status}: ${body.slice(0, 180)}`,
 					this.id,
-					res.status >= 500,
+					res.status >= 500 || res.status === 429,
 				);
 			}
 
 			const json = (await res.json()) as FirecrawlScrapeResponse;
 
 			if (!json.success) {
+				const errText = json.error ?? 'erro desconhecido';
+				const cfInErr = detectCloudflareOrChallengeContent({ html: errText });
+				if (cfInErr) {
+					throw new AcquisitionError('captcha_detected', cfInErr, this.id, false);
+				}
+				if (/403|forbidden/i.test(errText)) {
+					throw new AcquisitionError('access_denied_403', `Acesso negado pela fonte (HTTP 403): ${errText}`, this.id, false);
+				}
+				if (/401|unauthorized|login/i.test(errText)) {
+					throw new AcquisitionError('paywall_detected', `Autenticação necessária (HTTP 401): ${errText}`, this.id, false);
+				}
 				throw new AcquisitionError(
 					'parse_error',
-					`Firecrawl falhou ao processar: ${json.error ?? 'erro desconhecido'}`,
+					`Firecrawl falhou ao extrair a página: ${errText}`,
 					this.id,
 					false,
 				);
 			}
 
-			// Check for access restrictions in returned content
 			const htmlContent = json.data?.html ?? '';
-			const restriction = input.adapter.detectAccessRestriction?.(htmlContent);
-			if (restriction) {
-				throw new AcquisitionError('captcha_detected', restriction, this.id, false);
+			const markdownContent = json.data?.markdown ?? '';
+			const metaStatusCode = typeof json.data?.metadata?.['statusCode'] === 'number'
+				? (json.data.metadata['statusCode'] as number)
+				: undefined;
+			const metaTitle = typeof json.data?.metadata?.['title'] === 'string'
+				? (json.data.metadata['title'] as string)
+				: undefined;
+
+			// 1. NEVER treat a Cloudflare challenge or CAPTCHA page as a valid chapter
+			const cfRestriction = detectCloudflareOrChallengeContent({
+				html: htmlContent,
+				markdown: markdownContent,
+				title: metaTitle,
+			});
+			if (cfRestriction) {
+				throw new AcquisitionError('captcha_detected', cfRestriction, this.id, false);
+			}
+			const adapterRestriction = input.adapter.detectAccessRestriction?.(htmlContent);
+			if (adapterRestriction) {
+				throw new AcquisitionError('captcha_detected', adapterRestriction, this.id, false);
 			}
 
-			// Try HTML extraction first (more reliable for data-page attributes)
+			// 2. Differentiate upstream HTTP 401 / 403 reported in Firecrawl metadata
+			if (metaStatusCode === 401) {
+				throw new AcquisitionError('paywall_detected', 'Fonte exige autenticação (HTTP 401).', this.id, false);
+			}
+			if (metaStatusCode === 403) {
+				throw new AcquisitionError('access_denied_403', 'Fonte retornou acesso negado (HTTP 403) ao Firecrawl.', this.id, false);
+			}
+
+			// 3. Extract pages: prefer site adapter HTML parser FIRST (preserves [data-page] numeric order & filters noise)
 			let pages: DiscoveredPage[] = [];
 			if (htmlContent) {
-				pages = extractImagesFromHtml(htmlContent, input.url);
-			}
-
-			// Fall back to markdown if HTML didn't yield results
-			if (pages.length === 0 && json.data?.markdown) {
-				pages = extractImagesFromMarkdown(json.data.markdown, input.url);
-			}
-
-			// Also try adapter's native HTML parser if available
-			if (pages.length === 0 && htmlContent) {
 				pages = input.adapter.extractPagesFromHtml(htmlContent, input.url);
 			}
+			if (pages.length === 0 && htmlContent) {
+				pages = extractImagesFromHtml(htmlContent, input.url);
+			}
+			if (pages.length === 0 && markdownContent) {
+				pages = extractImagesFromMarkdown(markdownContent, input.url);
+			}
 
-			// Extract available chapters from HTML if adapter supports it
+			// Validate deterministic sequential page order (1..N)
+			const orderedPages = pages.map((p, idx) => ({
+				...p,
+				pageNumber: idx + 1,
+			}));
+
+			if (orderedPages.length === 0) {
+				throw new AcquisitionError(
+					'no_pages_found',
+					'Erro de extração: Firecrawl retornou a página, mas nenhuma imagem de capítulo válida foi encontrada.',
+					this.id,
+					false,
+				);
+			}
+
 			const availableChapters = htmlContent
 				? (input.adapter.extractAvailableChaptersFromHtml?.(htmlContent, input.url) ?? [])
 				: [];
 
-			return { pages, availableChapters };
+			return { pages: orderedPages, availableChapters };
 		} catch (err) {
 			clearTimeout(timer);
 			if (err instanceof AcquisitionError) throw err;
 			if (err instanceof DOMException && err.name === 'AbortError') {
-				throw new AcquisitionError('timeout', 'Firecrawl: tempo esgotado.', this.id, true, err);
+				throw new AcquisitionError('timeout', 'Firecrawl Local: tempo esgotado.', this.id, true, err);
 			}
 			throw new AcquisitionError(
 				'network_error',
-				`Erro ao comunicar com Firecrawl: ${err instanceof Error ? err.message : String(err)}`,
+				`Erro ao comunicar com Firecrawl Local: ${err instanceof Error ? err.message : String(err)}`,
 				this.id,
 				true,
 				err,
@@ -357,4 +518,36 @@ export function createFirecrawlSelfHostedProvider(
 	options?: FirecrawlProviderOptions,
 ): FirecrawlSelfHostedProvider {
 	return new FirecrawlSelfHostedProvider(options);
+}
+
+/**
+ * Wraps the standard Playwright/direct-HTTP discovery port as an AcquisitionProvider (`direct-fetch`)
+ * so `AcquisitionRouter` seamlessly falls back when Firecrawl Local is unavailable.
+ */
+export function createDirectFetchAcquisitionProvider(options?: {
+	allowHttpForTests?: boolean;
+}): AcquisitionProvider {
+	const delegate = createPlaywrightPageDiscoveryPort(options);
+	return {
+		id: 'direct-fetch',
+		displayName: 'Direct Fetch / Playwright',
+		capabilities: {
+			supportsDynamicContent: true,
+			requiresExternalService: false,
+			worksInPackagedElectron: true,
+			maxConcurrency: 3,
+		},
+		async checkHealth(): Promise<AcquisitionProviderHealth> {
+			return {
+				providerId: 'direct-fetch',
+				available: true,
+				lastCheckAtIso: new Date().toISOString(),
+				consecutiveFailures: 0,
+				circuitState: 'closed',
+			};
+		},
+		async discover(input) {
+			return delegate.discover(input);
+		},
+	};
 }
