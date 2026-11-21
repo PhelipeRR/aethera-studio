@@ -1225,11 +1225,21 @@ export function RecapProductionPanel() {
     return () => window.clearInterval(timer);
   }, [isRunning]);
 
+  const pipelineTimeline = useMemo(
+    () => derivePipelineTimeline(activeProject, statusNote),
+    [activeProject, statusNote],
+  );
+
   const workflowSteps = useMemo(
     () =>
       deriveWorkflowSteps({
         hasSeriesOrProject: Boolean(activeSeries || activeProject),
-        hasChapterSource: Boolean(selectedFiles.length > 0 || activeProject?.archivePath || importedLibrary.length > 0),
+        hasChapterSource: Boolean(
+          selectedFiles.length > 0 ||
+            activeProject?.archivePath ||
+            linkImportedCbz?.cbzPath ||
+            cdnResult?.cbzPath,
+        ),
         isProducing: isRunning,
         record: activeProject,
         sceneCount: scenes.length,
@@ -1241,7 +1251,7 @@ export function RecapProductionPanel() {
         hasAudiovisualPlan: Boolean(activePlan && activePlan.shots.length > 0),
         hasRenderedVideo: Boolean(activeProject?.masterMp4Path || activeProject?.previewMp4Path),
       }),
-    [activeSeries, activeProject, selectedFiles.length, importedLibrary.length, isRunning, scenes, activeGateG, activeGateH, activePlan],
+    [activeSeries, activeProject, selectedFiles.length, linkImportedCbz?.cbzPath, cdnResult?.cbzPath, isRunning, scenes, activeGateG, activeGateH, activePlan],
   );
 
   // Resolve active archive path across all 3 origins or active project
@@ -2648,7 +2658,7 @@ export function RecapProductionPanel() {
 
           <AudiovisualTrackTimeline
             plan={activePlan}
-            motionVelix={activeProject?.motionVelix}
+            motionVelix={activeProject?.motionVelix ?? null}
             selectedShotId={selectedShotId}
             onSelectShot={(shotId) => setSelectedShotId(shotId)}
           />
@@ -2875,7 +2885,7 @@ export function RecapProductionPanel() {
         <RecapVisualStoryboard
           scenes={scenes}
           plan={activePlan}
-          motionVelix={activeProject?.motionVelix}
+          motionVelix={activeProject?.motionVelix ?? null}
           selectedShotId={selectedShotId}
           onSelectShot={(shotId) => setSelectedShotId(shotId)}
         />
@@ -2886,7 +2896,7 @@ export function RecapProductionPanel() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <AudiovisualTrackTimeline
             plan={activePlan}
-            motionVelix={activeProject?.motionVelix}
+            motionVelix={activeProject?.motionVelix ?? null}
             selectedShotId={selectedShotId}
             onSelectShot={(shotId) => setSelectedShotId(shotId)}
           />
