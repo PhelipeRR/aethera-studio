@@ -89,11 +89,44 @@ interface Rf07EngineStatus {
   checkedAt: string;
 }
 
+type MultimodalHealthStateView =
+  | 'multimodal_available'
+  | 'cli_ready_untested'
+  | 'quota_exhausted'
+  | 'auth_expired'
+  | 'model_incompatible'
+  | 'temporarily_unavailable'
+  | 'not_installed';
+
+interface MultimodalProviderHealthRecordView {
+  providerId: string;
+  label: string;
+  installed: boolean;
+  version: string | null;
+  authenticated: boolean | null;
+  authMethod: string | null;
+  model: string | null;
+  multimodalStatus: MultimodalHealthStateView;
+  multimodalLabel: string;
+  code?: string;
+  detail: string;
+  resetAtText?: string;
+  latencyMs?: number;
+  testedWithRealImage: boolean;
+  checkedAtIso: string;
+}
+
 interface EvolutionBridge {
   cinemaEvolutionSnapshot?: (input?: { refresh?: boolean }) => Promise<{
     directors: DirectorProfileView[];
     snapshot: EvolutionSnapshotView;
     extraEngines?: Rf07EngineStatus[];
+    multimodalHealth?: MultimodalProviderHealthRecordView[];
+  }>;
+  cinemaTestVisionProviders?: (input?: { providerId?: string; force?: boolean }) => Promise<{
+    ok: boolean;
+    tested: MultimodalProviderHealthRecordView[];
+    multimodalHealth: MultimodalProviderHealthRecordView[];
   }>;
   cinemaSubmitFeedback?: (input: {
     text: string;
@@ -210,6 +243,8 @@ export function AetheraAgentsPage() {
     exercises: [],
   });
   const [extraEngines, setExtraEngines] = useState<Rf07EngineStatus[]>([]);
+  const [multimodalHealth, setMultimodalHealth] = useState<MultimodalProviderHealthRecordView[]>([]);
+  const [testingVisionId, setTestingVisionId] = useState<string | null>(null);
   const [feedbackText, setFeedbackText] = useState('');
   const [dagPrompt, setDagPrompt] = useState('Documentário cinematográfico sobre exploração espacial com humor 35%');
   const [busy, setBusy] = useState(false);
@@ -223,6 +258,7 @@ export function AetheraAgentsPage() {
         if (res?.directors?.length) setDirectors(res.directors);
         if (res?.snapshot) setEvolution(res.snapshot);
         if (res?.extraEngines) setExtraEngines(res.extraEngines);
+        if (res?.multimodalHealth) setMultimodalHealth(res.multimodalHealth);
       }
       if (bridge.cinemaAcademySnapshot) {
         const ac = await bridge.cinemaAcademySnapshot();
@@ -230,6 +266,33 @@ export function AetheraAgentsPage() {
       }
     } catch {
       // Keep fallback metadata when outside Electron preload
+    }
+  }, []);
+
+  const handleTestVision = useCallback(async (providerId?: string) => {
+    const bridge = getBridge();
+    if (!bridge.cinemaTestVisionProviders) return;
+    setTestingVisionId(providerId ?? 'all');
+    try {
+      const res = await bridge.cinemaTestVisionProviders({
+        ...(providerId ? { providerId } : {}),
+        force: true,
+      });
+      if (res?.multimodalHealth) {
+        setMultimodalHealth(res.multimodalHealth);
+      }
+      const availableList = (res?.multimodalHealth ?? [])
+        .filter((h) => h.multimodalStatus === 'multimodal_available')
+        .map((h) => h.label);
+      setStatusMessage(
+        availableList.length > 0
+          ? `Teste de visão concluído: multimodal disponível em ${availableList.join(', ')}.`
+          : 'Teste de visão concluído: nenhum provedor respondeu com visão multimodal ativa no momento.',
+      );
+    } catch (err) {
+      setStatusMessage(`Falha ao testar visão: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setTestingVisionId(null);
     }
   }, []);
 
@@ -496,30 +559,134 @@ export function AetheraAgentsPage() {
 
       {tab === 'engines' && (
         <section className="rounded-2xl border border-border bg-card p-5 space-y-4">
-          <div>
-            <h2 className="text-sm font-semibold text-foreground">Motores Técnicos Subjacentes (Claude / Codex / Antigravity / Claude Gateway)</h2>
-            <p className="text-xs text-muted-foreground">{fallbackMode}</p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">
+                Motores Técnicos Subjacentes (Claude / Codex / Antigravity / Claude Gateway)
+              </h2>
+              <p className="text-xs text-muted-foreground">
+                Disponibilidade do CLI é separada da disponibilidade multimodal (visão, quota e compatibilidade do modelo).
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleTestVision()}
+              disabled={testingVisionId !== null}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-primary/50 bg-primary/15 px-3.5 text-xs font-semibold text-foreground transition hover:bg-primary/25 disabled:opacity-50"
+            >
+              {testingVisionId === 'all' ? (
+                <LoaderCircle className="size-3.5 animate-spin" />
+              ) : (
+                <Camera className="size-3.5" />
+              )}
+              {testingVisionId === 'all' ? 'Testando visão…' : 'Testar visão'}
+            </button>
           </div>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             {allEngines.map((agent) => {
               const health = healthOf(agent as Parameters<typeof healthOf>[0]);
+              const mm = multimodalHealth.find((m) => m.providerId === agent.id);
+              const mmStatus: MultimodalHealthStateView =
+                mm?.multimodalStatus ??
+                (!agent.installed
+                  ? 'not_installed'
+                  : agent.authenticated === false
+                    ? 'auth_expired'
+                    : health === 'ready'
+                      ? 'cli_ready_untested'
+                      : 'temporarily_unavailable');
+              const badgeLabel =
+                mm?.multimodalLabel ??
+                (mmStatus === 'multimodal_available'
+                  ? 'Multimodal disponível'
+                  : mmStatus === 'cli_ready_untested'
+                    ? 'CLI operacional'
+                    : mmStatus === 'quota_exhausted'
+                      ? 'Quota esgotada'
+                      : mmStatus === 'auth_expired'
+                        ? 'Autenticação expirada'
+                        : mmStatus === 'model_incompatible'
+                          ? 'Modelo incompatível'
+                          : mmStatus === 'not_installed'
+                            ? 'Não instalado'
+                            : 'Temporariamente indisponível');
+              const badgeTone =
+                mmStatus === 'multimodal_available'
+                  ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                  : mmStatus === 'cli_ready_untested'
+                    ? 'bg-sky-500/15 text-sky-300 border border-sky-500/30'
+                    : mmStatus === 'quota_exhausted' || mmStatus === 'temporarily_unavailable'
+                      ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                      : 'bg-rose-500/15 text-rose-300 border border-rose-500/30';
+              const isTestingThis = testingVisionId === agent.id || testingVisionId === 'all';
+
               return (
-                <div key={agent.id} className="rounded-xl border border-border bg-[#0d0d17] p-4 text-xs space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-foreground">{agent.label}</span>
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                        health === 'ready'
-                          ? 'bg-emerald-500/15 text-emerald-300'
-                          : 'bg-amber-500/15 text-amber-300'
-                      }`}
-                    >
-                      {HEALTH_LABEL[health]}
-                    </span>
+                <div key={agent.id} className="flex flex-col justify-between rounded-xl border border-border bg-[#0d0d17] p-4 text-xs space-y-2.5">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-foreground">{agent.label}</span>
+                      <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-medium ${badgeTone}`}>
+                        {badgeLabel}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 text-[10px]">
+                      <span
+                        className={`rounded-md px-1.5 py-0.5 ${
+                          agent.installed
+                            ? 'bg-emerald-500/10 text-emerald-300'
+                            : 'bg-rose-500/10 text-rose-300'
+                        }`}
+                      >
+                        {agent.installed ? `Instalado (${agent.version ?? 'CLI'})` : 'Não instalado'}
+                      </span>
+                      <span
+                        className={`rounded-md px-1.5 py-0.5 ${
+                          mmStatus === 'auth_expired' || agent.authenticated === false
+                            ? 'bg-rose-500/10 text-rose-300'
+                            : agent.authenticated
+                              ? 'bg-emerald-500/10 text-emerald-300'
+                              : 'bg-zinc-500/15 text-zinc-300'
+                        }`}
+                      >
+                        {mmStatus === 'auth_expired' || agent.authenticated === false
+                          ? 'Autenticação expirada'
+                          : agent.authenticated
+                            ? `Autenticado${agent.authMethod ? ` (${agent.authMethod})` : ''}`
+                            : 'Auth pendente'}
+                      </span>
+                      {mm?.model && (
+                        <span className="rounded-md bg-purple-500/10 px-1.5 py-0.5 text-purple-200">
+                          {mm.model}
+                        </span>
+                      )}
+                    </div>
+                    {mm?.detail && (
+                      <p className="text-[11px] leading-relaxed text-muted-foreground line-clamp-3">
+                        {mm.detail}
+                      </p>
+                    )}
+                    {mm?.resetAtText && (
+                      <p className="text-[10px] font-medium text-amber-300">
+                        Reset previsto: {mm.resetAtText}
+                      </p>
+                    )}
                   </div>
-                  <p className="text-muted-foreground">
-                    {agent.installed ? `Instalado (${agent.version ?? 'CLI'})` : 'Não instalado'}
-                  </p>
+                  <div className="flex items-center justify-between pt-2 border-t border-border/50">
+                    <span className="text-[10px] text-muted-foreground">
+                      {mm?.testedWithRealImage
+                        ? `Visão testada${mm.latencyMs ? ` · ${(mm.latencyMs / 1000).toFixed(1)}s` : ''}`
+                        : 'Visão ainda não testada'}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={!agent.installed || testingVisionId !== null}
+                      onClick={() => void handleTestVision(agent.id)}
+                      className="inline-flex items-center gap-1 rounded-md border border-border bg-[#151525] px-2 py-1 text-[10px] font-medium text-foreground hover:border-primary/50 disabled:opacity-40"
+                    >
+                      {isTestingThis ? <LoaderCircle className="size-2.5 animate-spin" /> : <Camera className="size-2.5" />}
+                      Testar visão
+                    </button>
+                  </div>
                 </div>
               );
             })}

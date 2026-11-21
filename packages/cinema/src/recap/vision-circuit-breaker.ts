@@ -22,6 +22,7 @@ export interface AgentCircuitState {
 const DEFINITIVE_OPEN_CODES = new Set<VisionErrorCode>([
 	'QUOTA_EXCEEDED',
 	'AUTHENTICATION_FAILED',
+	'MODEL_INCOMPATIBLE',
 	'PROVIDER_UNAVAILABLE',
 ]);
 
@@ -91,5 +92,21 @@ export class AgentCircuitBreaker {
 		};
 		this.circuits.set(providerId, next);
 		return next;
+	}
+
+	clearProvider(providerId: string): void {
+		this.circuits.delete(providerId);
+	}
+
+	reset(options?: { preserveQuotaExhausted?: boolean }): void {
+		if (!options?.preserveQuotaExhausted) {
+			this.circuits.clear();
+			return;
+		}
+		for (const [providerId, state] of this.circuits.entries()) {
+			if (state.code !== 'QUOTA_EXCEEDED') {
+				this.circuits.delete(providerId);
+			}
+		}
 	}
 }

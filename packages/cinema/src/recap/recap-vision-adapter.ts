@@ -471,6 +471,7 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 					providerId: candidate.id,
 					code: classified.code,
 					message: classified.message,
+					...(classified.exitCode !== undefined ? { exitCode: classified.exitCode } : {}),
 					...(classified.resetAtText ? { resetAtText: classified.resetAtText } : {}),
 				});
 				attempts.push({ provider: candidate.id, outcome: 'error', detail: `${classified.code}: ${classified.message}` });
@@ -651,11 +652,24 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 			let resolvedPath: string;
 
 			if (Buffer.isBuffer(imagePathOrBuffer)) {
-				// Write buffer to a temp file inside the authorized root so the provider can read it.
+				// Write buffer to a temp file inside the authorized root so the provider can read it, preserving true binary extension.
 				const hash = createHash('sha256').update(imagePathOrBuffer).digest('hex').slice(0, 16);
 				const tempDir = join(resolvedRoot, '.recap-vision-tmp');
 				if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
-				resolvedPath = join(tempDir, `${hash}.png`);
+				let ext = '.png';
+				if (imagePathOrBuffer.length >= 12) {
+					if (imagePathOrBuffer[0] === 0xff && imagePathOrBuffer[1] === 0xd8 && imagePathOrBuffer[2] === 0xff) {
+						ext = '.jpg';
+					} else if (
+						imagePathOrBuffer[0] === 0x52 && imagePathOrBuffer[1] === 0x49 &&
+						imagePathOrBuffer[2] === 0x46 && imagePathOrBuffer[3] === 0x46 &&
+						imagePathOrBuffer[8] === 0x57 && imagePathOrBuffer[9] === 0x45 &&
+						imagePathOrBuffer[10] === 0x42 && imagePathOrBuffer[11] === 0x50
+					) {
+						ext = '.webp';
+					}
+				}
+				resolvedPath = join(tempDir, `${hash}${ext}`);
 				writeFileSync(resolvedPath, imagePathOrBuffer);
 			} else {
 				resolvedPath = imagePathOrBuffer;

@@ -209,7 +209,9 @@ export async function* runAgent(options: {
       cancelled: outcome.cancelled,
       sessionId,
       result: result ?? lastText,
-      errorOutput: ok ? null : outcome.spawnError ?? (outcome.stderrTail.slice(-2000) || null),
+      errorOutput: ok
+        ? null
+        : outcome.spawnError ?? (outcome.stderrTail.slice(-2000) || (resultOk === false ? (result ?? lastText) : null)),
     };
   } finally {
     if (!finished) internal.abort();

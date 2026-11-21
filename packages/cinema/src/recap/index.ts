@@ -166,7 +166,7 @@ export {
 } from './recap-vision-adapter.js';
 
 // ─── Claude Vision Provider (E2E Phase 2.2.4) ────────────────────────────────
-export { createClaudeVisionProvider, type ClaudeVisionProviderOptions } from './claude-vision-provider.js';
+export { createClaudeVisionProvider, detectImageMimeType, type ClaudeVisionProviderOptions } from './claude-vision-provider.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // FASE 2.2 — NARRATIVE ENHANCEMENT EXPORTS
@@ -232,6 +232,19 @@ export {
 	AgentCircuitBreaker,
 	type AgentCircuitState,
 } from './vision-circuit-breaker.js';
+
+export {
+	MULTIMODAL_HEALTH_STATES,
+	MULTIMODAL_HEALTH_LABELS,
+	type MultimodalHealthState,
+	type MultimodalProviderHealthRecord,
+	type VisionHealthProbeCandidate,
+	createTinyProbePngBuffer,
+	ensureVisionHealthProbeImage,
+	mapErrorCodeToMultimodalState,
+	inspectPassiveMultimodalHealth,
+	runMultimodalVisionHealthCheck,
+} from './vision-health-check.js';
 
 // ─── Story Memory (Persistent Cross-Chapter Narrative Memory) ────────────────
 export * from './story-memory.js';

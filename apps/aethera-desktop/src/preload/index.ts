@@ -75,6 +75,8 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaListLibrary: () => ipcRenderer.invoke('cinema:list-library'),
   cinemaEvolutionSnapshot: (input?: { refresh?: boolean }) =>
     ipcRenderer.invoke('cinema:evolution-snapshot', input),
+  cinemaTestVisionProviders: (input?: { providerId?: string; force?: boolean }) =>
+    ipcRenderer.invoke('cinema:test-vision-providers', input),
   cinemaSubmitFeedback: (input: { text: string; projectId?: string; genre?: string }) =>
     ipcRenderer.invoke('cinema:submit-feedback', input),
   cinemaToggleMemory: (input: { memoryId: string; action: 'disable' | 'rollback' | 'delete' }) =>

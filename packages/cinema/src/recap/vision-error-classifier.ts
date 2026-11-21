@@ -10,6 +10,7 @@ export const VISION_ERROR_CODES = [
 	'QUOTA_EXCEEDED',
 	'RATE_LIMITED',
 	'AUTHENTICATION_FAILED',
+	'MODEL_INCOMPATIBLE',
 	'PROVIDER_UNAVAILABLE',
 	'TIMEOUT',
 	'INVALID_MODEL_RESPONSE',
@@ -129,10 +130,13 @@ const QUOTA_PATTERNS = [
 	/insufficient[_ ]?credits?/i,
 	/cr[ée]ditos?\s+insuficientes?/i,
 	/saldo\s+insuficiente/i,
+	/balance is too low/i,
+	/ai credits balance/i,
 	/out of (?:usage )?credits?/i,
 	/no remaining credits?/i,
 	/credits?\s+exhausted/i,
 	/hit your (?:weekly|daily|monthly|usage) limit/i,
+	/usage_limit_reached/i,
 	/weekly limit/i,
 	/usage limit/i,
 	/quota[_ ]?exceeded/i,
@@ -141,6 +145,22 @@ const QUOTA_PATTERNS = [
 	/billing hard limit/i,
 	/exceeded your current quota/i,
 	/quota\s+exhausted/i,
+];
+
+const MODEL_INCOMPATIBLE_PATTERNS = [
+	/does not support (?:image|vision|multimodal)/i,
+	/(?:image|vision|multimodal) (?:input |content )?(?:is )?not supported/i,
+	/cannot process image/i,
+	/model .* does not support/i,
+	/model .* not (?:found|supported|available)/i,
+	/invalid[_ ]?model/i,
+	/unknown model/i,
+	/not_found_error.*model/i,
+	/image does not match the provided media type/i,
+	/unsupported[_ ]?media[_ ]?type/i,
+	/text[- ]only model/i,
+	/sem suporte a (?:imagem|imagens|vis[ãa]o|multimodal)/i,
+	/modelo incompat[íi]vel/i,
 ];
 
 const RATE_LIMIT_PATTERNS = [
@@ -201,6 +221,8 @@ const PARSE_PATTERNS = [
 	/n[ãa]o retornou json estruturado/i,
 	/invalid json/i,
 	/zoderror/i,
+	/unrecognized_keys/i,
+	/invalid_enum_value/i,
 ];
 
 /**
@@ -215,6 +237,7 @@ export function classifyVisionError(
 	fallbackCode: VisionErrorCode = 'UNKNOWN_PROVIDER_ERROR',
 ): RecapVisionError {
 	if (rawInput instanceof RecapVisionError) return rawInput;
+	const isZodError = rawInput instanceof Error && rawInput.name === 'ZodError';
 	const rawMessage = rawInput instanceof Error ? rawInput.message : String(rawInput ?? '');
 	const sanitized = sanitizeErrorMessage(rawMessage);
 	const resetAtText = extractResetInfo(rawMessage);
@@ -252,6 +275,16 @@ export function classifyVisionError(
 			cause: rawInput,
 		});
 	}
+	if (MODEL_INCOMPATIBLE_PATTERNS.some((re) => re.test(rawMessage))) {
+		return new RecapVisionError({
+			code: 'MODEL_INCOMPATIBLE',
+			providerId,
+			message: sanitized,
+			retryable: false,
+			...(exitCode !== undefined ? { exitCode } : {}),
+			cause: rawInput,
+		});
+	}
 	if (TIMEOUT_PATTERNS.some((re) => re.test(rawMessage))) {
 		return new RecapVisionError({
 			code: 'TIMEOUT',
@@ -282,7 +315,7 @@ export function classifyVisionError(
 			cause: rawInput,
 		});
 	}
-	if (PARSE_PATTERNS.some((re) => re.test(rawMessage))) {
+	if (isZodError || PARSE_PATTERNS.some((re) => re.test(rawMessage))) {
 		return new RecapVisionError({
 			code: 'INVALID_MODEL_RESPONSE',
 			providerId,
@@ -305,7 +338,7 @@ export function classifyVisionError(
 
 /**
  * Inspects raw model text BEFORE JSON parsing to detect provider errors
- * (quota, RESOURCE_EXHAUSTED, rate-limit, auth, network) returned inline as text output.
+ * (quota, RESOURCE_EXHAUSTED, rate-limit, auth, model incompatibility, network) returned inline as text output.
  */
 export function detectProviderErrorInText(rawText: string, providerId: string): RecapVisionError | null {
 	const trimmed = rawText.trim();
@@ -316,7 +349,8 @@ export function detectProviderErrorInText(rawText: string, providerId: string): 
 	if (
 		QUOTA_PATTERNS.some((re) => re.test(trimmed)) ||
 		RATE_LIMIT_PATTERNS.some((re) => re.test(trimmed)) ||
-		AUTH_PATTERNS.some((re) => re.test(trimmed))
+		AUTH_PATTERNS.some((re) => re.test(trimmed)) ||
+		MODEL_INCOMPATIBLE_PATTERNS.some((re) => re.test(trimmed))
 	) {
 		return classifyVisionError(trimmed, providerId);
 	}

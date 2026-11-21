@@ -24,6 +24,8 @@ import type { GateHReport, RecapAudiovisualPlan, RecapTtsSynthesisPort, RecapVis
 import { renderRecapVideo } from '../phase3/recap-mp4-renderer.js';
 import { checkRecapProductionReadiness, type ReadinessProviderProbe, type RecapProductionReadinessReport } from '../production-readiness.js';
 import { AgentCircuitBreaker } from '../vision-circuit-breaker.js';
+import { AllVisionProvidersUnavailableError } from '../vision-error-classifier.js';
+import { formatVisionRoutingSummary } from '../recap-vision-adapter.js';
 import { runStoryEngine } from '../story-engine.js';
 
 import type { MotionVelixRenderReport } from '../phase3/recap-motionvelix.js';
@@ -63,6 +65,27 @@ export interface RecapOrchestratorProgressEvent {
 	updatedAtIso: string;
 }
 
+export interface RecapVisionFailedProviderItem {
+	providerId: string;
+	code: string;
+	reason: string;
+	resetAtText?: string;
+	fallbackTo?: string;
+}
+
+export interface RecapVisionLiveTelemetry {
+	activeProvider: string | null;
+	activeModel: string | null;
+	completedPanels: number;
+	totalPanels: number;
+	currentPanelIndex?: number;
+	failedProviders: RecapVisionFailedProviderItem[];
+	fallbackActive: boolean;
+	fallbackFrom?: string | null;
+	canResumeFromCheckpoint: boolean;
+	updatedAtIso: string;
+}
+
 export interface RecapOrchestratorRecord {
 	schemaVersion: 1;
 	runId: string;
@@ -83,6 +106,7 @@ export interface RecapOrchestratorRecord {
 	currentStage?: RecapPipelineStageId | null;
 	completedSteps: string[];
 	readiness?: RecapProductionReadinessReport;
+	visionTelemetry?: RecapVisionLiveTelemetry;
 	gateFVerdict?: GateFReport['verdict'];
 	gateGVerdict?: GateGReport['verdict'];
 	gateHVerdict?: GateHReport['verdict'];
@@ -223,6 +247,7 @@ export async function runRecapProductionOrchestrator(
 			...(input.gateFVerdict ?? base?.gateFVerdict ? { gateFVerdict: input.gateFVerdict ?? base?.gateFVerdict } : {}),
 			...(base?.gateGVerdict ? { gateGVerdict: base.gateGVerdict } : {}),
 			...(base?.gateHVerdict ? { gateHVerdict: base.gateHVerdict } : {}),
+			...(base?.visionTelemetry ? { visionTelemetry: base.visionTelemetry } : {}),
 			...(base?.motionVelix ? { motionVelix: base.motionVelix } : {}),
 			...(base?.previewMp4Path ? { previewMp4Path: base.previewMp4Path } : {}),
 			...(base?.masterMp4Path ? { masterMp4Path: base.masterMp4Path } : {}),
@@ -272,7 +297,113 @@ export async function runRecapProductionOrchestrator(
 		}
 
 		// ─── Step 2: Story Engine (resumes checkpoint idempotently) ───────────
-		persist('story_engine', 'vision', 'Analisando painéis, continuidade e gerando roteiro…', { readiness });
+		let liveCompletedPanels = readiness.checkpoint.completedPanels;
+		const totalPanelsCount = input.panels.length;
+
+		const buildFailedProvidersSnapshot = (
+			traceAttempts?: readonly { provider: string; outcome: string; detail?: string }[],
+		): RecapVisionFailedProviderItem[] => {
+			const map = new Map<string, RecapVisionFailedProviderItem>();
+			for (const cb of circuitBreaker.getSnapshot()) {
+				if (cb.state === 'open' || cb.failureCount > 0) {
+					map.set(cb.providerId, {
+						providerId: cb.providerId,
+						code: cb.code ?? 'PROVIDER_UNAVAILABLE',
+						reason: cb.reason ?? 'Indisponível',
+						...(cb.resetAtText ? { resetAtText: cb.resetAtText } : {}),
+					});
+				}
+			}
+			if (traceAttempts && traceAttempts.length > 0) {
+				const summary = formatVisionRoutingSummary(traceAttempts, circuitBreaker);
+				for (const item of summary) {
+					if (item.outcome !== 'ok' && item.outcome !== 'cached') {
+						const existing = map.get(item.provider);
+						map.set(item.provider, {
+							providerId: item.provider,
+							code: item.code ?? existing?.code ?? 'PROVIDER_UNAVAILABLE',
+							reason: item.reason ?? existing?.reason ?? 'Falha na análise visual',
+							...(existing?.resetAtText ? { resetAtText: existing.resetAtText } : {}),
+							...(item.fallbackTo ? { fallbackTo: item.fallbackTo } : {}),
+						});
+					}
+				}
+			}
+			return [...map.values()];
+		};
+
+		const initialTelemetry: RecapVisionLiveTelemetry = {
+			activeProvider: readiness.operationalProviders[0] ?? null,
+			activeModel: null,
+			completedPanels: liveCompletedPanels,
+			totalPanels: totalPanelsCount,
+			failedProviders: buildFailedProvidersSnapshot(),
+			fallbackActive: buildFailedProvidersSnapshot().length > 0 && readiness.operationalProviders.length > 0,
+			fallbackFrom: buildFailedProvidersSnapshot()[0]?.providerId ?? null,
+			canResumeFromCheckpoint: readiness.checkpoint.canResume,
+			updatedAtIso: new Date().toISOString(),
+		};
+
+		persist(
+			'story_engine',
+			'vision',
+			liveCompletedPanels > 0
+				? `Retomando análise visual do painel ${liveCompletedPanels + 1}/${totalPanelsCount} (${liveCompletedPanels} em checkpoint)…`
+				: `Analisando painéis (0/${totalPanelsCount}) via ${initialTelemetry.activeProvider ?? 'VisionRouter'}…`,
+			{ readiness, visionTelemetry: initialTelemetry },
+		);
+
+		type TraceableVisionAdapter = VisionAdapter & {
+			getLastTrace?: () => {
+				provider: string | null;
+				model: string | null;
+				reportedModel?: string | null;
+				attempts: readonly { provider: string; outcome: string; detail?: string }[];
+			} | null;
+		};
+
+		const rawVisionAdapter = input.visionAdapter as TraceableVisionAdapter | undefined;
+		const instrumentedVisionAdapter: VisionAdapter | undefined = rawVisionAdapter
+			? {
+					name: rawVisionAdapter.name,
+					analyze: async (imagePathOrBuffer, context) => {
+						const res = await rawVisionAdapter.analyze(imagePathOrBuffer, context);
+						liveCompletedPanels = Math.min(totalPanelsCount, liveCompletedPanels + 1);
+						const trace = rawVisionAdapter.getLastTrace?.() ?? null;
+						const failedList = buildFailedProvidersSnapshot(trace?.attempts);
+						const activeProvider = trace?.provider ?? readiness.operationalProviders[0] ?? null;
+						const activeModel = trace?.reportedModel ?? trace?.model ?? null;
+						const fallbackFrom = failedList.find((f) => f.providerId !== activeProvider)?.providerId ?? null;
+						const visionTelemetry: RecapVisionLiveTelemetry = {
+							activeProvider,
+							activeModel,
+							completedPanels: liveCompletedPanels,
+							totalPanels: totalPanelsCount,
+							...(context?.panelIndex !== undefined ? { currentPanelIndex: context.panelIndex + 1 } : {}),
+							failedProviders: failedList,
+							fallbackActive: Boolean(fallbackFrom && activeProvider),
+							fallbackFrom,
+							canResumeFromCheckpoint: liveCompletedPanels > 0 && liveCompletedPanels < totalPanelsCount,
+							updatedAtIso: new Date().toISOString(),
+						};
+						const providerBadge = activeProvider
+							? `${activeProvider}${activeModel ? ` (${activeModel})` : ''}`
+							: 'VisionRouter';
+						const fallbackNote =
+							visionTelemetry.fallbackActive && fallbackFrom
+								? ` · fallback de ${fallbackFrom}`
+								: '';
+						persist(
+							'story_engine',
+							'vision',
+							`Painel ${liveCompletedPanels}/${totalPanelsCount} analisado via ${providerBadge}${fallbackNote}`,
+							{ readiness, visionTelemetry },
+						);
+						return res;
+					},
+				}
+			: undefined;
+
 		try {
 			const resolvedStyle: ScriptStyle =
 				input.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(input.scriptStyle)
@@ -287,7 +418,7 @@ export async function runRecapProductionOrchestrator(
 				workTitle: input.workTitle,
 				...(input.language ? { language: input.language } : {}),
 				...(input.humorVolume !== undefined ? { humorVolume: input.humorVolume } : {}),
-				...(input.visionAdapter ? { visionAdapter: input.visionAdapter } : {}),
+				...(instrumentedVisionAdapter ? { visionAdapter: instrumentedVisionAdapter } : {}),
 				...(input.scriptPort ? { scriptPort: input.scriptPort } : {}),
 				...(input.humanize ? { humanize: input.humanize } : {}),
 				...(input.seriesProjectId && input.chapterNumber
@@ -310,6 +441,22 @@ export async function runRecapProductionOrchestrator(
 				completedSteps.add('humanize');
 			}
 			completedSteps.add('story_engine');
+			const trace = rawVisionAdapter?.getLastTrace?.() ?? null;
+			const finalFailed = buildFailedProvidersSnapshot(trace?.attempts);
+			const finalProvider = trace?.provider ?? readiness.operationalProviders[0] ?? null;
+			const finalModel = trace?.reportedModel ?? trace?.model ?? null;
+			const finalFallbackFrom = finalFailed.find((f) => f.providerId !== finalProvider)?.providerId ?? null;
+			const finalVisionTelemetry: RecapVisionLiveTelemetry = {
+				activeProvider: finalProvider,
+				activeModel: finalModel,
+				completedPanels: totalPanelsCount,
+				totalPanels: totalPanelsCount,
+				failedProviders: finalFailed,
+				fallbackActive: Boolean(finalFallbackFrom && finalProvider),
+				fallbackFrom: finalFallbackFrom,
+				canResumeFromCheckpoint: false,
+				updatedAtIso: new Date().toISOString(),
+			};
 			if (gateGReport.verdict === 'fail') {
 				const errMsg = `Gate G falhou: ${gateGReport.reasons.join('; ')}`;
 				const failed = persist(
@@ -318,6 +465,7 @@ export async function runRecapProductionOrchestrator(
 					errMsg,
 					{
 						readiness,
+						visionTelemetry: finalVisionTelemetry,
 						sceneCount: script.scenes.length,
 						gateGVerdict: gateGReport.verdict,
 						lastError: errMsg,
@@ -332,6 +480,7 @@ export async function runRecapProductionOrchestrator(
 				`Roteiro concluído (${script.scenes.length} cenas) · Gate G: ${gateGReport.verdict}.`,
 				{
 					readiness,
+					visionTelemetry: finalVisionTelemetry,
 					sceneCount: script.scenes.length,
 					gateGVerdict: gateGReport.verdict,
 				},
@@ -339,8 +488,44 @@ export async function runRecapProductionOrchestrator(
 			);
 		} catch (err) {
 			const errMsg = err instanceof Error ? err.message : String(err);
-			const failed = persist('failed', 'vision', errMsg, {
-				readiness,
+			const postFailReadiness = await checkRecapProductionReadiness({
+				providers: input.providers,
+				circuitBreaker,
+				checkpointDir,
+				expectedTotalPanels: input.panels.length,
+			});
+			const trace = rawVisionAdapter?.getLastTrace?.() ?? null;
+			const failedList = buildFailedProvidersSnapshot(trace?.attempts);
+			if (err instanceof AllVisionProvidersUnavailableError) {
+				for (const d of err.diagnostics) {
+					if (!failedList.some((f) => f.providerId === d.providerId)) {
+						failedList.push({
+							providerId: d.providerId,
+							code: d.code,
+							reason: d.message,
+							...(d.resetAtText ? { resetAtText: d.resetAtText } : {}),
+						});
+					}
+				}
+			}
+			const visionTelemetry: RecapVisionLiveTelemetry = {
+				activeProvider: null,
+				activeModel: null,
+				completedPanels: postFailReadiness.checkpoint.completedPanels,
+				totalPanels: totalPanelsCount,
+				failedProviders: failedList,
+				fallbackActive: false,
+				fallbackFrom: failedList[0]?.providerId ?? null,
+				canResumeFromCheckpoint: postFailReadiness.checkpoint.canResume,
+				updatedAtIso: new Date().toISOString(),
+			};
+			const nextState: RecapOrchestratorState =
+				err instanceof AllVisionProvidersUnavailableError && postFailReadiness.checkpoint.canResume
+					? 'paused_provider_unavailable'
+					: 'failed';
+			const failed = persist(nextState, 'vision', errMsg, {
+				readiness: postFailReadiness,
+				visionTelemetry,
 				lastError: errMsg,
 			});
 			return { record: failed };

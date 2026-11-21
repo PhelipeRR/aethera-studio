@@ -211,6 +211,19 @@ interface StoryMemoryProjectView {
 
 interface RecapBridge {
   recapGetReadiness?: (input?: { chapterId?: string }) => Promise<RecapReadinessView>;
+  cinemaTestVisionProviders?: (input?: { providerId?: string; force?: boolean }) => Promise<{
+    ok: boolean;
+    multimodalHealth?: Array<{
+      providerId: string;
+      label: string;
+      multimodalStatus: string;
+      multimodalLabel: string;
+      detail: string;
+      resetAtText?: string;
+      model?: string | null;
+      testedWithRealImage?: boolean;
+    }>;
+  }>;
   recapGetMotionVelixStatus?: () => Promise<MotionVelixKitStatusView>;
   recapPlanRevision?: (input: { prompt: string; script: unknown; availablePanelIds?: string[] }) => Promise<RecapRevisionPlanView>;
   recapSelectArchives?: () => Promise<{ canceled: boolean; files: SelectedArchiveFile[] }>;
@@ -885,6 +898,131 @@ function RealPipelineTimeline({
           );
         })}
       </div>
+
+      {record?.visionTelemetry && (
+        <div
+          style={{
+            marginTop: 14,
+            padding: '12px 14px',
+            borderRadius: T.radiusInner,
+            border: `1px solid ${T.border}`,
+            background: T.surfaceSubtle,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+          }}
+        >
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: T.inkMuted }}>
+                Visão Multimodal
+              </span>
+              {record.visionTelemetry.activeProvider ? (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    fontFamily: T.mono,
+                    padding: '2px 8px',
+                    borderRadius: T.radiusFull,
+                    background: T.successBg,
+                    color: T.success,
+                    border: `1px solid ${T.successBorder}`,
+                  }}
+                >
+                  Analisando: {record.visionTelemetry.activeProvider}
+                  {record.visionTelemetry.activeModel ? ` (${record.visionTelemetry.activeModel})` : ''}
+                </span>
+              ) : (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    fontFamily: T.mono,
+                    padding: '2px 8px',
+                    borderRadius: T.radiusFull,
+                    background: T.warningBg,
+                    color: T.warning,
+                    border: `1px solid ${T.warningBorder}`,
+                  }}
+                >
+                  Nenhum provedor ativo
+                </span>
+              )}
+              {record.visionTelemetry.fallbackActive && record.visionTelemetry.fallbackFrom && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    fontFamily: T.mono,
+                    padding: '2px 8px',
+                    borderRadius: T.radiusFull,
+                    background: '#f5f3ff',
+                    color: T.accent,
+                    border: `1px solid #ddd6fe`,
+                  }}
+                >
+                  Fallback: {record.visionTelemetry.fallbackFrom} → {record.visionTelemetry.activeProvider}
+                </span>
+              )}
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 700, fontFamily: T.mono, color: T.ink }}>
+              Painéis: {record.visionTelemetry.completedPanels}/{record.visionTelemetry.totalPanels}
+              {record.visionTelemetry.totalPanels > 0
+                ? ` (${Math.round((record.visionTelemetry.completedPanels / record.visionTelemetry.totalPanels) * 100)}%)`
+                : ''}
+            </span>
+          </div>
+
+          {record.visionTelemetry.totalPanels > 0 && (
+            <div style={{ height: 5, borderRadius: T.radiusFull, background: T.border, overflow: 'hidden' }}>
+              <div
+                style={{
+                  height: '100%',
+                  width: `${Math.min(100, Math.round((record.visionTelemetry.completedPanels / record.visionTelemetry.totalPanels) * 100))}%`,
+                  background: T.accent,
+                  transition: 'width 200ms ease',
+                }}
+              />
+            </div>
+          )}
+
+          {record.visionTelemetry.failedProviders.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: T.inkMuted }}>
+                Diagnóstico por agente / fallback:
+              </span>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {record.visionTelemetry.failedProviders.map((fp) => (
+                  <span
+                    key={fp.providerId}
+                    title={fp.reason}
+                    style={{
+                      fontSize: 11,
+                      fontFamily: T.mono,
+                      padding: '3px 8px',
+                      borderRadius: T.radiusSm,
+                      background: T.errorBg,
+                      color: T.error,
+                      border: `1px solid ${T.errorBorder}`,
+                    }}
+                  >
+                    {fp.providerId}: {fp.code}
+                    {fp.resetAtText ? ` (reset: ${fp.resetAtText})` : ''}
+                    {fp.fallbackTo ? ` → ${fp.fallbackTo}` : ''}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {record.visionTelemetry.canResumeFromCheckpoint && (
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.success }}>
+              Checkpoint preservado ({record.visionTelemetry.completedPanels}/{record.visionTelemetry.totalPanels} painéis concluídos). A produção pode ser retomada do painel {record.visionTelemetry.completedPanels + 1} sem reprocessar painéis anteriores.
+            </div>
+          )}
+        </div>
+      )}
     </BentoBlock>
   );
 }
@@ -1417,6 +1555,19 @@ export function RecapProductionPanel() {
     checkedAtIso: new Date().toISOString(),
   });
   const [readinessLoading, setReadinessLoading] = useState(false);
+  const [testingVision, setTestingVision] = useState(false);
+  const [visionHealthItems, setVisionHealthItems] = useState<
+    Array<{
+      providerId: string;
+      label: string;
+      multimodalStatus: string;
+      multimodalLabel: string;
+      detail: string;
+      resetAtText?: string;
+      model?: string | null;
+      testedWithRealImage?: boolean;
+    }>
+  >([]);
   const [statusNote, setStatusNote] = useState<string | null>(null);
 
   // Preview & Review state
@@ -1646,6 +1797,32 @@ export function RecapProductionPanel() {
       setReadinessLoading(false);
     }
   }, []);
+
+  const handleTestVisionReal = useCallback(async () => {
+    const bridge = getRecapBridge();
+    if (!bridge?.cinemaTestVisionProviders) return;
+    setTestingVision(true);
+    setStatusNote('Testando visão multimodal com imagem real nos motores técnicos…');
+    try {
+      const res = await bridge.cinemaTestVisionProviders({ force: true });
+      if (res?.multimodalHealth) {
+        setVisionHealthItems(res.multimodalHealth);
+        const okLabels = res.multimodalHealth
+          .filter((h) => h.multimodalStatus === 'multimodal_available')
+          .map((h) => `${h.label}${h.model ? ` (${h.model})` : ''}`);
+        setStatusNote(
+          okLabels.length > 0
+            ? `Visão multimodal confirmada: ${okLabels.join(', ')}.`
+            : 'Teste de visão concluído: nenhum provedor respondeu com visão multimodal ativa.',
+        );
+      }
+      await refreshReadiness(activeProject?.chapterId);
+    } catch (err) {
+      setStatusNote(`Falha no teste de visão: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setTestingVision(false);
+    }
+  }, [activeProject?.chapterId, refreshReadiness]);
 
   const refreshMotionVelixStatus = useCallback(async () => {
     const bridge = getRecapBridge();
@@ -4215,6 +4392,16 @@ export function RecapProductionPanel() {
                 <RefreshCw className={readinessLoading ? 'animate-spin' : undefined} style={{ width: 13, height: 13 }} />
                 Verificar Provedores
               </button>
+
+              <button
+                type="button"
+                disabled={testingVision || isRunning}
+                onClick={() => void handleTestVisionReal()}
+                style={btnGhost}
+              >
+                <Sparkles className={testingVision ? 'animate-spin' : undefined} style={{ width: 13, height: 13 }} />
+                {testingVision ? 'Testando visão…' : 'Testar visão'}
+              </button>
             </div>
           </BentoBlock>
 
@@ -4896,16 +5083,27 @@ export function RecapProductionPanel() {
 
               {/* Provider Readiness */}
               <BentoBlock>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                   <SectionLabel>Provedores Multimodais</SectionLabel>
-                  <button
-                    type="button"
-                    disabled={readinessLoading}
-                    onClick={() => void refreshReadiness(activeProject?.chapterId)}
-                    style={{ ...btnGhost, padding: '4px 8px' }}
-                  >
-                    <RefreshCw className={readinessLoading ? 'animate-spin' : undefined} style={{ width: 12, height: 12 }} />
-                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <button
+                      type="button"
+                      disabled={testingVision}
+                      onClick={() => void handleTestVisionReal()}
+                      style={{ ...btnGhost, padding: '4px 8px', fontSize: 11 }}
+                    >
+                      <Sparkles className={testingVision ? 'animate-spin' : undefined} style={{ width: 12, height: 12 }} />
+                      {testingVision ? 'Testando…' : 'Testar visão'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={readinessLoading}
+                      onClick={() => void refreshReadiness(activeProject?.chapterId)}
+                      style={{ ...btnGhost, padding: '4px 8px' }}
+                    >
+                      <RefreshCw className={readinessLoading ? 'animate-spin' : undefined} style={{ width: 12, height: 12 }} />
+                    </button>
+                  </div>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {readiness.providers.length === 0 ? (
@@ -4913,31 +5111,63 @@ export function RecapProductionPanel() {
                       Clique em atualizar para verificar provedores locais.
                     </p>
                   ) : (
-                    readiness.providers.map((p) => (
-                      <div
-                        key={p.providerId}
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          fontSize: 12,
-                          padding: '6px 0',
-                          borderBottom: `1px solid ${T.border}`,
-                        }}
-                      >
-                        <span style={{ fontWeight: 600, color: T.ink }}>{p.label}</span>
-                        <span
+                    readiness.providers.map((p) => {
+                      const vh = visionHealthItems.find((h) => h.providerId === p.providerId);
+                      const statusLabel = vh
+                        ? vh.multimodalLabel
+                        : p.status === 'available'
+                          ? 'CLI operacional'
+                          : p.code === 'QUOTA_EXCEEDED'
+                            ? 'Quota esgotada'
+                            : p.code === 'AUTHENTICATION_FAILED'
+                              ? 'Autenticação expirada'
+                              : p.code === 'MODEL_INCOMPATIBLE'
+                                ? 'Modelo incompatível'
+                                : p.code ?? 'Indisponível';
+                      const isMultimodalOk = vh?.multimodalStatus === 'multimodal_available';
+                      const isCliReady = !vh && p.status === 'available';
+                      return (
+                        <div
+                          key={p.providerId}
                           style={{
-                            fontFamily: T.mono,
-                            fontSize: 11,
-                            fontWeight: 700,
-                            color: p.status === 'available' ? T.success : p.status === 'circuit_open' ? T.error : T.inkSubtle,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 2,
+                            fontSize: 12,
+                            padding: '6px 0',
+                            borderBottom: `1px solid ${T.border}`,
                           }}
                         >
-                          {p.status === 'available' ? 'ONLINE' : p.code ?? 'OFF'}
-                        </span>
-                      </div>
-                    ))
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 600, color: T.ink }}>{p.label}</span>
+                            <span
+                              style={{
+                                fontFamily: T.mono,
+                                fontSize: 11,
+                                fontWeight: 700,
+                                color: isMultimodalOk
+                                  ? T.success
+                                  : isCliReady
+                                    ? T.accent
+                                    : p.status === 'circuit_open' || vh
+                                      ? T.error
+                                      : T.inkSubtle,
+                              }}
+                            >
+                              {statusLabel}
+                            </span>
+                          </div>
+                          {(vh?.detail || p.reason || p.resetAtText || vh?.resetAtText) && (
+                            <span style={{ fontSize: 10, color: T.inkMuted }}>
+                              {vh?.resetAtText || p.resetAtText
+                                ? `Reset: ${vh?.resetAtText ?? p.resetAtText} · `
+                                : ''}
+                              {vh?.detail ?? p.reason ?? ''}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </BentoBlock>

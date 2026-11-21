@@ -56,6 +56,49 @@ type Request = { frames?: readonly VisionFrame[]; texts?: readonly string[]; lab
 const classification = z.strictObject({ kind: z.enum(segmentKinds), confidence: z.number().min(0).max(1) });
 const description = z.strictObject({ description: z.string().min(1), tags: z.array(z.string().min(1)) });
 const vectors = z.array(z.array(z.number().finite()).min(1)).min(1);
+const recapPanelAnalysisSchema = z.object({
+  schemaVersion: z.number().optional(),
+  nature: z.string().min(1),
+  natureConfidence: z.number().min(0).max(1),
+  description: z.string().min(1),
+  frames: z.array(z.object({
+    atMs: z.number().min(0),
+    observed: z.string(),
+    visibleText: z.array(z.object({ text: z.string(), region: z.string() })),
+  })).min(1),
+  entities: z.array(z.object({
+    name: z.string(),
+    type: z.string(),
+    basis: z.string(),
+    evidence: z.string(),
+    confidence: z.number().min(0).max(1),
+  })),
+  actions: z.array(z.object({
+    description: z.string(),
+    basis: z.string(),
+    confidence: z.number().min(0).max(1),
+  })),
+  environment: z.object({
+    description: z.string(),
+    basis: z.string(),
+    confidence: z.number().min(0).max(1),
+  }).nullable(),
+  overlays: z.object({
+    burnedText: z.boolean(),
+    burnedTextRegion: z.string().nullable(),
+    watermark: z.boolean(),
+    webcam: z.boolean(),
+  }),
+  limitations: z.array(z.string()),
+  confidence: z.number().min(0).max(1),
+  speechBubbles: z.array(z.unknown()).optional(),
+  expressions: z.array(z.string()).optional(),
+  relevantObjects: z.array(z.string()).optional(),
+  characterDetails: z.array(z.unknown()).optional(),
+  readingOrderHint: z.string().optional(),
+  relationToPrevious: z.string().optional(),
+  relationToNext: z.string().optional(),
+});
 class VisionOverBudgetError extends Error { constructor() { super('vision budget exceeded'); this.name = 'VisionOverBudgetError'; } }
 
 /** Cache keys bind ordered inputs, capability, provider, model and prompt. All capabilities share the run budget. */
@@ -250,7 +293,11 @@ export class VisionRouter {
             const parse = (value: unknown): unknown => {
               if (capability === 'classify') { const parsed = classification.parse(value); if (!input.labels?.includes(parsed.kind) && parsed.kind !== 'unknown') throw new Error('unrequested label'); return parsed; }
               if (capability === 'describe') return description.parse(value);
-              if (capability === 'analyze') return segmentAnalysisSchema.parse(value);
+              if (capability === 'analyze') {
+                return input.policy.scope === 'recap'
+                  ? recapPanelAnalysisSchema.parse(value)
+                  : segmentAnalysisSchema.parse(value);
+              }
               if (capability === 'ocr') { const parsed = z.array(z.string()).parse(value); if (parsed.length !== frames.length) throw new Error('OCR cardinality'); return parsed; }
               const parsed = vectors.parse(value);
               const dimension = parsed[0]?.length;

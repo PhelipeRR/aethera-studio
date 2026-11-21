@@ -61,6 +61,27 @@ export interface MotionVelixKitStatusView {
   summary: string;
 }
 
+export interface RecapVisionFailedProviderView {
+  providerId: string;
+  code: string;
+  reason: string;
+  resetAtText?: string;
+  fallbackTo?: string;
+}
+
+export interface RecapVisionLiveTelemetryView {
+  activeProvider: string | null;
+  activeModel: string | null;
+  completedPanels: number;
+  totalPanels: number;
+  currentPanelIndex?: number;
+  failedProviders: RecapVisionFailedProviderView[];
+  fallbackActive: boolean;
+  fallbackFrom?: string | null;
+  canResumeFromCheckpoint: boolean;
+  updatedAtIso: string;
+}
+
 export interface RecapProjectRecordView {
   schemaVersion?: 1;
   runId: string;
@@ -80,6 +101,7 @@ export interface RecapProjectRecordView {
   state: string;
   currentStage?: RecapStageId | null;
   completedSteps: string[];
+  visionTelemetry?: RecapVisionLiveTelemetryView;
   gateFVerdict?: 'pass' | 'needs_review' | 'fail';
   gateGVerdict?: 'pass' | 'needs_review' | 'fail';
   gateHVerdict?: 'pass' | 'needs_review' | 'fail';

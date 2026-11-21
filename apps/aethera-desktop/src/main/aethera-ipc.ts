@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeChapterArchivesForProduction, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type ScriptStyle } from '@neuralbridge/cinema';
+import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, classifyVisionError, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRecapVisionAdapter, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, inspectPassiveMultimodalHealth, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeChapterArchivesForProduction, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runMultimodalVisionHealthCheck, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, type MultimodalProviderHealthRecord, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type RecapVisualAnalysisPort, type ScriptStyle, type VisionErrorCode, type VisionHealthProbeCandidate } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -340,6 +340,8 @@ export function registerAetheraDomainIpc(options: {
   };
 
   const claude = new ClaudeCliAdapter({ resolveEnv: resolveClaudeGatewayEnv });
+  const nativeClaude = new ClaudeCliAdapter({ id: 'claude' });
+  const gatewayClaude = new ClaudeCliAdapter({ id: 'claude-gateway', resolveEnv: resolveClaudeGatewayEnv });
   const codex = new CodexCliAdapter();
   const agents = [claude, codex];
 const productionConsole = createProductionConsoleService(join(app.getPath('userData'), 'cinema-console-logs'));
@@ -3783,11 +3785,131 @@ productionConsole,
 
   // Aethera Evolution & Academy IPC handlers (using evolutionCore & academyEngine initialized above)
 
+  // Shared Recap & Multimodal Vision Health state (Phases 2, 4 & 5)
+  const recapCircuitBreaker = new AgentCircuitBreaker();
+  const recapWorkspace = join(userDataDir, 'recap-workspace');
+  const legacyRecapCheckpointsRoot = join(userDataDir, 'recap-checkpoints');
+  const visionHealthCheckCacheFile = join(recapWorkspace, 'state', 'vision-healthcheck-cache.json');
+
+  const buildVisionHealthCandidates = (rootDir: string, refreshCli = false): VisionHealthProbeCandidate[] => {
+    mkdirSync(rootDir, { recursive: true });
+    const gwCfg = claudeGatewaySecretStore.load();
+    const claudeCli = findClientCli('claude');
+    const gwReady = Boolean(gwCfg?.enabled && gwCfg?.authToken && gwCfg?.baseUrl && claudeCli);
+
+    const claudeNativePort = createClaudeVisionProvider({
+      adapter: nativeClaude,
+      providerId: 'claude',
+      cwd: rootDir,
+      timeoutMs: 45_000,
+    });
+
+    const claudeGatewayPort = createClaudeVisionProvider({
+      adapter: gatewayClaude,
+      providerId: 'claude-gateway',
+      cwd: rootDir,
+      ...(gwCfg?.model ? { model: gwCfg.model } : {}),
+      timeoutMs: 45_000,
+    });
+
+    const codexPort = createAgentAdapterVisionProvider({
+      id: 'codex',
+      root: rootDir,
+      adapter: codex,
+    });
+
+    const antigravityPort = createAntigravityCliVisionProvider({
+      root: rootDir,
+      detect: async () => {
+        const st = await detectAntigravityCli({ refresh: refreshCli });
+        return st.installed && st.problems.length === 0
+          ? { available: true }
+          : { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.' };
+      },
+      runPrompt: ({ prompt, cwd, model, signal }) =>
+        runAntigravityPrompt({
+          prompt,
+          cwd,
+          mode: 'read-only',
+          ...(model ? { model } : {}),
+          ...(signal ? { signal } : {}),
+          timeoutMs: 45_000,
+        }),
+    });
+
+    return [
+      {
+        id: 'claude',
+        label: 'Claude Code',
+        getCliStatus: async () => {
+          const st = await nativeClaude.detect({ refresh: refreshCli });
+          return {
+            installed: st.installed,
+            version: st.version,
+            authenticated: st.authenticated,
+            authMethod: st.authMethod,
+            problems: st.problems,
+          };
+        },
+        port: claudeNativePort,
+      },
+      {
+        id: 'claude-gateway',
+        label: 'Claude Gateway',
+        getCliStatus: async () => ({
+          installed: Boolean(claudeCli && gwCfg?.authToken),
+          version: gwCfg?.model ?? 'claude-opus-5-5',
+          authenticated: gwReady ? true : gwCfg?.authToken ? false : null,
+          authMethod: gwReady ? 'gateway-token' : null,
+          problems: !gwCfg?.authToken
+            ? ['Token do Claude Gateway não configurado em Configurações → Agentes e IA.']
+            : !gwCfg.enabled
+              ? ['Claude Gateway desativado nas configurações.']
+              : !claudeCli
+                ? ['Claude CLI (claude.exe) não encontrado para executar o Gateway.']
+                : [],
+        }),
+        port: claudeGatewayPort,
+      },
+      {
+        id: 'codex',
+        label: 'Codex CLI',
+        getCliStatus: async () => {
+          const st = await codex.detect({ refresh: refreshCli });
+          return {
+            installed: st.installed,
+            version: st.version,
+            authenticated: st.authenticated,
+            authMethod: st.authMethod,
+            problems: st.problems,
+          };
+        },
+        port: codexPort as unknown as RecapVisualAnalysisPort,
+      },
+      {
+        id: 'antigravity',
+        label: 'Antigravity CLI (agy)',
+        getCliStatus: async () => {
+          const st = await detectAntigravityCli({ refresh: refreshCli });
+          return {
+            installed: st.installed,
+            version: st.version,
+            authenticated: st.authenticated,
+            authMethod: st.authMethod,
+            problems: st.problems,
+          };
+        },
+        port: antigravityPort as unknown as RecapVisualAnalysisPort,
+      },
+    ];
+  };
+
   ipcMain.handle(
     'cinema:evolution-snapshot',
     async (event, input?: { refresh?: boolean }) => {
       ensureTrusted(event.senderFrame);
-      const antigravity = await detectAntigravityCli({ refresh: Boolean(input?.refresh) });
+      const refreshCli = Boolean(input?.refresh);
+      const antigravity = await detectAntigravityCli({ refresh: refreshCli });
       const gwCfg = claudeGatewaySecretStore.load();
       const claudeCli = findClientCli('claude');
       const gwReady = Boolean(gwCfg?.enabled && gwCfg?.authToken && gwCfg?.baseUrl && claudeCli);
@@ -3809,10 +3931,42 @@ productionConsole,
             : [],
         checkedAt: new Date().toISOString(),
       };
+      const multimodalHealth = await inspectPassiveMultimodalHealth({
+        candidates: buildVisionHealthCandidates(recapWorkspace, refreshCli),
+        circuitBreaker: recapCircuitBreaker,
+        cacheFilePath: visionHealthCheckCacheFile,
+      });
       return {
         directors: listAllDirectors(),
         snapshot: evolutionCore.getSnapshot(),
         extraEngines: [antigravity, claudeGatewayEngine],
+        multimodalHealth,
+      };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:test-vision-providers',
+    async (event, input?: { providerId?: string; force?: boolean }) => {
+      ensureTrusted(event.senderFrame);
+      const candidates = buildVisionHealthCandidates(recapWorkspace, true);
+      const tested = await runMultimodalVisionHealthCheck({
+        rootDir: recapWorkspace,
+        candidates,
+        circuitBreaker: recapCircuitBreaker,
+        ...(input?.providerId ? { providerId: input.providerId } : {}),
+        force: input?.force ?? true,
+        cacheFilePath: visionHealthCheckCacheFile,
+      });
+      const fullHealth = await inspectPassiveMultimodalHealth({
+        candidates,
+        circuitBreaker: recapCircuitBreaker,
+        cacheFilePath: visionHealthCheckCacheFile,
+      });
+      return {
+        ok: fullHealth.some((h) => h.multimodalStatus === 'multimodal_available'),
+        tested,
+        multimodalHealth: fullHealth,
       };
     },
   );
@@ -4918,10 +5072,6 @@ productionConsole,
 
 
   // ─── Aethera Recap IPC (Fases 4.2, 4.4, 5 & 7.1) ───────────────────────────
-  const recapCircuitBreaker = new AgentCircuitBreaker();
-  const recapWorkspace = join(userDataDir, 'recap-workspace');
-  const legacyRecapCheckpointsRoot = join(userDataDir, 'recap-checkpoints');
-
   const emitRecapProgress = (payload: RecapOrchestratorProgressEvent) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) {
@@ -4932,33 +5082,29 @@ productionConsole,
 
   const buildRecapProviders = () => {
     const gwCfg = claudeGatewaySecretStore.load();
+    const claudeCli = findClientCli('claude');
     return [
-      {
-        id: 'claude',
-        label: 'Claude CLI',
-        detect: async () => {
-          const st = await claude.detect();
-          return st.installed && st.authenticated !== false && st.problems.length === 0
-            ? { available: true }
-            : { available: false, reason: st.problems[0] ?? 'Claude CLI não autenticado.' };
-        },
-      },
       {
         id: 'claude-gateway',
         label: 'Claude Gateway',
         detect: async () =>
-          gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl
+          gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl && claudeCli
             ? { available: true }
-            : { available: false, reason: 'Claude Gateway não configurado nas configurações do Aethera.' },
+            : {
+                available: false,
+                reason: !claudeCli
+                  ? 'Claude CLI (claude.exe) não encontrado para o Gateway.'
+                  : 'Claude Gateway não configurado ou desativado nas configurações do Aethera.',
+              },
       },
       {
-        id: 'codex',
-        label: 'Codex CLI',
+        id: 'claude',
+        label: 'Claude Code',
         detect: async () => {
-          const st = await codex.detect();
+          const st = await nativeClaude.detect();
           return st.installed && st.authenticated !== false && st.problems.length === 0
             ? { available: true }
-            : { available: false, reason: st.problems[0] ?? 'Codex CLI não autenticado.' };
+            : { available: false, reason: st.problems[0] ?? 'Claude Code não autenticado.' };
         },
       },
       {
@@ -4971,6 +5117,16 @@ productionConsole,
             : { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.' };
         },
       },
+      {
+        id: 'codex',
+        label: 'Codex CLI',
+        detect: async () => {
+          const st = await codex.detect();
+          return st.installed && st.authenticated !== false && st.problems.length === 0
+            ? { available: true }
+            : { available: false, reason: st.problems[0] ?? 'Codex CLI não autenticado.' };
+        },
+      },
     ];
   };
 
@@ -4980,33 +5136,10 @@ productionConsole,
     const providers: VisualAnalysisProvider[] = [];
     const policyChain: string[] = [];
 
-    const claudeLean = createClaudeVisionProvider({
-      adapter: claude,
-      providerId: 'claude',
-      cwd: rootDir,
-    });
-    providers.push({
-      id: 'claude',
-      model: claudeLean.model,
-      capabilities: ['analyze'],
-      limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
-      detect: () => claudeLean.detect(),
-      analyze: (req) => claudeLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
-    });
-    policyChain.push('claude');
-
+    // 1. Claude Gateway (isolated profile CLAUDE_CONFIG_DIR + ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN)
     if (gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl) {
-      const gwAdapter = new ClaudeCliAdapter({
-        id: 'claude-gateway',
-        resolveEnv: () => ({
-          ANTHROPIC_AUTH_TOKEN: gwCfg.authToken,
-          ANTHROPIC_BASE_URL: gwCfg.baseUrl,
-          ...(gwCfg.model ? { ANTHROPIC_MODEL: gwCfg.model } : {}),
-          ANTHROPIC_API_KEY: undefined,
-        }),
-      });
       const gwLean = createClaudeVisionProvider({
-        adapter: gwAdapter,
+        adapter: gatewayClaude,
         providerId: 'claude-gateway',
         cwd: rootDir,
         ...(gwCfg.model ? { model: gwCfg.model } : {}),
@@ -5022,6 +5155,46 @@ productionConsole,
       policyChain.push('claude-gateway');
     }
 
+    // 2. Native Claude Code CLI (uses ~/.claude OAuth login without gateway override)
+    const claudeLean = createClaudeVisionProvider({
+      adapter: nativeClaude,
+      providerId: 'claude',
+      cwd: rootDir,
+    });
+    providers.push({
+      id: 'claude',
+      model: claudeLean.model,
+      capabilities: ['analyze'],
+      limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
+      detect: () => claudeLean.detect(),
+      analyze: (req) => claudeLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
+    });
+    policyChain.push('claude');
+
+    // 3. Antigravity CLI (agy) with corrected detect ({ available }) and runPrompt contract
+    providers.push(
+      createAntigravityCliVisionProvider({
+        root: rootDir,
+        detect: async () => {
+          const st = await detectAntigravityCli();
+          return st.installed && st.problems.length === 0
+            ? { available: true }
+            : { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.' };
+        },
+        runPrompt: ({ prompt, cwd, model, signal }) =>
+          runAntigravityPrompt({
+            prompt,
+            cwd,
+            mode: 'read-only',
+            ...(model ? { model } : {}),
+            ...(signal ? { signal } : {}),
+            timeoutMs: 60_000,
+          }),
+      }),
+    );
+    policyChain.push('antigravity');
+
+    // 4. Codex CLI
     providers.push(
       createAgentAdapterVisionProvider({
         id: 'codex',
@@ -5030,20 +5203,6 @@ productionConsole,
       }),
     );
     policyChain.push('codex');
-
-    providers.push(
-      createAntigravityCliVisionProvider({
-        root: rootDir,
-        detect: async () => {
-          const st = await detectAntigravityCli();
-          return st.installed && st.problems.length === 0
-            ? { installed: true, detail: st.version ?? 'agy' }
-            : { installed: false, detail: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.' };
-        },
-        run: (req) => runAntigravityPrompt(req),
-      }),
-    );
-    policyChain.push('antigravity');
 
     const memCacheStore = new Map<string, unknown>();
     const cache: VisionCachePort = {
@@ -5160,6 +5319,8 @@ productionConsole,
       },
     ) => {
       ensureTrusted(event.senderFrame);
+      // Clear any non-quota transient/configuration errors before a new production run while preserving known quota exhaustion
+      recapCircuitBreaker.reset({ preserveQuotaExhausted: true });
       const workTitle = (input.workTitle || '').trim() || basename(input.archivePath).replace(/\.(cbz|pdf)$/i, '') || 'Aethera Recap';
       const chapterId = workTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'recap-chapter';
       const runId = input.runId?.trim() || `recap-${Date.now()}`;
