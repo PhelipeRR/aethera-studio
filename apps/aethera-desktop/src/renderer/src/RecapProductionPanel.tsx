@@ -50,6 +50,7 @@ import {
 import { RecapWorkflowStepper } from './recap/RecapWorkflowStepper.js';
 import { RecapScriptStudio } from './recap/RecapScriptStudio.js';
 import { RecapVisualStoryboard } from './recap/RecapVisualStoryboard.js';
+import { MotionVelixOutroPanel, type VideoOutroConfigView } from '@/features/aethera/MotionVelixOutroPanel';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -989,30 +990,69 @@ function RealPipelineTimeline({
             </div>
           )}
 
+          {record.visionTelemetry.priorityOrder && record.visionTelemetry.priorityOrder.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 11 }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontWeight: 600, color: T.inkMuted }}>Ordem de prioridade:</span>
+                {record.visionTelemetry.priorityOrder.map((pid, idx) => {
+                  const isActive = record.visionTelemetry?.activeProvider === pid;
+                  const isFailed = record.visionTelemetry?.failedProviders.some((fp) => fp.providerId === pid);
+                  return (
+                    <span
+                      key={pid}
+                      style={{
+                        fontFamily: T.mono,
+                        padding: '1px 7px',
+                        borderRadius: T.radiusFull,
+                        background: isActive ? T.successBg : isFailed ? T.errorBg : T.surface,
+                        color: isActive ? T.success : isFailed ? T.error : T.ink,
+                        border: `1px solid ${isActive ? T.successBorder : isFailed ? T.errorBorder : T.border}`,
+                        fontWeight: isActive ? 700 : 500,
+                      }}
+                    >
+                      {idx + 1}. {pid}
+                    </span>
+                  );
+                })}
+              </div>
+              <span style={{ fontFamily: T.mono, color: T.inkMuted }}>
+                Próximo fallback:{' '}
+                <strong style={{ color: record.visionTelemetry.nextFallback ? T.ink : T.warning }}>
+                  {record.visionTelemetry.nextFallback ?? 'nenhum disponível'}
+                </strong>
+              </span>
+            </div>
+          )}
+
           {record.visionTelemetry.failedProviders.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <span style={{ fontSize: 11, fontWeight: 600, color: T.inkMuted }}>
-                Diagnóstico por agente / fallback:
+                Agentes indisponíveis e motivos:
               </span>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {record.visionTelemetry.failedProviders.map((fp) => (
-                  <span
+                  <div
                     key={fp.providerId}
-                    title={fp.reason}
                     style={{
                       fontSize: 11,
                       fontFamily: T.mono,
-                      padding: '3px 8px',
+                      padding: '4px 8px',
                       borderRadius: T.radiusSm,
                       background: T.errorBg,
                       color: T.error,
                       border: `1px solid ${T.errorBorder}`,
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      alignItems: 'center',
+                      gap: 6,
                     }}
                   >
-                    {fp.providerId}: {fp.code}
-                    {fp.resetAtText ? ` (reset: ${fp.resetAtText})` : ''}
-                    {fp.fallbackTo ? ` → ${fp.fallbackTo}` : ''}
-                  </span>
+                    <strong>{fp.providerId}</strong>
+                    <span>({fp.code})</span>
+                    {fp.reason && <span style={{ color: T.ink }}>— {fp.reason}</span>}
+                    {fp.resetAtText && <span>[Reset quota: {fp.resetAtText}]</span>}
+                    {fp.fallbackTo && <span>→ {fp.fallbackTo}</span>}
+                  </div>
                 ))}
               </div>
             </div>
@@ -1034,13 +1074,18 @@ function AudiovisualTrackTimeline({
   motionVelix,
   selectedShotId,
   onSelectShot,
+  outroConfig,
+  onSelectOutro,
 }: {
   plan: RecapAudiovisualPlanView | null;
   motionVelix?: MotionVelixRenderTelemetry | null;
   selectedShotId: string | null;
   onSelectShot: (shotId: string, sceneId: string) => void;
+  outroConfig?: VideoOutroConfigView | null;
+  onSelectOutro?: () => void;
 }) {
   const tracks = useMemo(() => deriveAudiovisualTracks(plan, motionVelix), [plan, motionVelix]);
+  const outroDurationMs = outroConfig?.enabled ? Math.round((outroConfig.durationSec || 15) * 1000) : 0;
 
   if (!tracks.hasRealPlan) {
     return (
@@ -1098,7 +1143,10 @@ function AudiovisualTrackTimeline({
             color: T.ink,
           }}
         >
-          <span>Total: <strong>{formatTimecodeMs(tracks.totalDurationMs)}</strong></span>
+          <span>Total: <strong>{formatTimecodeMs(tracks.totalDurationMs + outroDurationMs)}</strong></span>
+          {outroDurationMs > 0 && (
+            <span>Outro: <strong>{formatTimecodeMs(outroDurationMs)}</strong></span>
+          )}
           <span>Narração: <strong>{formatTimecodeMs(tracks.measuredNarrationDurationMs)}</strong></span>
           <span>Shots: <strong>{tracks.shots.length}</strong></span>
           <span>SFX: <strong>{motionVelix?.sfxApplied ?? 0}/{tracks.sfxMarkers.length}</strong></span>
@@ -1155,6 +1203,32 @@ function AudiovisualTrackTimeline({
                 </button>
               );
             })}
+            {outroConfig?.enabled && (
+              <button
+                type="button"
+                onClick={onSelectOutro}
+                title={`Outro MotionVelix (${outroConfig.style}) · ${outroConfig.durationSec}s · Clique para editar o encerramento`}
+                style={{
+                  flex: `${Math.max(1, outroDurationMs)} 1 0%`,
+                  minWidth: 74,
+                  padding: '6px 8px',
+                  borderRadius: 8,
+                  border: '1.5px solid #111111',
+                  background: '#111111',
+                  color: '#ffffff',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  overflow: 'hidden',
+                }}
+              >
+                <div style={{ fontSize: 10, fontWeight: 700, fontFamily: T.mono, color: '#b6f500', whiteSpace: 'nowrap' }}>
+                  Outro · {outroConfig.durationSec}s
+                </div>
+                <div style={{ fontSize: 10, opacity: 0.85, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {outroConfig.style}
+                </div>
+              </button>
+            )}
           </div>
         </div>
 
@@ -1578,6 +1652,7 @@ export function RecapProductionPanel() {
   const [regeneratingSceneId, setRegeneratingSceneId] = useState<string | null>(null);
   const [regeneratingScript, setRegeneratingScript] = useState(false);
   const [regenerateFeedback, setRegenerateFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const [outroConfig, setOutroConfig] = useState<VideoOutroConfigView | null>(null);
   const [expandedVisualScenes, setExpandedVisualScenes] = useState<Record<string, boolean>>({});
   const [selectedPanelIdxByScene, setSelectedPanelIdxByScene] = useState<Record<string, number>>({});
   const [revisionPrompt, setRevisionPrompt] = useState('');
@@ -4320,7 +4395,22 @@ export function RecapProductionPanel() {
             motionVelix={activeProject?.motionVelix ?? null}
             selectedShotId={selectedShotId}
             onSelectShot={(shotId) => setSelectedShotId(shotId)}
+            outroConfig={outroConfig}
+            onSelectOutro={() => {
+              setSubTab('producao');
+              setTimeout(() => {
+                document.getElementById('recap-motionvelix-outro-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }, 80);
+            }}
           />
+
+          <div id="recap-motionvelix-outro-panel">
+            <MotionVelixOutroPanel
+              projectId={activeProject?.runId || chapterId || 'recap-default'}
+              channelName={workTitle}
+              onConfigChange={setOutroConfig}
+            />
+          </div>
 
           <BentoBlock>
             <SectionLabel>Configuração da Produção</SectionLabel>
@@ -4569,7 +4659,22 @@ export function RecapProductionPanel() {
             motionVelix={activeProject?.motionVelix ?? null}
             selectedShotId={selectedShotId}
             onSelectShot={(shotId) => setSelectedShotId(shotId)}
+            outroConfig={outroConfig}
+            onSelectOutro={() => {
+              setSubTab('producao');
+              setTimeout(() => {
+                document.getElementById('recap-motionvelix-outro-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }, 80);
+            }}
           />
+
+          <div id="recap-motionvelix-outro-panel">
+            <MotionVelixOutroPanel
+              projectId={activeProject?.runId || chapterId || 'recap-default'}
+              channelName={workTitle}
+              onConfigChange={setOutroConfig}
+            />
+          </div>
 
           <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'minmax(0, 1fr) 360px', alignItems: 'start' }}>
             {/* Left: Video + Humanized Script + Prompt Revision */}

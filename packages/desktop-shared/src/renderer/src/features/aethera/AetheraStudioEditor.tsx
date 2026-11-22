@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { MotionVelixOutroPanel, type VideoOutroConfigView } from './MotionVelixOutroPanel';
 import {
   Bot,
   ChevronRight,
@@ -41,7 +42,7 @@ import {
 } from './editor-composition';
 
 type LeftBinTab = 'media' | 'effects' | 'transitions' | 'titles' | 'sfx' | 'music';
-type InspectorTab = 'transform' | 'color' | 'audio' | 'subtitles' | 'speed';
+type InspectorTab = 'transform' | 'color' | 'audio' | 'subtitles' | 'speed' | 'outro';
 
 interface EditorClip {
   clipId: string;
@@ -308,6 +309,7 @@ export function AetheraStudioEditor() {
   const [selectedClipId, setSelectedClipId] = useState<string>('');
   const [leftTab, setLeftTab] = useState<LeftBinTab>('media');
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('transform');
+  const [outroConfig, setOutroConfig] = useState<VideoOutroConfigView | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(true);
   const [revisionText, setRevisionText] = useState('');
   const [submittingRevision, setSubmittingRevision] = useState(false);
@@ -1979,6 +1981,7 @@ export function AetheraStudioEditor() {
                 ['audio', 'Áudio'],
                 ['subtitles', 'Legendas'],
                 ['speed', 'Velocidade'],
+                ['outro', 'Outro'],
               ] as const
             ).map(([id, label]) => (
               <button
@@ -1995,6 +1998,14 @@ export function AetheraStudioEditor() {
           </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-2">
+          {inspectorTab === 'outro' && (
+            <MotionVelixOutroPanel
+              compact
+              projectId={pkg?.projectId ?? 'editor-default'}
+              channelName={pkg?.title ?? ''}
+              onConfigChange={setOutroConfig}
+            />
+          )}
           {inspectorTab === 'transform' && (() => {
             const elementKind = resolveSelectedElementKind(selectedClip ?? null, pkg?.timeline.sourceMedia);
             const kindLabels: Record<typeof elementKind, string> = {
@@ -2711,6 +2722,47 @@ export function AetheraStudioEditor() {
                       </div>
                     );
                   })}
+                  {(() => {
+                    const v1Clips = clips.filter((c) => (c.trackId ?? 'v1') !== 'sub1');
+                    const outroStartSec = v1Clips.reduce(
+                      (acc, c) => Math.max(acc, c.startSec + c.durationSec / Math.max(0.25, c.speed)),
+                      0,
+                    );
+                    const effectiveOutroDur = outroConfig?.enabled ? outroConfig.durationSec : 15;
+                    const outroWidthPx = Math.max(64, effectiveOutroDur * pxPerSec - 2);
+                    const isOutroSelected = selectedClipId === 'outro' || inspectorTab === 'outro';
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedClipId('outro');
+                          setInspectorTab('outro');
+                        }}
+                        title={
+                          outroConfig?.enabled
+                            ? `Outro MotionVelix (${outroConfig.style}) · ${outroConfig.durationSec}s · Clique para editar`
+                            : 'Encerramento (Outro) · Clique para configurar'
+                        }
+                        className={`absolute top-0.5 bottom-0.5 flex items-end overflow-hidden rounded-md border text-left text-[11px] font-medium transition-colors ${
+                          isOutroSelected
+                            ? 'border-lime-400 ring-1 ring-lime-400/80 bg-zinc-900 text-white'
+                            : outroConfig?.enabled
+                              ? 'border-lime-500/60 bg-zinc-900/90 text-white'
+                              : 'border-dashed border-zinc-500/50 bg-zinc-900/40 text-zinc-300'
+                        }`}
+                        style={{ left: outroStartSec * pxPerSec + 2, width: outroWidthPx }}
+                      >
+                        <div className="relative z-10 flex w-full items-center gap-1 px-1.5 py-0.5">
+                          <span className="truncate text-[10px] font-semibold text-lime-300">
+                            {outroConfig?.enabled ? `Outro · ${outroConfig.style}` : '+ Outro'}
+                          </span>
+                          <span className="ml-auto shrink-0 font-mono text-[9px] text-zinc-200">
+                            {effectiveOutroDur}s
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })()}
                 </div>
 
                 {/* A1 Narration, A2 Music, A3 SFX, A4 Ambience Real Waveforms */}

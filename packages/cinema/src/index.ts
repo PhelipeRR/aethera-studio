@@ -424,3 +424,5 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
     humorBeats: audiovisualPlan.humorBeats,
   };
 }
+
+export * from './motionvelix/video-outro-engine.js';

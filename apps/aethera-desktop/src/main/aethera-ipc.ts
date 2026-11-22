@@ -8,7 +8,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron';
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
-import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, classifyVisionError, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRecapVisionAdapter, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, inspectPassiveMultimodalHealth, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, mergeChapterArchivesForProduction, mergeStoryMemoryCharacters, planRecapRevisionImpact, RecapImportJobManager, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runMultimodalVisionHealthCheck, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, type MultimodalProviderHealthRecord, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type RecapVisualAnalysisPort, type ScriptStyle, type VisionErrorCode, type VisionHealthProbeCandidate } from '@neuralbridge/cinema';
+import { VisionPriorityStore, type MultimodalAgentId } from './vision-priority-store.js';
+import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, classifyVisionError, composeVideoWithOutroMp4, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRecapVisionAdapter, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, inspectPassiveMultimodalHealth, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, loadVisionHealthCheckCache, mergeChapterArchivesForProduction, mergeStoryMemoryCharacters, parseResetAtMs, planRecapRevisionImpact, RecapImportJobManager, renderMotionVelixOutroMp4, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runMultimodalVisionHealthCheck, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, VideoOutroConfigStore, type MultimodalProviderHealthRecord, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type RecapVisualAnalysisPort, type ScriptStyle, type VideoOutroConfig, type VisionErrorCode, type VisionHealthProbeCandidate } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
@@ -1948,7 +1949,30 @@ productionConsole,
     join(app.getPath('userData'), 'calendar', 'editorial-calendar-store.json'),
   );
   const socialPublishingHub = new SocialPublishingHub(editorialCalendar);
-  const AETHERA_VISION_CHAIN = ['local-vlm', 'claude-gateway', 'antigravity', 'claude', 'codex', 'local-siglip', 'ffmpeg-heuristics'] as const;
+  const visionPriorityStore = new VisionPriorityStore(join(userDataDir, 'aethera-vision-priority.json'));
+  const visionPrioritySchema = z.strictObject({
+    priority: z.array(z.enum(['codex', 'antigravity', 'claude', 'claude-gateway'])).min(1),
+  });
+  ipcMain.handle('aethera:vision-priority:get', async (event) => {
+    ensureTrusted(event.senderFrame);
+    return visionPriorityStore.getView();
+  });
+  ipcMain.handle('aethera:vision-priority:save', async (event, input: { priority: string[] }) => {
+    ensureTrusted(event.senderFrame);
+    const parsed = visionPrioritySchema.parse(input);
+    return visionPriorityStore.save(parsed.priority);
+  });
+  ipcMain.handle('aethera:vision-priority:reset', async (event) => {
+    ensureTrusted(event.senderFrame);
+    return visionPriorityStore.reset();
+  });
+
+  const getAetheraVisionChain = () => [
+    'local-vlm',
+    ...visionPriorityStore.getPriority(),
+    'local-siglip',
+    'ffmpeg-heuristics',
+  ];
   // Scene frames are analysed as lean, project-less TaskEngine runs: the cinema scene/segment id is not a TaskEngine
   // project, and using it as one failed every Claude/Codex vision call with a tasks→projects FOREIGN KEY error.
   const buildAetheraVisionProviders = (rootDir: string, projectId: string | null) =>
@@ -1966,7 +1990,7 @@ productionConsole,
               taskEngine,
               checkAvailable: async () => {
                 const cfg = claudeGatewaySecretStore.load();
-                if (!cfg?.enabled || !cfg.authToken) {
+                if (!cfg?.enabled || !cfg.authToken || !cfg.baseUrl) {
                   return { available: false, reason: 'Claude Gateway desativado ou sem token.' };
                 }
                 return findClientCli('claude')
@@ -1980,9 +2004,9 @@ productionConsole,
         root: rootDir,
         detect: async () => {
           const st = await detectAntigravityCli();
-          return st.installed
+          return st.installed && st.authenticated !== false && st.problems.length === 0
             ? { available: true }
-            : { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) não encontrado.' };
+            : { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) indisponível ou não autenticado.' };
         },
         runPrompt: ({ prompt, cwd, model, signal }) =>
           runAntigravityPrompt({
@@ -2003,10 +2027,12 @@ productionConsole,
               projectId,
               enabled: true,
               taskEngine,
-              checkAvailable: async () =>
-                findClientCli('claude')
+              checkAvailable: async () => {
+                const st = await nativeClaude.detect();
+                return st.installed && st.authenticated !== false && st.problems.length === 0
                   ? { available: true }
-                  : { available: false, reason: 'Claude CLI (claude.exe) não encontrado.' },
+                  : { available: false, reason: st.problems[0] ?? 'Claude Code não autenticado ou indisponível.' };
+              },
             }),
             createTaskEngineVisionProvider({
               id: 'codex',
@@ -2015,10 +2041,12 @@ productionConsole,
               projectId,
               enabled: true,
               taskEngine,
-              checkAvailable: async () =>
-                findClientCli('codex')
+              checkAvailable: async () => {
+                const st = await codex.detect();
+                return st.installed && st.authenticated !== false && st.problems.length === 0
                   ? { available: true }
-                  : { available: false, reason: 'Codex CLI não encontrado.' },
+                  : { available: false, reason: st.problems[0] ?? 'Codex CLI não autenticado ou indisponível.' };
+              },
             }),
           ]
         : []),
@@ -2197,8 +2225,8 @@ productionConsole,
         {
           // Technical deadlines only: Scene Grounding thresholds remain unchanged.
           // Bound fallback so acquisition can persist diagnostics and resume safely.
-          enabledProviders: ['local-vlm', 'claude-gateway', 'antigravity', 'claude', 'codex'],
-          priority: ['local-vlm', 'claude-gateway', 'antigravity', 'claude', 'codex'],
+          enabledProviders: ['local-vlm', ...visionPriorityStore.getPriority()],
+          priority: ['local-vlm', ...visionPriorityStore.getPriority()],
           perProviderTimeoutMs: {
             'local-vlm': 5_000,
             'claude-gateway': 75_000,
@@ -2206,13 +2234,13 @@ productionConsole,
             claude: 75_000,
             codex: 75_000,
           },
-          maxAttempts: 3,
+          maxAttempts: 4,
         },
       );
       const policy: VisionPolicy = {
         schemaVersion: 1,
         task: 'describe',
-        chain: [...AETHERA_VISION_CHAIN],
+        chain: getAetheraVisionChain(),
         scope: 'project',
         thresholds: null,
         version: 'aethera-scene-grounding-v1',
@@ -3849,7 +3877,7 @@ productionConsole,
         }),
     });
 
-    return [
+    const candidates: VisionHealthProbeCandidate[] = [
       {
         id: 'claude',
         label: 'Claude Code',
@@ -3914,6 +3942,9 @@ productionConsole,
         port: antigravityPort as unknown as RecapVisualAnalysisPort,
       },
     ];
+    const order = visionPriorityStore.getPriority();
+    const orderMap = new Map(order.map((id, idx) => [id, idx]));
+    return candidates.sort((a, b) => (orderMap.get(a.id as MultimodalAgentId) ?? 99) - (orderMap.get(b.id as MultimodalAgentId) ?? 99));
   };
 
   ipcMain.handle(
@@ -5259,136 +5290,232 @@ productionConsole,
     }
   };
 
+  const checkCachedMultimodalHealth = (providerId: string): { available: true } | { available: false; reason: string; code?: VisionErrorCode; resetAtText?: string; multimodal?: boolean } => {
+    const cached = loadVisionHealthCheckCache(visionHealthCheckCacheFile)[providerId];
+    if (!cached) return { available: true };
+    if (cached.multimodalStatus === 'model_incompatible') {
+      return {
+        available: false,
+        code: 'MODEL_INCOMPATIBLE',
+        multimodal: false,
+        reason: cached.detail || 'Agente sem suporte multimodal real (apenas texto).',
+      };
+    }
+    if (cached.multimodalStatus === 'auth_expired') {
+      return {
+        available: false,
+        code: 'AUTHENTICATION_FAILED',
+        reason: cached.detail || 'Autenticação expirada.',
+      };
+    }
+    if (cached.multimodalStatus === 'quota_exhausted') {
+      const resetMs = parseResetAtMs(cached.resetAtText, Date.parse(cached.checkedAtIso) || Date.now());
+      if (resetMs === undefined || Date.now() < resetMs) {
+        return {
+          available: false,
+          code: 'QUOTA_EXCEEDED',
+          ...(cached.resetAtText ? { resetAtText: cached.resetAtText } : {}),
+          reason: cached.detail || 'Quota esgotada.',
+        };
+      }
+    }
+    return { available: true };
+  };
+
   const buildRecapProviders = () => {
     const gwCfg = claudeGatewaySecretStore.load();
     const claudeCli = findClientCli('claude');
-    return [
-      {
-        id: 'claude-gateway',
-        label: 'Claude Gateway',
-        detect: async () =>
-          gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl && claudeCli
-            ? { available: true }
-            : {
+    const byId = new Map<MultimodalAgentId, {
+      id: string;
+      label: string;
+      detect: () => Promise<{ available: boolean; reason?: string; code?: VisionErrorCode; resetAtText?: string; multimodal?: boolean }>;
+    }>([
+      [
+        'codex',
+        {
+          id: 'codex',
+          label: 'Codex CLI',
+          detect: async () => {
+            const st = await codex.detect();
+            if (!st.installed || st.authenticated === false || st.problems.length > 0) {
+              return {
                 available: false,
+                code: st.authenticated === false ? 'AUTHENTICATION_FAILED' : 'PROVIDER_UNAVAILABLE',
+                reason: st.problems[0] ?? 'Codex CLI não autenticado.',
+              };
+            }
+            return checkCachedMultimodalHealth('codex');
+          },
+        },
+      ],
+      [
+        'antigravity',
+        {
+          id: 'antigravity',
+          label: 'Antigravity CLI (agy)',
+          detect: async () => {
+            const st = await detectAntigravityCli();
+            if (!st.installed || st.authenticated === false || st.problems.length > 0) {
+              return {
+                available: false,
+                code: st.authenticated === false ? 'AUTHENTICATION_FAILED' : 'PROVIDER_UNAVAILABLE',
+                reason: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.',
+              };
+            }
+            return checkCachedMultimodalHealth('antigravity');
+          },
+        },
+      ],
+      [
+        'claude',
+        {
+          id: 'claude',
+          label: 'Claude Code',
+          detect: async () => {
+            const st = await nativeClaude.detect();
+            if (!st.installed || st.authenticated === false || st.problems.length > 0) {
+              return {
+                available: false,
+                code: st.authenticated === false ? 'AUTHENTICATION_FAILED' : 'PROVIDER_UNAVAILABLE',
+                reason: st.problems[0] ?? 'Claude Code não autenticado.',
+              };
+            }
+            return checkCachedMultimodalHealth('claude');
+          },
+        },
+      ],
+      [
+        'claude-gateway',
+        {
+          id: 'claude-gateway',
+          label: 'Claude Gateway (Claude Opus 5.5)',
+          detect: async () => {
+            if (!gwCfg || !gwCfg.enabled || !gwCfg.authToken || !gwCfg.baseUrl || !claudeCli) {
+              return {
+                available: false,
+                code: 'PROVIDER_UNAVAILABLE',
                 reason: !claudeCli
                   ? 'Claude CLI (claude.exe) não encontrado para o Gateway.'
                   : 'Claude Gateway não configurado ou desativado nas configurações do Aethera.',
-              },
-      },
-      {
-        id: 'claude',
-        label: 'Claude Code',
-        detect: async () => {
-          const st = await nativeClaude.detect();
-          return st.installed && st.authenticated !== false && st.problems.length === 0
-            ? { available: true }
-            : { available: false, reason: st.problems[0] ?? 'Claude Code não autenticado.' };
+              };
+            }
+            return checkCachedMultimodalHealth('claude-gateway');
+          },
         },
-      },
-      {
-        id: 'antigravity',
-        label: 'Antigravity CLI (agy)',
-        detect: async () => {
-          const st = await detectAntigravityCli();
-          return st.installed && st.problems.length === 0
-            ? { available: true }
-            : { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.' };
-        },
-      },
-      {
-        id: 'codex',
-        label: 'Codex CLI',
-        detect: async () => {
-          const st = await codex.detect();
-          return st.installed && st.authenticated !== false && st.problems.length === 0
-            ? { available: true }
-            : { available: false, reason: st.problems[0] ?? 'Codex CLI não autenticado.' };
-        },
-      },
-    ];
+      ],
+    ]);
+    return visionPriorityStore
+      .getPriority()
+      .map((id) => byId.get(id))
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
   };
 
   const buildRecapVisionAdapter = (rootDir: string) => {
     mkdirSync(rootDir, { recursive: true });
     const gwCfg = claudeGatewaySecretStore.load();
+    const priorityOrder = visionPriorityStore.getPriority();
     const providers: VisualAnalysisProvider[] = [];
     const policyChain: string[] = [];
 
-    // 1. Claude Gateway (isolated profile CLAUDE_CONFIG_DIR + ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN)
-    if (gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl) {
-      const gwLean = createClaudeVisionProvider({
-        adapter: gatewayClaude,
-        providerId: 'claude-gateway',
-        cwd: rootDir,
-        ...(gwCfg.model ? { model: gwCfg.model } : {}),
-      });
-      providers.push({
-        id: 'claude-gateway',
-        model: gwLean.model,
-        capabilities: ['analyze'],
-        limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
-        detect: () => gwLean.detect(),
-        analyze: (req) => gwLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
-      });
-      policyChain.push('claude-gateway');
+    const createProviderForId = (id: MultimodalAgentId): VisualAnalysisProvider | null => {
+      if (id === 'codex') {
+        const codexProvider = createAgentAdapterVisionProvider({
+          id: 'codex',
+          root: rootDir,
+          adapter: codex,
+        });
+        return {
+          ...codexProvider,
+          detect: async (signal) => {
+            const base = await codexProvider.detect(signal);
+            if (!base.available) return base;
+            return checkCachedMultimodalHealth('codex');
+          },
+        };
+      }
+      if (id === 'antigravity') {
+        return createAntigravityCliVisionProvider({
+          root: rootDir,
+          detect: async () => {
+            const st = await detectAntigravityCli();
+            if (!st.installed || st.authenticated === false || st.problems.length > 0) {
+              return { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.' };
+            }
+            return checkCachedMultimodalHealth('antigravity');
+          },
+          runPrompt: ({ prompt, cwd, model, signal }) =>
+            runAntigravityPrompt({
+              prompt,
+              cwd,
+              mode: 'read-only',
+              ...(model ? { model } : {}),
+              ...(signal ? { signal } : {}),
+              timeoutMs: 60_000,
+            }),
+        });
+      }
+      if (id === 'claude') {
+        const claudeLean = createClaudeVisionProvider({
+          adapter: nativeClaude,
+          providerId: 'claude',
+          cwd: rootDir,
+        });
+        return {
+          id: 'claude',
+          model: claudeLean.model,
+          capabilities: ['analyze'],
+          limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
+          detect: async (signal) => {
+            const base = await claudeLean.detect(signal);
+            if (!base.available) return base;
+            return checkCachedMultimodalHealth('claude');
+          },
+          analyze: (req) => claudeLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
+        };
+      }
+      if (id === 'claude-gateway' && gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl) {
+        const gwLean = createClaudeVisionProvider({
+          adapter: gatewayClaude,
+          providerId: 'claude-gateway',
+          cwd: rootDir,
+          ...(gwCfg.model ? { model: gwCfg.model } : {}),
+        });
+        return {
+          id: 'claude-gateway',
+          model: gwLean.model,
+          capabilities: ['analyze'],
+          limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
+          detect: async (signal) => {
+            const base = await gwLean.detect(signal);
+            if (!base.available) return base;
+            return checkCachedMultimodalHealth('claude-gateway');
+          },
+          analyze: (req) => gwLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
+        };
+      }
+      return null;
+    };
+
+    for (const id of priorityOrder) {
+      const provider = createProviderForId(id);
+      if (provider) {
+        providers.push(provider);
+        policyChain.push(id);
+      }
     }
-
-    // 2. Native Claude Code CLI (uses ~/.claude OAuth login without gateway override)
-    const claudeLean = createClaudeVisionProvider({
-      adapter: nativeClaude,
-      providerId: 'claude',
-      cwd: rootDir,
-    });
-    providers.push({
-      id: 'claude',
-      model: claudeLean.model,
-      capabilities: ['analyze'],
-      limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
-      detect: () => claudeLean.detect(),
-      analyze: (req) => claudeLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
-    });
-    policyChain.push('claude');
-
-    // 3. Antigravity CLI (agy) with corrected detect ({ available }) and runPrompt contract
-    providers.push(
-      createAntigravityCliVisionProvider({
-        root: rootDir,
-        detect: async () => {
-          const st = await detectAntigravityCli();
-          return st.installed && st.problems.length === 0
-            ? { available: true }
-            : { available: false, reason: st.problems[0] ?? 'Antigravity CLI (agy) indisponível.' };
-        },
-        runPrompt: ({ prompt, cwd, model, signal }) =>
-          runAntigravityPrompt({
-            prompt,
-            cwd,
-            mode: 'read-only',
-            ...(model ? { model } : {}),
-            ...(signal ? { signal } : {}),
-            timeoutMs: 60_000,
-          }),
-      }),
-    );
-    policyChain.push('antigravity');
-
-    // 4. Codex CLI
-    providers.push(
-      createAgentAdapterVisionProvider({
-        id: 'codex',
-        root: rootDir,
-        adapter: codex,
-      }),
-    );
-    policyChain.push('codex');
 
     const memCacheStore = new Map<string, unknown>();
     const cache: VisionCachePort = {
       get: (key) => memCacheStore.get(JSON.stringify(key)),
       put: (key, value) => { memCacheStore.set(JSON.stringify(key), value); },
     };
-    const visionRouter = new VisionRouter(providers, cache);
+    const visionRouter = new VisionRouter({
+      providers,
+      cache,
+      cooldowns: visionProviderCooldowns,
+      timeoutFailures: visionProviderTimeoutFailures,
+      config: { priority: priorityOrder },
+    });
     return createRoutedRecapVisionAdapter({
       root: rootDir,
       router: visionRouter as unknown as Parameters<typeof createRoutedRecapVisionAdapter>[0]['router'],
@@ -6457,6 +6584,198 @@ productionConsole,
     ensureTrusted(event.senderFrame);
     return deleteRecapProject(recapWorkspace, runId, legacyRecapCheckpointsRoot);
   });
+
+  // ─── MotionVelix — Encerramento do Vídeo (Outro) IPCs ─────────────────────
+  const videoOutroStore = new VideoOutroConfigStore(join(userDataDir, 'aethera-outro'));
+  const outroRendersDir = join(userDataDir, 'aethera-outro', 'renders');
+  mkdirSync(outroRendersDir, { recursive: true });
+
+  const resolveDefaultChannelName = (): string => {
+    try {
+      const channelCfgPath = join(userDataDir, 'aethera-channel-profile.json');
+      if (existsSync(channelCfgPath)) {
+        const parsed = JSON.parse(readFileSync(channelCfgPath, 'utf-8')) as { name?: string; channelName?: string };
+        if (parsed.channelName?.trim()) return parsed.channelName.trim();
+        if (parsed.name?.trim()) return parsed.name.trim();
+      }
+    } catch {
+      // Ignore optional profile read errors
+    }
+    return '';
+  };
+
+  ipcMain.handle(
+    'cinema:outro-get-config',
+    async (event, input: { projectId: string; channelKey?: string | null; channelName?: string | null }) => {
+      ensureTrusted(event.senderFrame);
+      const effectiveChannelName = input.channelName?.trim() || resolveDefaultChannelName();
+      return videoOutroStore.loadEffectiveConfig({
+        projectId: input.projectId || 'default',
+        channelKey: input.channelKey ?? (effectiveChannelName || null),
+        channelName: effectiveChannelName || null,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:outro-save-config',
+    async (
+      event,
+      input: {
+        projectId: string;
+        channelKey?: string | null;
+        config: Partial<VideoOutroConfig>;
+        saveAsChannelDefault?: boolean;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      const saved = videoOutroStore.saveProjectConfig(input.projectId || 'default', input.config, {
+        channelKey: input.channelKey ?? input.config.channelName ?? null,
+        saveAsChannelDefault: Boolean(input.saveAsChannelDefault || input.config.saveAsChannelDefault),
+      });
+      return { ok: true, config: saved };
+    },
+  );
+
+  ipcMain.handle('cinema:outro-delete-config', async (event, input: { projectId: string }) => {
+    ensureTrusted(event.senderFrame);
+    const removed = videoOutroStore.removeProjectConfig(input.projectId || 'default');
+    return { ok: true, removed };
+  });
+
+  ipcMain.handle('cinema:outro-pick-image', async (event) => {
+    ensureTrusted(event.senderFrame);
+    const res = await dialog.showOpenDialog({
+      title: 'Selecionar imagem de fundo do encerramento',
+      properties: ['openFile'],
+      filters: [{ name: 'Imagens (PNG, JPG, WEBP)', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    });
+    if (res.canceled || res.filePaths.length === 0) {
+      return { canceled: true, path: null, name: null };
+    }
+    const picked = res.filePaths[0]!;
+    return { canceled: false, path: picked, name: basename(picked) };
+  });
+
+  ipcMain.handle('cinema:outro-list-library-images', async (event) => {
+    ensureTrusted(event.senderFrame);
+    const results: Array<{ id: string; name: string; path: string; source: string }> = [];
+    const seen = new Set<string>();
+    const allowedExt = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+
+    const scanDir = (dirPath: string, source: string, maxItems = 24) => {
+      if (!existsSync(dirPath)) return;
+      try {
+        for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
+          if (results.length >= maxItems) break;
+          const full = join(dirPath, entry.name);
+          if (entry.isFile()) {
+            const dotIdx = entry.name.lastIndexOf('.');
+            const ext = dotIdx >= 0 ? entry.name.slice(dotIdx).toLowerCase() : '';
+            if (allowedExt.has(ext) && !seen.has(full)) {
+              seen.add(full);
+              results.push({ id: createHash('sha1').update(full).digest('hex').slice(0, 12), name: entry.name, path: full, source });
+            }
+          }
+        }
+      } catch {
+        // Ignore unreadable dirs
+      }
+    };
+
+    try {
+      const managedItems = await mediaLibrary.list({ kind: 'image' });
+      for (const item of managedItems.slice(0, 24)) {
+        if (item.localPath && existsSync(item.localPath) && !seen.has(item.localPath)) {
+          seen.add(item.localPath);
+          results.push({ id: item.id, name: item.title || basename(item.localPath), path: item.localPath, source: 'Biblioteca' });
+        }
+      }
+    } catch {
+      // Fallback to directory scan
+    }
+
+    scanDir(join(userDataDir, 'creative-studio', 'renders'), 'Thumbs & Artes', 36);
+    scanDir(join(userDataDir, 'media-library'), 'Biblioteca', 48);
+
+    return { ok: true, images: results };
+  });
+
+  ipcMain.handle(
+    'cinema:outro-render-preview',
+    async (
+      event,
+      input: { projectId: string; config: Partial<VideoOutroConfig>; quality?: 'preview' | 'master' },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      try {
+        const saved = videoOutroStore.saveProjectConfig(input.projectId || 'default', {
+          ...input.config,
+          enabled: true,
+        });
+        const projectRenderDir = join(outroRendersDir, (input.projectId || 'default').replace(/[^a-zA-Z0-9._-]+/g, '-'));
+        const renderResult = await renderMotionVelixOutroMp4({
+          config: saved,
+          outputDir: projectRenderDir,
+          outputFilename: `outro-${saved.style}-${saved.aspectRatio.replace(':', 'x')}-${saved.durationSec}s-${Date.now()}.mp4`,
+          quality: input.quality ?? 'preview',
+        });
+        const updated = videoOutroStore.saveProjectConfig(input.projectId || 'default', {
+          ...saved,
+          lastPreviewMp4Path: renderResult.outputMp4Path,
+          lastRenderedAtIso: new Date().toISOString(),
+        });
+        return {
+          ok: true,
+          result: renderResult,
+          config: updated,
+          message: `Encerramento renderizado (${renderResult.durationSec}s · ${renderResult.width}x${renderResult.height} · ${renderResult.style}).`,
+        };
+      } catch (err) {
+        return { ok: false, message: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:outro-compose-with-video',
+    async (
+      event,
+      input: {
+        projectId: string;
+        mainVideoPath: string;
+        config: Partial<VideoOutroConfig>;
+        outputMp4Path?: string;
+        quality?: 'preview' | 'master';
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      try {
+        const saved = videoOutroStore.saveProjectConfig(input.projectId || 'default', {
+          ...input.config,
+          enabled: true,
+        });
+        const projectRenderDir = join(outroRendersDir, (input.projectId || 'default').replace(/[^a-zA-Z0-9._-]+/g, '-'));
+        const outroRender = await renderMotionVelixOutroMp4({
+          config: saved,
+          outputDir: projectRenderDir,
+          quality: input.quality ?? 'master',
+        });
+        const composedPath =
+          input.outputMp4Path || join(projectRenderDir, `composed-with-outro-${Date.now()}.mp4`);
+        const composed = await composeVideoWithOutroMp4({
+          mainVideoPath: input.mainVideoPath,
+          outroVideoPath: outroRender.outputMp4Path,
+          outputMp4Path: composedPath,
+          aspectRatio: saved.aspectRatio,
+          quality: input.quality ?? 'master',
+        });
+        return { ok: composed.ok, outro: outroRender, composed };
+      } catch (err) {
+        return { ok: false, message: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
 
   // Keep unused imports referenced for proxy/agent orchestration readiness
   void AetheraMediaProxyRepository;

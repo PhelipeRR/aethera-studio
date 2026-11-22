@@ -26,6 +26,10 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
     ipcRenderer.invoke('agent-execution:save-settings', input),
   agentRunsList: (projectId?: string) => ipcRenderer.invoke('agent-execution:list-runs', projectId),
   agentRunStop: (input: { runId: string; mode?: 'skip' | 'cancel' }) => ipcRenderer.invoke('agent-execution:stop-run', input),
+  visionPriorityGet: () => ipcRenderer.invoke('aethera:vision-priority:get'),
+  visionPrioritySave: (input: { priority: string[] }) =>
+    ipcRenderer.invoke('aethera:vision-priority:save', input),
+  visionPriorityReset: () => ipcRenderer.invoke('aethera:vision-priority:reset'),
   cinemaProduce: (input: Record<string, unknown>) => ipcRenderer.invoke('cinema:produce', input),
   cinemaExportOtio: (projectId: string) => ipcRenderer.invoke('cinema:export-otio', projectId),
   cinemaRepair: (projectId: string) => ipcRenderer.invoke('cinema:repair', projectId),
@@ -300,6 +304,23 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   recapListProjects: () => ipcRenderer.invoke('recap:list-projects'),
   recapLoadProject: (runId: string) => ipcRenderer.invoke('recap:load-project', runId),
   recapDeleteProject: (runId: string) => ipcRenderer.invoke('recap:delete-project', runId),
+  cinemaOutroGetConfig: (input: { projectId: string; channelKey?: string | null; channelName?: string | null }) =>
+    ipcRenderer.invoke('cinema:outro-get-config', input),
+  cinemaOutroSaveConfig: (input: { projectId: string; channelKey?: string | null; config: Record<string, unknown>; saveAsChannelDefault?: boolean }) =>
+    ipcRenderer.invoke('cinema:outro-save-config', input),
+  cinemaOutroDeleteConfig: (input: { projectId: string }) =>
+    ipcRenderer.invoke('cinema:outro-delete-config', input),
+  cinemaOutroPickImage: () => ipcRenderer.invoke('cinema:outro-pick-image'),
+  cinemaOutroListLibraryImages: () => ipcRenderer.invoke('cinema:outro-list-library-images'),
+  cinemaOutroRenderPreview: (input: { projectId: string; config: Record<string, unknown>; quality?: 'preview' | 'master' }) =>
+    ipcRenderer.invoke('cinema:outro-render-preview', input),
+  cinemaOutroComposeWithVideo: (input: {
+    projectId: string;
+    mainVideoPath: string;
+    config: Record<string, unknown>;
+    outputMp4Path?: string;
+    quality?: 'preview' | 'master';
+  }) => ipcRenderer.invoke('cinema:outro-compose-with-video', input),
   onRecapProductionProgress: (listener: (event: unknown) => void) => {
     const wrapped = (_event: unknown, payload: unknown) => listener(payload);
     ipcRenderer.on('recap:production-progress', wrapped);
