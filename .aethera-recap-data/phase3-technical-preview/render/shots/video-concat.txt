@@ -1,4 +1,0 @@
-file 'C:/dev/neuralbridge-studio/.aethera-recap-data/phase3-technical-preview/render/shots/shot-1-1.mp4'
-file 'C:/dev/neuralbridge-studio/.aethera-recap-data/phase3-technical-preview/render/shots/shot-2-1.mp4'
-file 'C:/dev/neuralbridge-studio/.aethera-recap-data/phase3-technical-preview/render/shots/shot-3-1.mp4'
-file 'C:/dev/neuralbridge-studio/.aethera-recap-data/phase3-technical-preview/render/shots/shot-4-1.mp4'
