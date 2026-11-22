@@ -192,7 +192,7 @@ function buildMarkdown(input: {
 	const approximations = [...new Set(reports.flatMap((report) => report.approximations))];
 	const result = (passed: boolean | null): string => (passed === null ? 'não verificado' : passed ? 'passou' : 'FALHOU');
 
-	return `# MOGRT Engine, Fase 3A: validação de \`${file}\`
+	return `# MOGRT Engine, Fases 3A e 3B: validação de \`${file}\`
 
 Gerado por \`scripts/validate-mogrt-phase3a.ts\` a partir do arquivo real. Todos os números abaixo são medidos na execução.
 
@@ -201,7 +201,7 @@ Gerado por \`scripts/validate-mogrt-phase3a.ts\` a partir do arquivo real. Todos
 - Completude do render: \`${base.completenessVerdict}\`
 - ${base.completenessReason}
 
-A única referência do After Effects é o \`thumb.png\` de um quadro. Os demais quadros não têm com o que ser comparados.
+O único critério de comparação com o After Effects é o \`thumb.png\`, de um quadro. Os demais quadros não são comparados com nada.
 
 ## Verificações
 
