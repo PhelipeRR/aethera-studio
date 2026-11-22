@@ -42,6 +42,7 @@ export interface StructuredVisionPayload {
 export interface RecapVisualAnalysisPort {
 	readonly id: string;
 	readonly model: string;
+	readonly supportsMultimodal?: boolean;
 	describe?(input: {
 		frames: readonly { hash: string; path: string; atMs?: number }[];
 		signal?: AbortSignal;
@@ -51,7 +52,7 @@ export interface RecapVisualAnalysisPort {
 		context?: string;
 		signal?: AbortSignal;
 	}): Promise<StructuredVisionPayload>;
-	detect(signal?: AbortSignal): Promise<{ available: true } | { available: false; reason: string }>;
+	detect(signal?: AbortSignal): Promise<{ available: true; multimodal?: boolean } | { available: false; reason: string }>;
 }
 
 /**
@@ -356,7 +357,7 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		provider,
 		providers,
 		router,
-		policyChain = ['claude', 'claude-gateway', 'codex', 'local-vlm', 'antigravity'],
+		policyChain = ['codex', 'antigravity', 'claude', 'claude-gateway'],
 		maxLatencyMs = 30_000,
 		budgetUsd = 0.5,
 		circuitBreaker = new AgentCircuitBreaker(),
@@ -440,6 +441,13 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		const attempts: Array<{ provider: string; outcome: string; detail?: string }> = [];
 
 		for (const candidate of list) {
+			if (candidate.supportsMultimodal === false) {
+				const mmErr = classifyVisionError('Agente sem suporte multimodal real (apenas texto).', candidate.id, 'MODEL_INCOMPATIBLE');
+				circuitBreaker.recordError(candidate.id, mmErr);
+				diagnostics.push({ providerId: candidate.id, code: mmErr.code, message: mmErr.message });
+				attempts.push({ provider: candidate.id, outcome: 'unavailable', detail: mmErr.message });
+				continue;
+			}
 			if (!circuitBreaker.isAvailable(candidate.id)) {
 				const st = circuitBreaker.getState(candidate.id);
 				diagnostics.push({
@@ -455,11 +463,16 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 			let det = detectionCache.get(candidate.id);
 			if (!det) {
 				const rawDet = await candidate.detect(signal);
-				det = rawDet.available ? { available: true } : { available: false, reason: rawDet.reason };
+				if (rawDet.available && rawDet.multimodal === false) {
+					det = { available: false, reason: 'Agente sem suporte multimodal real (apenas texto).' };
+				} else {
+					det = rawDet.available ? { available: true } : { available: false, reason: rawDet.reason };
+				}
 				detectionCache.set(candidate.id, det);
 			}
 			if (!det.available) {
-				const detErr = classifyVisionError(det.reason ?? 'Provider unavailable', candidate.id, 'PROVIDER_UNAVAILABLE');
+				const fallbackCode = det.reason?.includes('suporte multimodal') ? 'MODEL_INCOMPATIBLE' : 'PROVIDER_UNAVAILABLE';
+				const detErr = classifyVisionError(det.reason ?? 'Provider unavailable', candidate.id, fallbackCode);
 				circuitBreaker.recordError(candidate.id, detErr);
 				diagnostics.push({ providerId: candidate.id, code: detErr.code, message: detErr.message });
 				attempts.push({ provider: candidate.id, outcome: 'unavailable', detail: detErr.message });
@@ -570,6 +583,36 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		const frames = [{ hash: 'recap-panel', path: validatedPath }];
 		const policy = buildPolicy();
 
+		if (policy.chain.length === 0) {
+			const diagnostics: VisionProviderDiagnostic[] = policyChain.map((id) => {
+				const st = circuitBreaker.getState(id);
+				return {
+					providerId: id,
+					code: st?.code ?? 'PROVIDER_UNAVAILABLE',
+					message: st?.reason ?? 'Circuit breaker open',
+					...(st?.resetAtText ? { resetAtText: st.resetAtText } : {}),
+				};
+			});
+			lastTrace = {
+				provider: null,
+				model: null,
+				reportedModel: null,
+				costUsd: 0,
+				attempts: diagnostics.map((d) => ({ provider: d.providerId, outcome: 'unavailable', detail: `circuit_open:${d.code}` })),
+			};
+			if (throwOnAllUnavailable) {
+				throw new AllVisionProvidersUnavailableError(diagnostics);
+			}
+			return {
+				characters: [],
+				actions: [],
+				emotions: ['unknown'],
+				setting: undefined,
+				uncertainties: ['Análise visual indisponível em todos os provedores configurados.'],
+				confidence: 0,
+			};
+		}
+
 		// Prefer structured analyze
 		const routerAnalyzeInput: Parameters<RecapVisionRouterPort['analyze']>[0] = {
 			frames,
@@ -604,28 +647,31 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 			return mapStructuredVisionResult(analyzeResult.value);
 		}
 
-		// Router returned no value — try describe fallback
-		const routerDescribeInput: Parameters<RecapVisionRouterPort['describe']>[0] = { frames, policy };
-		if (signal) routerDescribeInput.signal = signal;
-		const describeResult = await router.describe(routerDescribeInput);
-		lastTrace = {
-			provider: describeResult.provider,
-			model: describeResult.model,
-			reportedModel: describeResult.reportedModel ?? null,
-			costUsd: describeResult.costUsd,
-			attempts: describeResult.attempts,
-		};
-
-		if (describeResult.value) {
-			return {
-				visualDescription: describeResult.value.description,
-				characters: [],
-				actions: [{ type: 'none', description: describeResult.value.description }],
-				emotions: extractEmotionsFromAnalysis(describeResult.value.description, describeResult.value.tags, []),
-				setting: undefined,
-				uncertainties: ['Análise obtida via describe fallback (sem extração estruturada de balões/entidades).'],
-				confidence: 0.4, // describe-only via router is lower confidence
+		// Router returned no value — try describe fallback only if at least one provider remains available
+		const describePolicy = buildPolicy();
+		if (describePolicy.chain.length > 0) {
+			const routerDescribeInput: Parameters<RecapVisionRouterPort['describe']>[0] = { frames, policy: describePolicy };
+			if (signal) routerDescribeInput.signal = signal;
+			const describeResult = await router.describe(routerDescribeInput);
+			lastTrace = {
+				provider: describeResult.provider,
+				model: describeResult.model,
+				reportedModel: describeResult.reportedModel ?? null,
+				costUsd: describeResult.costUsd,
+				attempts: describeResult.attempts,
 			};
+
+			if (describeResult.value) {
+				return {
+					visualDescription: describeResult.value.description,
+					characters: [],
+					actions: [{ type: 'none', description: describeResult.value.description }],
+					emotions: extractEmotionsFromAnalysis(describeResult.value.description, describeResult.value.tags, []),
+					setting: undefined,
+					uncertainties: ['Análise obtida via describe fallback (sem extração estruturada de balões/entidades).'],
+					confidence: 0.4, // describe-only via router is lower confidence
+				};
+			}
 		}
 
 		// All providers failed — throw structured error when strict, or return zero confidence

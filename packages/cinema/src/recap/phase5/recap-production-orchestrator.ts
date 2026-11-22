@@ -76,6 +76,8 @@ export interface RecapVisionFailedProviderItem {
 export interface RecapVisionLiveTelemetry {
 	activeProvider: string | null;
 	activeModel: string | null;
+	priorityOrder?: string[];
+	nextFallback?: string | null;
 	completedPanels: number;
 	totalPanels: number;
 	currentPanelIndex?: number;
@@ -287,10 +289,47 @@ export async function runRecapProductionOrchestrator(
 	let gateGReport: GateGReport | undefined;
 	let panelAnalyses: import('../recap-types.js').PanelAnalysis[] | undefined;
 
+	const priorityOrder = input.providers.map((p) => p.id);
+	const resolveNextFallback = (
+		activeProvider: string | null,
+		failedProviders: readonly RecapVisionFailedProviderItem[],
+	): string | null => {
+		const failedIds = new Set(failedProviders.map((f) => f.providerId));
+		const startIdx = activeProvider ? priorityOrder.indexOf(activeProvider) + 1 : 0;
+		for (let i = Math.max(0, startIdx); i < priorityOrder.length; i += 1) {
+			const candidate = priorityOrder[i]!;
+			if (candidate !== activeProvider && !failedIds.has(candidate) && circuitBreaker.isAvailable(candidate)) {
+				return candidate;
+			}
+		}
+		return null;
+	};
+
 	if (!script) {
 		if (!readiness.ready) {
+			const failedProviders: RecapVisionFailedProviderItem[] = readiness.providers
+				.filter((p) => p.status !== 'available')
+				.map((p) => ({
+					providerId: p.providerId,
+					code: p.code ?? 'PROVIDER_UNAVAILABLE',
+					reason: p.reason ?? 'Indisponível',
+					...(p.resetAtText ? { resetAtText: p.resetAtText } : {}),
+				}));
 			const paused = persist('paused_provider_unavailable', 'vision', readiness.summaryMessage, {
 				readiness,
+				visionTelemetry: {
+					activeProvider: null,
+					activeModel: null,
+					priorityOrder,
+					nextFallback: null,
+					completedPanels: readiness.checkpoint.completedPanels,
+					totalPanels: input.panels.length,
+					failedProviders,
+					fallbackActive: false,
+					fallbackFrom: failedProviders[0]?.providerId ?? null,
+					canResumeFromCheckpoint: readiness.checkpoint.canResume,
+					updatedAtIso: new Date().toISOString(),
+				},
 				lastError: readiness.summaryMessage,
 			});
 			return { record: paused };
@@ -332,14 +371,18 @@ export async function runRecapProductionOrchestrator(
 			return [...map.values()];
 		};
 
+		const initialFailed = buildFailedProvidersSnapshot();
+		const initialActive = readiness.operationalProviders[0] ?? null;
 		const initialTelemetry: RecapVisionLiveTelemetry = {
-			activeProvider: readiness.operationalProviders[0] ?? null,
+			activeProvider: initialActive,
 			activeModel: null,
+			priorityOrder,
+			nextFallback: resolveNextFallback(initialActive, initialFailed),
 			completedPanels: liveCompletedPanels,
 			totalPanels: totalPanelsCount,
-			failedProviders: buildFailedProvidersSnapshot(),
-			fallbackActive: buildFailedProvidersSnapshot().length > 0 && readiness.operationalProviders.length > 0,
-			fallbackFrom: buildFailedProvidersSnapshot()[0]?.providerId ?? null,
+			failedProviders: initialFailed,
+			fallbackActive: initialFailed.length > 0 && readiness.operationalProviders.length > 0,
+			fallbackFrom: initialFailed[0]?.providerId ?? null,
 			canResumeFromCheckpoint: readiness.checkpoint.canResume,
 			updatedAtIso: new Date().toISOString(),
 		};
@@ -377,6 +420,8 @@ export async function runRecapProductionOrchestrator(
 						const visionTelemetry: RecapVisionLiveTelemetry = {
 							activeProvider,
 							activeModel,
+							priorityOrder,
+							nextFallback: resolveNextFallback(activeProvider, failedList),
 							completedPanels: liveCompletedPanels,
 							totalPanels: totalPanelsCount,
 							...(context?.panelIndex !== undefined ? { currentPanelIndex: context.panelIndex + 1 } : {}),
@@ -449,6 +494,8 @@ export async function runRecapProductionOrchestrator(
 			const finalVisionTelemetry: RecapVisionLiveTelemetry = {
 				activeProvider: finalProvider,
 				activeModel: finalModel,
+				priorityOrder,
+				nextFallback: resolveNextFallback(finalProvider, finalFailed),
 				completedPanels: totalPanelsCount,
 				totalPanels: totalPanelsCount,
 				failedProviders: finalFailed,
@@ -511,6 +558,8 @@ export async function runRecapProductionOrchestrator(
 			const visionTelemetry: RecapVisionLiveTelemetry = {
 				activeProvider: null,
 				activeModel: null,
+				priorityOrder,
+				nextFallback: null,
 				completedPanels: postFailReadiness.checkpoint.completedPanels,
 				totalPanels: totalPanelsCount,
 				failedProviders: failedList,

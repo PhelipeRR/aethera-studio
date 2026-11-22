@@ -13,7 +13,8 @@ import { loadCheckpoint } from './checkpoint-persistence.js';
 export interface ReadinessProviderProbe {
 	id: string;
 	label: string;
-	detect: () => Promise<{ available: boolean; reason?: string }>;
+	supportsMultimodal?: boolean;
+	detect: () => Promise<{ available: boolean; reason?: string; code?: VisionErrorCode; resetAtText?: string; multimodal?: boolean }>;
 }
 
 export interface ProviderReadinessItem {
@@ -100,9 +101,27 @@ export async function checkRecapProductionReadiness(input: {
 			});
 			continue;
 		}
+		if (p.supportsMultimodal === false) {
+			items.push({
+				providerId: p.id,
+				label: p.label,
+				status: 'unavailable',
+				code: 'MODEL_INCOMPATIBLE',
+				reason: 'Agente sem suporte multimodal real (apenas texto).',
+			});
+			continue;
+		}
 		try {
 			const det = await p.detect();
-			if (det.available) {
+			if (det.available && det.multimodal === false) {
+				items.push({
+					providerId: p.id,
+					label: p.label,
+					status: 'unavailable',
+					code: 'MODEL_INCOMPATIBLE',
+					reason: 'Agente sem suporte multimodal real (apenas texto).',
+				});
+			} else if (det.available) {
 				operationalProviders.push(p.id);
 				items.push({ providerId: p.id, label: p.label, status: 'available' });
 			} else {
@@ -110,8 +129,9 @@ export async function checkRecapProductionReadiness(input: {
 					providerId: p.id,
 					label: p.label,
 					status: 'unavailable',
-					code: 'PROVIDER_UNAVAILABLE',
+					code: det.code ?? 'PROVIDER_UNAVAILABLE',
 					...(det.reason ? { reason: det.reason } : {}),
+					...(det.resetAtText ? { resetAtText: det.resetAtText } : {}),
 				});
 			}
 		} catch (err) {

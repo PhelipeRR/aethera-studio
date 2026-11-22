@@ -72,6 +72,8 @@ export interface RecapVisionFailedProviderView {
 export interface RecapVisionLiveTelemetryView {
   activeProvider: string | null;
   activeModel: string | null;
+  priorityOrder?: string[];
+  nextFallback?: string | null;
   completedPanels: number;
   totalPanels: number;
   currentPanelIndex?: number;

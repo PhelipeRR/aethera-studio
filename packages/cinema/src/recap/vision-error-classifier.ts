@@ -57,14 +57,30 @@ export function sanitizeErrorMessage(raw: string, maxLength = 360): string {
  */
 export function extractResetInfo(raw: string): string | undefined {
 	const patterns = [
-		/resets?\s+([^·\n]+?)(?:\s*·|\s*$)/i,
+		/resets?\s+(?:at\s+|in\s+)?([^·\n]+?)(?:\s*·|\s*$)/i,
 		/try again\s+(?:at|after|in)\s+([^·\n.]+)/i,
-		/available again\s+(?:at|on)\s+([^·\n.]+)/i,
+		/available again\s+(?:at|on|in)\s+([^·\n.]+)/i,
 		/until\s+([0-9]{4}-[0-9]{2}-[0-9]{2}[^\s·\n]*|[0-9]{2}\/[0-9]{2}\/[0-9]{4})/i,
 	];
 	for (const re of patterns) {
 		const m = re.exec(raw);
 		if (m?.[1]?.trim()) return sanitizeErrorMessage(m[1].trim(), 120);
+	}
+	return undefined;
+}
+
+export function parseResetAtMs(resetAtText?: string, nowMs = Date.now()): number | undefined {
+	if (!resetAtText) return undefined;
+	const trimmed = resetAtText.trim();
+	if (!trimmed) return undefined;
+	const isoMs = Date.parse(trimmed);
+	if (Number.isFinite(isoMs) && isoMs > nowMs) return isoMs;
+	const relMatch = /(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\b/i.exec(trimmed);
+	if (relMatch?.[1] && relMatch[2]) {
+		const amount = Number.parseInt(relMatch[1], 10);
+		const unit = relMatch[2].toLowerCase();
+		const mult = unit.startsWith('s') ? 1_000 : unit.startsWith('m') ? 60_000 : unit.startsWith('h') ? 3_600_000 : 86_400_000;
+		if (Number.isFinite(amount) && amount > 0) return nowMs + amount * mult;
 	}
 	return undefined;
 }
@@ -81,6 +97,7 @@ export class RecapVisionError extends Error {
 	readonly providerId: string;
 	readonly retryable: boolean;
 	readonly resetAtText?: string;
+	readonly resetAtMs?: number;
 	readonly exitCode?: number;
 
 	constructor(input: {
@@ -89,6 +106,7 @@ export class RecapVisionError extends Error {
 		message: string;
 		retryable?: boolean;
 		resetAtText?: string;
+		resetAtMs?: number;
 		exitCode?: number;
 		cause?: unknown;
 	}) {
@@ -99,7 +117,13 @@ export class RecapVisionError extends Error {
 		this.code = input.code;
 		this.providerId = input.providerId;
 		this.retryable = input.retryable ?? (input.code === 'RATE_LIMITED' || input.code === 'TIMEOUT' || input.code === 'NETWORK_ERROR');
-		if (input.resetAtText) this.resetAtText = input.resetAtText;
+		if (input.resetAtText) {
+			this.resetAtText = input.resetAtText;
+			const parsed = input.resetAtMs ?? parseResetAtMs(input.resetAtText);
+			if (parsed !== undefined) this.resetAtMs = parsed;
+		} else if (input.resetAtMs !== undefined) {
+			this.resetAtMs = input.resetAtMs;
+		}
 		if (input.exitCode !== undefined) this.exitCode = input.exitCode;
 	}
 }

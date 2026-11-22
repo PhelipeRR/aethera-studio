@@ -226,6 +226,7 @@ export {
 	detectProviderErrorInText,
 	sanitizeErrorMessage,
 	extractResetInfo,
+	parseResetAtMs,
 } from './vision-error-classifier.js';
 
 export {
@@ -243,6 +244,7 @@ export {
 	ensureVisionHealthProbeImage,
 	mapErrorCodeToMultimodalState,
 	inspectPassiveMultimodalHealth,
+	loadVisionHealthCheckCache,
 	runMultimodalVisionHealthCheck,
 } from './vision-health-check.js';
 

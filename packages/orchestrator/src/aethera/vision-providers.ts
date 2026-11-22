@@ -206,17 +206,17 @@ export function createAgentAdapterVisionProvider(input: {
 export function createVisionProviders(configured: readonly VisualAnalysisProvider[] = []): VisualAnalysisProvider[] {
   const registry: Array<{ id: string; capabilities: VisualAnalysisProvider['capabilities']; reason: string }> = [
     { id: 'ffmpeg-heuristics', capabilities: ['describe'], reason: '' },
-    { id: 'claude-gateway', capabilities: ['classify', 'describe', 'ocr', 'analyze'], reason: 'Claude Gateway não configurado ou desativado.' },
-    { id: 'antigravity', capabilities: ['classify', 'describe', 'ocr', 'analyze'], reason: 'Antigravity CLI (agy) não configurado ou indisponível.' },
     { id: 'codex', capabilities: ['classify', 'describe', 'ocr', 'analyze'], reason: 'TaskEngine visual adapter not enabled; real B-1 validation pending.' },
+    { id: 'antigravity', capabilities: ['classify', 'describe', 'ocr', 'analyze'], reason: 'Antigravity CLI (agy) não configurado ou indisponível.' },
     { id: 'claude', capabilities: ['classify', 'describe', 'ocr', 'analyze'], reason: 'TaskEngine visual adapter not enabled; real B-1 validation pending.' },
+    { id: 'claude-gateway', capabilities: ['classify', 'describe', 'ocr', 'analyze'], reason: 'Claude Gateway não configurado ou desativado.' },
     { id: 'local-siglip', capabilities: ['classify', 'embed_image', 'embed_text'], reason: 'SigLIP model/runtime not installed or benchmarked.' },
     { id: 'local-vlm', capabilities: ['classify', 'describe', 'ocr'], reason: 'Isolated VLM runtime not installed or benchmarked.' },
     { id: 'openai', capabilities: ['classify', 'describe', 'ocr'], reason: 'External provider disabled; consent/credentials/benchmark required.' },
     { id: 'gemini', capabilities: ['classify', 'describe', 'ocr'], reason: 'External provider disabled; consent/credentials/benchmark required.' },
   ];
   return registry.map(({ id, capabilities, reason }) => configured.find((provider) => provider.id === id) ?? (id === 'ffmpeg-heuristics' ? {
-    id, model: 'structural-v1', capabilities, limits: { maxImagesPerCall: 3 }, detect: async () => ({ available: true as const }),
+    id, model: 'structural-v1', capabilities, supportsMultimodal: false, limits: { maxImagesPerCall: 3 }, detect: async () => ({ available: true as const, multimodal: false }),
     describe: async ({ frames }) => ({ description: `${frames.length} extracted frame(s). Semantic content unavailable; consult measured segment quality.`, tags: ['structural-only'] }),
   } : { id, model: 'unconfigured', capabilities, limits: { maxImagesPerCall: 3 }, detect: async () => ({ available: false as const, reason }) }));
 }

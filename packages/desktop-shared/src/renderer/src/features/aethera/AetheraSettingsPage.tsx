@@ -23,6 +23,7 @@ import {
 } from '@/app/app-settings-isolation';
 import { MediaSourcesSettings } from './MediaSourcesSettings';
 import { AgentExecutionSettings } from './AgentExecutionSettings';
+import { AgentPrioritySettings } from './AgentPrioritySettings';
 import { SetupTutorialDrawer } from './SetupTutorialDrawer';
 import { TtsProviderSelector } from './TtsProviderSelector';
 import { loadNarrationDefaults, saveNarrationDefaults, type NarrationDefaults } from './narration-defaults';
@@ -757,6 +758,8 @@ export function AetheraSettingsPage({ description }: { description: string }) {
                 </div>
 
                 <AgentExecutionSettings />
+
+                <AgentPrioritySettings />
 
                 <form
                   onSubmit={(e) => void handleSaveClaudeGateway(e)}

@@ -7,7 +7,7 @@
  * dispatched to it, even if `detect()` still reports authenticated.
  */
 
-import type { RecapVisionError, VisionErrorCode } from './vision-error-classifier.js';
+import { parseResetAtMs, type RecapVisionError, type VisionErrorCode } from './vision-error-classifier.js';
 
 export interface AgentCircuitState {
 	providerId: string;
@@ -15,6 +15,7 @@ export interface AgentCircuitState {
 	code?: VisionErrorCode;
 	reason?: string;
 	resetAtText?: string;
+	resetAtMs?: number;
 	openedAtIso?: string;
 	failureCount: number;
 }
@@ -34,9 +35,18 @@ export class AgentCircuitBreaker {
 		this.transientFailureThreshold = options?.transientFailureThreshold ?? 3;
 	}
 
-	isAvailable(providerId: string): boolean {
+	isAvailable(providerId: string, nowMs = Date.now()): boolean {
 		const entry = this.circuits.get(providerId);
-		return !entry || entry.state === 'closed';
+		if (!entry || entry.state === 'closed') return true;
+		if (
+			entry.code === 'QUOTA_EXCEEDED' &&
+			entry.resetAtMs !== undefined &&
+			nowMs >= entry.resetAtMs
+		) {
+			this.circuits.delete(providerId);
+			return true;
+		}
+		return false;
 	}
 
 	getState(providerId: string): AgentCircuitState | null {
@@ -67,12 +77,14 @@ export class AgentCircuitBreaker {
 			DEFINITIVE_OPEN_CODES.has(error.code) ||
 			failureCount >= this.transientFailureThreshold;
 
+		const resetAtMs = error.resetAtMs ?? parseResetAtMs(error.resetAtText);
 		const next: AgentCircuitState = {
 			providerId,
 			state: shouldOpen ? 'open' : 'closed',
 			code: error.code,
 			reason: error.message,
 			...(error.resetAtText ? { resetAtText: error.resetAtText } : {}),
+			...(resetAtMs !== undefined ? { resetAtMs } : {}),
 			...(shouldOpen ? { openedAtIso: existing?.openedAtIso ?? new Date().toISOString() } : {}),
 			failureCount,
 		};
@@ -80,13 +92,15 @@ export class AgentCircuitBreaker {
 		return next;
 	}
 
-	open(providerId: string, code: VisionErrorCode, reason: string, resetAtText?: string): AgentCircuitState {
+	open(providerId: string, code: VisionErrorCode, reason: string, resetAtText?: string, resetAtMs?: number): AgentCircuitState {
+		const resolvedResetAtMs = resetAtMs ?? parseResetAtMs(resetAtText);
 		const next: AgentCircuitState = {
 			providerId,
 			state: 'open',
 			code,
 			reason,
 			...(resetAtText ? { resetAtText } : {}),
+			...(resolvedResetAtMs !== undefined ? { resetAtMs: resolvedResetAtMs } : {}),
 			openedAtIso: new Date().toISOString(),
 			failureCount: (this.circuits.get(providerId)?.failureCount ?? 0) + 1,
 		};

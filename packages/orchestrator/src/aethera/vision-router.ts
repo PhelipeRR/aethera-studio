@@ -3,14 +3,21 @@ import { z } from 'zod';
 import { calibratedProbability, confidenceBand, segmentAnalysisSchema, segmentKinds, type SegmentAnalysis, type ConfidenceCalibration, type ConfidenceBand, type SegmentKind, type VisionCapability, type VisionPolicy, type VisionTask } from '@neuralbridge/shared';
 import { visionGpuScheduler, type VisualWorkScheduler } from './visual-work-scheduler.js';
 
+export const DEFAULT_MULTIMODAL_AGENT_PRIORITY = ['codex', 'antigravity', 'claude', 'claude-gateway'] as const;
+
 /** `atMs` is the frame's position in the source, kept so an analysis can cite when something was seen. */
 export interface VisionFrame { hash: string; path: string; atMs?: number }
 export interface VisionClassification { kind: SegmentKind; confidence: number }
 export interface VisionDescription { description: string; tags: string[] }
 export interface VisualAnalysisProvider {
   id: string; model: string; capabilities: readonly VisionCapability[];
+  /** Explicit multimodal capability flag. When `false`, image payloads are never dispatched to this provider. */
+  supportsMultimodal?: boolean;
   limits: { maxImagesPerCall: number; vramMb?: number; costPerImageUsd?: number };
-  detect(signal?: AbortSignal): Promise<{ available: true } | { available: false; reason: string }>;
+  detect(signal?: AbortSignal): Promise<
+    | { available: true; multimodal?: boolean }
+    | { available: false; reason: string; code?: string; resetAtMs?: number; resetAtText?: string }
+  >;
   classify?(input: { frames: readonly VisionFrame[]; labels: readonly SegmentKind[]; signal?: AbortSignal }): Promise<VisionClassification>;
   describe?(input: { frames: readonly VisionFrame[]; signal?: AbortSignal }): Promise<VisionDescription>;
   embedImage?(input: { frames: readonly VisionFrame[]; signal?: AbortSignal }): Promise<number[][]>;
@@ -25,7 +32,7 @@ export type VisionCacheKey = { frameHash: string; provider: string; model: strin
 export interface VisionCachePort { get(key: VisionCacheKey): unknown; put(key: VisionCacheKey, value: unknown): void }
 export interface VisionSpendPort { get(key: string): number; add(key: string, amount: number): number }
 export type VisionAttemptOutcome = 'ok' | 'cached' | 'low_confidence' | 'unavailable' | 'over_budget' | 'error';
-export interface VisionCooldownEntry { untilMs: number; reason: string; kind?: 'quota' | 'timeout' }
+export interface VisionCooldownEntry { untilMs: number; reason: string; kind?: 'quota' | 'timeout'; resetAtText?: string }
 export interface VisionProviderTelemetry {
   provider: string;
   calls: number;
@@ -47,6 +54,36 @@ export interface VisionRouterConfig {
 }
 export function isVisionQuotaError(message: string): boolean {
   return /QUOTA_EXHAUSTED|QUOTA_EXCEEDED|RESOURCE_EXHAUSTED|insufficient[_ ]?credits?|cr[ée]ditos?\s+insuficientes?|saldo\s+insuficiente|weekly limit|hit your (?:weekly|daily|monthly|usage) limit|out of (?:usage )?credits?|usage limit|quota|rate[- ]limit|too many requests|\b429\b|try again at|insufficient[_ ]quota|credit balance/i.test(message);
+}
+
+export function extractVisionResetInfo(raw: string): string | undefined {
+  const patterns = [
+    /resets?\s+(?:at\s+|in\s+)?([^·\n]+?)(?:\s*·|\s*$)/i,
+    /try again\s+(?:at|after|in)\s+([^·\n.]+)/i,
+    /available again\s+(?:at|on|in)\s+([^·\n.]+)/i,
+    /until\s+([0-9]{4}-[0-9]{2}-[0-9]{2}[^\s·\n]*|[0-9]{2}\/[0-9]{2}\/[0-9]{4})/i,
+  ];
+  for (const re of patterns) {
+    const m = re.exec(raw);
+    if (m?.[1]?.trim()) return m[1].trim().slice(0, 120);
+  }
+  return undefined;
+}
+
+export function parseVisionResetAtMs(resetAtText?: string, nowMs = Date.now()): number | undefined {
+  if (!resetAtText) return undefined;
+  const trimmed = resetAtText.trim();
+  if (!trimmed) return undefined;
+  const isoMs = Date.parse(trimmed);
+  if (Number.isFinite(isoMs) && isoMs > nowMs) return isoMs;
+  const relMatch = /(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\b/i.exec(trimmed);
+  if (relMatch?.[1] && relMatch[2]) {
+    const amount = Number.parseInt(relMatch[1], 10);
+    const unit = relMatch[2].toLowerCase();
+    const mult = unit.startsWith('s') ? 1_000 : unit.startsWith('m') ? 60_000 : unit.startsWith('h') ? 3_600_000 : 86_400_000;
+    if (Number.isFinite(amount) && amount > 0) return nowMs + amount * mult;
+  }
+  return undefined;
 }
 export type VisionAttempt = { provider: string; outcome: VisionAttemptOutcome; detail?: string; durationMs?: number };
 type Attempt = VisionAttempt;
@@ -156,12 +193,20 @@ export class VisionRouter {
     for (const id of chain) {
       const cd = this.cooldowns.get(id);
       if (cd && cd.untilMs > Date.now()) {
-        out.push({ provider: id, available: false, reason: `${cd.kind === 'timeout' ? 'timeout_cooldown' : 'quota_cooldown'}: ${cd.reason}` });
+        const resetSuffix = cd.resetAtText ? ` (reset: ${cd.resetAtText})` : '';
+        out.push({ provider: id, available: false, reason: `${cd.kind === 'timeout' ? 'timeout_cooldown' : 'quota_cooldown'}: ${cd.reason}${resetSuffix}` });
         continue;
+      }
+      if (cd && cd.untilMs <= Date.now()) {
+        this.cooldowns.delete(id);
       }
       const provider = this.providers.get(id);
       if (!provider) {
         out.push({ provider: id, available: false, reason: 'not configured' });
+        continue;
+      }
+      if (provider.supportsMultimodal === false) {
+        out.push({ provider: id, available: false, reason: 'model_incompatible: agente sem suporte multimodal real (apenas texto)' });
         continue;
       }
       try {
@@ -178,7 +223,11 @@ export class VisionRouter {
               }, this.healthTimeoutMs);
             }),
           ]);
-          out.push(res.available ? { provider: id, available: true } : { provider: id, available: false, reason: res.reason });
+          if (res.available && res.multimodal === false) {
+            out.push({ provider: id, available: false, reason: 'model_incompatible: agente sem suporte multimodal real (apenas texto)' });
+          } else {
+            out.push(res.available ? { provider: id, available: true } : { provider: id, available: false, reason: res.reason });
+          }
         } finally {
           if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
         }
@@ -264,11 +313,19 @@ export class VisionRouter {
       }
       const cd = this.cooldowns.get(id);
       if (cd && cd.untilMs > Date.now()) {
-        attempts.push({ provider: id, outcome: 'unavailable', detail: `${cd.kind === 'timeout' ? 'timeout_cooldown' : 'quota_cooldown'}: ${cd.reason}` });
+        const resetSuffix = cd.resetAtText ? ` (reset: ${cd.resetAtText})` : '';
+        attempts.push({ provider: id, outcome: 'unavailable', detail: `${cd.kind === 'timeout' ? 'timeout_cooldown' : 'quota_cooldown'}: ${cd.reason}${resetSuffix}` });
         continue;
+      }
+      if (cd && cd.untilMs <= Date.now()) {
+        this.cooldowns.delete(id);
       }
       const provider = this.providers.get(id);
       if (!provider || !provider.capabilities.includes(capability)) { attempts.push({ provider: id, outcome: 'unavailable', detail: `capability ${capability} unavailable` }); continue; }
+      if (capability !== 'embed_text' && provider.supportsMultimodal === false) {
+        attempts.push({ provider: id, outcome: 'unavailable', detail: 'model_incompatible: agente sem suporte multimodal real (apenas texto)' });
+        continue;
+      }
       providerAttempts += 1;
       const controller = new AbortController();
       const abort = () => controller.abort(input.signal?.reason);
@@ -313,6 +370,10 @@ export class VisionRouter {
                 detected = true;
                 if (!availability.available) {
                   attempts.push({ provider: id, outcome: 'unavailable', detail: availability.reason });
+                  return empty();
+                }
+                if (capability !== 'embed_text' && availability.multimodal === false) {
+                  attempts.push({ provider: id, outcome: 'unavailable', detail: 'model_incompatible: agente sem suporte multimodal real (apenas texto)' });
                   return empty();
                 }
               }
@@ -383,7 +444,14 @@ export class VisionRouter {
           t.lastError = detail.slice(-160);
           this.telemetry.set(id, t);
           if (isVisionQuotaError(detail)) {
-            this.cooldowns.set(id, { untilMs: Date.now() + 10 * 60_000, reason: detail.slice(-160), kind: 'quota' });
+            const resetAtText = extractVisionResetInfo(detail);
+            const untilMs = parseVisionResetAtMs(resetAtText) ?? (Date.now() + 10 * 60_000);
+            this.cooldowns.set(id, {
+              untilMs,
+              reason: detail.slice(-160),
+              kind: 'quota',
+              ...(resetAtText ? { resetAtText } : {}),
+            });
           } else if (isTimeout) {
             const count = (this.timeoutFailures.get(id) ?? 0) + 1;
             this.timeoutFailures.set(id, count);

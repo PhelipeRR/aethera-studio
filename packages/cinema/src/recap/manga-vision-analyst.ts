@@ -545,7 +545,7 @@ export function createMangaVisionVisionAdapter(options: MangaVisionAdapterOption
 		provider,
 		visionAdapter,
 		storyMemoryContext,
-		policyChain = ['claude', 'codex', 'antigravity'],
+		policyChain = ['codex', 'antigravity', 'claude', 'claude-gateway'],
 		budgetUsd = 0.5,
 		maxLatencyMs = 45_000,
 	} = options;
