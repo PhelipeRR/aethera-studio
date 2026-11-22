@@ -1,13 +1,13 @@
-# MOGRT Engine, Fase 3A: validação de `Dynamic Anime Burst Logo 01.mogrt`
+# MOGRT Engine, Fases 3A e 3B: validação de `Dynamic Anime Burst Logo 01.mogrt`
 
 Gerado por `scripts/validate-mogrt-phase3a.ts` a partir do arquivo real. Todos os números abaixo são medidos na execução.
 
 - SHA-256: `742d296d11a90b0b8b35b5394c7a9404790e128ec6246f92188b36df619d96cc`
 - Resultado das verificações: **aprovado**
 - Completude do render: `partial_with_documented_gaps`
-- Reprodução parcial: 97 de 106 máscaras rasterizadas, 15 ocorrência(s) de efeito com lacuna (ADBE Turbulent Displace, ADBE Displacement Map, ADBE Fractal Noise, ADBE CurvesCustom, APC Vegas, ADBE Scribble Fill), 0 expressão(ões) não avaliada(s), 1 outra(s) lacuna(s) e 7 aproximação(ões). Não equivale a um render do After Effects.
+- Reprodução parcial: 97 de 106 máscaras rasterizadas, 1 ocorrência(s) de efeito com lacuna (ADBE Scribble Fill), 0 expressão(ões) não avaliada(s), 0 outra(s) lacuna(s) e 11 aproximação(ões). Não equivale a um render do After Effects.
 
-A única referência do After Effects é o `thumb.png` de um quadro. Os demais quadros não têm com o que ser comparados.
+O único critério de comparação com o After Effects é o `thumb.png`, de um quadro. Os demais quadros não são comparados com nada.
 
 ## Verificações
 
@@ -23,7 +23,7 @@ A única referência do After Effects é o `thumb.png` de um quadro. Os demais q
 | edited: duração do MP4 igual ao definition.json | passou | 7.267 s, esperado 7.267 s |
 | arquivo original intacto | passou | SHA-256 antes e depois |
 | quadro base contra o thumb.png (t=0.667 s) | passou | MAE 10.76 (máx. 20), IoU 0.913 (mín. 0.85) |
-| trocar o logo muda o quadro | passou | MAE 10.73 (mín. 0.2) |
+| trocar o logo muda o quadro | passou | MAE 10.62 (mín. 0.2) |
 | editar cores muda a transição | passou | MAE 77.06 (mín. 0.2) |
 | editar só o texto muda o quadro final | passou | MAE 0.56 (mín. 0.2) |
 
@@ -67,14 +67,19 @@ A única referência do After Effects é o `thumb.png` de um quadro. Os demais q
 
 | Efeito | Execuções |
 | :--- | :--- |
-| ADBE Fill | 942 |
+| ADBE Fill | 1013 |
 | ADBE Tint | 199 |
 | ADBE Drop Shadow | 1151 |
 | ADBE Glo2 | 207 |
 | ADBE Noise2 | 218 |
-| ADBE Shift Channels | 365 |
-| ADBE Simple Choker | 365 |
-| ADBE Geometry2 | 782 |
+| ADBE Turbulent Displace | 527 |
+| ADBE Fractal Noise | 436 |
+| ADBE Shift Channels | 436 |
+| ADBE CurvesCustom | 532 |
+| ADBE Simple Choker | 436 |
+| ADBE Geometry2 | 853 |
+| ADBE Displacement Map | 154 |
+| APC Vegas | 62 |
 | ADBE Box Blur2 | 184 |
 | ADBE Set Matte3 | 184 |
 
@@ -82,27 +87,11 @@ A única referência do After Effects é o `thumb.png` de um quadro. Os demais q
 
 | Composição | Camada | Efeito | Motivo |
 | :--- | :--- | :--- | :--- |
-| L01 COLOR_LOGO 01 | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
-| L01 COLOR_LOGO 01 | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Displacement Map | Efeito não implementado; a camada aparece sem ele. |
-| Matte | Shape Layer 1 | ADBE Fractal Noise | Efeito não implementado; a camada aparece sem ele. |
-| Matte | Shape Layer 1 | ADBE CurvesCustom | Efeito não implementado; a camada aparece sem ele. |
-| L01 LOGO | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
-| L01 STROKE | Dynamic Anime Burst 01 Logo Placeholder Comp | APC Vegas | Gerador não implementado que substitui a camada; a camada é omitida. |
-| L01 COLOR_LOGO 02 | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
-| L01 COLOR_LOGO 02 | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Displacement Map | Efeito não implementado; a camada aparece sem ele. |
-| L01 LOGO | Blink 03 | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
-| L01 REF_MAP | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE CurvesCustom | Efeito não implementado; a camada aparece sem ele. |
-| L01 LOGO | Blink 04 | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
-| L01 LOGO | Blink 01 | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
-| L01 LOGO | Blink 02 | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
-| L01 STROKE | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Turbulent Displace | Efeito não implementado (Fase 3B); não é reproduzido. |
-| Energy 25 Glow | Shape Layer 2 | ADBE Scribble Fill | Efeito não implementado (Fase 3B); não é reproduzido. |
+| Energy 25 Glow | Shape Layer 2 | ADBE Scribble Fill | Efeito não implementado, sem efeito no resultado: a camada tem opacidade fixa de 0% e nenhuma outra a usa como fonte. |
 
 ## Outras lacunas
 
-| Composição | Camada | Motivo |
-| :--- | :--- | :--- |
-| DABL_01 | Shape Layer 1 | Traço de shape não implementado. |
+Nenhum.
 
 ## Aproximações
 
@@ -111,6 +100,10 @@ A única referência do After Effects é o `thumb.png` de um quadro. Os demais q
 - Glow: bloom próprio; cores A e B usam a média, e só Add/atrás são distinguidos.
 - Noise: grão determinístico próprio, com outro padrão de pixels.
 - wiggle(): ruído determinístico próprio, com curva diferente da do After Effects.
+- Turbulent Displace: ruído próprio com amplitude, tamanho e tempo do projeto; o desenho da distorção difere do After Effects.
+- Fractal Noise (Strings): ruído próprio com a escala, o contraste e o tempo do projeto; o desenho dos fios difere do After Effects.
+- Displacement Map: o mapa fica centralizado na camada; regra inferida para pré-composições recolhidas.
+- Vegas: contornos por marching squares; o ponto de partida do traço em cada contorno difere do After Effects.
 - Set Matte com origem recolhida: usa o espaço da composição; regra inferida, sem quadro do After Effects para comparar.
 - Fonte "Montserrat-Bold" não vem no .mogrt: se não estiver instalada, o rasterizador usa outra.
 
