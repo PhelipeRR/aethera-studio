@@ -98,6 +98,8 @@ export interface RenderMogrtPhase3AOptions {
 	durationSec?: number;
 	/** Optional timestamps (in seconds) to capture PNG frames during the render pass. */
 	captureFrames?: Array<{ tSec: number; outputPngPath: string }>;
+	/** Called after each frame reaches the encoder. */
+	onProgress?: (done: number, total: number) => void;
 }
 
 export interface MogrtRenderGap {
@@ -1481,7 +1483,7 @@ export function renderMogrtFrameRgba(opts: {
 }
 
 /** Flattens over black, as H.264 has no alpha, and counts the pixels that are not black. */
-function flattenOverBlack(frame: RgbaBuffer): number {
+export function flattenOverBlack(frame: RgbaBuffer): number {
 	const { data } = frame;
 	let lit = 0;
 	for (let o = 0; o < data.length; o += 4) {
@@ -1522,7 +1524,7 @@ export async function renderMogrtPhase3AToMp4(opts: RenderMogrtPhase3AOptions): 
 			'-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-crf', '18', '-movflags', '+faststart',
 			opts.outputMp4Path,
 		],
-		{ stdio: ['pipe', 'ignore', 'pipe'] },
+		{ stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true },
 	);
 	let stderr = '';
 	ff.stderr.on('data', (chunk: Buffer) => {
@@ -1559,6 +1561,7 @@ export async function renderMogrtPhase3AToMp4(opts: RenderMogrtPhase3AOptions): 
 			if (!ff.stdin.write(Buffer.from(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength))) {
 				await Promise.race([new Promise((resolve) => ff.stdin.once('drain', resolve)), closed]);
 			}
+			opts.onProgress?.(f + 1, totalFrames);
 		}
 	} catch (error) {
 		ff.kill();

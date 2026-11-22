@@ -34,6 +34,7 @@ function runCommandWithFallback(
 			return execFileSync(c.bin, c.args, {
 				maxBuffer: 256 * 1024 * 1024,
 				stdio: ['pipe', 'pipe', 'pipe'],
+				windowsHide: true,
 				...(c.input !== undefined ? { input: c.input } : {}),
 			});
 		} catch (err) {
@@ -329,7 +330,7 @@ export function writeRgbaBufferToPng(buf: RgbaBuffer, outputPngPath: string): vo
 			'1',
 			outputPngPath,
 		],
-		{ input: Buffer.from(buf.data.buffer, buf.data.byteOffset, buf.data.byteLength) },
+		{ input: Buffer.from(buf.data.buffer, buf.data.byteOffset, buf.data.byteLength), windowsHide: true },
 	);
 }
 

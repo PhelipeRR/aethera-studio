@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, extname, join, relative } from 'node:path';
+import { assertSafeZip } from './mogrt-zip-guard.js';
 
 export type MogrtControlKind =
 	| 'group'
@@ -199,12 +200,13 @@ function classifyAssetKind(relPath: string): MogrtEmbeddedAsset['kind'] {
 }
 
 function unpackZipSafe(zipPath: string, targetDir: string): void {
+	assertSafeZip(readFileSync(zipPath));
 	mkdirSync(targetDir, { recursive: true });
 	if (process.platform === 'win32') {
 		// Windows 10/11 ships bsdtar, which reads ZIP regardless of extension. Call it by path: a GNU tar
 		// earlier on PATH (Git Bash, MSYS) cannot read ZIP and takes `C:` for a remote host.
 		const bsdtar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
-		execFileSync(bsdtar, ['-xf', zipPath, '-C', targetDir]);
+		execFileSync(bsdtar, ['-xf', zipPath, '-C', targetDir], { windowsHide: true });
 		return;
 	}
 	try {
