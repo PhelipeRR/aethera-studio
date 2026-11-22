@@ -426,3 +426,8 @@ export function produceCinemaPackage(input: ProduceCinemaPackageInput): CinemaPr
 }
 
 export * from './motionvelix/video-outro-engine.js';
+export * from './motionvelix/outro-template-registry.js';
+export * from './motionvelix/logo-library-store.js';
+export * from './motionvelix/outro-cache-manager.js';
+export * from './motionvelix/outro-preset-store.js';
+export * from './motionvelix/outro-studio-renderer.js';

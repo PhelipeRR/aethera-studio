@@ -438,6 +438,45 @@ export class AetheraDatabase {
       .run(key, publicationId, platform, new Date().toISOString(), JSON.stringify(result));
   }
 
+  // MotionVelix Outro Studio 3.0 Web / Remote Host sync (logical versioned refs, no Windows paths)
+  public getOutroStudioConfig(projectId: string): Record<string, unknown> | null {
+    const row = this.db
+      .prepare('SELECT payload FROM studio_kv WHERE key = ?')
+      .get(`outro_v3_cfg:${projectId}`) as { payload: string } | undefined;
+    return row ? (JSON.parse(row.payload) as Record<string, unknown>) : null;
+  }
+
+  public upsertOutroStudioConfig(projectId: string, config: Record<string, unknown>): Record<string, unknown> {
+    this.db
+      .prepare(
+        `INSERT INTO studio_kv (key, payload) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET payload = excluded.payload`,
+      )
+      .run(`outro_v3_cfg:${projectId}`, JSON.stringify(config));
+    return config;
+  }
+
+  public listOutroLogoRefs(channelId: string): Array<Record<string, unknown>> {
+    const row = this.db
+      .prepare('SELECT payload FROM studio_kv WHERE key = ?')
+      .get(`outro_v3_logos:${channelId}`) as { payload: string } | undefined;
+    return row ? (JSON.parse(row.payload) as Array<Record<string, unknown>>) : [];
+  }
+
+  public upsertOutroLogoRef(channelId: string, logoRef: Record<string, unknown>): Array<Record<string, unknown>> {
+    const current = this.listOutroLogoRefs(channelId);
+    const id = String(logoRef.logoId ?? '');
+    const next = current.filter((item) => String(item.logoId ?? '') !== id);
+    next.push(logoRef);
+    this.db
+      .prepare(
+        `INSERT INTO studio_kv (key, payload) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET payload = excluded.payload`,
+      )
+      .run(`outro_v3_logos:${channelId}`, JSON.stringify(next));
+    return next;
+  }
+
   public close(): void {
     this.db.close();
   }

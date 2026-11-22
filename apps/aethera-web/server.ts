@@ -1400,6 +1400,43 @@ export function createAetheraApiApp(opts: CreateAppOptions = {}) {
     res.json(buildBootstrap());
   });
 
+  // MotionVelix Outro Studio 3.0 — Web & Remote Host sync (forbids raw Windows paths)
+  const hasLocalWindowsPath = (val: unknown): boolean =>
+    typeof val === 'string' && /^[a-zA-Z]:\\/.test(val.trim());
+
+  app.get('/api/outro-studio/config/:projectId', (req, res) => {
+    const cfg = db.getOutroStudioConfig(req.params.projectId);
+    res.json({ ok: true, config: cfg });
+  });
+
+  app.put('/api/outro-studio/config/:projectId', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (hasLocalWindowsPath(body.backgroundImagePath) || hasLocalWindowsPath((body.audio as Record<string, unknown> | undefined)?.musicPath)) {
+      res.status(400).json({ error: 'Caminhos locais do Windows não são permitidos na sincronização Web/Cloud. Use referências versionadas (assetId + contentHash).' });
+      return;
+    }
+    const saved = db.upsertOutroStudioConfig(req.params.projectId, {
+      ...body,
+      projectId: req.params.projectId,
+      syncedAt: new Date().toISOString(),
+    });
+    res.json({ ok: true, config: saved });
+  });
+
+  app.get('/api/outro-studio/logos/:channelId', (req, res) => {
+    res.json({ ok: true, logos: db.listOutroLogoRefs(req.params.channelId) });
+  });
+
+  app.post('/api/outro-studio/logos/:channelId', (req, res) => {
+    const logoRef = (req.body ?? {}) as Record<string, unknown>;
+    if (!logoRef.logoId || !logoRef.assetId || !logoRef.contentHash) {
+      res.status(400).json({ error: 'logoId, assetId e contentHash são obrigatórios.' });
+      return;
+    }
+    const logos = db.upsertOutroLogoRef(req.params.channelId, logoRef);
+    res.json({ ok: true, logos });
+  });
+
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'Rota API não encontrada.' });
   });

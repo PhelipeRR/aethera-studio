@@ -321,6 +321,43 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
     outputMp4Path?: string;
     quality?: 'preview' | 'master';
   }) => ipcRenderer.invoke('cinema:outro-compose-with-video', input),
+  cinemaOutroV3ListTemplates: () => ipcRenderer.invoke('cinema:outro-v3-list-templates'),
+  cinemaOutroV3GetConfig: (input: { projectId: string; channelId?: string | null; channelName?: string | null }) =>
+    ipcRenderer.invoke('cinema:outro-v3-get-config', input),
+  cinemaOutroV3SaveConfig: (input: { projectId: string; config: Record<string, unknown> }) =>
+    ipcRenderer.invoke('cinema:outro-v3-save-config', input),
+  cinemaOutroV3ExtractPalette: (input: { imagePath: string }) =>
+    ipcRenderer.invoke('cinema:outro-v3-extract-palette', input),
+  cinemaOutroV3PickMusic: () => ipcRenderer.invoke('cinema:outro-v3-pick-music'),
+  cinemaOutroV3Render: (input: { projectId: string; config: Record<string, unknown>; quality?: 'preview' | 'master' }) =>
+    ipcRenderer.invoke('cinema:outro-v3-render', input),
+  cinemaOutroV3CacheStats: () => ipcRenderer.invoke('cinema:outro-v3-cache-stats'),
+  cinemaOutroLogoList: (input?: { channelId?: string }) => ipcRenderer.invoke('cinema:outro-logo-list', input),
+  cinemaOutroLogoAdd: (input: { channelId: string; name?: string; sourceFilePath?: string; isDefault?: boolean; isFavorite?: boolean }) =>
+    ipcRenderer.invoke('cinema:outro-logo-add', input),
+  cinemaOutroLogoRename: (input: { logoId: string; name: string }) => ipcRenderer.invoke('cinema:outro-logo-rename', input),
+  cinemaOutroLogoToggleFavorite: (input: { logoId: string; isFavorite?: boolean }) =>
+    ipcRenderer.invoke('cinema:outro-logo-toggle-favorite', input),
+  cinemaOutroLogoSetDefault: (input: { logoId: string }) => ipcRenderer.invoke('cinema:outro-logo-set-default', input),
+  cinemaOutroLogoReplace: (input: { logoId: string; sourceFilePath?: string }) =>
+    ipcRenderer.invoke('cinema:outro-logo-replace', input),
+  cinemaOutroLogoDelete: (input: { logoId: string }) => ipcRenderer.invoke('cinema:outro-logo-delete', input),
+  cinemaOutroLogoResolve: (input: {
+    channelId: string;
+    productionId: string;
+    mode: string;
+    manualLogoId?: string | null;
+    manualLogoVersion?: number | null;
+    logoDisabled?: boolean;
+  }) => ipcRenderer.invoke('cinema:outro-logo-resolve', input),
+  cinemaOutroPresetList: (input?: { channelId?: string }) => ipcRenderer.invoke('cinema:outro-preset-list', input),
+  cinemaOutroPresetSave: (input: { presetId?: string; channelId?: string; name: string; description?: string; config: Record<string, unknown> }) =>
+    ipcRenderer.invoke('cinema:outro-preset-save', input),
+  cinemaOutroPresetDuplicate: (input: { presetId: string; name?: string }) =>
+    ipcRenderer.invoke('cinema:outro-preset-duplicate', input),
+  cinemaOutroPresetRename: (input: { presetId: string; name: string }) =>
+    ipcRenderer.invoke('cinema:outro-preset-rename', input),
+  cinemaOutroPresetDelete: (input: { presetId: string }) => ipcRenderer.invoke('cinema:outro-preset-delete', input),
   onRecapProductionProgress: (listener: (event: unknown) => void) => {
     const wrapped = (_event: unknown, payload: unknown) => listener(payload);
     ipcRenderer.on('recap:production-progress', wrapped);

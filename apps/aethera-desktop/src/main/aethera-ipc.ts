@@ -11,6 +11,18 @@ import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js
 import { VisionPriorityStore, type MultimodalAgentId } from './vision-priority-store.js';
 import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, classifyVisionError, composeVideoWithOutroMp4, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRecapVisionAdapter, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, inspectPassiveMultimodalHealth, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, loadVisionHealthCheckCache, mergeChapterArchivesForProduction, mergeStoryMemoryCharacters, parseResetAtMs, planRecapRevisionImpact, RecapImportJobManager, renderMotionVelixOutroMp4, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runMultimodalVisionHealthCheck, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, VideoOutroConfigStore, type MultimodalProviderHealthRecord, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type RecapVisualAnalysisPort, type ScriptStyle, type VideoOutroConfig, type VisionErrorCode, type VisionHealthProbeCandidate } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
+import {
+  createDefaultOutroStudioConfigV3,
+  extractPaletteFromImage,
+  listOutroTemplates,
+  LogoLibraryStore,
+  migrateLegacyOutroConfig,
+  OutroCacheManager,
+  OutroPresetStore,
+  renderOutroStudioV3Mp4,
+  type LogoSelectionMode,
+  type OutroStudioConfigV3,
+} from '@neuralbridge/cinema';
 import { createCinemaAuthenticMediaSource } from './creative-authentic-media.js';
 import type { AuthenticMediaSource } from '@neuralbridge/creative-studio';
 import {
@@ -6776,6 +6788,301 @@ productionConsole,
       }
     },
   );
+
+  // ─── MotionVelix Outro Studio 3.0 IPCs (Templates, Logo Library, Presets, Cache, V3 Render) ──
+  const outroStudioRoot = join(userDataDir, 'aethera-outro-studio-v3');
+  const outroLogoLibrary = new LogoLibraryStore(outroStudioRoot);
+  const outroPresetStore = new OutroPresetStore(outroStudioRoot);
+  const outroCacheManager = new OutroCacheManager(outroStudioRoot);
+  const outroV3ConfigsDir = join(outroStudioRoot, 'project-configs');
+  mkdirSync(outroV3ConfigsDir, { recursive: true });
+
+  const outroV3ConfigPath = (projectId: string) =>
+    join(outroV3ConfigsDir, `${(projectId || 'default').replace(/[^a-zA-Z0-9._-]+/g, '-')}.json`);
+
+  const loadOutroV3Config = (projectId: string, channelId?: string | null, channelName?: string | null): OutroStudioConfigV3 => {
+    const file = outroV3ConfigPath(projectId);
+    if (existsSync(file)) {
+      try {
+        return migrateLegacyOutroConfig(JSON.parse(readFileSync(file, 'utf-8')));
+      } catch {
+        // fallback below
+      }
+    }
+    const legacy = videoOutroStore.loadEffectiveConfig({
+      projectId: projectId || 'default',
+      channelKey: channelId ?? channelName ?? null,
+      channelName: channelName ?? null,
+    });
+    if (legacy.source !== 'default') {
+      return migrateLegacyOutroConfig(legacy.config);
+    }
+    const effectiveChannel = channelId || channelName?.trim() || 'default';
+    const logos = outroLogoLibrary.listLogos(effectiveChannel);
+    const defLogo = logos.find((l) => l.isDefault) ?? logos[0] ?? null;
+    return createDefaultOutroStudioConfigV3({
+      channelId: effectiveChannel,
+      channelName: channelName?.trim() || resolveDefaultChannelName(),
+      defaultLogoId: defLogo?.logoId ?? null,
+      defaultLogoVersion: defLogo?.assetVersion ?? null,
+      defaultLogoHash: defLogo?.contentHash ?? null,
+    });
+  };
+
+  ipcMain.handle('cinema:outro-v3-list-templates', async (event) => {
+    ensureTrusted(event.senderFrame);
+    return { ok: true, templates: listOutroTemplates() };
+  });
+
+  ipcMain.handle(
+    'cinema:outro-v3-get-config',
+    async (event, input: { projectId: string; channelId?: string | null; channelName?: string | null }) => {
+      ensureTrusted(event.senderFrame);
+      const config = loadOutroV3Config(input.projectId, input.channelId, input.channelName);
+      return { ok: true, config };
+    },
+  );
+
+  ipcMain.handle(
+    'cinema:outro-v3-save-config',
+    async (event, input: { projectId: string; config: Partial<OutroStudioConfigV3> }) => {
+      ensureTrusted(event.senderFrame);
+      const normalized = migrateLegacyOutroConfig({ ...input.config, schemaVersion: 3 });
+      writeFileSync(outroV3ConfigPath(input.projectId), JSON.stringify(normalized, null, 2), 'utf-8');
+      if (normalized.selectedLogoId) {
+        outroLogoLibrary.registerProjectReference(normalized.selectedLogoId, input.projectId || 'default');
+      }
+      return { ok: true, config: normalized };
+    },
+  );
+
+  ipcMain.handle('cinema:outro-v3-extract-palette', async (event, input: { imagePath: string }) => {
+    ensureTrusted(event.senderFrame);
+    try {
+      const palette = await extractPaletteFromImage(input.imagePath);
+      return { ok: true, palette };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('cinema:outro-v3-pick-music', async (event) => {
+    ensureTrusted(event.senderFrame);
+    const res = await dialog.showOpenDialog({
+      title: 'Selecionar música para o encerramento',
+      properties: ['openFile'],
+      filters: [{ name: 'Áudio (MP3, WAV, M4A, OGG)', extensions: ['mp3', 'wav', 'm4a', 'ogg', 'aac'] }],
+    });
+    if (res.canceled || res.filePaths.length === 0) return { canceled: true, path: null, name: null };
+    return { canceled: false, path: res.filePaths[0]!, name: basename(res.filePaths[0]!) };
+  });
+
+  // Logo Library IPCs
+  ipcMain.handle('cinema:outro-logo-list', async (event, input?: { channelId?: string }) => {
+    ensureTrusted(event.senderFrame);
+    return { ok: true, logos: outroLogoLibrary.listLogos(input?.channelId) };
+  });
+
+  ipcMain.handle(
+    'cinema:outro-logo-add',
+    async (event, input: { channelId: string; name?: string; sourceFilePath?: string; isDefault?: boolean; isFavorite?: boolean }) => {
+      ensureTrusted(event.senderFrame);
+      try {
+        let filePath = input.sourceFilePath;
+        if (!filePath) {
+          const picked = await dialog.showOpenDialog({
+            title: 'Adicionar logotipo à biblioteca (PNG, WebP ou SVG)',
+            properties: ['openFile'],
+            filters: [{ name: 'Logotipos (PNG, WebP, SVG)', extensions: ['png', 'webp', 'svg'] }],
+          });
+          if (picked.canceled || picked.filePaths.length === 0) {
+            return { ok: false, canceled: true };
+          }
+          filePath = picked.filePaths[0]!;
+        }
+        const logo = await outroLogoLibrary.addLogo({
+          channelId: input.channelId || 'default',
+          name: input.name?.trim() || basename(filePath).replace(/\.[^.]+$/, ''),
+          sourceFilePath: filePath,
+          ...(input.isDefault !== undefined ? { isDefault: input.isDefault } : {}),
+          ...(input.isFavorite !== undefined ? { isFavorite: input.isFavorite } : {}),
+        });
+        return { ok: true, logo };
+      } catch (err) {
+        return { ok: false, message: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
+
+  ipcMain.handle('cinema:outro-logo-rename', async (event, input: { logoId: string; name: string }) => {
+    ensureTrusted(event.senderFrame);
+    try {
+      return { ok: true, logo: outroLogoLibrary.renameLogo(input.logoId, input.name) };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('cinema:outro-logo-toggle-favorite', async (event, input: { logoId: string; isFavorite?: boolean }) => {
+    ensureTrusted(event.senderFrame);
+    try {
+      return { ok: true, logo: outroLogoLibrary.toggleFavorite(input.logoId, input.isFavorite) };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('cinema:outro-logo-set-default', async (event, input: { logoId: string }) => {
+    ensureTrusted(event.senderFrame);
+    try {
+      return { ok: true, logo: outroLogoLibrary.setDefaultLogo(input.logoId) };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('cinema:outro-logo-replace', async (event, input: { logoId: string; sourceFilePath?: string }) => {
+    ensureTrusted(event.senderFrame);
+    try {
+      let filePath = input.sourceFilePath;
+      if (!filePath) {
+        const picked = await dialog.showOpenDialog({
+          title: 'Substituir arquivo do logotipo (cria nova versão)',
+          properties: ['openFile'],
+          filters: [{ name: 'Logotipos (PNG, WebP, SVG)', extensions: ['png', 'webp', 'svg'] }],
+        });
+        if (picked.canceled || picked.filePaths.length === 0) return { ok: false, canceled: true };
+        filePath = picked.filePaths[0]!;
+      }
+      const logo = await outroLogoLibrary.replaceLogoFile({ logoId: input.logoId, sourceFilePath: filePath });
+      return { ok: true, logo };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('cinema:outro-logo-delete', async (event, input: { logoId: string }) => {
+    ensureTrusted(event.senderFrame);
+    return { ok: true, ...outroLogoLibrary.deleteLogo(input.logoId) };
+  });
+
+  ipcMain.handle(
+    'cinema:outro-logo-resolve',
+    async (
+      event,
+      input: {
+        channelId: string;
+        productionId: string;
+        mode: LogoSelectionMode;
+        manualLogoId?: string | null;
+        manualLogoVersion?: number | null;
+        logoDisabled?: boolean;
+      },
+    ) => {
+      ensureTrusted(event.senderFrame);
+      return { ok: true, ...outroLogoLibrary.resolveLogoForVideo(input) };
+    },
+  );
+
+  // Preset Store IPCs
+  ipcMain.handle('cinema:outro-preset-list', async (event, input?: { channelId?: string }) => {
+    ensureTrusted(event.senderFrame);
+    return { ok: true, presets: outroPresetStore.listPresets(input?.channelId) };
+  });
+
+  ipcMain.handle(
+    'cinema:outro-preset-save',
+    async (event, input: { presetId?: string; channelId?: string; name: string; description?: string; config: OutroStudioConfigV3 }) => {
+      ensureTrusted(event.senderFrame);
+      try {
+        return { ok: true, preset: outroPresetStore.savePreset(input) };
+      } catch (err) {
+        return { ok: false, message: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
+
+  ipcMain.handle('cinema:outro-preset-duplicate', async (event, input: { presetId: string; name?: string }) => {
+    ensureTrusted(event.senderFrame);
+    try {
+      return { ok: true, preset: outroPresetStore.duplicatePreset(input.presetId, input.name) };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('cinema:outro-preset-rename', async (event, input: { presetId: string; name: string }) => {
+    ensureTrusted(event.senderFrame);
+    try {
+      return { ok: true, preset: outroPresetStore.renamePreset(input.presetId, input.name) };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('cinema:outro-preset-delete', async (event, input: { presetId: string }) => {
+    ensureTrusted(event.senderFrame);
+    return { ok: true, deleted: outroPresetStore.deletePreset(input.presetId) };
+  });
+
+  // Studio 3.0 Cached Multi-Template Render + Cache Stats
+  ipcMain.handle(
+    'cinema:outro-v3-render',
+    async (event, input: { projectId: string; config: Partial<OutroStudioConfigV3>; quality?: 'preview' | 'master' }) => {
+      ensureTrusted(event.senderFrame);
+      try {
+        const normalized = migrateLegacyOutroConfig({ ...input.config, schemaVersion: 3 });
+        const resolvedLogo = outroLogoLibrary.resolveLogoForVideo({
+          channelId: normalized.channelId || 'default',
+          productionId: input.projectId || 'default',
+          mode: normalized.logoSelectionMode,
+          manualLogoId: normalized.selectedLogoId,
+          manualLogoVersion: normalized.selectedLogoVersion,
+          logoDisabled: normalized.logoDisabled,
+        });
+        const renderDir = join(outroRendersDir, 'v3', (input.projectId || 'default').replace(/[^a-zA-Z0-9._-]+/g, '-'));
+        const result = await renderOutroStudioV3Mp4({
+          config: {
+            ...normalized,
+            selectedLogoId: resolvedLogo.logo?.logoId ?? normalized.selectedLogoId,
+            selectedLogoVersion: resolvedLogo.version?.assetVersion ?? normalized.selectedLogoVersion,
+            selectedLogoHash: resolvedLogo.version?.contentHash ?? normalized.selectedLogoHash,
+          },
+          logoFilePath: resolvedLogo.version?.originalPath ?? null,
+          logoHash: resolvedLogo.version?.contentHash ?? null,
+          logoVersion: resolvedLogo.version?.assetVersion ?? null,
+          outputDir: renderDir,
+          quality: input.quality ?? 'preview',
+          cacheManager: outroCacheManager,
+        });
+        const persisted: OutroStudioConfigV3 = {
+          ...normalized,
+          selectedLogoId: resolvedLogo.logo?.logoId ?? normalized.selectedLogoId,
+          selectedLogoVersion: resolvedLogo.version?.assetVersion ?? normalized.selectedLogoVersion,
+          selectedLogoHash: resolvedLogo.version?.contentHash ?? normalized.selectedLogoHash,
+          lastRenderCacheKey: result.cacheKey,
+          lastPreviewMp4Path: result.outputMp4Path,
+          lastRenderedAtIso: new Date().toISOString(),
+        };
+        writeFileSync(outroV3ConfigPath(input.projectId), JSON.stringify(persisted, null, 2), 'utf-8');
+        return {
+          ok: true,
+          result,
+          config: persisted,
+          message: result.cacheHit
+            ? `Cache instantâneo (${result.templateId} · ${result.durationSec}s · ${result.width}x${result.height}).`
+            : `Renderizado (${result.templateId} · ${result.durationSec}s · ${result.width}x${result.height} em ${(result.renderDurationMs / 1000).toFixed(1)}s).`,
+        };
+      } catch (err) {
+        return { ok: false, message: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
+
+  ipcMain.handle('cinema:outro-v3-cache-stats', async (event) => {
+    ensureTrusted(event.senderFrame);
+    return { ok: true, stats: outroCacheManager.getStats() };
+  });
 
   // Keep unused imports referenced for proxy/agent orchestration readiness
   void AetheraMediaProxyRepository;
