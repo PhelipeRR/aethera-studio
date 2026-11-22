@@ -5,28 +5,42 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
 import { createRgbaBuffer, type RgbaBuffer } from './mogrt-effects-pipeline.js';
+import type { Affine } from './mogrt-mask-renderer.js';
+
+/** `node -e` resolves modules from the working directory, so hand the child an absolute path. */
+function sharpRequireStatement(): string {
+	let target = 'sharp';
+	try {
+		target = createRequire(import.meta.url).resolve('sharp');
+	} catch {
+		// Not installed next to this package: the child fails and the fallbacks are tried.
+	}
+	return `const sharp = require(${JSON.stringify(target)});`;
+}
 
 function runCommandWithFallback(
 	candidates: Array<{ bin: string; args: string[]; input?: Buffer | string }>,
 ): Buffer {
-	let lastErr: unknown;
+	const errors: string[] = [];
 	for (const c of candidates) {
+		// On Windows `convert` is the FAT-to-NTFS volume tool, not ImageMagick.
+		if (process.platform === 'win32' && c.bin === 'convert') continue;
 		try {
 			return execFileSync(c.bin, c.args, {
-				maxBuffer: 64 * 1024 * 1024,
+				maxBuffer: 256 * 1024 * 1024,
+				stdio: ['pipe', 'pipe', 'pipe'],
 				...(c.input !== undefined ? { input: c.input } : {}),
 			});
 		} catch (err) {
-			lastErr = err;
+			errors.push(err instanceof Error ? err.message.slice(0, 600) : String(err));
 		}
 	}
-	throw new Error(
-		`Unable to rasterize media via sharp/ffmpeg/convert: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
-	);
+	throw new Error(`Unable to rasterize media via sharp/ffmpeg/ImageMagick: ${errors.join(' | ')}`);
 }
 
 /**
@@ -37,7 +51,7 @@ export function rasterizeSvgToPngSync(svgMarkupOrPath: string, outputPngPath: st
 	mkdirSync(dirname(outputPngPath), { recursive: true });
 	const isMarkup = svgMarkupOrPath.trimStart().startsWith('<');
 	const sharpScript = `
-const sharp = require('sharp');
+${sharpRequireStatement()}
 const fs = require('fs');
 const [isMarkup, src, outPath, wStr, hStr] = process.argv.slice(1);
 const input = isMarkup === '1' ? Buffer.from(src, 'utf8') : fs.readFileSync(src);
@@ -84,7 +98,7 @@ p.png().toFile(outPath).catch((err) => { console.error(err); process.exit(1); })
 function rasterizeSvgToRgbaSync(svgMarkupOrPath: string, w: number, h: number): Buffer {
 	const isMarkup = svgMarkupOrPath.trimStart().startsWith('<');
 	const sharpScript = `
-const sharp = require('sharp');
+${sharpRequireStatement()}
 const fs = require('fs');
 const [isMarkup, src, wStr, hStr] = process.argv.slice(1);
 const input = isMarkup === '1' ? Buffer.from(src, 'utf8') : fs.readFileSync(src);
@@ -224,52 +238,72 @@ export interface RenderTextLayerOptions {
 	text: string;
 	width: number;
 	height: number;
+	/** Maps text space (origin at the paragraph's first baseline) to buffer pixels. */
+	matrix: Affine;
 	fontSize: number;
+	lineHeight: number;
 	colorRgba01: [number, number, number, number];
-	fontName?: string;
+	/** PostScript name, e.g. `Montserrat-Bold`. */
+	fontName: string;
+	justification: 'left' | 'right' | 'center';
+	/** Thousandths of an em. */
+	tracking?: number;
+	baselineShift?: number;
 	allCaps?: boolean;
 }
 
-/**
- * Renders an editable text layer into a transparent RGBA buffer using SVG + sharp (librsvg+Pango) rasterization
- * (no Adobe dependency; works deterministically with custom colors, sizes, and allCaps).
- */
-export function renderTextLayerRgba(opts: RenderTextLayerOptions): RgbaBuffer {
-	const w = Math.max(1, Math.round(opts.width));
-	const h = Math.max(1, Math.round(opts.height));
-	const displayText = (opts.allCaps ? opts.text.toUpperCase() : opts.text).trim();
-	if (!displayText) return createRgbaBuffer(w, h);
+const FONT_WEIGHTS: Array<[RegExp, number]> = [
+	[/thin/i, 100],
+	[/(extra|ultra)light/i, 200],
+	[/light/i, 300],
+	[/(semi|demi)bold/i, 600],
+	[/(extra|ultra)bold/i, 800],
+	[/bold/i, 700],
+	[/black|heavy/i, 900],
+	[/medium/i, 500],
+];
 
-	const r = Math.round(Math.max(0, Math.min(1, opts.colorRgba01[0])) * 255);
-	const g = Math.round(Math.max(0, Math.min(1, opts.colorRgba01[1])) * 255);
-	const b = Math.round(Math.max(0, Math.min(1, opts.colorRgba01[2])) * 255);
-	const a = Math.max(0, Math.min(1, opts.colorRgba01[3]));
-	const escaped = displayText
+function escapeXml(text: string): string {
+	return text
+		.replace(/[^\P{Cc}\t\n\r]/gu, '')
 		.replace(/&/g, '&amp;')
 		.replace(/</g, '&lt;')
 		.replace(/>/g, '&gt;');
-	const fontFamily = (opts.fontName || 'DejaVu Sans, Arial, sans-serif').replace(/['"]/g, '');
-	const fontSize = Math.max(12, Math.round(opts.fontSize));
+}
 
-	const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-  <text x="${Math.round(w / 2)}" y="${Math.round(h / 2 + fontSize * 0.34)}"
-        text-anchor="middle"
-        font-family="${fontFamily}, DejaVu Sans, sans-serif"
-        font-size="${fontSize}"
-        font-weight="800"
-        letter-spacing="${Math.round(fontSize * 0.08)}"
-        fill="rgb(${r},${g},${b})"
-        fill-opacity="${a.toFixed(3)}">${escaped}</text>
-</svg>`;
+/**
+ * Renders a point-text layer with SVG + sharp. A font that is not installed is substituted by the
+ * rasterizer. Throws when rasterization fails, instead of returning a blank layer.
+ */
+export function renderTextLayerRgba(opts: RenderTextLayerOptions): RgbaBuffer {
+	const buf = createRgbaBuffer(opts.width, opts.height);
+	const text = opts.allCaps ? opts.text.toUpperCase() : opts.text;
+	if (!text.trim()) return buf;
 
-	try {
-		const raw = rasterizeSvgToRgbaSync(svg, w, h);
-		const buf = createRgbaBuffer(w, h);
-		buf.data.set(raw.subarray(0, Math.min(raw.length, buf.data.length)));
-		return buf;
-	} catch {
-		return createRgbaBuffer(w, h);
-	}
+	const [family = '', style = ''] = opts.fontName.replace(/[^\w -]/g, '').split('-');
+	const spaced = family.replace(/([a-z])([A-Z])/g, '$1 $2');
+	const families = [...new Set([family, spaced, 'Arial', 'sans-serif'])].filter(Boolean).join(', ');
+	const weight = FONT_WEIGHTS.find(([pattern]) => pattern.test(style))?.[1] ?? 400;
+	const anchor = { left: 'start', center: 'middle', right: 'end' }[opts.justification];
+	const [r, g, b, a] = opts.colorRgba01.map((v) => Math.max(0, Math.min(1, v))) as [number, number, number, number];
+	const fill = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+	const spacing = ((opts.tracking ?? 0) / 1000) * opts.fontSize;
+	const italic = /italic|oblique/i.test(style) ? 'italic' : 'normal';
+	const lines = text
+		.replaceAll('\u0003', '\n') // AE's soft line break
+		.split(/\r\n|[\r\n]/)
+		.map(
+			(line, i) =>
+				`<text x="0" y="${i * opts.lineHeight - (opts.baselineShift ?? 0)}" text-anchor="${anchor}">${escapeXml(line)}</text>`,
+		)
+		.join('');
+	const svg =
+		`<svg xmlns="http://www.w3.org/2000/svg" width="${opts.width}" height="${opts.height}" viewBox="0 0 ${opts.width} ${opts.height}">` +
+		`<g transform="matrix(${opts.matrix.join(' ')})" font-family="${families}" font-size="${opts.fontSize}" font-weight="${weight}" ` +
+		`font-style="${italic}" letter-spacing="${spacing}" fill="${fill}" fill-opacity="${a}">${lines}</g></svg>`;
+
+	buf.data.set(rasterizeSvgToRgbaSync(svg, opts.width, opts.height).subarray(0, buf.data.length));
+	return buf;
 }
 
 /**

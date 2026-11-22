@@ -439,4 +439,5 @@ export * from './motionvelix/mogrt-expression-eval.js';
 export * from './motionvelix/mogrt-effects-pipeline.js';
 export * from './motionvelix/mogrt-media-loader.js';
 export * from './motionvelix/mogrt-comp-renderer.js';
-export * from './motionvelix/aep-fixture-builder.js';
+// Both modules export the name, which makes `export *` drop it; keep the original, nullable one.
+export { sha256File } from './motionvelix/outro-cache-manager.js';

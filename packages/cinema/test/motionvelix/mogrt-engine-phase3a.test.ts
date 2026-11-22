@@ -1,6 +1,10 @@
+/**
+ * Pipeline tests on a synthetic project, so they run without the commercial pack. They do not prove
+ * compatibility with After Effects files: mogrt-real-file-acceptance.test.ts does.
+ */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,7 +12,7 @@ import {
 	parseAepProjectGraph,
 	type AepAnimatedProperty,
 } from '../../src/motionvelix/aep-comp-graph.js';
-import { buildModelo01FixtureMogrt } from '../../src/motionvelix/aep-fixture-builder.js';
+import { buildSyntheticMogrt, SYNTHETIC_MOGRT } from '../../src/motionvelix/aep-fixture-builder.js';
 import {
 	applyEffectBoxBlur,
 	applyEffectFill,
@@ -30,6 +34,7 @@ import { rasterizeSvgToPngSync, sha256File } from '../../src/motionvelix/mogrt-m
 import {
 	renderMogrtFrameRgba,
 	renderMogrtPhase3AToMp4,
+	type MogrtRenderOverrides,
 } from '../../src/motionvelix/mogrt-comp-renderer.js';
 
 function createTempDir(prefix: string): string {
@@ -61,52 +66,44 @@ function meanAbsDiffRgba(a: Uint8Array, b: Uint8Array): number {
 	return sum / ((a.length / 4) * 3);
 }
 
-test('Phase 3A: Nested composition graph parses hierarchy, duration, FPS, 90 real Bézier masks, keyframes & unsupported effects', () => {
+test('Phase 3A: synthetic project decodes timing, nesting, masks, controls and unsupported effects', () => {
 	const dir = createTempDir('mvx-p3a-graph-');
 	try {
-		const mogrtPath = join(dir, 'Dynamic Anime Burst Logo 01.mogrt');
-		buildModelo01FixtureMogrt(mogrtPath, join(dir, 'stage'));
+		const mogrtPath = join(dir, 'synthetic.mogrt');
+		buildSyntheticMogrt(mogrtPath);
 		const inspection = inspectMogrtFile(mogrtPath, join(dir, 'inspect'));
 		assert.ok(inspection.aepPath && existsSync(inspection.aepPath));
 
-		const graph = parseAepProjectGraph(inspection.aepPath, {
-			preferredRootCompName: inspection.name,
-		});
-
+		const graph = parseAepProjectGraph(inspection.aepPath, { preferredRootCompName: inspection.name });
+		assert.deepEqual(graph.warnings, []);
 		assert.equal(graph.compositions.length, 3);
-		assert.equal(graph.rootCompName, 'Dynamic Anime Burst Logo 01');
+		assert.equal(graph.rootCompName, SYNTHETIC_MOGRT.name);
 
-		const rootComp = graph.compositionsById.get(graph.rootCompId);
-		assert.ok(rootComp);
-		assert.equal(rootComp.width, 1920);
-		assert.equal(rootComp.height, 1080);
-		assert.equal(rootComp.fps, 30);
-		assert.ok(Math.abs(rootComp.durationSec - 7.267) < 0.02);
+		const root = graph.compositionsById.get(graph.rootCompId);
+		assert.ok(root);
+		assert.deepEqual([root.width, root.height, root.fps, root.durationSec], [640, 360, 30, 2]);
+		assert.equal(inspection.durationSec, 2);
 
-		const transitionComp = graph.compositionsByName.get('Transition 01');
-		assert.ok(transitionComp);
-		assert.equal(transitionComp.fps, 15, 'Transition 01 must preserve 15fps native cadence');
-		assert.equal(transitionComp.totalMasks, 90, 'Transition 01 must preserve all 90 real Bézier masks');
-		assert.equal(graph.totalMasksExtracted, 90);
+		const burst = graph.compositionsByName.get('Burst');
+		assert.ok(burst);
+		assert.equal(burst.fps, 15, 'a nested composition keeps its own frame rate');
+		assert.equal(burst.totalMasks, 2);
+		assert.equal(burst.totalShapeKeyframes, 4);
+		const mask = burst.layers[0]!.masks[0]!;
+		assert.equal(mask.mode, 'difference');
+		assert.deepEqual(mask.shapeKeyframes[0]!.vertices[0]!.point, { x: 160, y: 90 });
 
-		assert.ok(inspection.thumbnailPath && existsSync(inspection.thumbnailPath), 'thumb.png must be extracted for reference comparison');
-		const logoComp = graph.compositionsByName.get('L01 LOGO');
-		assert.ok(logoComp);
-		const logoLayer = logoComp.layers.find((l) => l.kind === 'logo_placeholder');
-		assert.ok(logoLayer, 'L01 LOGO must contain Logo Placeholder');
-		assert.equal(logoLayer.solid?.width, 500, 'Logo Placeholder must preserve native 500px source width from .aep');
-		assert.equal(logoLayer.solid?.height, 500, 'Logo Placeholder must preserve native 500px source height from .aep');
-		assert.ok(logoLayer.transform.scale.keyframes.length >= 4, 'Logo Placeholder must have decoded scale keyframes');
-		assert.ok(logoLayer.transform.position.keyframes.length >= 3, 'Logo Placeholder must have decoded position keyframes');
-		assert.ok(logoLayer.transform.rotation.keyframes.length >= 2, 'Logo Placeholder must have decoded rotation keyframes');
-		assert.ok(logoLayer.transform.opacity.keyframes.length >= 4, 'Logo Placeholder must have decoded opacity keyframes');
-
-		// Unsupported Adobe proprietary effects MUST be surfaced explicitly
-		const unsupportedNames = new Set(graph.unsupportedEffects.map((e) => e.matchName));
-		assert.ok(unsupportedNames.has('ADBE Turbulent Displace'));
-		assert.ok(unsupportedNames.has('ADBE Fractal Noise'));
-		assert.ok(unsupportedNames.has('APC Vegas'));
-		assert.ok(unsupportedNames.has('ADBE Scribble Fill'));
+		const logo = root.layers.find((layer) => layer.kind === 'logo_placeholder');
+		assert.ok(logo, 'the media control marks the logo placeholder');
+		assert.deepEqual(logo.sourceSize, { width: 100, height: 100 });
+		assert.deepEqual(
+			graph.controls.map((control) => [control.name, control.kind]),
+			[
+				['Burst Color', 'color'],
+				['Logo Placeholder', 'media'],
+			],
+		);
+		assert.deepEqual(graph.unsupportedEffects.map((effect) => effect.matchName), ['ADBE Turbulent Displace']);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -245,170 +242,114 @@ test('Phase 3A: All 7 RGBA effects (Fill, Tint, Box Blur, Glow, Simple Choker, N
 	assert.equal(dst.data[(20 * 40 + 20) * 4 + 1], 255);
 });
 
-test('Phase 3A: Safe AE expression evaluator resolves control bindings, overrides & logs unsupported expressions', () => {
-	const dir = createTempDir('mvx-p3a-expr-');
-	try {
-		const mogrtPath = join(dir, 'Dynamic Anime Burst Logo 01.mogrt');
-		buildModelo01FixtureMogrt(mogrtPath, join(dir, 'stage'));
-		const inspection = inspectMogrtFile(mogrtPath, join(dir, 'inspect'));
-		const graph = parseAepProjectGraph(inspection.aepPath!);
-		const rootComp = graph.compositionsById.get(graph.rootCompId)!;
+test('Phase 3A: expressions resolve control references and report what they cannot evaluate', () => {
+	const amber = hexStringToRgba01('#fbbf24')!;
+	const context = {
+		tSec: 1,
+		valueAt: () => [960, 540],
+		resolveProperty: (ref: { effect: string | number }) =>
+			ref.effect === 'Burst Color' ? [...amber] : ref.effect === 'Logo Scale' ? [135] : undefined,
+	};
 
-		const audit = { supportedEvaluated: 0, unsupported: [] as Array<{ compName: string; layerName: string; expression: string; reason: string }> };
+	const colour = evaluateAeExpression(
+		'comp("Synthetic Burst").layer("Controls").effect("Burst Color")("Color")',
+		context,
+	);
+	assert.equal(colour.supported, true);
+	assert.deepEqual(colour.value, [...amber]);
 
-		// Color control binding with user hex override
-		const colorRes = evaluateAeExpression(
-			'comp("Dynamic Anime Burst Logo 01").layer("Controls").effect("Primary Color")("Color")',
-			{
-				tSec: 1,
-				currentComp: rootComp,
-				currentLayerName: 'Burst Rays',
-				compositionsByName: graph.compositionsByName,
-				controlOverrides: { 'Primary Color': '#fbbf24' },
-				baseValue: [1, 0, 1, 1],
-				audit,
-			},
-		);
-		assert.equal(colorRes.supported, true);
-		assert.ok(Array.isArray(colorRes.value));
-		const expectedAmber = hexStringToRgba01('#fbbf24')!;
-		assert.ok(Math.abs((colorRes.value as number[])[0]! - expectedAmber[0]) < 0.01);
-		assert.ok(Math.abs((colorRes.value as number[])[1]! - expectedAmber[1]) < 0.01);
+	const scale = evaluateAeExpression('var s = thisComp.layer("Controls").effect("Logo Scale")("Slider"); [s, s]', context);
+	assert.equal(scale.supported, true);
+	assert.deepEqual(scale.value, [135, 135]);
 
-		// Multi-line var + vector construction expression
-		const scaleRes = evaluateAeExpression(
-			'var s = thisComp.layer("Controls").effect("Logo Scale")("Slider"); [s, s]',
-			{
-				tSec: 1,
-				currentComp: rootComp,
-				currentLayerName: 'L01 LOGO',
-				compositionsByName: graph.compositionsByName,
-				controlOverrides: { 'Logo Scale': 135 },
-				baseValue: [100, 100],
-				audit,
-			},
-		);
-		assert.equal(scaleRes.supported, true);
-		assert.deepEqual(scaleRes.value, [135, 135]);
-
-		// Unsupported wiggle() must NOT throw and MUST be logged in audit.unsupported
-		const unsupRes = evaluateAeExpression('wiggle(5, 30)', {
-			tSec: 1,
-			currentComp: rootComp,
-			currentLayerName: 'Logo Placeholder',
-			compositionsByName: graph.compositionsByName,
-			controlOverrides: {},
-			baseValue: [960, 540],
-			audit,
-		});
-		assert.equal(unsupRes.supported, false);
-		assert.deepEqual(unsupRes.value, [960, 540]);
-		assert.equal(audit.unsupported.length, 1);
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
+	const unsupported = evaluateAeExpression('sourceRectAtTime().width', context);
+	assert.equal(unsupported.supported, false);
+	assert.ok(unsupported.reason, 'an unsupported expression says why');
 });
 
-test('Phase 3A: Logo PNG/SVG swap, editable color palettes, zero original .mogrt mutation & honest partial verdict', async () => {
+test('Phase 3A: masks, colour, SVG/PNG logo swap, untouched .mogrt and partial verdict', async () => {
 	const dir = createTempDir('mvx-p3a-e2e-');
 	try {
-		const mogrtPath = join(dir, 'Dynamic Anime Burst Logo 01.mogrt');
-		buildModelo01FixtureMogrt(mogrtPath, join(dir, 'stage'));
+		const mogrtPath = join(dir, 'synthetic.mogrt');
+		buildSyntheticMogrt(mogrtPath);
 		const shaOriginal = sha256File(mogrtPath);
 
-		const logoSvgPath = join(dir, 'logo-a.svg');
-		const logoPngPath = join(dir, 'logo-b.png');
-		createSampleSvgLogo(logoSvgPath, '#6366f1');
-		createSamplePngLogo(logoPngPath, '#ef4444');
+		const svg = join(dir, 'logo-a.svg');
+		const png = join(dir, 'logo-b.png');
+		createSampleSvgLogo(svg, '#6366f1');
+		createSamplePngLogo(png, '#ef4444');
 
-		// Frame comparison at hero reveal (t=2.5s): Logo 1 SVG vs Logo 2 PNG
-		const resLogo1 = renderMogrtFrameRgba({
-			mogrtPath,
-			workDir: join(dir, 'w1'),
-			tSec: 2.5,
-			width: 480,
-			height: 270,
-			overrides: {
-				logoPath: logoSvgPath,
-				textOverride: 'AETHERA STUDIO',
-				controls: { 'Primary Color': '#ff5eff', 'Accent Color': '#ffffff', 'BG Color': '#0d081a' },
-			},
-		});
-		const resLogo2 = renderMogrtFrameRgba({
-			mogrtPath,
-			workDir: join(dir, 'w2'),
-			tSec: 2.5,
-			width: 480,
-			height: 270,
-			overrides: {
-				logoPath: logoPngPath,
-				textOverride: 'AETHERA STUDIO',
-				controls: { 'Primary Color': '#ff5eff', 'Accent Color': '#ffffff', 'BG Color': '#0d081a' },
-			},
-		});
-		assert.equal(resLogo1.logoSubstituted, true);
-		assert.equal(resLogo2.logoSubstituted, true);
-		const diffLogos = meanAbsDiffRgba(resLogo1.frame.data, resLogo2.frame.data);
-		assert.ok(diffLogos > 2.5, `Logo SVG vs PNG swap must visibly change frame (MAE=${diffLogos})`);
+		const frameAt = (tSec: number, overrides?: MogrtRenderOverrides) =>
+			renderMogrtFrameRgba({
+				mogrtPath,
+				workDir: mkdtempSync(join(dir, 'w-')),
+				tSec,
+				width: 640,
+				height: 360,
+				...(overrides ? { overrides } : {}),
+			});
+		const pixel = (data: Uint8Array, x: number, y: number) => [...data.subarray((y * 640 + x) * 4, (y * 640 + x) * 4 + 4)];
 
-		// Frame comparison during 90-mask burst (t=0.67s): Palette A vs Palette B
-		const resPalA = renderMogrtFrameRgba({
-			mogrtPath,
-			workDir: join(dir, 'w3'),
-			tSec: 0.67,
-			width: 480,
-			height: 270,
-			overrides: {
-				logoPath: logoSvgPath,
-				controls: { 'Primary Color': '#ff5eff', 'Accent Color': '#ffffff', 'BG Color': '#0d081a' },
-			},
-		});
-		const resPalB = renderMogrtFrameRgba({
-			mogrtPath,
-			workDir: join(dir, 'w4'),
-			tSec: 0.67,
-			width: 480,
-			height: 270,
-			overrides: {
-				logoPath: logoSvgPath,
-				controls: { 'Primary Color': '#fbbf24', 'Accent Color': '#22d3ee', 'BG Color': '#061a24' },
-			},
-		});
-		assert.ok(resPalA.masksRasterized > 40, `Expected real .aep masks rasterized during burst (got ${resPalA.masksRasterized})`);
-		const diffPalettes = meanAbsDiffRgba(resPalA.frame.data, resPalB.frame.data);
-		assert.ok(diffPalettes > 8, `Palette A vs Palette B must visibly change burst colors (MAE=${diffPalettes})`);
+		// The burst starts at 0.5 s. Two Difference squares leave a hole where they overlap.
+		assert.equal(pixel(frameAt(0.2).frame.data, 170, 100)[3], 0);
+		const burst = frameAt(1);
+		assert.equal(burst.masksRasterized, 2);
+		assert.deepEqual(pixel(burst.frame.data, 170, 100), [255, 0, 255, 255]);
+		assert.equal(pixel(burst.frame.data, 320, 180)[3], 0);
+		assert.equal(pixel(burst.frame.data, 20, 20)[3], 0);
 
-		// Short MP4 pipeline test verifying FFmpeg output, SHA-256 non-mutation, 90-mask provenance & honest verdict
+		const recoloured = frameAt(1, { controls: { 'Burst Color': '#00ff00' } });
+		assert.deepEqual(pixel(recoloured.frame.data, 170, 100), [0, 255, 0, 255]);
+
+		const first = frameAt(1.8, { logoPath: svg });
+		const second = frameAt(1.8, { logoPath: png });
+		assert.equal(first.logoSubstituted, true);
+		assert.equal(second.logoSubstituted, true);
+		const diffLogos = meanAbsDiffRgba(first.frame.data, second.frame.data);
+		assert.ok(diffLogos > 0.5, `Logo SVG vs PNG swap must visibly change frame (MAE=${diffLogos})`);
+
+		assert.throws(() => frameAt(1, { textOverride: 'no text control here' }), /textOverride/);
+
 		const outMp4 = join(dir, 'out.mp4');
-		mkdirSync(join(dir, 'mp4work'), { recursive: true });
 		const report = await renderMogrtPhase3AToMp4({
 			mogrtPath,
 			workDir: join(dir, 'mp4work'),
 			outputMp4Path: outMp4,
 			width: 320,
 			height: 180,
-			fps: 15,
-			durationSec: 1.5,
-			overrides: {
-				logoPath: logoSvgPath,
-				textOverride: 'PHASE 3A TEST',
-				controls: { 'Primary Color': '#ff5eff', 'Accent Color': '#ffffff' },
-			},
+			overrides: { logoPath: svg },
 		});
-
 		assert.equal(existsSync(outMp4), true);
+		assert.deepEqual([report.framesRendered, report.durationSec], [60, 2]);
 		assert.equal(report.originalMogrtUntouched, true);
 		assert.equal(report.originalMogrtSha256After, shaOriginal);
 		assert.equal(report.logoSubstituted, true);
-		assert.equal(report.masksProvenance.aepTotalMasksExtracted, 90);
-		assert.equal(report.masksProvenance.verifiedFromAepBinary, true);
-		assert.ok(report.masksProvenance.uniqueRealMasksRasterized >= 80, `Expected >=80 unique real masks rasterized, got ${report.masksProvenance.uniqueRealMasksRasterized}`);
-		assert.ok(report.unsupportedEffectsEncountered.length >= 4, 'Unsupported Adobe effects must be explicitly logged');
+		assert.equal(report.masksProvenance.uniqueRealMasksRasterized, 2);
+		assert.equal(report.unsupportedEffectsEncountered.length, 1, 'unsupported effects must be logged');
 		assert.equal(
 			report.completenessVerdict,
 			'partial_with_documented_gaps',
 			'Must NEVER falsely claim complete reproduction when unsupported Adobe effects exist',
 		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('Phase 3A: a black render with no rasterized masks is reported as failed', async () => {
+	const dir = createTempDir('mvx-p3a-black-');
+	try {
+		const mogrtPath = join(dir, 'black.mogrt');
+		buildSyntheticMogrt(mogrtPath, { hideBurst: true });
+		const report = await renderMogrtPhase3AToMp4({
+			mogrtPath,
+			workDir: join(dir, 'work'),
+			outputMp4Path: join(dir, 'out.mp4'),
+			width: 160,
+			height: 90,
+		});
+		assert.equal(report.nonBlackFrames, 0);
+		assert.equal(report.completenessVerdict, 'failed');
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

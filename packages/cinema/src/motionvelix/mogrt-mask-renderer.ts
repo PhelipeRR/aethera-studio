@@ -6,6 +6,7 @@ import type {
 	AepCompositionMasks,
 	BezierVertex,
 	Vec2,
+	AepMaskMode,
 } from './aep-mask-extractor.js';
 import { evaluateAnimatedMaskAtTime } from './aep-mask-extractor.js';
 
@@ -68,69 +69,131 @@ export function flattenBezierVertices(
 	return pts;
 }
 
+/** 2D affine matrix [a, b, c, d, e, f], mapping (x, y) to (a*x + c*y + e, b*x + d*y + f). */
+export type Affine = readonly [number, number, number, number, number, number];
+
+export interface PathBounds {
+	x0: number;
+	y0: number;
+	x1: number;
+	y1: number;
+}
+
+const SUB_SCANLINES = 4;
+
 /**
- * Fast scanline even-odd polygon rasterizer into a single-channel Float32Array alpha buffer (`width * height`).
- * Supports `add` (union/max) and `subtract` (punch-out) AE mask modes.
+ * Nonzero-winding rasterizer with anti-aliased coverage. Writes 0..1 into `out`, which must be
+ * zeroed by the caller, and returns the bounds it touched.
  */
-export function rasterizePolygonIntoMask(
-	poly: Vec2[],
-	alphaBuf: Float32Array,
+export function rasterizePaths(paths: Vec2[][], out: Float32Array, width: number, height: number): PathBounds | null {
+	const edges: Array<{ x0: number; y0: number; y1: number; slope: number; winding: number }> = [];
+	let left = Infinity;
+	let top = Infinity;
+	let right = -Infinity;
+	let bottom = -Infinity;
+	for (const path of paths) {
+		for (let i = 0; i < path.length; i++) {
+			const p = path[i]!;
+			const q = path[(i + 1) % path.length]!;
+			left = Math.min(left, p.x);
+			right = Math.max(right, p.x);
+			top = Math.min(top, p.y);
+			bottom = Math.max(bottom, p.y);
+			if (p.y === q.y) continue;
+			const [from, to] = p.y < q.y ? [p, q] : [q, p];
+			edges.push({
+				x0: from.x,
+				y0: from.y,
+				y1: to.y,
+				slope: (to.x - from.x) / (to.y - from.y),
+				winding: p.y < q.y ? 1 : -1,
+			});
+		}
+	}
+	const bounds = {
+		x0: Math.max(0, Math.floor(left)),
+		y0: Math.max(0, Math.floor(top)),
+		x1: Math.min(width, Math.ceil(right)),
+		y1: Math.min(height, Math.ceil(bottom)),
+	};
+	if (edges.length === 0 || bounds.x0 >= bounds.x1 || bounds.y0 >= bounds.y1) return null;
+
+	edges.sort((a, b) => a.y0 - b.y0);
+	let next = 0;
+	let active: typeof edges = [];
+	const weight = 1 / SUB_SCANLINES;
+	for (let row = bounds.y0; row < bounds.y1; row++) {
+		for (let sub = 0; sub < SUB_SCANLINES; sub++) {
+			const y = row + (sub + 0.5) * weight;
+			while (next < edges.length && edges[next]!.y0 <= y) active.push(edges[next++]!);
+			active = active.filter((edge) => edge.y1 > y);
+			const crossings = active
+				.map((edge) => ({ x: edge.x0 + (y - edge.y0) * edge.slope, winding: edge.winding }))
+				.sort((a, b) => a.x - b.x);
+			let winding = 0;
+			let start = 0;
+			for (const crossing of crossings) {
+				const wasInside = winding !== 0;
+				winding += crossing.winding;
+				if (!wasInside && winding !== 0) start = crossing.x;
+				if (!wasInside || winding !== 0) continue;
+				const from = Math.max(0, start);
+				const to = Math.min(width, crossing.x);
+				for (let x = Math.floor(from); x < to; x++) {
+					const index = row * width + x;
+					out[index] = Math.min(1, out[index]! + (Math.min(x + 1, to) - Math.max(x, from)) * weight);
+				}
+			}
+		}
+	}
+	return bounds;
+}
+
+export interface MaskStackEntry {
+	mode: AepMaskMode;
+	inverted: boolean;
+	opacity: number;
+	vertices: BezierVertex[];
+}
+
+/** Combines masks top to bottom with their AE modes. `matrix` maps layer pixels to buffer pixels. */
+export function rasterizeMaskStack(
+	masks: readonly MaskStackEntry[],
+	matrix: Affine,
 	width: number,
 	height: number,
-	opacity: number,
-	mode: 'add' | 'subtract',
-): void {
-	const n = poly.length;
-	if (n < 3 || opacity <= 0.005) return;
+): Float32Array {
+	const active = masks.filter((mask) => mask.mode !== 'none');
+	const result = new Float32Array(width * height);
+	const first = active[0]?.mode;
+	if (first === 'subtract' || first === 'intersect') result.fill(1);
+	const shape = new Float32Array(width * height);
+	const [a, b, c, d, e, f] = matrix;
 
-	let minY = height;
-	let maxY = -1;
-	for (let i = 0; i < n; i++) {
-		const y = poly[i]!.y;
-		if (y < minY) minY = y;
-		if (y > maxY) maxY = y;
-	}
-	const y0 = Math.max(0, Math.floor(minY));
-	const y1 = Math.min(height - 1, Math.ceil(maxY));
-	if (y0 > y1) return;
-
-	const nodes: number[] = [];
-	for (let y = y0; y <= y1; y++) {
-		const sy = y + 0.5;
-		nodes.length = 0;
-
-		let j = n - 1;
-		for (let i = 0; i < n; i++) {
-			const pi = poly[i]!;
-			const pj = poly[j]!;
-			if ((pi.y < sy && pj.y >= sy) || (pj.y < sy && pi.y >= sy)) {
-				const x = pi.x + ((sy - pi.y) / (pj.y - pi.y)) * (pj.x - pi.x);
-				nodes.push(x);
-			}
-			j = i;
-		}
-		if (nodes.length < 2) continue;
-		nodes.sort((a, b) => a - b);
-
-		const rowOff = y * width;
-		for (let k = 0; k + 1 < nodes.length; k += 2) {
-			const xStart = Math.max(0, Math.ceil(nodes[k]!));
-			const xEnd = Math.min(width - 1, Math.floor(nodes[k + 1]!));
-			if (xStart > xEnd) continue;
-			if (mode === 'add') {
-				for (let x = xStart; x <= xEnd; x++) {
-					const idx = rowOff + x;
-					if (opacity > alphaBuf[idx]!) alphaBuf[idx] = opacity;
-				}
-			} else {
-				const keep = 1 - opacity;
-				for (let x = xStart; x <= xEnd; x++) {
-					const idx = rowOff + x;
-					alphaBuf[idx] = alphaBuf[idx]! * keep;
-				}
+	for (const mask of active) {
+		const path = flattenBezierVertices(mask.vertices, 1, 1, 8).map(({ x, y }) => ({
+			x: a * x + c * y + e,
+			y: b * x + d * y + f,
+		}));
+		const touched = rasterizePaths([path], shape, width, height);
+		const everywhere = mask.inverted || mask.mode === 'intersect' || mask.mode === 'darken';
+		if (!touched && !everywhere) continue;
+		const { x0, y0, x1, y1 } = everywhere ? { x0: 0, y0: 0, x1: width, y1: height } : touched!;
+		for (let y = y0; y < y1; y++) {
+			for (let i = y * width + x0; i < y * width + x1; i++) {
+				const value = (mask.inverted ? 1 - shape[i]! : shape[i]!) * mask.opacity;
+				const current = result[i]!;
+				if (mask.mode === 'add') result[i] = current + value - current * value;
+				else if (mask.mode === 'subtract') result[i] = current * (1 - value);
+				else if (mask.mode === 'intersect') result[i] = current * value;
+				else if (mask.mode === 'lighten') result[i] = Math.max(current, value);
+				else if (mask.mode === 'darken') result[i] = Math.min(current, value);
+				else result[i] = Math.abs(current - value);
+				shape[i] = 0;
 			}
 		}
 	}
+	return result;
 }
 
 export interface RenderMaskLayerSpec {
@@ -173,27 +236,17 @@ export function renderAepMasksFrameRgba(opts: RenderCompMasksFrameOptions): {
 		outRgba[o + 3] = 255;
 	}
 
-	const layerAlpha = new Float32Array(width * height);
 	let activeMasks = 0;
 	let totalVertices = 0;
 
 	for (const layerSpec of layers) {
-		layerAlpha.fill(0);
-		let layerHasAny = false;
-
-		for (const mask of layerSpec.masks) {
-			const state = evaluateAnimatedMaskAtTime(mask, tSec);
-			if (!state.visible || state.vertices.length < 3) continue;
-			layerHasAny = true;
-			activeMasks++;
-			totalVertices += state.vertices.length;
-
-			const poly = flattenBezierVertices(state.vertices, scaleX, scaleY, 10);
-			const op: 'add' | 'subtract' = state.mode === 'subtract' ? 'subtract' : 'add';
-			rasterizePolygonIntoMask(poly, layerAlpha, width, height, state.opacity, op);
-		}
-
-		if (!layerHasAny) continue;
+		const states = layerSpec.masks
+			.map((mask) => evaluateAnimatedMaskAtTime(mask, tSec))
+			.filter((state) => state.visible && state.closed && state.vertices.length >= 2);
+		if (states.length === 0) continue;
+		activeMasks += states.length;
+		totalVertices += states.reduce((sum, state) => sum + state.vertices.length, 0);
+		const layerAlpha = rasterizeMaskStack(states, [scaleX, 0, 0, scaleY, 0, 0], width, height);
 
 		const { r: cr, g: cg, b: cb } = layerSpec.color;
 		for (let i = 0; i < width * height; i++) {
@@ -307,7 +360,7 @@ export async function renderAepMasksToMp4(opts: RenderAepMasksMp4Options): Promi
 			bgColor: opts.bgColor,
 			layers: opts.layers,
 			outRgba: frameBuf,
-			drawVertexHandles: opts.drawVertexHandles,
+			...(opts.drawVertexHandles === undefined ? {} : { drawVertexHandles: opts.drawVertexHandles }),
 		});
 		const canContinue = ff.stdin.write(frameBuf);
 		if (!canContinue) {

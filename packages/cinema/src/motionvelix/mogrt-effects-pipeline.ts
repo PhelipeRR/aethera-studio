@@ -1,20 +1,13 @@
 /**
- * MotionVelix MOGRT Engine — Phase 3A Deterministic RGBA Effects & Compositing Pipeline
+ * MotionVelix MOGRT Engine: deterministic effects and compositing on straight-alpha RGBA buffers.
  *
- * Implements the 7 Phase 3A After Effects image effects cleanly on straight-alpha RGBA Uint8Array buffers:
- * 1. `ADBE Fill`          — Solid RGB fill preserving alpha (with opacity blend)
- * 2. `ADBE Tint`          — Dual-tone luminance mapping (mapBlackTo -> mapWhiteTo, amount 0..100%)
- * 3. `ADBE Box Blur2` / `ADBE Gaussian Blur 2` — Separable O(1)-per-pixel sliding-window box blur (1..3 iterations)
- * 4. `ADBE Glo2`          — Threshold extraction + separable multi-pass bloom + optional A/B tint + additive composite
- * 5. `ADBE Simple Choker` — Morphological alpha erosion (choke > 0) / dilation (choke < 0)
- * 6. `ADBE Noise2`        — Deterministic per-frame hashed film grain (mono or color)
- * 7. `ADBE Set Matte3`    — Transfers alpha/luma/channel matte from a target layer (with optional invert)
- *
- * Also implements 2D affine layer transformation (anchor, position, scale, rotation),
- * Track Mattes (`alpha`, `alpha_inverted`, `luma`, `luma_inverted`), and AE blend modes.
+ * Fill, Tint, Box Blur, Glow, Drop Shadow, Simple Choker, Noise, Set Matte and Shift Channels
+ * reimplement the documented behaviour of the After Effects effects. They are not pixel-identical
+ * to Adobe's. Also provides affine compositing with track mattes and blend modes.
  */
 
-import type { AepBlendMode, AepTrackMatteType } from './aep-comp-graph.js';
+import type { AepBlendMode, AepTrackMatteType } from './aep-binary.js';
+import type { Affine } from './mogrt-mask-renderer.js';
 
 export interface RgbaBuffer {
 	width: number;
@@ -190,9 +183,9 @@ export function applyEffectBoxBlur(
 	radiusPx: number,
 	iterations = 2,
 ): void {
-	const r = Math.min(64, Math.max(0, Math.round(radiusPx)));
+	const r = Math.min(512, Math.max(0, Math.round(radiusPx)));
 	if (r < 1) return;
-	const iters = Math.max(1, Math.min(4, Math.round(iterations)));
+	const iters = Math.max(1, Math.min(10, Math.round(iterations)));
 	const { width, height, data } = buf;
 	const n = width * height * 4;
 	const fA = new Float32Array(n);
@@ -244,6 +237,8 @@ export interface GlowOptions {
 	intensity?: number;
 	/** Optional custom glow tint RGB (when AE Glow Colors = A & B Colors). */
 	tintColor?: [number, number, number];
+	/** `add` brightens the layer; `behind` only shows where the layer is transparent. */
+	composite?: 'add' | 'behind';
 }
 
 /**
@@ -251,7 +246,7 @@ export interface GlowOptions {
  * optionally tints with custom glow color, and composites additively back onto source.
  */
 export function applyEffectGlow(buf: RgbaBuffer, opts: GlowOptions = {}): void {
-	const radius = Math.min(64, Math.max(1, Math.round(opts.radiusPx ?? 14)));
+	const radius = Math.min(512, Math.max(1, Math.round(opts.radiusPx ?? 14)));
 	const intensity = Math.max(0, opts.intensity ?? 1.0);
 	if (intensity <= 0.001) return;
 	const threshold = Math.max(0, Math.min(1, (opts.thresholdPct ?? 50) / 100));
@@ -299,9 +294,10 @@ export function applyEffectGlow(buf: RgbaBuffer, opts: GlowOptions = {}): void {
 
 	// Additive composite of bloom onto straight-alpha RGBA buffer
 	for (let i = 0; i < n; i += 4) {
-		const gr = src[i]! * intensity;
-		const gg = src[i + 1]! * intensity;
-		const gb = src[i + 2]! * intensity;
+		const keep = opts.composite === 'behind' ? 1 - data[i + 3]! / 255 : 1;
+		const gr = src[i]! * intensity * keep;
+		const gg = src[i + 1]! * intensity * keep;
+		const gb = src[i + 2]! * intensity * keep;
 		const ga = src[i + 3]! * intensity;
 		if (ga <= 0.5 && gr <= 0.5 && gg <= 0.5 && gb <= 0.5) continue;
 
@@ -420,6 +416,114 @@ export function applyEffectNoise(
 	}
 }
 
+export interface DropShadowOptions {
+	color: [number, number, number];
+	/** 0..1 */
+	opacity: number;
+	/** 0 is up, growing clockwise. */
+	directionDeg: number;
+	distancePx: number;
+	softnessPx: number;
+	shadowOnly?: boolean;
+}
+
+/** One box pass over a single channel, with transparency beyond the edges. */
+function blurAlphaPass(
+	src: Float32Array,
+	dst: Float32Array,
+	lines: number,
+	length: number,
+	stride: number,
+	step: number,
+	radius: number,
+): void {
+	const inverse = 1 / (2 * radius + 1);
+	for (let line = 0; line < lines; line++) {
+		const base = line * stride;
+		let sum = 0;
+		for (let k = 0; k < Math.min(radius, length); k++) sum += src[base + k * step]!;
+		for (let k = 0; k < length; k++) {
+			if (k + radius < length) sum += src[base + (k + radius) * step]!;
+			if (k - radius - 1 >= 0) sum -= src[base + (k - radius - 1) * step]!;
+			dst[base + k * step] = sum * inverse;
+		}
+	}
+}
+
+/** ADBE Drop Shadow: a blurred, offset copy of the alpha, composited behind the layer. */
+export function applyEffectDropShadow(buf: RgbaBuffer, opts: DropShadowOptions): void {
+	const opacity = Math.max(0, Math.min(1, opts.opacity));
+	if (opacity === 0 && !opts.shadowOnly) return;
+	const { width, height, data } = buf;
+	const angle = (opts.directionDeg * Math.PI) / 180;
+	const dx = Math.round(Math.sin(angle) * opts.distancePx);
+	const dy = Math.round(-Math.cos(angle) * opts.distancePx);
+
+	const alpha = new Float32Array(width * height);
+	for (let y = Math.max(0, dy); y < Math.min(height, height + dy); y++) {
+		for (let x = Math.max(0, dx); x < Math.min(width, width + dx); x++) {
+			alpha[y * width + x] = data[((y - dy) * width + x - dx) * 4 + 3]! / 255;
+		}
+	}
+
+	// Three box passes approximate a Gaussian whose standard deviation is about the box radius.
+	const radius = Math.min(512, Math.round(opts.softnessPx / 2.5));
+	if (radius >= 1) {
+		const scratch = new Float32Array(width * height);
+		for (let pass = 0; pass < 3; pass++) {
+			blurAlphaPass(alpha, scratch, height, width, width, 1, radius);
+			blurAlphaPass(scratch, alpha, width, height, 1, width, radius);
+		}
+	}
+
+	const [r, g, b] = opts.color;
+	for (let i = 0, o = 0; i < alpha.length; i++, o += 4) {
+		const layerAlpha = opts.shadowOnly ? 0 : data[o + 3]! / 255;
+		const shadow = alpha[i]! * opacity * (1 - layerAlpha);
+		const out = layerAlpha + shadow;
+		if (out <= 0) {
+			data[o + 3] = 0;
+			continue;
+		}
+		if (shadow === 0) continue;
+		data[o] = clampByte((data[o]! * layerAlpha + r * shadow) / out);
+		data[o + 1] = clampByte((data[o + 1]! * layerAlpha + g * shadow) / out);
+		data[o + 2] = clampByte((data[o + 2]! * layerAlpha + b * shadow) / out);
+		data[o + 3] = clampByte(out * 255);
+	}
+}
+
+/**
+ * ADBE Shift Channels. Sources use AE's popup order: 1 alpha, 2 red, 3 green, 4 blue, 5 luminance,
+ * 9 full on, 10 full off. Returns false, leaving the buffer untouched, for hue, lightness and saturation.
+ */
+export function applyEffectShiftChannels(
+	buf: RgbaBuffer,
+	from: { alpha: number; red: number; green: number; blue: number },
+): boolean {
+	const sources = [from.red, from.green, from.blue, from.alpha];
+	if (sources.some((code) => ![1, 2, 3, 4, 5, 9, 10].includes(code))) return false;
+	const d = buf.data;
+	for (let i = 0; i < d.length; i += 4) {
+		const r = d[i]!;
+		const g = d[i + 1]!;
+		const b = d[i + 2]!;
+		const a = d[i + 3]!;
+		for (let channel = 0; channel < 4; channel++) {
+			const code = sources[channel]!;
+			let value = 0;
+			if (code === 1) value = a;
+			else if (code === 2) value = r;
+			else if (code === 3) value = g;
+			else if (code === 4) value = b;
+			else if (code === 5) value = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+			else if (code === 9) value = 255;
+			d[i + channel] = clampByte(value);
+		}
+	}
+	return true;
+}
+
 export type SetMatteChannel = 'alpha' | 'luma' | 'red' | 'green' | 'blue';
 
 /**
@@ -475,10 +579,7 @@ export interface Transform2DParams {
 	opacity: number;
 }
 
-/**
- * Composites `src` onto `dst` with exact 2D AE affine transformation (anchor, scale, rotation, position),
- * bilinear interpolation, optional Track Matte buffer, and AE blend mode.
- */
+/** Composites `src` with an anchor, scale, rotation and position transform. */
 export function compositeLayerTransformed(
 	dst: RgbaBuffer,
 	src: RgbaBuffer,
@@ -486,158 +587,160 @@ export function compositeLayerTransformed(
 	blendMode: AepBlendMode = 'normal',
 	trackMatte?: { buffer: RgbaBuffer; type: AepTrackMatteType },
 ): void {
-	const op = Math.max(0, Math.min(1, tx.opacity));
-	if (op <= 0.002 || Math.abs(tx.scaleX) < 1e-4 || Math.abs(tx.scaleY) < 1e-4) return;
+	const angle = (tx.rotationDeg * Math.PI) / 180;
+	const a = Math.cos(angle) * tx.scaleX;
+	const b = Math.sin(angle) * tx.scaleX;
+	const c = -Math.sin(angle) * tx.scaleY;
+	const d = Math.cos(angle) * tx.scaleY;
+	const e = tx.posX - a * tx.anchorX - c * tx.anchorY;
+	const f = tx.posY - b * tx.anchorX - d * tx.anchorY;
+	compositeLayerAffine(dst, src, [a, b, c, d, e, f], tx.opacity, blendMode, trackMatte);
+}
 
-	const rad = (tx.rotationDeg * Math.PI) / 180;
-	const cos = Math.cos(rad);
-	const sin = Math.sin(rad);
-
-	// Forward transform:
-	//   dx = (sx - anchorX) * scaleX
-	//   dy = (sy - anchorY) * scaleY
-	//   px = dx * cos - dy * sin + posX
-	//   py = dx * sin + dy * cos + posY
-	// Compute tight destination bounding box from the 4 transformed corners of `src`
-	const corners: Array<[number, number]> = [
-		[0, 0],
-		[src.width, 0],
-		[src.width, src.height],
-		[0, src.height],
-	];
-	let minX = dst.width;
-	let maxX = -1;
-	let minY = dst.height;
-	let maxY = -1;
-	for (const [cx, cy] of corners) {
-		const dx = (cx - tx.anchorX) * tx.scaleX;
-		const dy = (cy - tx.anchorY) * tx.scaleY;
-		const px = dx * cos - dy * sin + tx.posX;
-		const py = dx * sin + dy * cos + tx.posY;
-		if (px < minX) minX = px;
-		if (px > maxX) maxX = px;
-		if (py < minY) minY = py;
-		if (py > maxY) maxY = py;
+function blendChannel(mode: AepBlendMode, under: number, over: number): number {
+	switch (mode) {
+		case 'add':
+			return Math.min(255, under + over);
+		case 'screen':
+			return 255 - ((255 - under) * (255 - over)) / 255;
+		case 'multiply':
+			return (under * over) / 255;
+		case 'lighten':
+			return Math.max(under, over);
+		case 'darken':
+			return Math.min(under, over);
+		case 'overlay':
+			return under < 128 ? (2 * under * over) / 255 : 255 - (2 * (255 - under) * (255 - over)) / 255;
+		default:
+			return over;
 	}
+}
 
-	const x0 = Math.max(0, Math.floor(minX));
-	const x1 = Math.min(dst.width - 1, Math.ceil(maxX));
-	const y0 = Math.max(0, Math.floor(minY));
-	const y1 = Math.min(dst.height - 1, Math.ceil(maxY));
-	if (x0 > x1 || y0 > y1) return;
+const luminosity = (r: number, g: number, b: number): number => 0.3 * r + 0.59 * g + 0.11 * b;
 
-	const invSx = 1 / tx.scaleX;
-	const invSy = 1 / tx.scaleY;
-	const sData = src.data;
-	const dData = dst.data;
-	const sW = src.width;
-	const sH = src.height;
-	const dW = dst.width;
-	const mBuf = trackMatte && trackMatte.type !== 'none' ? trackMatte.buffer : null;
-	const mType = trackMatte?.type ?? 'none';
+/** Color blend: hue and saturation of `over`, luminosity of `under`. */
+function blendColor(under: number[], over: number[]): number[] {
+	const target = luminosity(under[0]!, under[1]!, under[2]!);
+	const shift = target - luminosity(over[0]!, over[1]!, over[2]!);
+	let out = over.map((value) => value + shift);
+	const low = Math.min(...out);
+	const high = Math.max(...out);
+	if (low < 0) out = out.map((value) => target + ((value - target) * target) / (target - low));
+	if (high > 255) out = out.map((value) => target + ((value - target) * (255 - target)) / (high - target));
+	return out;
+}
 
-	for (let py = y0; py <= y1; py++) {
-		const ry = py + 0.5 - tx.posY;
-		for (let px = x0; px <= x1; px++) {
-			const rx = px + 0.5 - tx.posX;
-			// Inverse rotate then inverse scale + anchor
-			const sx = (rx * cos + ry * sin) * invSx + tx.anchorX - 0.5;
-			const sy = (-rx * sin + ry * cos) * invSy + tx.anchorY - 0.5;
-			if (sx < -0.5 || sy < -0.5 || sx > sW - 0.5 || sy > sH - 0.5) continue;
+/** Stencil modes keep what is below only inside the layer; Silhouette modes cut the layer out of it. */
+function compositeKnockout(dst: RgbaBuffer, coverage: RgbaBuffer, mode: AepBlendMode): void {
+	const silhouette = mode === 'silhouette_alpha' || mode === 'silhouette_luma';
+	const luma = mode === 'stencil_luma' || mode === 'silhouette_luma';
+	const c = coverage.data;
+	for (let o = 0; o < c.length; o += 4) {
+		let value = c[o + 3]! / 255;
+		if (luma) value *= luminosity(c[o]!, c[o + 1]!, c[o + 2]!) / 255;
+		dst.data[o + 3] = clampByte(dst.data[o + 3]! * (silhouette ? 1 - value : value));
+	}
+}
 
-			// Bilinear sampling
-			const ix = Math.max(0, Math.min(sW - 1, Math.floor(sx)));
-			const iy = Math.max(0, Math.min(sH - 1, Math.floor(sy)));
-			const ix1 = Math.min(sW - 1, ix + 1);
-			const iy1 = Math.min(sH - 1, iy + 1);
-			const fx = Math.max(0, Math.min(1, sx - ix));
-			const fy = Math.max(0, Math.min(1, sy - iy));
+/**
+ * Composites `src` onto `dst` through `matrix` (source pixels to destination pixels) with bilinear,
+ * alpha-weighted sampling, an optional destination-sized track matte and an AE blend mode.
+ */
+export function compositeLayerAffine(
+	dst: RgbaBuffer,
+	src: RgbaBuffer,
+	matrix: Affine,
+	opacity = 1,
+	blendMode: AepBlendMode = 'normal',
+	trackMatte?: { buffer: RgbaBuffer; type: AepTrackMatteType },
+): void {
+	if (blendMode.startsWith('stencil_') || blendMode.startsWith('silhouette_')) {
+		const coverage = createRgbaBuffer(dst.width, dst.height);
+		compositeLayerAffine(coverage, src, matrix, opacity, 'normal', trackMatte);
+		compositeKnockout(dst, coverage, blendMode);
+		return;
+	}
+	const op = Math.max(0, Math.min(1, opacity));
+	const [a, b, c, d, e, f] = matrix;
+	const det = a * d - b * c;
+	if (op <= 0.002 || !(Math.abs(det) > 1e-9)) return;
+	const { width: sW, height: sH, data: sData } = src;
+	const { width: dW, height: dH, data: dData } = dst;
+	const xs = [e, a * sW + e, c * sH + e, a * sW + c * sH + e];
+	const ys = [f, b * sW + f, d * sH + f, b * sW + d * sH + f];
+	const x0 = Math.max(0, Math.floor(Math.min(...xs)));
+	const x1 = Math.min(dW, Math.ceil(Math.max(...xs)));
+	const y0 = Math.max(0, Math.floor(Math.min(...ys)));
+	const y1 = Math.min(dH, Math.ceil(Math.max(...ys)));
+	if (x0 >= x1 || y0 >= y1) return;
 
-			const o00 = (iy * sW + ix) * 4;
-			const o10 = (iy * sW + ix1) * 4;
-			const o01 = (iy1 * sW + ix) * 4;
-			const o11 = (iy1 * sW + ix1) * 4;
+	const ia = d / det;
+	const ib = -b / det;
+	const ic = -c / det;
+	const id = a / det;
+	const matte = trackMatte && trackMatte.type !== 'none' ? trackMatte.buffer.data : null;
+	const matteType = trackMatte?.type;
+	const matteLuma = matteType === 'luma' || matteType === 'luma_inverted';
+	const matteInverted = matteType === 'alpha_inverted' || matteType === 'luma_inverted';
 
-			const w00 = (1 - fx) * (1 - fy);
-			const w10 = fx * (1 - fy);
-			const w01 = (1 - fx) * fy;
-			const w11 = fx * fy;
+	for (let py = y0; py < y1; py++) {
+		for (let px = x0; px < x1; px++) {
+			const rx = px + 0.5 - e;
+			const ry = py + 0.5 - f;
+			const u = ia * rx + ic * ry;
+			const v = ib * rx + id * ry;
+			if (u < 0 || v < 0 || u > sW || v > sH) continue;
 
-			const saRaw =
-				(sData[o00 + 3]! * w00 +
-					sData[o10 + 3]! * w10 +
-					sData[o01 + 3]! * w01 +
-					sData[o11 + 3]! * w11) /
-				255;
-			if (saRaw <= 0.002) continue;
-
-			let sa = saRaw * op;
-			if (mBuf) {
-				const mo = (py * dW + px) * 4;
-				let mv = 1;
-				if (mType === 'alpha' || mType === 'alpha_inverted') {
-					mv = mBuf.data[mo + 3]! / 255;
-				} else {
-					const ma = mBuf.data[mo + 3]! / 255;
-					mv =
-						((0.2126 * mBuf.data[mo]! + 0.7152 * mBuf.data[mo + 1]! + 0.0722 * mBuf.data[mo + 2]!) / 255) * ma;
-				}
-				if (mType === 'alpha_inverted' || mType === 'luma_inverted') mv = 1 - mv;
-				sa *= mv;
-				if (sa <= 0.002) continue;
-			}
-
-			const sr =
-				sData[o00]! * w00 + sData[o10]! * w10 + sData[o01]! * w01 + sData[o11]! * w11;
-			const sg =
-				sData[o00 + 1]! * w00 + sData[o10 + 1]! * w10 + sData[o01 + 1]! * w01 + sData[o11 + 1]! * w11;
-			const sb =
-				sData[o00 + 2]! * w00 + sData[o10 + 2]! * w10 + sData[o01 + 2]! * w01 + sData[o11 + 2]! * w11;
+			const sx = Math.max(0, Math.min(sW - 1, u - 0.5));
+			const sy = Math.max(0, Math.min(sH - 1, v - 0.5));
+			const ix = sx | 0;
+			const iy = sy | 0;
+			const fx = sx - ix;
+			const fy = sy - iy;
+			const right = ix + 1 < sW ? 4 : 0;
+			const down = iy + 1 < sH ? sW * 4 : 0;
+			const o = (iy * sW + ix) * 4;
+			const w00 = (1 - fx) * (1 - fy) * sData[o + 3]!;
+			const w10 = fx * (1 - fy) * sData[o + right + 3]!;
+			const w01 = (1 - fx) * fy * sData[o + down + 3]!;
+			const w11 = fx * fy * sData[o + down + right + 3]!;
+			const weight = w00 + w10 + w01 + w11;
+			if (weight <= 0.25) continue;
 
 			const doff = (py * dW + px) * 4;
-			const dr = dData[doff]!;
-			const dg = dData[doff + 1]!;
-			const db = dData[doff + 2]!;
+			let sa = (weight / 255) * op;
+			if (matte) {
+				let value = matte[doff + 3]! / 255;
+				if (matteLuma) {
+					value *= (0.2126 * matte[doff]! + 0.7152 * matte[doff + 1]! + 0.0722 * matte[doff + 2]!) / 255;
+				}
+				sa *= matteInverted ? 1 - value : value;
+			}
+			if (sa <= 0.002) continue;
+
 			const da = dData[doff + 3]! / 255;
-
-			let br = sr;
-			let bg = sg;
-			let bb = sb;
-			if (blendMode === 'add') {
-				br = Math.min(255, dr + sr);
-				bg = Math.min(255, dg + sg);
-				bb = Math.min(255, db + sb);
-			} else if (blendMode === 'screen') {
-				br = 255 - ((255 - dr) * (255 - sr)) / 255;
-				bg = 255 - ((255 - dg) * (255 - sg)) / 255;
-				bb = 255 - ((255 - db) * (255 - sb)) / 255;
-			} else if (blendMode === 'multiply') {
-				br = (dr * sr) / 255;
-				bg = (dg * sg) / 255;
-				bb = (db * sb) / 255;
-			} else if (blendMode === 'lighten') {
-				br = Math.max(dr, sr);
-				bg = Math.max(dg, sg);
-				bb = Math.max(db, sb);
-			} else if (blendMode === 'darken') {
-				br = Math.min(dr, sr);
-				bg = Math.min(dg, sg);
-				bb = Math.min(db, sb);
-			} else if (blendMode === 'overlay') {
-				const ov = (d: number, s: number) =>
-					d < 128 ? (2 * d * s) / 255 : 255 - (2 * (255 - d) * (255 - s)) / 255;
-				br = ov(dr, sr);
-				bg = ov(dg, sg);
-				bb = ov(db, sb);
-			}
-
 			const outA = sa + da * (1 - sa);
-			if (outA > 0.004) {
-				dData[doff] = clampByte((br * sa + dr * da * (1 - sa)) / outA);
-				dData[doff + 1] = clampByte((bg * sa + dg * da * (1 - sa)) / outA);
-				dData[doff + 2] = clampByte((bb * sa + db * da * (1 - sa)) / outA);
-				dData[doff + 3] = clampByte(outA * 255);
+			const sample = (k: number): number =>
+				(sData[o + k]! * w00 +
+					sData[o + right + k]! * w10 +
+					sData[o + down + k]! * w01 +
+					sData[o + down + right + k]! * w11) /
+				weight;
+			const recoloured =
+				blendMode === 'color' && da > 0
+					? blendColor([dData[doff]!, dData[doff + 1]!, dData[doff + 2]!], [sample(0), sample(1), sample(2)])
+					: null;
+			for (let k = 0; k < 3; k++) {
+				const colour = sample(k);
+				const under = dData[doff + k]!;
+				// Over transparency the source keeps its colour: blending only applies over content.
+				const blended =
+					blendMode === 'normal'
+						? colour
+						: colour * (1 - da) + (recoloured ? recoloured[k]! : blendChannel(blendMode, under, colour)) * da;
+				dData[doff + k] = clampByte((blended * sa + under * da * (1 - sa)) / outA);
 			}
+			dData[doff + 3] = clampByte(outA * 255);
 		}
 	}
 }

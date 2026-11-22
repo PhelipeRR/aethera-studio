@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
 	classifyAfterEffectsMatchName,
 	inspectMogrtFile,
@@ -35,14 +37,12 @@ describe('MotionVelix MOGRT Engine — Phase 2 Experimental', () => {
 		expect(poly[0]).toEqual({ x: 0, y: 0 });
 	});
 
-	const sampleMogrt =
-		'C:/Users/Pheli/.gemini/antigravity/brain/01318809-de6a-47e0-9094-8803e9ca85ee/scratch/mogrt_audit/pack/Dynamic Anime Burst Logo Pack/Dynamic Anime Burst Logo 01.mogrt';
+	// The commercial pack is never committed. Unset means a reported skip; set with a missing file is a failure.
+	const packDir = process.env.MOTIONVELIX_MOGRT_PACK_DIR;
 
-	test('inspects Dynamic Anime Burst Logo 01.mogrt and extracts all 90 animated Bezier masks from Transition 01', () => {
-		if (!existsSync(sampleMogrt)) return;
-		const workRoot =
-			'C:/Users/Pheli/.gemini/antigravity/brain/01318809-de6a-47e0-9094-8803e9ca85ee/scratch/mogrt_phase2_test_work';
-		const info = inspectMogrtFile(sampleMogrt, workRoot);
+	test.skipIf(!packDir)('inspects Dynamic Anime Burst Logo 01.mogrt and extracts all 90 animated Bezier masks from Transition 01', () => {
+		const workRoot = mkdtempSync(join(tmpdir(), 'mogrt-phase2-'));
+		const info = inspectMogrtFile(join(packDir!, 'Dynamic Anime Burst Logo 01.mogrt'), workRoot);
 		expect(info.name).toBe('Dynamic Anime Burst Logo 01');
 		expect(info.controls.length).toBe(28);
 		expect(info.placeholders.length).toBe(2);
@@ -66,5 +66,6 @@ describe('MotionVelix MOGRT Engine — Phase 2 Experimental', () => {
 		const evalMid = evaluateAnimatedMaskAtTime(mask1, 0.73);
 		expect(evalMid.visible).toBe(true);
 		expect(evalMid.vertices.length).toBeGreaterThan(3);
+		rmSync(workRoot, { recursive: true, force: true });
 	});
 });

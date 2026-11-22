@@ -125,14 +125,14 @@ export function classifyAfterEffectsMatchName(matchName: string): MogrtEffectCom
 		return {
 			matchName,
 			support: 'native_exact',
-			reason: 'Parâmetro de controle ou operação direta de cor/transformação/matte reproduzível com alta fidelidade em Remotion/WebGL.',
+			reason: 'Operação direta de controle, cor, transformação ou matte. É uma estimativa de viabilidade, não prova de que o renderizador a implementa.',
 		};
 	}
 	if (WEBGL_APPROXIMABLE_EFFECTS.has(matchName)) {
 		return {
 			matchName,
 			support: 'webgl_approximable',
-			reason: 'Processamento de imagem reproduzível por shader WebGL2 equivalente (80–95% de fidelidade; pode haver microdiferenças de kernel/seed).',
+			reason: 'Processamento de imagem aproximável. A fidelidade não foi medida, e o relatório de render diz se foi implementado.',
 		};
 	}
 	return {
@@ -201,8 +201,10 @@ function classifyAssetKind(relPath: string): MogrtEmbeddedAsset['kind'] {
 function unpackZipSafe(zipPath: string, targetDir: string): void {
 	mkdirSync(targetDir, { recursive: true });
 	if (process.platform === 'win32') {
-		// Windows 10/11 ships bsdtar (`tar -xf`) which natively handles ZIP archives regardless of extension (.mogrt / .aegraphic / .zip).
-		execFileSync('tar', ['-xf', zipPath, '-C', targetDir]);
+		// Windows 10/11 ships bsdtar, which reads ZIP regardless of extension. Call it by path: a GNU tar
+		// earlier on PATH (Git Bash, MSYS) cannot read ZIP and takes `C:` for a remote host.
+		const bsdtar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+		execFileSync(bsdtar, ['-xf', zipPath, '-C', targetDir]);
 		return;
 	}
 	try {
