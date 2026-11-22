@@ -285,6 +285,23 @@ describe('real .mogrt acceptance', { skip }, () => {
 		assert.ok(late > 0.9, `the logo is not revealed: ${late}`);
 	});
 
+	for (const model of [MODEL_01, MODEL_02]) {
+		test(`${model.file}: the only effect left out is one that draws nothing`, () => {
+			const logoPath = writeLogo(tempDir(), 'logo.svg', '#00ffff');
+			const executed = new Set<string>();
+			const left = new Map<string, string>();
+			for (const tSec of [0.4, 0.7, 0.9, 1.1, 3]) {
+				const result = render(tSec, { logoPath }, model);
+				for (const name of Object.keys(result.effectsExecutedCounts)) executed.add(name);
+				for (const gap of result.unsupportedEffects) left.set(`${gap.layerName}: ${gap.matchName}`, gap.reason);
+			}
+			assert.ok(executed.has('APC Vegas'), 'the animated contour stroke never ran');
+			const expected = model === MODEL_01 ? ['Shape Layer 2: ADBE Scribble Fill'] : [];
+			assert.deepEqual([...left.keys()], expected);
+			for (const reason of left.values()) assert.match(reason, /opacidade fixa de 0%/);
+		});
+	}
+
 	test('model 01: edited text changes the rendered tagline', () => {
 		const narrow = render(4.5, { textOverride: 'IIII' }).frame;
 		const wide = render(4.5, { textOverride: 'WWWWWWWW' }).frame;

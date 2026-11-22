@@ -40,6 +40,7 @@ import {
 	type DisplacementChannel,
 	type TurbulentDisplaceKind,
 } from './mogrt-effects-distort.js';
+import { applyEffectVegas, type VegasBlend, type VegasChannel } from './mogrt-effects-vegas.js';
 import {
 	applyEffectBoxBlur,
 	applyEffectDropShadow,
@@ -192,6 +193,11 @@ const DISPLACEMENT_CHANNELS: Record<number, DisplacementChannel> = {
 	10: 'half',
 	11: 'off',
 };
+const VEGAS_CHANNELS: Record<number, VegasChannel> = { 1: 'intensity', 2: 'red', 3: 'green', 4: 'blue', 5: 'alpha' };
+const VEGAS_BLENDS: Record<number, VegasBlend> = { 1: 'transparent', 2: 'over', 3: 'under', 4: 'stencil' };
+const NOT_IMPLEMENTED = 'Efeito não implementado; não é reproduzido.';
+const DRAWS_NOTHING =
+	'Efeito não implementado, sem efeito no resultado: a camada tem opacidade fixa de 0% e nenhuma outra a usa como fonte.';
 const CONTROL_EFFECT = /^ADBE (Checkbox|Color|Point|Slider|Angle|Layer) Control$/;
 
 function multiply(m: Affine, n: Affine): Affine {
@@ -386,18 +392,40 @@ class CompositionRenderer {
 	/** Effects skipped while rendering plus every unsupported effect declared in the project. */
 	get unsupportedEffects(): MogrtUnsupportedEffect[] {
 		const all = new Map(this.effectGaps);
-		for (const { compName, layerName, matchName, displayName } of this.graph.unsupportedEffects) {
-			const key = `${compName}::${layerName}::${matchName}`;
-			if (all.has(key)) continue;
-			all.set(key, {
-				compName,
-				layerName,
-				matchName,
-				displayName,
-				reason: 'Efeito não implementado (Fase 3B); não é reproduzido.',
+		for (const comp of this.graph.compositions) {
+			comp.layers.forEach((layer, index) => {
+				for (const { matchName, displayName, enabled, supportedInPhase3A } of layer.effects) {
+					if (!enabled || supportedInPhase3A) continue;
+					const key = `${comp.name}::${layer.name}::${matchName}`;
+					// Layers can share a name: one that shows outweighs one that does not.
+					const known = all.get(key);
+					if (known && known.reason !== DRAWS_NOTHING) continue;
+					all.set(key, {
+						compName: comp.name,
+						layerName: layer.name,
+						matchName,
+						displayName,
+						reason: this.drawsNothing(comp, index) ? DRAWS_NOTHING : NOT_IMPLEMENTED,
+					});
+				}
 			});
 		}
 		return [...all.values()];
+	}
+
+	/** Whether the layer can reach no pixel at any time: constant 0% opacity and no other use as a source. */
+	private drawsNothing(comp: AepGraphComposition, index: number): boolean {
+		const layer = comp.layers[index]!;
+		const { opacity } = layer.transform;
+		if (opacity.expression || opacity.keyframes.length > 0 || opacity.staticValue[0] !== 0) return false;
+		if (this.overrides.properties.has(opacity)) return false;
+		const below = comp.layers[index + 1];
+		if (below && below.trackMatte !== 'none') return false;
+		return !comp.layers.some(
+			(other) =>
+				other !== layer &&
+				other.effects.some((effect) => effect.params.some((param) => param.layerRef === layer.layerId)),
+		);
 	}
 
 	/** Renders the root composition fitted into `width` x `height`, with transparency. */
@@ -1257,11 +1285,56 @@ class CompositionRenderer {
 				case 'ADBE Displacement Map':
 					if (this.applyDisplacementMap(buffer, space, effect)) break;
 					continue;
+				case 'APC Vegas': {
+					const blend = VEGAS_BLENDS[read('0008')];
+					const channel = VEGAS_CHANNELS[read('0010')];
+					const input = effect.params.find((param) => param.matchName === 'APC Vegas-0002')?.layerRef;
+					if (!blend || !channel || read('0052') !== 1 || (input && input !== layer.layerId)) {
+						const replacesLayer = blend === 'transparent' || blend === 'stencil';
+						this.effectGap(
+							space,
+							effect,
+							replacesLayer
+								? 'Configuração do Vegas não suportada; ela substitui a camada, que é omitida.'
+								: 'Configuração do Vegas não suportada; efeito ignorado.',
+						);
+						if (replacesLayer) return false;
+						continue;
+					}
+					const segments = read('0028');
+					if (
+						read('0014') > 0 ||
+						read('0032') > 0 ||
+						read('0044') !== 1 ||
+						read('0048') !== 1 ||
+						(segments > 1 && read('0026') !== 2)
+					) {
+						this.effectGap(space, effect, 'Pré-desfoque, seleção, fase aleatória ou distribuição do Vegas ignorados.');
+					}
+					this.approximations.add(
+						'Vegas: contornos por marching squares; o ponto de partida do traço em cada contorno difere do After Effects.',
+					);
+					applyEffectVegas(buffer, {
+						channel,
+						invertInput: read('0004') > 0,
+						threshold: read('0012'),
+						segments,
+						length: read('0024'),
+						rotationDeg: read('0030'),
+						blend,
+						color: rgb('0018'),
+						width: read('0020') * scale,
+						hardness: read('0022'),
+						startOpacity: read('0036'),
+						midOpacity: read('0038'),
+						midPosition: read('0040'),
+						endOpacity: read('0042'),
+					});
+					break;
+				}
 				default: {
-					// These generators replace the layer: without them its raw content would be wrong content.
-					const replacesLayer =
-						(effect.matchName === 'APC Vegas' && [1, 4].includes(read('0008'))) ||
-						(effect.matchName === 'ADBE Scribble Fill' && [2, 3].includes(read('0026')));
+					// This generator replaces the layer: without it the raw content would be wrong content.
+					const replacesLayer = effect.matchName === 'ADBE Scribble Fill' && [2, 3].includes(read('0026'));
 					this.effectGap(
 						space,
 						effect,

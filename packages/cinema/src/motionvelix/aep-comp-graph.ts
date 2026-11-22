@@ -257,6 +257,7 @@ export const PHASE3A_SUPPORTED_EFFECTS = new Set<string>([
 	'ADBE Fractal Noise',
 	'ADBE Turbulent Displace',
 	'ADBE Displacement Map',
+	'APC Vegas',
 ]);
 
 const MAX_DIMENSION = 30000;
