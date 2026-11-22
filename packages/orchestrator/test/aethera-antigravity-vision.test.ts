@@ -9,6 +9,7 @@ import {
   VisionRouter,
   type VisionCooldownEntry,
 } from '../src/index.js';
+import { parseModelJson, stripMarkdownJsonFences } from '../src/aethera/vision-providers.js';
 
 const tempDirs: string[] = [];
 function makeTempDir(prefix: string): string {
@@ -224,5 +225,25 @@ describe('Antigravity (AGY) VisionRouter Integration', () => {
     expect(res.value).toBeNull();
     expect(res.attempts[0]?.outcome).toBe('error');
     expect(res.attempts[0]?.detail).toContain('forbidden');
+  });
+});
+
+describe('Model JSON fences (antigravity "Unrecognized token \'`\'" regression)', () => {
+  it('parses JSON wrapped in a closed ```json fence', () => {
+    expect(parseModelJson('```json\n{"nature":"reaction","confidence":0.8}\n```')).toEqual({ nature: 'reaction', confidence: 0.8 });
+  });
+
+  it('parses JSON after an unclosed opening fence (truncated answer)', () => {
+    expect(stripMarkdownJsonFences('```json\n{"a":1}')).toBe('{"a":1}');
+    expect(parseModelJson('```json\n{"a":1}')).toEqual({ a: 1 });
+  });
+
+  it('parses a fenced object preceded by prose and plain JSON unchanged', () => {
+    expect(parseModelJson('Aqui está:\n```\n{"b":[1,2]}\n```\nfim')).toEqual({ b: [1, 2] });
+    expect(parseModelJson('{"c":true}')).toEqual({ c: true });
+  });
+
+  it('still fails on output with no JSON object', () => {
+    expect(() => parseModelJson('```json\nnot json\n```')).toThrow();
   });
 });

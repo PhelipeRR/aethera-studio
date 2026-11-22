@@ -27,6 +27,7 @@ import {
 	type ResearchAgentAdapterPort,
 	type RecapScript,
 } from '../../src/recap/index.js';
+import { parseResetAtMs } from '../../src/recap/vision-error-classifier.js';
 
 function makePanel(id: string, pageNumber: number, imagePath: string, imageHash: string): ExtractedPanel {
 	return {
@@ -565,5 +566,84 @@ describe('Phase 2.2.4 Enhancements (Quota, Circuit Breaker, Vision Fallback, Dur
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe('Vision provider recovery (false MODEL_INCOMPATIBLE, unreadable resets, 429, stuck circuits)', () => {
+	it('keeps a router-tagged JSON parse failure as INVALID_MODEL_RESPONSE, never MODEL_INCOMPATIBLE', () => {
+		const detail = '[INVALID_MODEL_RESPONSE] (claude-gateway) Failed to parse JSON after 23222ms. Preview: { "nature": "reaction", "description": "Personagem de cabelos claros';
+		expect(classifyVisionError(detail, 'claude-gateway').code).toBe('INVALID_MODEL_RESPONSE');
+		expect(classifyVisionError('Failed to parse JSON after 10ms. Preview: model x not available', 'g').code).toBe('INVALID_MODEL_RESPONSE');
+	});
+
+	it('still classifies a real invalid model error as MODEL_INCOMPATIBLE', () => {
+		expect(classifyVisionError('invalid_model: gpt-x does not exist', 'g').code).toBe('MODEL_INCOMPATIBLE');
+		expect(classifyVisionError('This model does not support image input', 'g').code).toBe('MODEL_INCOMPATIBLE');
+	});
+
+	it('treats a retryable 429 RESOURCE_EXHAUSTED as RATE_LIMITED but keeps explicit plan limits as quota', () => {
+		const agy = 'quota_cooldown: .g. check quota).","status":"RESOURCE_EXHAUSTED","error_code":429,"code_kind":"http","retryable":true';
+		const rate = classifyVisionError(agy, 'antigravity');
+		expect(rate.code).toBe('RATE_LIMITED');
+		expect(rate.retryable).toBe(true);
+		expect(classifyVisionError('RESOURCE_EXHAUSTED: insufficient credits (429)', 'antigravity').code).toBe('QUOTA_EXCEEDED');
+		expect(classifyVisionError("You've hit your weekly limit · resets 3pm (America/Sao_Paulo)", 'claude').code).toBe('QUOTA_EXCEEDED');
+		expect(classifyVisionError('RESOURCE_EXHAUSTED', 'antigravity').code).toBe('QUOTA_EXCEEDED');
+	});
+
+	it('parses clock-with-zone and ordinal-date reset hints', () => {
+		const now = Date.parse('2026-11-22T13:00:00Z'); // 10:00 in São Paulo (UTC-3)
+		expect(parseResetAtMs('3pm (America/Sao_Paulo)', now)).toBe(Date.parse('2026-11-22T18:00:00Z'));
+		// Already past today in that zone -> next day.
+		expect(parseResetAtMs('9am (America/Sao_Paulo)', now)).toBe(Date.parse('2026-11-23T12:00:00Z'));
+		expect(parseResetAtMs('Nov 23rd, 2026 11:02 AM (UTC)', now)).toBe(Date.parse('2026-11-23T11:02:00Z'));
+		const local = parseResetAtMs('Nov 23rd, 2026 11:02 AM', now);
+		expect(local).toBe(new Date(2026, 10, 23, 11, 2).getTime());
+		expect(parseResetAtMs('in 5 minutes', now)).toBe(now + 5 * 60_000);
+		expect(parseResetAtMs('whenever', now)).toBeUndefined();
+	});
+
+	it('the weekly-limit error carries a reset the circuit can expire on', () => {
+		const err = classifyVisionError("You've hit your weekly limit · resets 3pm (America/Sao_Paulo)", 'claude');
+		expect(err.resetAtText).toBe('3pm (America/Sao_Paulo)');
+		expect(err.resetAtMs).toBeGreaterThan(Date.now());
+	});
+
+	it('reopens transient circuits for probing after the cooldown, with one-strike half-open', () => {
+		let now = Date.parse('2026-11-22T13:00:00Z');
+		const breaker = new AgentCircuitBreaker({ transientCooldownMs: 10 * 60_000, now: () => now });
+		const timeout = classifyVisionError('request timed out', 'claude-gateway');
+		for (let i = 0; i < 3; i++) breaker.recordError('claude-gateway', timeout);
+		expect(breaker.isAvailable('claude-gateway')).toBe(false);
+		now += 9 * 60_000;
+		expect(breaker.isAvailable('claude-gateway')).toBe(false);
+		now += 2 * 60_000;
+		expect(breaker.isAvailable('claude-gateway')).toBe(true);
+		breaker.recordError('claude-gateway', timeout);
+		expect(breaker.isAvailable('claude-gateway')).toBe(false);
+	});
+
+	it('closes a quota circuit at its parsed reset, or after the bounded fallback when unreadable', () => {
+		let now = Date.parse('2026-11-22T13:00:00Z');
+		const breaker = new AgentCircuitBreaker({ quotaWithoutResetCooldownMs: 60 * 60_000, now: () => now });
+		breaker.open('claude', 'QUOTA_EXCEEDED', 'weekly limit', '3pm (America/Sao_Paulo)', parseResetAtMs('3pm (America/Sao_Paulo)', now));
+		breaker.open('codex', 'QUOTA_EXCEEDED', 'quota', 'sometime soon');
+		expect(breaker.isAvailable('claude')).toBe(false);
+		expect(breaker.isAvailable('codex')).toBe(false);
+		now += 61 * 60_000;
+		expect(breaker.isAvailable('codex')).toBe(true);
+		expect(breaker.isAvailable('claude')).toBe(false);
+		now = Date.parse('2026-11-22T18:00:01Z');
+		expect(breaker.isAvailable('claude')).toBe(true);
+	});
+
+	it('keeps auth and real model-incompatible circuits open', () => {
+		let now = Date.parse('2026-11-22T13:00:00Z');
+		const breaker = new AgentCircuitBreaker({ now: () => now });
+		breaker.recordError('a', classifyVisionError('authentication failed', 'a'));
+		breaker.recordError('m', classifyVisionError('model does not support image', 'm'));
+		now += 7 * 24 * 60 * 60_000;
+		expect(breaker.isAvailable('a')).toBe(false);
+		expect(breaker.isAvailable('m')).toBe(false);
 	});
 });

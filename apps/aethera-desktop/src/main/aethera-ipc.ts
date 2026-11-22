@@ -5303,10 +5303,18 @@ productionConsole,
     }
   };
 
+  const RECAP_INCOMPATIBLE_CACHE_MAX_AGE_MS = 24 * 60 * 60_000;
+  const RECAP_QUOTA_WITHOUT_RESET_BLOCK_MS = 60 * 60_000;
   const checkCachedMultimodalHealth = (providerId: string): { available: true } | { available: false; reason: string; code?: VisionErrorCode; resetAtText?: string; multimodal?: boolean } => {
     const cached = loadVisionHealthCheckCache(visionHealthCheckCacheFile)[providerId];
     if (!cached) return { available: true };
-    if (cached.multimodalStatus === 'model_incompatible') {
+    const checkedAtMs = Date.parse(cached.checkedAtIso);
+    const ageMs = Number.isFinite(checkedAtMs) ? Date.now() - checkedAtMs : Number.POSITIVE_INFINITY;
+    // A JSON parse failure proves the model answered about the image; older builds
+    // misfiled it as model_incompatible. Never block on that, and let a real
+    // incompatibility verdict be re-probed after a day instead of blocking forever.
+    const misfiledParseFailure = /failed to parse json|invalid_model_response|json parse error/i.test(cached.detail ?? '');
+    if (cached.multimodalStatus === 'model_incompatible' && !misfiledParseFailure && ageMs < RECAP_INCOMPATIBLE_CACHE_MAX_AGE_MS) {
       return {
         available: false,
         code: 'MODEL_INCOMPATIBLE',
@@ -5322,8 +5330,10 @@ productionConsole,
       };
     }
     if (cached.multimodalStatus === 'quota_exhausted') {
-      const resetMs = parseResetAtMs(cached.resetAtText, Date.parse(cached.checkedAtIso) || Date.now());
-      if (resetMs === undefined || Date.now() < resetMs) {
+      const resetMs = parseResetAtMs(cached.resetAtText, Number.isFinite(checkedAtMs) ? checkedAtMs : Date.now());
+      // Unreadable reset: block for a bounded window, then let the router probe again.
+      const blockedUntilMs = resetMs ?? (Number.isFinite(checkedAtMs) ? checkedAtMs + RECAP_QUOTA_WITHOUT_RESET_BLOCK_MS : 0);
+      if (Date.now() < blockedUntilMs) {
         return {
           available: false,
           code: 'QUOTA_EXCEEDED',

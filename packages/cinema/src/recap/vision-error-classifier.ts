@@ -69,12 +69,99 @@ export function extractResetInfo(raw: string): string | undefined {
 	return undefined;
 }
 
+const MONTH_DAY_ORDINAL = /\b(\d{1,2})(?:st|nd|rd|th)\b/gi;
+const TZ_SUFFIX = /\s*\(([A-Za-z]+(?:\/[A-Za-z0-9_+\-]+)+|UTC|GMT)\)\s*$/;
+const CLOCK_ONLY = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i;
+
+/** Offset (ms) of an IANA zone at a given instant: wall-clock(zone) - UTC. */
+function zoneOffsetMs(timeZone: string, atMs: number): number | undefined {
+	try {
+		const parts = new Intl.DateTimeFormat('en-US', {
+			timeZone,
+			hourCycle: 'h23',
+			year: 'numeric',
+			month: '2-digit',
+			day: '2-digit',
+			hour: '2-digit',
+			minute: '2-digit',
+			second: '2-digit',
+		}).formatToParts(new Date(atMs));
+		const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+		const wallAsUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+		return Number.isFinite(wallAsUtc) ? wallAsUtc - Math.floor(atMs / 1000) * 1000 : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Wall-clock components in a zone (or local time when no zone) -> epoch ms. */
+function wallClockToMs(y: number, mo: number, d: number, h: number, mi: number, timeZone?: string): number | undefined {
+	if (!timeZone) return new Date(y, mo, d, h, mi, 0, 0).getTime();
+	const guess = Date.UTC(y, mo, d, h, mi);
+	const offset = zoneOffsetMs(timeZone, guess);
+	if (offset === undefined) return undefined;
+	// Second pass settles DST edges.
+	const offset2 = zoneOffsetMs(timeZone, guess - offset) ?? offset;
+	return guess - offset2;
+}
+
+function wallDateInZone(nowMs: number, timeZone?: string): { y: number; mo: number; d: number } | undefined {
+	if (!timeZone) {
+		const now = new Date(nowMs);
+		return { y: now.getFullYear(), mo: now.getMonth(), d: now.getDate() };
+	}
+	const offset = zoneOffsetMs(timeZone, nowMs);
+	if (offset === undefined) return undefined;
+	const wall = new Date(nowMs + offset);
+	return { y: wall.getUTCFullYear(), mo: wall.getUTCMonth(), d: wall.getUTCDate() };
+}
+
+/**
+ * Parses provider reset hints into an absolute epoch. Accepts ISO dates, relative windows
+ * ("in 5 minutes"), clock times with an optional IANA zone ("3pm (America/Sao_Paulo)",
+ * next occurrence), and ordinal dates ("Nov 23rd, 2026 11:02 AM").
+ */
 export function parseResetAtMs(resetAtText?: string, nowMs = Date.now()): number | undefined {
 	if (!resetAtText) return undefined;
-	const trimmed = resetAtText.trim();
+	let trimmed = resetAtText.trim();
 	if (!trimmed) return undefined;
-	const isoMs = Date.parse(trimmed);
-	if (Number.isFinite(isoMs) && isoMs > nowMs) return isoMs;
+	const tzMatch = TZ_SUFFIX.exec(trimmed);
+	const rawZone = tzMatch?.[1];
+	const timeZone = rawZone ? (/^(?:UTC|GMT)$/i.test(rawZone) ? 'UTC' : rawZone) : undefined;
+	if (tzMatch) trimmed = trimmed.slice(0, tzMatch.index).trim();
+	trimmed = trimmed.replace(/^(?:at|on)\s+/i, '').replace(/[.,;]+$/, '').trim();
+
+	const clock = CLOCK_ONLY.exec(trimmed);
+	if (clock?.[1] && (clock[3] || clock[2] !== undefined)) {
+		let hour = Number.parseInt(clock[1], 10);
+		const minute = clock[2] ? Number.parseInt(clock[2], 10) : 0;
+		const meridiem = clock[3]?.toLowerCase();
+		if (meridiem === 'pm' && hour < 12) hour += 12;
+		if (meridiem === 'am' && hour === 12) hour = 0;
+		if (hour > 23 || minute > 59) return undefined;
+		const today = wallDateInZone(nowMs, timeZone);
+		if (!today) return undefined;
+		for (let addDays = 0; addDays <= 1; addDays++) {
+			const candidate = wallClockToMs(today.y, today.mo, today.d + addDays, hour, minute, timeZone);
+			if (candidate !== undefined && candidate > nowMs) return candidate;
+		}
+		return undefined;
+	}
+
+	const dateText = trimmed.replace(MONTH_DAY_ORDINAL, '$1');
+	if (/[a-z]{3,}|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}/i.test(dateText)) {
+		if (timeZone) {
+			const asUtc = Date.parse(`${dateText} UTC`);
+			if (Number.isFinite(asUtc)) {
+				const offset = zoneOffsetMs(timeZone, asUtc);
+				const ms = offset !== undefined ? asUtc - offset : undefined;
+				if (ms !== undefined && ms > nowMs) return ms;
+			}
+		}
+		const dateMs = Date.parse(dateText);
+		if (Number.isFinite(dateMs) && dateMs > nowMs) return dateMs;
+	}
+
 	const relMatch = /(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\b/i.exec(trimmed);
 	if (relMatch?.[1] && relMatch[2]) {
 		const amount = Number.parseInt(relMatch[1], 10);
@@ -148,9 +235,22 @@ export class AllVisionProvidersUnavailableError extends RecapVisionError {
 	}
 }
 
-const QUOTA_PATTERNS = [
+/**
+ * Ambiguous exhaustion signals: Google-style RESOURCE_EXHAUSTED and the router's own
+ * cooldown marker. With a 429 or `retryable: true` and no explicit credit/plan-limit text,
+ * these are short-lived rate limits, not an exhausted quota.
+ */
+const SOFT_QUOTA_PATTERNS = [
 	/quota_cooldown/i,
 	/RESOURCE_EXHAUSTED/i,
+];
+
+const RETRYABLE_SIGNAL_PATTERNS = [
+	/["']?retryable["']?\s*[:=]\s*true/i,
+	/\b429\b/,
+];
+
+const QUOTA_PATTERNS = [
 	/insufficient[_ ]?credits?/i,
 	/cr[ée]ditos?\s+insuficientes?/i,
 	/saldo\s+insuficiente/i,
@@ -177,7 +277,8 @@ const MODEL_INCOMPATIBLE_PATTERNS = [
 	/cannot process image/i,
 	/model .* does not support/i,
 	/model .* not (?:found|supported|available)/i,
-	/invalid[_ ]?model/i,
+	// Must not match the INVALID_MODEL_RESPONSE code (a parse failure, not a capability gap).
+	/invalid[_ ]?model(?![_ ]?response)/i,
 	/unknown model/i,
 	/not_found_error.*model/i,
 	/image does not match the provided media type/i,
@@ -238,6 +339,14 @@ const UNAVAILABLE_PATTERNS = [
 	/capability .* unavailable/i,
 ];
 
+/** Unambiguous "the model answered, but not as valid JSON" signals. */
+const STRONG_PARSE_PATTERNS = [
+	/failed to parse json/i,
+	/invalid_model_response/i,
+	/n[ãa]o retornou json estruturado/i,
+	/json parse error/i,
+];
+
 const PARSE_PATTERNS = [
 	/failed to parse json/i,
 	/unexpected token .* json/i,
@@ -248,6 +357,19 @@ const PARSE_PATTERNS = [
 	/unrecognized_keys/i,
 	/invalid_enum_value/i,
 ];
+
+/**
+ * Reads a leading "[CODE] (provider)" tag that RecapVisionError.message carries after it
+ * has been stringified (e.g. by the vision router). Generic codes are ignored so the
+ * free text can still refine them.
+ */
+function leadingErrorCode(raw: string): VisionErrorCode | undefined {
+	const m = /^\s*\[([A-Z_]+)\]\s*\([^)]*\)/.exec(raw);
+	const code = m?.[1];
+	if (!code || !(VISION_ERROR_CODES as readonly string[]).includes(code)) return undefined;
+	if (code === 'UNKNOWN_PROVIDER_ERROR' || code === 'PROVIDER_UNAVAILABLE') return undefined;
+	return code as VisionErrorCode;
+}
 
 /**
  * Classifies a raw error or provider output string into a structured RecapVisionError.
@@ -267,7 +389,34 @@ export function classifyVisionError(
 	const resetAtText = extractResetInfo(rawMessage);
 	const exitCode = extractExitCode(rawMessage);
 
-	if (QUOTA_PATTERNS.some((re) => re.test(rawMessage))) {
+	const taggedCode = leadingErrorCode(rawMessage);
+	if (taggedCode) {
+		// Already classified upstream ("[CODE] (provider) detail"): keep it instead of
+		// re-guessing from the free text, which may include a model output preview.
+		return new RecapVisionError({
+			code: taggedCode,
+			providerId,
+			message: sanitized,
+			...(resetAtText && (taggedCode === 'QUOTA_EXCEEDED' || taggedCode === 'RATE_LIMITED') ? { resetAtText } : {}),
+			...(exitCode !== undefined ? { exitCode } : {}),
+			cause: rawInput,
+		});
+	}
+
+	const hardQuota = QUOTA_PATTERNS.some((re) => re.test(rawMessage));
+	const softQuota = SOFT_QUOTA_PATTERNS.some((re) => re.test(rawMessage));
+	if (!hardQuota && softQuota && RETRYABLE_SIGNAL_PATTERNS.some((re) => re.test(rawMessage))) {
+		return new RecapVisionError({
+			code: 'RATE_LIMITED',
+			providerId,
+			message: sanitized,
+			retryable: true,
+			...(resetAtText ? { resetAtText } : {}),
+			...(exitCode !== undefined ? { exitCode } : {}),
+			cause: rawInput,
+		});
+	}
+	if (hardQuota || softQuota) {
 		return new RecapVisionError({
 			code: 'QUOTA_EXCEEDED',
 			providerId,
@@ -292,6 +441,16 @@ export function classifyVisionError(
 	if (AUTH_PATTERNS.some((re) => re.test(rawMessage))) {
 		return new RecapVisionError({
 			code: 'AUTHENTICATION_FAILED',
+			providerId,
+			message: sanitized,
+			retryable: false,
+			...(exitCode !== undefined ? { exitCode } : {}),
+			cause: rawInput,
+		});
+	}
+	if (STRONG_PARSE_PATTERNS.some((re) => re.test(rawMessage))) {
+		return new RecapVisionError({
+			code: 'INVALID_MODEL_RESPONSE',
 			providerId,
 			message: sanitized,
 			retryable: false,
@@ -372,6 +531,7 @@ export function detectProviderErrorInText(rawText: string, providerId: string): 
 	}
 	if (
 		QUOTA_PATTERNS.some((re) => re.test(trimmed)) ||
+		SOFT_QUOTA_PATTERNS.some((re) => re.test(trimmed)) ||
 		RATE_LIMIT_PATTERNS.some((re) => re.test(trimmed)) ||
 		AUTH_PATTERNS.some((re) => re.test(trimmed)) ||
 		MODEL_INCOMPATIBLE_PATTERNS.some((re) => re.test(trimmed))

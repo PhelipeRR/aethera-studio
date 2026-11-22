@@ -184,8 +184,7 @@ export function createAgentAdapterVisionProvider(input: {
       const detail = parts.length > 0 ? parts.join(' — ') : 'agent visual adapter returned no structured result';
       throw new Error(`${input.id} visual run failed: ${detail}`);
     }
-    const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(answer)?.[1]?.trim() ?? answer.trim();
-    return schema.parse(JSON.parse(fenced));
+    return schema.parse(parseModelJson(answer));
   };
   const analyze = async (frames: readonly { path: string; atMs?: number }[], context: string | undefined, signal?: AbortSignal) => {
     const timeline = frames.map((frame, index) => `image ${index + 1} = ${frame.atMs ?? 'unknown'} ms`).join('; ');
@@ -295,18 +294,34 @@ function resolveAuthorizedFramePaths(rootDir: string, frames: readonly { path: s
   });
 }
 
-function extractStructuredJson(rawOutput: string): unknown {
+/**
+ * Strips markdown code fences around model JSON, including an unclosed opening fence
+ * (truncated or streamed answers), so "```json {...}" never reaches JSON.parse.
+ */
+export function stripMarkdownJsonFences(rawOutput: string): string {
   const trimmed = rawOutput.trim();
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
-  const candidate = fenced?.[1]?.trim() ?? trimmed;
+  const closed = /```[a-z0-9_-]*\s*([\s\S]*?)```/i.exec(trimmed);
+  if (closed?.[1] !== undefined) return closed[1].trim();
+  return trimmed.replace(/^```[a-z0-9_-]*\s*/i, '').replace(/```\s*$/, '').trim();
+}
+
+/** Parses model JSON tolerating markdown fences and prose around a single object. */
+export function parseModelJson(rawOutput: string): unknown {
+  const candidate = stripMarkdownJsonFences(rawOutput);
   try {
     return JSON.parse(candidate);
-  } catch {
+  } catch (error) {
     const objMatch = /\{[\s\S]*\}/.exec(candidate);
-    if (!objMatch) {
-      throw new Error('Antigravity CLI não retornou JSON estruturado válido.');
-    }
+    if (!objMatch) throw error;
     return JSON.parse(objMatch[0]);
+  }
+}
+
+function extractStructuredJson(rawOutput: string): unknown {
+  try {
+    return parseModelJson(rawOutput);
+  } catch {
+    throw new Error('Antigravity CLI não retornou JSON estruturado válido.');
   }
 }
 
