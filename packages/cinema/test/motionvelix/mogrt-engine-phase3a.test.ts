@@ -103,7 +103,7 @@ test('Phase 3A: synthetic project decodes timing, nesting, masks, controls and u
 				['Logo Placeholder', 'media'],
 			],
 		);
-		assert.deepEqual(graph.unsupportedEffects.map((effect) => effect.matchName), ['ADBE Turbulent Displace']);
+		assert.deepEqual(graph.unsupportedEffects.map((effect) => effect.matchName), ['ADBE Wave Warp']);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

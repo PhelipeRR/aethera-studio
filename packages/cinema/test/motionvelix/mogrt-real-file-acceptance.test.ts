@@ -266,6 +266,25 @@ describe('real .mogrt acceptance', { skip }, () => {
 		});
 	}
 
+	test('model 01: the fractal matte reveals the logo gradually', () => {
+		const logoPath = writeLogo(tempDir(), 'cyan.svg', '#00ffff');
+		const shown = (tSec: number): number => {
+			const { frame } = render(tSec, { logoPath, controls: { 'Transition Color 01': '#000000', 'Transition Color 02': '#000000' } });
+			let lit = 0;
+			for (let y = 165; y < 285; y++) {
+				for (let x = 340; x < 460; x++) {
+					const [r, g, b] = overBlack(frame.data, (y * WIDTH + x) * 4);
+					if (Math.max(r, g, b) > 120) lit++;
+				}
+			}
+			return lit / (120 * 120);
+		};
+		const early = shown(0.4);
+		const late = shown(1.5);
+		assert.ok(early < 0.5, `the logo is not hidden at first: ${early}`);
+		assert.ok(late > 0.9, `the logo is not revealed: ${late}`);
+	});
+
 	test('model 01: edited text changes the rendered tagline', () => {
 		const narrow = render(4.5, { textOverride: 'IIII' }).frame;
 		const wide = render(4.5, { textOverride: 'WWWWWWWW' }).frame;

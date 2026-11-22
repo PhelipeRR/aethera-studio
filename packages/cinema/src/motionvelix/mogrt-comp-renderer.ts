@@ -33,6 +33,14 @@ import {
 	type RadialZoomType,
 } from './mogrt-effects-color.js';
 import {
+	applyEffectDisplacementMap,
+	applyEffectFractalNoise,
+	applyEffectTurbulentDisplace,
+	turbulentDisplaceReach,
+	type DisplacementChannel,
+	type TurbulentDisplaceKind,
+} from './mogrt-effects-distort.js';
+import {
 	applyEffectBoxBlur,
 	applyEffectDropShadow,
 	applyEffectFill,
@@ -162,6 +170,28 @@ const TIME_EPSILON_SEC = 1e-6;
 const MAX_DEPTH = 32;
 const MAX_EFFECT_PADDING_PX = 160;
 const LIT_PIXEL_SUM = 24;
+/** Popup codes, which count the menus' separators. The "Smoother" variants share their base kind. */
+const DISPLACE_KINDS: Record<number, TurbulentDisplaceKind> = {
+	1: 'turbulent',
+	2: 'bulge',
+	3: 'twist',
+	5: 'turbulent',
+	6: 'bulge',
+	7: 'twist',
+	9: 'vertical',
+	10: 'horizontal',
+	11: 'turbulent', // Cross is both axes at once.
+};
+const DISPLACEMENT_CHANNELS: Record<number, DisplacementChannel> = {
+	1: 'red',
+	2: 'green',
+	3: 'blue',
+	4: 'alpha',
+	5: 'luma',
+	9: 'full',
+	10: 'half',
+	11: 'off',
+};
 const CONTROL_EFFECT = /^ADBE (Checkbox|Color|Point|Slider|Angle|Layer) Control$/;
 
 function multiply(m: Affine, n: Affine): Affine {
@@ -192,13 +222,13 @@ function transformPoint([a, b, c, d, e, f]: Affine, x: number, y: number): Vec2 
 	return { x: a * x + c * y + e, y: b * x + d * y + f };
 }
 
-/** Stored units to the units expressions and controls show. */
 function invert([a, b, c, d, e, f]: Affine): Affine | undefined {
 	const det = a * d - b * c;
 	if (Math.abs(det) < 1e-12) return undefined;
 	return [d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det];
 }
 
+/** Stored units to the units expressions and controls show. */
 function toUserUnits(prop: AepAnimatedProperty, value: number[]): number[] {
 	if (prop.unit === 'fraction_percent') return value.map((v) => v * 100);
 	if (prop.unit !== 'color_argb255') return value;
@@ -984,6 +1014,8 @@ class CompositionRenderer {
 		if (!layer.effectsActive) return 0;
 		const space = { comp, layer, tSec, scale };
 		let spread = 0;
+		// Distortions in series add up.
+		let moved = 0;
 		for (const effect of layer.effects) {
 			if (!effect.enabled) continue;
 			const read = (id: string): number => this.param(space, effect, id)[0]!;
@@ -991,8 +1023,13 @@ class CompositionRenderer {
 			else if (effect.matchName === 'ADBE Glo2') spread = Math.max(spread, read('0003') * 2);
 			else if (effect.matchName === 'ADBE Box Blur2') spread = Math.max(spread, read('0001') * read('0002'));
 			else if (effect.matchName === 'ADBE Simple Choker') spread = Math.max(spread, -read('0002'));
+			else if (effect.matchName === 'ADBE Turbulent Displace') {
+				if (layer.collapseTransform) moved += turbulentDisplaceReach(read('0002'), read('0003'));
+			} else if (effect.matchName === 'ADBE Displacement Map') {
+				if (layer.collapseTransform || read('0008') > 0) moved += Math.max(Math.abs(read('0003')), Math.abs(read('0005')));
+			}
 		}
-		return Math.min(MAX_EFFECT_PADDING_PX, Math.ceil(spread * scale));
+		return Math.min(MAX_EFFECT_PADDING_PX, Math.ceil((spread + moved) * scale));
 	}
 
 	/** Returns false when the layer has to be omitted rather than shown without its defining effect. */
@@ -1006,6 +1043,10 @@ class CompositionRenderer {
 			const rgb = (id: string): [number, number, number] => {
 				const [, r = 0, g = 0, b = 0] = this.param(space, effect, id);
 				return [r, g, b];
+			};
+			const point = (id: string): Vec2 => {
+				const [x = 0, y = 0] = this.param(space, effect, id);
+				return { x: x * scale + padding, y: y * scale + padding };
 			};
 
 			switch (effect.matchName) {
@@ -1108,10 +1149,6 @@ class CompositionRenderer {
 					break;
 				}
 				case 'ADBE Ramp': {
-					const point = (id: string): Vec2 => {
-						const [x = 0, y = 0] = this.param(space, effect, id);
-						return { x: x * scale + padding, y: y * scale + padding };
-					};
 					const blendWithOriginal = read('0007');
 					if (blendWithOriginal < 1 && read('0006') > 0) this.effectGap(space, effect, 'Dispersão do Ramp ignorada.');
 					applyEffectRamp(buffer, {
@@ -1147,14 +1184,79 @@ class CompositionRenderer {
 						continue;
 					}
 					this.approximations.add('CC Radial Blur: zoom por amostragem própria, com queda exponencial no rastro.');
-					const [x = 0, y = 0] = this.param(space, effect, '0004');
 					applyEffectRadialZoom(buffer, {
-						centre: { x: x * scale + padding, y: y * scale + padding },
+						centre: point('0004'),
 						amount: read('0002'),
 						type,
 					});
 					break;
 				}
+				case 'ADBE Fractal Noise': {
+					if (read('0001') !== 19) {
+						this.effectGap(space, effect, 'Tipo de fractal não implementado (só Strings); efeito ignorado.');
+						continue;
+					}
+					if (read('0030') !== 2) {
+						this.effectGap(space, effect, 'Mesclagem do Fractal Noise não implementada; efeito ignorado.');
+						continue;
+					}
+					if (read('0019') !== 0 || read('0021') > 0 || read('0025') > 0 || read('0031') > 0) {
+						this.effectGap(space, effect, 'Subrotação, subescala centrada, ciclo ou perspectiva do Fractal Noise ignorados.');
+					}
+					this.approximations.add(
+						'Fractal Noise (Strings): ruído próprio com a escala, o contraste e o tempo do projeto; o desenho dos fios difere do After Effects.',
+					);
+					const uniform = read('0009') > 0;
+					applyEffectFractalNoise(buffer, {
+						fractal: 'strings',
+						invert: read('0003') > 0,
+						contrast: read('0004'),
+						brightness: read('0005'),
+						// A cell is 100 layer pixels at 100% scale.
+						cellWidth: read(uniform ? '0010' : '0011') * scale,
+						cellHeight: read(uniform ? '0010' : '0012') * scale,
+						rotationDeg: read('0008'),
+						offset: point('0013'),
+						complexity: read('0015'),
+						subInfluence: read('0017') / 100,
+						subScaling: read('0018') / 100,
+						evolutionDeg: read('0023'),
+						seed: read('0027'),
+						opacity: read('0029') / 100,
+					});
+					break;
+				}
+				case 'ADBE Turbulent Displace': {
+					const kind = DISPLACE_KINDS[read('0001')];
+					if (!kind) {
+						this.effectGap(space, effect, 'Tipo de Turbulent Displace não suportado; efeito ignorado.');
+						continue;
+					}
+					const pinning = read('0012');
+					const pinAll = pinning === 3 || pinning === 11;
+					if (pinning !== 1 && !pinAll) this.effectGap(space, effect, 'Fixação por lado do Turbulent Displace ignorada.');
+					if (read('0008') > 0) this.effectGap(space, effect, 'Ciclo de evolução do Turbulent Displace ignorado.');
+					this.approximations.add(
+						'Turbulent Displace: ruído próprio com amplitude, tamanho e tempo do projeto; o desenho da distorção difere do After Effects.',
+					);
+					applyEffectTurbulentDisplace(buffer, {
+						kind,
+						amount: read('0002'),
+						size: read('0003'),
+						complexity: read('0005'),
+						evolutionDeg: read('0006'),
+						seed: read('0010'),
+						offset: point('0004'),
+						scale,
+						padding,
+						// A collapsed pre-composition is pinned at the composition's bounds, away from its content.
+						pinned: pinAll && !(layer.sourceSize && layer.collapseTransform),
+					});
+					break;
+				}
+				case 'ADBE Displacement Map':
+					if (this.applyDisplacementMap(buffer, space, effect)) break;
+					continue;
 				default: {
 					// These generators replace the layer: without them its raw content would be wrong content.
 					const replacesLayer =
@@ -1189,16 +1291,7 @@ class CompositionRenderer {
 
 		// AE takes the matte from the source's content, stretched to this layer's bounds. A collapsed source, like
 		// vector layers, has comp-sized content with its transform already applied.
-		let content: RgbaBuffer | null;
-		if (source.sourceSize) {
-			const w = Math.max(1, Math.round(source.sourceSize.width * scale));
-			const h = Math.max(1, Math.round(source.sourceSize.height * scale));
-			content = this.isActive(source, tSec) ? this.sourceContent(comp, source, tSec, scale, w, h, depth + 1) : null;
-		} else {
-			content = createRgbaBuffer(Math.max(1, Math.round(comp.width * scale)), Math.max(1, Math.round(comp.height * scale)));
-			const matrix = multiply(scaling(scale, scale), this.worldMatrix(comp, source, tSec));
-			this.drawVectorContent(content, comp, source, matrix, tSec);
-		}
+		const content = this.inputContent(comp, source, tSec, scale, depth);
 		const matte = createRgbaBuffer(buffer.width, buffer.height);
 		if (content) {
 			let toLayer: Affine = [width / content.width, 0, 0, height / content.height, padding, padding];
@@ -1211,6 +1304,59 @@ class CompositionRenderer {
 			compositeLayerAffine(matte, content, toLayer);
 		}
 		applyEffectSetMatte(buffer, matte, channel, this.param(space, effect, '0003')[0]! > 0);
+		return true;
+	}
+
+	/** What an effect's layer parameter reads: the source, before that layer's own masks and effects. */
+	private inputContent(
+		comp: AepGraphComposition,
+		source: AepGraphLayer,
+		tSec: number,
+		scale: number,
+		depth: number,
+	): RgbaBuffer | null {
+		if (source.sourceSize) {
+			const width = Math.max(1, Math.round(source.sourceSize.width * scale));
+			const height = Math.max(1, Math.round(source.sourceSize.height * scale));
+			return this.isActive(source, tSec) ? this.sourceContent(comp, source, tSec, scale, width, height, depth + 1) : null;
+		}
+		const content = createRgbaBuffer(Math.max(1, Math.round(comp.width * scale)), Math.max(1, Math.round(comp.height * scale)));
+		const matrix = multiply(scaling(scale, scale), this.worldMatrix(comp, source, tSec));
+		this.drawVectorContent(content, comp, source, matrix, tSec);
+		return content;
+	}
+
+	private applyDisplacementMap(buffer: RgbaBuffer, space: EffectSpace, effect: AepEffectInstance): boolean {
+		const { comp, layer, tSec, scale, padding, width, height, depth } = space;
+		const read = (id: string): number => this.param(space, effect, id)[0]!;
+		const ref = effect.params.find((param) => param.matchName === 'ADBE Displacement Map-0001')?.layerRef;
+		const source = !ref || ref === layer.layerId ? layer : comp.layers.find((candidate) => candidate.layerId === ref);
+		const horizontal = DISPLACEMENT_CHANNELS[read('0002')];
+		const vertical = DISPLACEMENT_CHANNELS[read('0004')];
+		const behavior = read('0006');
+		if (!source || !horizontal || !vertical || behavior === 3) {
+			this.effectGap(space, effect, 'Camada, canal ou mapa repetido do Displacement Map não suportado; efeito ignorado.');
+			return false;
+		}
+		const content = this.inputContent(comp, source, tSec, scale, depth);
+		// Without a map at this instant there is nothing to displace by.
+		if (!content) return true;
+		this.approximations.add(
+			'Displacement Map: o mapa fica centralizado na camada; regra inferida para pré-composições recolhidas.',
+		);
+		const stretched = behavior === 2;
+		const mapWidth = stretched ? width : content.width;
+		const mapHeight = stretched ? height : content.height;
+		const x0 = padding + (width - mapWidth) / 2;
+		const y0 = padding + (height - mapHeight) / 2;
+		const map = createRgbaBuffer(buffer.width, buffer.height);
+		compositeLayerAffine(map, content, [mapWidth / content.width, 0, 0, mapHeight / content.height, x0, y0]);
+		applyEffectDisplacementMap(buffer, map, {
+			horizontal: { channel: horizontal, max: read('0003') * scale },
+			vertical: { channel: vertical, max: read('0005') * scale },
+			wrap: read('0007') > 0,
+			mapBounds: { x0, y0, x1: x0 + mapWidth, y1: y0 + mapHeight },
+		});
 		return true;
 	}
 }

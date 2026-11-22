@@ -254,6 +254,9 @@ export const PHASE3A_SUPPORTED_EFFECTS = new Set<string>([
 	'ADBE Ramp',
 	'ADBE Mosaic',
 	'CC Radial Blur',
+	'ADBE Fractal Noise',
+	'ADBE Turbulent Displace',
+	'ADBE Displacement Map',
 ]);
 
 const MAX_DIMENSION = 30000;

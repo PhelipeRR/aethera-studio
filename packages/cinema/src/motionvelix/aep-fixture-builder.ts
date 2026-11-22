@@ -197,7 +197,7 @@ function project(hideBurst: boolean): Buffer {
 			startSec: 0.5,
 			durationSec: 1.5,
 			hidden: hideBurst,
-			effects: [effect('ADBE Turbulent Displace', 'Turbulent Displace', [])],
+			effects: [effect('ADBE Wave Warp', 'Wave Warp', [])],
 		}),
 	]);
 
@@ -295,7 +295,7 @@ export function buildSyntheticMogrt(outputMogrtPath: string, options: { hideBurs
 				framerate: { ticksperframe: 254016000000 / fps },
 			},
 		},
-		usedEffects: ['ADBE Color Control', 'ADBE Fill', 'ADBE Turbulent Displace'],
+		usedEffects: ['ADBE Color Control', 'ADBE Fill', 'ADBE Wave Warp'],
 		clientControls: [],
 	};
 	const aegraphic = zip([{ name: 'synthetic.aep', data: project(options.hideBurst ?? false) }]);
