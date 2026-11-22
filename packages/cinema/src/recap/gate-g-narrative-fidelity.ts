@@ -9,6 +9,7 @@ import type {
 	HumanizeSceneDiff,
 } from './recap-types.js';
 import { isGenericNarration, isReviewRequiredPlaceholder, estimateNarrationDurationSec } from './script-generator.js';
+import { isLikelyOcrGarbage } from './dialogue-extractor.js';
 
 export interface GateGInput {
 	script: RecapScript;
@@ -174,11 +175,12 @@ export function runGateGNarrativeFidelity(input: GateGInput): GateGReport {
 			});
 		}
 
-		// Important extracted dialogues ignored in narration (ignore SFX, punctuation-only & non-verbal screams)
+		// Important extracted dialogues ignored in narration (ignore SFX, OCR garbage, punctuation-only & non-verbal screams)
 		const essentialDialogues = (scene.extractedDialogues ?? []).filter((d) => {
 			const kind = d.kind ?? (d.isNarration ? 'narration' : 'dialogue');
 			if (kind === 'sfx') return false;
 			const clean = (d.translatedText ?? d.text).trim();
+			if (isLikelyOcrGarbage(clean, d.uncertainty)) return false;
 			const alpha = clean.replace(/[^A-Za-zÀ-ú0-9]/g, '');
 			if (alpha.length < 6 || clean.length < 8) return false;
 			const words = clean.split(/\s+/).filter(Boolean);

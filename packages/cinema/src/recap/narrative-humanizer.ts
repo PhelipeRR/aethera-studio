@@ -229,35 +229,38 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 
 	// Clone scenes to avoid mutating the original
 	const humanizedScenes: Scene[] = script.scenes.map((scene) => ({ ...scene }));
+	const indexedDiffs: Array<HumanizeSceneDiff | undefined> = new Array(humanizedScenes.length);
+	const indexedWarnings: string[][] = Array.from({ length: humanizedScenes.length }, () => []);
 
-	for (let i = 0; i < humanizedScenes.length; i++) {
+	const isNaturalStyle = options.style === 'natural_recap';
+	const systemPrompt = HUMANIZE_SYSTEM_PROMPT
+		.replace('{style}', options.style)
+		.replace('{styleDescription}', getStyleDescription(options.style));
+
+	const processSceneAt = async (i: number): Promise<void> => {
 		const scene = humanizedScenes[i]!;
 		const originalText = scene.narrationText;
+		const sceneWarnings = indexedWarnings[i]!;
 
 		// Only humanize scenes that already have a valid factual narration
 		if (isReviewRequiredPlaceholder(originalText) || isGenericNarration(originalText)) {
-			warnings.push(`Scene ${scene.sceneId}: skipped humanization because scene lacks valid factual narration.`);
-			diffs.push({
+			sceneWarnings.push(`Scene ${scene.sceneId}: skipped humanization because scene lacks valid factual narration.`);
+			indexedDiffs[i] = {
 				sceneId: scene.sceneId,
 				originalText,
 				humanizedText: originalText,
 				reverted: true,
 				revertReason: 'no_valid_factual_narration',
-			});
-			continue;
+			};
+			return;
 		}
 
 		if (options.signal?.aborted) {
-			warnings.push(`Humanize aborted at scene ${i + 1}/${humanizedScenes.length}.`);
-			break;
+			sceneWarnings.push(`Humanize aborted at scene ${i + 1}/${humanizedScenes.length}.`);
+			return;
 		}
 
 		try {
-			const isNaturalStyle = options.style === 'natural_recap';
-			const systemPrompt = HUMANIZE_SYSTEM_PROMPT
-				.replace('{style}', options.style)
-				.replace('{styleDescription}', getStyleDescription(options.style));
-
 			const enhanceInput: TextEnhancementRequest = {
 				text: originalText,
 				context: {
@@ -281,11 +284,11 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 			const result = await options.port.enhance(enhanceInput);
 
 			if (!result.ok) {
-				warnings.push(`Scene ${scene.sceneId}: enhancement failed — ${result.error ?? 'unknown error'}. Keeping original.`);
+				sceneWarnings.push(`Scene ${scene.sceneId}: enhancement failed — ${result.error ?? 'unknown error'}. Keeping original.`);
 				const failDiff: HumanizeSceneDiff = { sceneId: scene.sceneId, originalText, humanizedText: originalText, reverted: true };
 				if (result.error) failDiff.revertReason = result.error;
-				diffs.push(failDiff);
-				continue;
+				indexedDiffs[i] = failDiff;
+				return;
 			}
 
 			agentId = result.agentId;
@@ -304,19 +307,19 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 			// Check structural integrity BEFORE duration to catch invented content first
 			const structuralCheck = checkStructuralIntegrity(scene, humanizedText, isNaturalStyle);
 			if (!structuralCheck.ok) {
-				warnings.push(`Scene ${scene.sceneId}: structural integrity violation — ${structuralCheck.reason}. Reverting.`);
+				sceneWarnings.push(`Scene ${scene.sceneId}: structural integrity violation — ${structuralCheck.reason}. Reverting.`);
 				const structDiff: HumanizeSceneDiff = { sceneId: scene.sceneId, originalText, humanizedText: originalText, reverted: true };
 				if (structuralCheck.reason) structDiff.revertReason = structuralCheck.reason;
-				diffs.push(structDiff);
-				continue;
+				indexedDiffs[i] = structDiff;
+				return;
 			}
 
 			// Validate duration (natural_recap allows concise shortening without artificial inflation)
-			if (!isDurationWithinBudget(scene.estimatedDurationSec, humanizedText, maxDeviation, isNaturalStyle)) {
-				warnings.push(`Scene ${scene.sceneId}: humanized text exceeds duration budget (±${Math.round(maxDeviation * 100)}%). Reverting.`);
-				const durationDiff: HumanizeSceneDiff = { sceneId: scene.sceneId, originalText, humanizedText: originalText, reverted: true, revertReason: 'duration_budget_exceeded' };
-				diffs.push(durationDiff);
-				continue;
+			const effectiveMaxDev = isNaturalStyle ? Math.max(maxDeviation, 0.35) : maxDeviation;
+			if (!isDurationWithinBudget(scene.estimatedDurationSec, humanizedText, effectiveMaxDev, isNaturalStyle)) {
+				sceneWarnings.push(`Scene ${scene.sceneId}: humanized text exceeds duration budget (±${Math.round(effectiveMaxDev * 100)}%). Reverting.`);
+				indexedDiffs[i] = { sceneId: scene.sceneId, originalText, humanizedText: originalText, reverted: true, revertReason: 'duration_budget_exceeded' };
+				return;
 			}
 
 			// Apply humanized text and update estimated duration
@@ -328,12 +331,29 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 				durationSource: 'estimated',
 			};
 			anySucceeded = true;
-			diffs.push({ sceneId: scene.sceneId, originalText, humanizedText, reverted: false });
+			indexedDiffs[i] = { sceneId: scene.sceneId, originalText, humanizedText, reverted: false };
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			warnings.push(`Scene ${scene.sceneId}: unexpected error during humanization — ${msg}. Keeping original.`);
-			diffs.push({ sceneId: scene.sceneId, originalText, humanizedText: originalText, reverted: true, revertReason: msg });
+			sceneWarnings.push(`Scene ${scene.sceneId}: unexpected error during humanization — ${msg}. Keeping original.`);
+			indexedDiffs[i] = { sceneId: scene.sceneId, originalText, humanizedText: originalText, reverted: true, revertReason: msg };
 		}
+	};
+
+	// Bounded concurrency pool (4 scenes at a time) so 33-scene scripts finish in ~30-40s
+	const CONCURRENCY = 4;
+	let nextIdx = 0;
+	const workers = Array.from({ length: Math.min(CONCURRENCY, humanizedScenes.length) }, async () => {
+		while (nextIdx < humanizedScenes.length) {
+			if (options.signal?.aborted) break;
+			const current = nextIdx++;
+			await processSceneAt(current);
+		}
+	});
+	await Promise.all(workers);
+
+	for (let i = 0; i < humanizedScenes.length; i++) {
+		if (indexedWarnings[i]!.length > 0) warnings.push(...indexedWarnings[i]!);
+		if (indexedDiffs[i]) diffs.push(indexedDiffs[i]!);
 	}
 
 	// Build the humanized script

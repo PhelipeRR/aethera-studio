@@ -5399,44 +5399,121 @@ productionConsole,
     });
   };
 
-  const buildRecapHumanizePort = () => {
-    const candidateAgents = ['claude-gateway', 'claude', 'antigravity', 'codex'] as const;
-    const ports = candidateAgents.flatMap((agentId) => {
+  const buildRecapHumanizePort = (): import('@neuralbridge/cinema').TextEnhancementPort | undefined => {
+    const gwCfg = (() => {
       try {
-        return [{
-          agentId,
-          port: createTaskEngineTextEnhancementAdapter({
-            taskEngine: engine,
-            agent: agentId,
-            model: '',
-            projectId: null,
-          }),
-        }];
+        return claudeGatewaySecretStore.load();
       } catch {
-        return [];
+        return null;
       }
-    });
-    if (ports.length === 0) return undefined;
+    })();
+
+    const cliCandidates: Array<{
+      agentId: string;
+      model: string | null;
+      adapter: typeof gatewayClaude | typeof codex;
+    }> = [];
+
+    if (gwCfg?.enabled && gwCfg.authToken && gwCfg.baseUrl) {
+      cliCandidates.push({
+        agentId: 'claude-gateway',
+        model: gwCfg.model || null,
+        adapter: gatewayClaude,
+      });
+    }
+    cliCandidates.push({ agentId: 'claude', model: null, adapter: nativeClaude });
+    cliCandidates.push({ agentId: 'codex', model: null, adapter: codex });
+
+    const taskEngineFallback = (() => {
+      try {
+        return createTaskEngineTextEnhancementAdapter({
+          taskEngine: engine,
+          agentPriority: ['claude', 'codex'],
+          projectId: null,
+        });
+      } catch {
+        return undefined;
+      }
+    })();
+
     let preferredIndex = 0;
+
     return {
-      async enhance(request: Parameters<typeof ports[0]['port']['enhance']>[0]) {
+      name: `direct-cli-humanizer[${cliCandidates.map((c) => c.agentId).join(',')}]`,
+      async enhance(request) {
         const ordered = [
-          ...ports.slice(preferredIndex),
-          ...ports.slice(0, preferredIndex),
+          ...cliCandidates.slice(preferredIndex),
+          ...cliCandidates.slice(0, preferredIndex),
         ];
-        let lastError: unknown;
+        const errors: string[] = [];
+
+        const userPrompt = [
+          'Reescreva a narração da cena abaixo seguindo estritamente as regras do sistema.',
+          'Responda APENAS com JSON válido no formato {"humanizedText": "..."} sem markdown ou explicações.',
+          '',
+          `Texto atual da cena:\n${request.text}`,
+        ].join('\n');
+
         for (const candidate of ordered) {
           try {
-            const res = await candidate.port.enhance(request);
-            if (res?.text?.trim()) {
-              preferredIndex = ports.findIndex((p) => p.agentId === candidate.agentId);
-              return res;
+            let resultText = '';
+            let errorText = '';
+            let runFailed = false;
+            for await (const ev of candidate.adapter.run(
+              {
+                prompt: userPrompt,
+                cwd: recapWorkspace,
+                mode: 'read-only',
+                timeoutMs: 45_000,
+                lean: { systemPrompt: request.systemPrompt },
+                ...(candidate.model ? { model: candidate.model } : {}),
+              },
+              request.signal,
+            )) {
+              if (ev.kind === 'result' && ev.text) {
+                resultText = ev.text;
+                if (ev.ok === false) runFailed = true;
+              } else if (ev.kind === 'text' && ev.text) {
+                resultText += ev.text;
+              } else if (ev.kind === 'error' && ev.message) {
+                errorText = errorText ? `${errorText} | ${ev.message}` : ev.message;
+              }
             }
+            const trimmed = resultText.trim();
+            if (!runFailed && trimmed.length > 0) {
+              // Unwrap markdown code fences if the model wrapped the JSON
+              const unwrapped = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+              const jsonMatch = unwrapped.match(/\{[\s\S]*"humanizedText"[\s\S]*\}/);
+              const finalPayload = jsonMatch ? jsonMatch[0] : unwrapped;
+              preferredIndex = cliCandidates.findIndex((c) => c.agentId === candidate.agentId);
+              return {
+                text: finalPayload,
+                agentId: candidate.agentId,
+                model: candidate.model,
+                ok: true,
+              };
+            }
+            errors.push(`${candidate.agentId}: ${errorText || 'resposta vazia'}`);
           } catch (err) {
-            lastError = err;
+            errors.push(`${candidate.agentId}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
-        throw lastError instanceof Error ? lastError : new Error('Nenhum agente de texto disponível para reescrever a narração.');
+
+        if (taskEngineFallback) {
+          const fallbackRes = await taskEngineFallback.enhance(request);
+          if (fallbackRes.ok && fallbackRes.text.trim()) {
+            return fallbackRes;
+          }
+          if (fallbackRes.error) errors.push(`taskEngine: ${fallbackRes.error}`);
+        }
+
+        return {
+          text: '',
+          agentId: 'none',
+          model: null,
+          ok: false,
+          error: errors.join('; ') || 'Nenhum agente de texto disponível para humanizar a narração.',
+        };
       },
     };
   };
@@ -6000,7 +6077,12 @@ productionConsole,
           gateGReport: storyRes.gateGReport,
         });
         const humanizedCount = storyRes.humanizeResult?.diffs.filter((d) => !d.reverted && d.humanizedText !== d.originalText).length ?? 0;
-        const humanizeSummary = humanizedCount > 0 ? ` · ${humanizedCount} cenas reescritas por IA` : '';
+        const humanizerAgent = storyRes.humanizeResult?.agentId && storyRes.humanizeResult.agentId !== 'none'
+          ? storyRes.humanizeResult.agentId
+          : null;
+        const humanizeSummary = humanizedCount > 0
+          ? ` · ${humanizedCount}/${storyRes.script.scenes.length} cenas humanizadas${humanizerAgent ? ` (${humanizerAgent})` : ''}`
+          : ` · humanização IA indisponível${storyRes.humanizeResult?.warnings?.[0] ? ` (${storyRes.humanizeResult.warnings[0].slice(0, 80)})` : ''}`;
         return {
           ok: storyRes.gateGReport.verdict !== 'fail',
           script: storyRes.script,

@@ -92,9 +92,20 @@ export function isLikelyOcrGarbage(text: string, uncertainty?: string): boolean 
 	// Multiple stray symbol-only tokens (e.g. "o. pia ; + : ae pe nia", "1 - y g")
 	if (symbolOnlyTokens.length >= 2) return true;
 	if (/[+|=^_\\<>]/.test(trimmed) && realWords.length < 2) return true;
+	// Leading/unmatched OCR punctuation noise like "; NX STAN)"
+	if (/^[;:,)\]}|]/.test(trimmed)) return true;
 
-	// Mostly 1-2 character fragments (e.g. "a k ie pe", "1 - y g")
+	// Mostly 1-2 character fragments (e.g. "a k ie pe", "1 - y g", "Vea j")
 	if (tokens.length >= 3 && tinyFragments.length / tokens.length >= 0.6 && realWords.length <= 1) {
+		return true;
+	}
+	if (tokens.length === 2 && realWords.length <= 1) {
+		const hasSingleLetterTail = tokens.some((t) => /^[A-Za-z0-9]$/.test(t));
+		if (hasSingleLetterTail) return true;
+	}
+	// Fragmented ALL-CAPS OCR mixing lone letters/digits (e.g. "WERE ALL OF 3", "E THOSE RANDOM")
+	const hasLoneNonWordToken = tokens.some((t) => /^[BCDFGHJKLMNPQRSTVWXYZ0-9]$/.test(t));
+	if (hasLoneNonWordToken && trimmed === trimmed.toUpperCase() && tokens.length <= 5) {
 		return true;
 	}
 	if (tokens.length >= 2 && realWords.length === 0) {

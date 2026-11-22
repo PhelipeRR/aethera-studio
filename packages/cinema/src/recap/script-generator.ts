@@ -84,12 +84,14 @@ function ensureSentenceEnding(text: string): string {
 
 const VISUAL_ANALYSIS_NOISE_PATTERNS: readonly RegExp[] = [
 	/\b(em\s+)?plano\s+(geral|m[ée]dio|fechado|superfechado|detalhe)(\s+vertical|\s+frontal|\s+visto\s+de\s+cima)?(\s*\([^)]+\))?(\s+de\s+ambienta[çc][ãa]o\s+noturna)?(\s+mostrando)?[,:]?\s*/gi,
-	/\b(?:em\s+um\s+|um\s+|o\s+)?painel(\s+vertical|\s+horizontal|\s+longo|\s+estreito|\s+de\s+p[áa]gina\s+inteira|\s+de\s+sequ[êe]ncia\s+de\s+movimento)*\s+(retratando|mostrando|exibindo|apresentando|capturando|destacando)\s+/gi,
+	/\b(?:em\s+um\s+|um\s+|o\s+)?painel(\s+vertical|\s+horizontal|\s+longo|\s+estreito|\s+de\s+p[áa]gina\s+inteira|\s+de\s+sequ[êe]ncia\s+de\s+movimento)*\s+(retratando|mostrando|exibindo|apresentando|capturando|destacando|estabelecendo|revelando|acompanhando|ilustrando|registrando)\s+/gi,
+	/\b(?:um\s+|o\s+)?quadro(?:\s+de\s+(?:manhwa|mang[áa]|webtoon|a[çc][ãa]o|luta))?(?:\s+de\s+[a-zÀ-ú]+)?(?:\s+em\s+estilo\s+[a-zÀ-ú\s]+)?\s+(?:mostrando|retratando|exibindo|apresentando|estabelecendo|revelando)\s+/gi,
 	/\bem\s+um\s+painel(\s+vertical|\s+horizontal)?(\s+longo)?(\s+de\s+sequ[êe]ncia\s+de\s+movimento)?[,:]?\s*/gi,
 	/\b(o\s+painel\s+apresenta|a\s+imagem\s+(mostra|sugere|exibe|retrata)|a\s+cena\s+(mostra|retrata|exibe|apresenta)|[ée]\s+poss[íi]vel\s+observar|nota-se\s+que)\b[,:]?\s*/gi,
 	/\bem\s+estilo\s+de\s+pintura\s+digital\b/gi,
 	/n[ãa]o\s+h[áa]\s+personagens(?:[,\s]+nem|\s*,\s*)?\s+bal[õo]es\s+de\s+texto[^.]*\.?/gi,
-	/galhos\s+e\s+folhagens\s+escuras\s+em\s+silhueta\s+emolduram\s+toda\s+a\s+cena[^.]*\.?/gi,
+	/nenhum\s+personagem,\s*objeto\s+ou\s+cen[áa]rio\s+aparece\s+vis[íi]vel\.?/gi,
+	/(?:galhos\s+e\s+)?folhagens\s+escuras(?:\s+e\s+densas)?(?:\s+em\s+silhueta)?\s+emolduram\s+(?:toda\s+a\s+cena|os\s+cantos\s+da\s+imagem)[^.]*\.?/gi,
 	/no\s+primeiro\s+plano\s+inferior[^.]*\.?/gi,
 	/a\s+express[ãa]o\s+de\s+[^.]+\s+refor[çc]a\s+o\s+clima\s+da\s+cena\.?/gi,
 	/\b(?:no|do|ao)\s+(?:canto|quadrante)\s+(superior|inferior)\s+(esquerdo|direito)[^.,;]*[.,;]?/gi,
