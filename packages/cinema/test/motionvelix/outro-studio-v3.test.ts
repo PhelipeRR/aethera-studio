@@ -44,10 +44,19 @@ async function makeTestLogoPng(label: string, colorHex: string, width = 360, hei
 }
 
 describe('MotionVelix Outro Studio 3.0 — Complete Suite (Phases 2–13)', () => {
-	it('registers all 4 real templates, migrates legacy v2 configs, and falls back safely on unknown templates', () => {
+	it('registers all real templates (Studio 3.0 + Flame Pack), migrates legacy v2 configs, and falls back safely on unknown templates', () => {
 		const templates = listOutroTemplates();
 		const ids = templates.map((t) => t.templateId);
-		expect(ids).toEqual(['fire_reveal', 'electric_reveal', 'particle_reveal', 'glitch_reveal']);
+		expect(ids).toEqual([
+			'fire_reveal',
+			'electric_reveal',
+			'particle_reveal',
+			'glitch_reveal',
+			'flame_wide',
+			'flame_banner',
+			'flame_squircle',
+			'flame_circle',
+		]);
 		for (const t of templates) {
 			expect(t.capabilities.supportsCustomLogo).toBe(true);
 			expect(t.supportedAspectRatios).toEqual(['16:9', '9:16']);

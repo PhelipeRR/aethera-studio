@@ -16,7 +16,11 @@ import { resolveMotionVelixKit } from '../recap/phase3/recap-motionvelix.js';
 import {
 	parseFirePaletteRgb,
 	renderFireRevealFrameRgba,
+	renderFlamePackFrameRgba,
+	type FlamePackVariant,
 } from './procedural-fire-shader.js';
+
+const FLAME_PACK_VARIANTS = new Set<string>(['flame_wide', 'flame_banner', 'flame_squircle', 'flame_circle']);
 import {
 	computeRenderCacheKey,
 	OUTRO_RENDERER_VERSION,
@@ -467,20 +471,26 @@ export async function renderOutroStudioV3Mp4(
 			await sharp(Buffer.from(fallbackSvg)).png().toFile(bgPng);
 		}
 
-		// Layer 2 & 3: Energy layer for non-fire templates (fire_reveal uses the real 2D FBM Fluid Fire Shader below)
-		if (config.templateId !== 'fire_reveal') {
+		// Layer 2 & 3: Energy layer for non-shader templates
+		const isFlamePack = FLAME_PACK_VARIANTS.has(config.templateId);
+		if (config.templateId !== 'fire_reveal' && !isFlamePack) {
 			await sharp(Buffer.from(buildTemplateEnergySvg(config, width, height)))
 				.resize(width, height)
 				.png()
 				.toFile(energyPng);
 		}
 
-		// Layer 4 & 5: User Logo placed inside safe zone preserving exact aspect ratio & alpha
+		// Layer 4 & 5: User Logo placed inside safe zone (or centered inside Flame Pack frame) preserving exact aspect ratio & alpha
 		const safe = getOutroSafeZone(config.aspectRatio, quality);
 		const isVertical = config.aspectRatio === '9:16';
 		if (effectiveLogoPath) {
-			const maxLogoW = Math.round(safe.contentWidth * (isVertical ? 0.56 : 0.34) * config.logoTransform.scale);
-			const maxLogoH = Math.round(safe.contentHeight * (isVertical ? 0.24 : 0.36) * config.logoTransform.scale);
+			const frameCy = isVertical ? 0.42 : 0.45;
+			const maxLogoW = isFlamePack
+				? Math.round(width * (config.templateId === 'flame_wide' || config.templateId === 'flame_banner' ? (isVertical ? 0.62 : 0.34) : (isVertical ? 0.38 : 0.16)) * config.logoTransform.scale)
+				: Math.round(safe.contentWidth * (isVertical ? 0.56 : 0.34) * config.logoTransform.scale);
+			const maxLogoH = isFlamePack
+				? Math.round(height * (config.templateId === 'flame_wide' || config.templateId === 'flame_banner' ? (isVertical ? 0.11 : 0.17) : (isVertical ? 0.18 : 0.24)) * config.logoTransform.scale)
+				: Math.round(safe.contentHeight * (isVertical ? 0.24 : 0.36) * config.logoTransform.scale);
 			const resizedLogo = await sharp(effectiveLogoPath)
 				.resize(Math.max(48, maxLogoW), Math.max(48, maxLogoH), {
 					fit: 'inside',
@@ -495,14 +505,18 @@ export async function renderOutroStudioV3Mp4(
 				0,
 				Math.min(
 					width - lw,
-					Math.round(safe.marginLeft + safe.contentWidth / 2 - lw / 2 + config.logoTransform.offsetX),
+					Math.round(width / 2 - lw / 2 + config.logoTransform.offsetX),
 				),
 			);
 			const top = Math.max(
 				0,
 				Math.min(
 					height - lh,
-					Math.round(safe.marginTop + safe.contentHeight * (isVertical ? 0.34 : 0.34) - lh / 2 + config.logoTransform.offsetY),
+					Math.round(
+						(isFlamePack ? height * frameCy : safe.marginTop + safe.contentHeight * 0.34) -
+							lh / 2 +
+							config.logoTransform.offsetY,
+					),
 				),
 			);
 			await sharp({
@@ -519,17 +533,35 @@ export async function renderOutroStudioV3Mp4(
 				.toFile(logoCanvasPng);
 		}
 
-		// Layer 6: Channel Title & Pre-Title
-		await sharp(Buffer.from(buildChannelTitleSvg(config, width, height)))
-			.resize(width, height)
-			.png()
-			.toFile(titlePng);
-
-		// Layer 7: Subscribe CTA & Optional Next Video Card
-		await sharp(Buffer.from(buildCtaLayerSvg(config, width, height)))
-			.resize(width, height)
-			.png()
-			.toFile(ctaPng);
+		// Layer 6 & 7: Channel Title & CTA (Flame Pack uses ultra-clean minimalist typography below the glowing frame!)
+		if (isFlamePack) {
+			const cxText = Math.round(width / 2);
+			const isSquareOrCircle = config.templateId === 'flame_squircle' || config.templateId === 'flame_circle';
+			const textBaseY = Math.round(height * (isVertical ? (isSquareOrCircle ? 0.65 : 0.59) : (isSquareOrCircle ? 0.71 : 0.67)));
+			const mainTitle = escapeXml((config.texts.channelTitle || config.channelName || 'NextWorth').trim());
+			const subCta = escapeXml((config.texts.subscribeCtaText || 'INSCREVA-SE').trim().toUpperCase());
+			const mainSize = Math.round(width * (isVertical ? 0.05 : 0.026));
+			const subSize = Math.round(width * (isVertical ? 0.028 : 0.014));
+			const minimalTitleSvg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+  <text x="${cxText}" y="${textBaseY}" text-anchor="middle" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="${mainSize}" font-weight="800" letter-spacing="1.5" fill="${config.palette.text}">${mainTitle}</text>
+</svg>`;
+			const minimalCtaSvg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+  ${config.showSubscribeCta ? `<text x="${cxText}" y="${textBaseY + Math.round(mainSize * 1.18)}" text-anchor="middle" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="${subSize}" font-weight="600" letter-spacing="4" fill="rgba(255,255,255,0.82)">${subCta}</text>` : ''}
+</svg>`;
+			await sharp(Buffer.from(minimalTitleSvg)).resize(width, height).png().toFile(titlePng);
+			await sharp(Buffer.from(minimalCtaSvg)).resize(width, height).png().toFile(ctaPng);
+		} else {
+			await sharp(Buffer.from(buildChannelTitleSvg(config, width, height)))
+				.resize(width, height)
+				.png()
+				.toFile(titlePng);
+			await sharp(Buffer.from(buildCtaLayerSvg(config, width, height)))
+				.resize(width, height)
+				.png()
+				.toFile(ctaPng);
+		}
 
 		// Layer 9: Real MotionVelix SFX kit WAVs (NO synthetic sine tones!)
 		const kit = resolveMotionVelixKit(input.motionVelixKitDir ? { envVelixDir: input.motionVelixKitDir } : undefined);
@@ -560,15 +592,15 @@ export async function renderOutroStudioV3Mp4(
 			input.outputFilename ?? `outro-v3-${config.templateId}-${config.aspectRatio.replace(':', 'x')}-${Math.round(durationSec)}s.mp4`,
 		);
 
-		// True 2D FBM Domain-Warped Fluid Fire Shader pipeline for `fire_reveal`
-		if (config.templateId === 'fire_reveal') {
+		// True 2D FBM Fluid Fire Shader pipeline for `fire_reveal` AND the 4 Flame Logo Pack variants
+		if (config.templateId === 'fire_reveal' || isFlamePack) {
 			const simW = config.aspectRatio === '9:16' ? 270 : 480;
 			const simH = config.aspectRatio === '9:16' ? 480 : 270;
 			const fireFps = 24;
 			const fireTotalFrames = Math.max(fireFps * 5, Math.round(durationSec * fireFps));
 
 			let bgRgba: Uint8Array | null = null;
-			if (config.backgroundImagePath && existsSync(config.backgroundImagePath)) {
+			if (!isFlamePack && config.backgroundImagePath && existsSync(config.backgroundImagePath)) {
 				const rawBg = await sharp(config.backgroundImagePath)
 					.resize(simW, simH, { fit: 'cover' })
 					.ensureAlpha()
@@ -589,8 +621,10 @@ export async function renderOutroStudioV3Mp4(
 
 			const fadeOutDur = Math.max(0.4, Math.min(2.0, config.audio.fadeOutSec || 0.8));
 			const fadeOutStart = Math.max(0.5, durationSec - fadeOutDur).toFixed(2);
-			const titleRevealDur = Math.max(0.4, (keyframes.channelRevealEndSec - keyframes.channelRevealStartSec) * 0.6).toFixed(2);
-			const ctaRevealDur = Math.max(0.35, (keyframes.ctaEndSec - keyframes.ctaStartSec) * 0.5).toFixed(2);
+			const titleStartSec = isFlamePack ? Number((3.4 * (durationSec / 15)).toFixed(2)) : keyframes.channelRevealStartSec;
+			const ctaStartSec = isFlamePack ? Number((4.2 * (durationSec / 15)).toFixed(2)) : keyframes.ctaStartSec;
+			const titleRevealDur = Math.max(0.4, (keyframes.channelRevealEndSec - keyframes.channelRevealStartSec) * 0.5).toFixed(2);
+			const ctaRevealDur = Math.max(0.35, (keyframes.ctaEndSec - keyframes.ctaStartSec) * 0.45).toFixed(2);
 
 			const fireArgs: string[] = [
 				'-y',
@@ -642,10 +676,10 @@ export async function renderOutroStudioV3Mp4(
 
 			const fireVideoFilters = [
 				`[0:v]scale=${width}:${height}:flags=lanczos,format=gbrp,split[vb0][vb1]`,
-				`[vb1]gblur=sigma=10[vglow]`,
-				`[vb0][vglow]blend=all_mode=screen:all_opacity=0.26,format=rgba[vfire]`,
-				`[1:v]scale=${width}:${height},fps=${fireFps},format=rgba,fade=t=in:st=${keyframes.channelRevealStartSec}:d=${titleRevealDur}:alpha=1,fade=t=out:st=${fadeOutStart}:d=${fadeOutDur}:alpha=1[vtitle]`,
-				`[2:v]scale=${width}:${height},fps=${fireFps},format=rgba,fade=t=in:st=${keyframes.ctaStartSec}:d=${ctaRevealDur}:alpha=1,fade=t=out:st=${fadeOutStart}:d=${fadeOutDur}:alpha=1[vcta]`,
+				`[vb1]gblur=sigma=8[vglow]`,
+				`[vb0][vglow]blend=all_mode=screen:all_opacity=0.22,format=rgba[vfire]`,
+				`[1:v]scale=${width}:${height},fps=${fireFps},format=rgba,fade=t=in:st=${titleStartSec}:d=${titleRevealDur}:alpha=1,fade=t=out:st=${fadeOutStart}:d=${fadeOutDur}:alpha=1[vtitle]`,
+				`[2:v]scale=${width}:${height},fps=${fireFps},format=rgba,fade=t=in:st=${ctaStartSec}:d=${ctaRevealDur}:alpha=1,fade=t=out:st=${fadeOutStart}:d=${fadeOutDur}:alpha=1[vcta]`,
 				`[vfire][vtitle]overlay=0:0:shortest=1[c1]`,
 				`[c1][vcta]overlay=0:0:shortest=1,format=yuv420p[vout]`,
 			];
@@ -686,18 +720,32 @@ export async function renderOutroStudioV3Mp4(
 				(async () => {
 					try {
 						for (let f = 0; f < fireTotalFrames; f++) {
-							renderFireRevealFrameRgba({
-								width: simW,
-								height: simH,
-								tSec: f / fireFps,
-								keyframes,
-								intensity: config.intensity,
-								palette: firePalRgb,
-								bgRgba,
-								logoRgba,
-								outRgba: frameBuf,
-								parallaxEnabled: config.parallaxEnabled,
-							});
+							if (isFlamePack) {
+								renderFlamePackFrameRgba({
+									variant: config.templateId as FlamePackVariant,
+									width: simW,
+									height: simH,
+									tSec: f / fireFps,
+									keyframes,
+									intensity: config.intensity,
+									palette: firePalRgb,
+									logoRgba,
+									outRgba: frameBuf,
+								});
+							} else {
+								renderFireRevealFrameRgba({
+									width: simW,
+									height: simH,
+									tSec: f / fireFps,
+									keyframes,
+									intensity: config.intensity,
+									palette: firePalRgb,
+									bgRgba,
+									logoRgba,
+									outRgba: frameBuf,
+									parallaxEnabled: config.parallaxEnabled,
+								});
+							}
 							if (!child.stdin!.write(frameBuf)) {
 								await new Promise<void>((r) => child.stdin!.once('drain', r));
 							}

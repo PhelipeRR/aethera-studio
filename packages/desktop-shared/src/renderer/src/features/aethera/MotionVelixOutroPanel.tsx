@@ -32,7 +32,15 @@ import {
 
 export type OutroAnimationStyle = 'energetic' | 'cinematic' | 'minimal';
 export type OutroAspectRatio = '16:9' | '9:16';
-export type OutroTemplateId = 'fire_reveal' | 'electric_reveal' | 'particle_reveal' | 'glitch_reveal';
+export type OutroTemplateId =
+  | 'flame_wide'
+  | 'flame_banner'
+  | 'flame_squircle'
+  | 'flame_circle'
+  | 'fire_reveal'
+  | 'electric_reveal'
+  | 'particle_reveal'
+  | 'glitch_reveal';
 export type PaletteSource = 'channel' | 'image' | 'custom';
 export type LogoSelectionMode = 'manual' | 'default' | 'rotate_favorites';
 
@@ -179,8 +187,13 @@ const TEMPLATE_CARDS: Array<{
   shortDesc: string;
   accent: string;
   secondary: string;
+  frameShape?: 'wide' | 'banner' | 'squircle' | 'circle';
 }> = [
-  { id: 'fire_reveal', name: 'Fire Reveal', shortDesc: 'Chamas orgânicas e brasas revelando o emblema', accent: '#F97316', secondary: '#A855F7' },
+  { id: 'flame_wide', name: 'Flame Wide', shortDesc: 'Moldura horizontal com fogo interno e explosão 2D', accent: '#7DD3FC', secondary: '#0284C7', frameShape: 'wide' },
+  { id: 'flame_banner', name: 'Flame Banner', shortDesc: 'Logo subindo nas chamas internas + CTA limpo', accent: '#22D3EE', secondary: '#0891B2', frameShape: 'banner' },
+  { id: 'flame_squircle', name: 'Flame Squircle', shortDesc: 'Emblema quadrado arredondado com fogo 2D ao redor', accent: '#34D399', secondary: '#059669', frameShape: 'squircle' },
+  { id: 'flame_circle', name: 'Flame Circle', shortDesc: 'Círculo avatar com fogo giratório e chamas nas bordas', accent: '#F87171', secondary: '#DC2626', frameShape: 'circle' },
+  { id: 'fire_reveal', name: 'Fire Reveal', shortDesc: 'Chamas fluidas 2D FBM entrando pelas bordas', accent: '#F97316', secondary: '#A855F7' },
   { id: 'electric_reveal', name: 'Electric Reveal', shortDesc: 'Arcos elétricos de alta tensão e pulso luminoso', accent: '#38BDF8', secondary: '#2563EB' },
   { id: 'particle_reveal', name: 'Particle Reveal', shortDesc: 'Partículas orbitais coalescendo no logotipo', accent: '#C084FC', secondary: '#6366F1' },
   { id: 'glitch_reveal', name: 'Glitch Reveal', shortDesc: 'Separação RGB, scanlines e travamento digital', accent: '#22D3EE', secondary: '#F43F5E' },

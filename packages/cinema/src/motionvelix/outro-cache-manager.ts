@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writ
 import { join, resolve } from 'node:path';
 import type { OutroStudioConfigV3 } from './outro-template-registry.js';
 
-export const OUTRO_RENDERER_VERSION = '3.2.1';
+export const OUTRO_RENDERER_VERSION = '3.3.0';
 
 export type OutroCacheLevel = 'assets' | 'thumbnails' | 'renders';
 

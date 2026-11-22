@@ -447,6 +447,110 @@ export const OutroStudioComposition: React.FC<OutroStudioCompositionProps> = ({
   const ctaFontSize = Math.round(width * (isVertical ? 0.032 : 0.018));
   const glowPx = Math.round((logoTransform.glowIntensity / 100) * 34);
 
+  const isFlamePack =
+    templateId === 'flame_wide' ||
+    templateId === 'flame_banner' ||
+    templateId === 'flame_squircle' ||
+    templateId === 'flame_circle';
+
+  if (isFlamePack) {
+    const isSqOrCirc = templateId === 'flame_squircle' || templateId === 'flame_circle';
+    const boxW = isSqOrCirc
+      ? Math.round(Math.min(width, height) * (isVertical ? 0.44 : 0.36))
+      : Math.round(width * (isVertical ? 0.72 : 0.44));
+    const boxH = isSqOrCirc
+      ? boxW
+      : Math.round(height * (isVertical ? 0.16 : 0.22));
+    const borderRad = templateId === 'flame_circle' ? 9999 : isSqOrCirc ? 36 : 22;
+    const fpFrameIn = interpolate(tSec, [0.3 * scaleTime, 1.5 * scaleTime], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+    const fpLogoIn = interpolate(tSec, [1.8 * scaleTime, 4.0 * scaleTime], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+    const fpTextIn = interpolate(tSec, [3.2 * scaleTime, 5.0 * scaleTime], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+    const fpSlideY = templateId === 'flame_banner' ? (1 - fpLogoIn) * (boxH * 0.85) : 0;
+
+    return (
+      <AbsoluteFill
+        style={{
+          backgroundColor: '#050608',
+          overflow: 'hidden',
+          opacity: masterOpacity,
+          fontFamily: 'Inter, Segoe UI, system-ui, -apple-system, sans-serif',
+        }}
+      >
+        {/* Outer fluid fire wisps canvas */}
+        <FluidFirePreviewCanvas
+          tSec={tSec}
+          totalSec={totalSec}
+          intensity={Math.min(100, intensity)}
+          aspectRatio={aspectRatio}
+          palette={palette}
+          reducedMotion={reducedMotion}
+        />
+
+        {/* Centered Glowing Flame Frame + Minimalist Typography */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 20,
+          }}
+        >
+          <div
+            style={{
+              width: boxW,
+              height: boxH,
+              borderRadius: borderRad,
+              border: `2.5px solid ${palette.glow}`,
+              boxShadow: `0 0 ${Math.max(18, glowPx)}px ${palette.energy}99, inset 0 0 28px ${palette.energy}66`,
+              background: `radial-gradient(circle at 50% 80%, ${palette.energy}66 0%, ${palette.primary}33 55%, rgba(5,6,8,0.88) 100%)`,
+              overflow: 'hidden',
+              position: 'relative',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 18,
+              opacity: fpFrameIn,
+              transform: `scale(${0.92 + 0.08 * fpFrameIn})`,
+            }}
+          >
+            {!logoDisabled && logoImageUrl ? (
+              <img
+                src={logoImageUrl}
+                alt="Logotipo do canal"
+                style={{
+                  maxWidth: '82%',
+                  maxHeight: '82%',
+                  objectFit: 'contain',
+                  opacity: fpLogoIn,
+                  transform: `translate3d(${logoTransform.offsetX}px, ${logoTransform.offsetY + fpSlideY}px, 0) scale(${logoTransform.scale})`,
+                  filter: `drop-shadow(0 0 12px ${palette.glow}88)`,
+                }}
+              />
+            ) : !logoDisabled ? (
+              <span style={{ color: palette.text, fontSize: Math.max(16, Math.round(titleFontSize * 0.5)), fontWeight: 800, opacity: fpLogoIn }}>
+                {texts.channelTitle || 'SEU CANAL'}
+              </span>
+            ) : null}
+          </div>
+
+          <div style={{ textAlign: 'center', opacity: fpTextIn, transform: `translate3d(0, ${(1 - fpTextIn) * 10}px, 0)` }}>
+            <div style={{ fontSize: Math.round(width * (isVertical ? 0.048 : 0.024)), fontWeight: 800, color: palette.text, letterSpacing: '0.04em' }}>
+              {texts.channelTitle || 'NextWorth'}
+            </div>
+            {showSubscribeCta && (
+              <div style={{ fontSize: Math.round(width * (isVertical ? 0.026 : 0.013)), fontWeight: 600, color: 'rgba(255,255,255,0.78)', letterSpacing: '0.24em', marginTop: 6, textTransform: 'uppercase' }}>
+                {texts.subscribeCtaText || 'INSCREVA-SE'}
+              </div>
+            )}
+          </div>
+        </div>
+      </AbsoluteFill>
+    );
+  }
+
   return (
     <AbsoluteFill
       style={{
