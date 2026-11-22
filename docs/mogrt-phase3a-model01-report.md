@@ -1,98 +1,121 @@
-# MotionVelix MOGRT Engine — Relatório da Fase 3A (Modelo 01)
+# MOGRT Engine, Fase 3A: validação de `Dynamic Anime Burst Logo 01.mogrt`
 
-**Template alvo:** `Dynamic Anime Burst Logo 01` (`Dynamic Anime Burst Logo 01`)
-**Dependência de Adobe (Premiere / After Effects / aerender):** **ZERO**
-**Modo de execução desta rodada:** Fixture binário autêntico `RIFX/Egg!` do Modelo 01 (90 máscaras Bézier reais, 7,267s @ 30fps, 3 composições aninhadas) — o arquivo comercial original não existe no ambiente Linux e não é versionado no repositório; o mesmo comando executa diretamente sobre o `.mogrt` comercial no Windows via `--mogrt "<caminho>"`.
-**Veredito honesto de completude:** `partial_with_documented_gaps`
-> Reprodução parcial honesta (Fase 3A): grafo de composições, keyframes, 90 máscaras Bézier reais do .aep, logo editável, cores/textos e efeitos base (Glow, Blur, Choker, Noise, Fill, Tint, Set Matte) foram renderizados, mas 4 ocorrência(s) de efeitos proprietários Adobe permanecem pendentes para a Fase 3B (sem substituição procedural silenciosa).
+Gerado por `scripts/validate-mogrt-phase3a.ts` a partir do arquivo real. Todos os números abaixo são medidos na execução.
 
----
+- SHA-256: `742d296d11a90b0b8b35b5394c7a9404790e128ec6246f92188b36df619d96cc`
+- Resultado das verificações: **aprovado**
+- Completude do render: `partial_with_documented_gaps`
+- Reprodução parcial: 97 de 106 máscaras rasterizadas, 15 ocorrência(s) de efeito com lacuna (ADBE Turbulent Displace, ADBE Displacement Map, ADBE Fractal Noise, ADBE CurvesCustom, APC Vegas, ADBE Scribble Fill), 0 expressão(ões) não avaliada(s), 1 outra(s) lacuna(s) e 7 aproximação(ões). Não equivale a um render do After Effects.
 
-## 1. Integridade do `.mogrt` Original (Sem Mutação)
+A única referência do After Effects é o `thumb.png` de um quadro. Os demais quadros não têm com o que ser comparados.
 
-| Verificação | Resultado |
+## Verificações
+
+| Verificação | Resultado | Medido |
+| :--- | :--- | :--- |
+| base: render | passou | 199/218 quadros não pretos |
+| base: duração do MP4 igual ao definition.json | passou | 7.266 s, esperado 7.267 s |
+| logo-a: render | passou | 216/218 quadros não pretos |
+| logo-a: duração do MP4 igual ao definition.json | passou | 7.266 s, esperado 7.267 s |
+| logo-b: render | passou | 216/218 quadros não pretos |
+| logo-b: duração do MP4 igual ao definition.json | passou | 7.266 s, esperado 7.267 s |
+| edited: render | passou | 197/218 quadros não pretos |
+| edited: duração do MP4 igual ao definition.json | passou | 7.267 s, esperado 7.267 s |
+| arquivo original intacto | passou | SHA-256 antes e depois |
+| quadro base contra o thumb.png (t=0.667 s) | passou | MAE 10.76 (máx. 20), IoU 0.913 (mín. 0.85) |
+| trocar o logo muda o quadro | passou | MAE 10.73 (mín. 0.2) |
+| editar cores muda a transição | passou | MAE 77.06 (mín. 0.2) |
+| editar só o texto muda o quadro final | passou | MAE 0.56 (mín. 0.2) |
+
+## Renders
+
+| Variante | Edição | Duração (ffprobe) | Quadros | Quadros não pretos | Codec |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| base | template sem edição | 7.266 s | 218 | 199 | h264 |
+| logo-a | logo de teste A | 7.266 s | 218 | 216 | h264 |
+| logo-b | logo de teste B | 7.266 s | 218 | 216 | h264 |
+| edited | todas as cores e o texto editados | 7.267 s | 218 | 197 | h264 |
+
+## Composições renderizadas
+
+| Composição | Tamanho | FPS | Duração | Camadas | Máscaras |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Dynamic Anime Burst 01 Logo Placeholder Comp | 500x500 | 30 | 10.000 s | 1 | 0 |
+| Dynamic Anime Burst 01 Logo Placeholder | 500x500 | 30 | 10.000 s | 0 | 0 |
+| Dynamic Anime Burst Logo 01 Text | 857x81 | 30 | 5.367 s | 1 | 0 |
+| DABL_01 | 4096x2304 | 30 | 7.267 s | 9 | 0 |
+| L01 COLOR_LOGO 01 | 1920x1080 | 30 | 1.367 s | 2 | 0 |
+| L01 COLOR_LOGO 02 | 1920x1080 | 30 | 1.200 s | 2 | 0 |
+| L01 COLOR_LOGO GR | 1920x1080 | 30 | 1.367 s | 4 | 0 |
+| L01 LOGO | 1920x1080 | 30 | 6.867 s | 14 | 0 |
+| L01 REF_MAP | 500x500 | 30 | 10.000 s | 1 | 0 |
+| L01 STROKE | 500x500 | 30 | 1.033 s | 1 | 0 |
+| Matte | 1920x1080 | 15 | 1.067 s | 1 | 0 |
+| Transition 01 | 1920x1080 | 15 | 2.067 s | 2 | 90 |
+| Energy 25 | 1920x1080 | 30 | 0.867 s | 1 | 0 |
+| Energy 25 Glow | 1920x947 | 30 | 0.867 s | 2 | 16 |
+| Dynamic Anime Burst Logo 01 | 4096x2304 | 30 | 7.267 s | 2 | 0 |
+
+## Máscaras e expressões
+
+- Máscaras no .aep: 106, com 832 keyframes de forma
+- Máscaras distintas rasterizadas no template sem edição: 97
+- Expressões no .aep: 74
+- Expressões não avaliadas: 0
+
+## Efeitos executados
+
+| Efeito | Execuções |
 | :--- | :--- |
-| SHA-256 antes das 3 renderizações | `043ef0f9ad7a37bcfd7fa85a37075959bb772ab19ea9ef23c3ca05df67aa581e` |
-| SHA-256 após todas as 3 renderizações | `043ef0f9ad7a37bcfd7fa85a37075959bb772ab19ea9ef23c3ca05df67aa581e` |
-| `.mogrt` original preservado intacto | **SIM (100% imutável)** |
+| ADBE Fill | 942 |
+| ADBE Tint | 199 |
+| ADBE Drop Shadow | 1151 |
+| ADBE Glo2 | 207 |
+| ADBE Noise2 | 218 |
+| ADBE Shift Channels | 365 |
+| ADBE Simple Choker | 365 |
+| ADBE Geometry2 | 782 |
+| ADBE Box Blur2 | 184 |
+| ADBE Set Matte3 | 184 |
 
----
+## Efeitos não reproduzidos
 
-## 2. Grafo de Composições Aninhadas Extraído do `.aep`
+| Composição | Camada | Efeito | Motivo |
+| :--- | :--- | :--- | :--- |
+| L01 COLOR_LOGO 01 | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
+| L01 COLOR_LOGO 01 | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Displacement Map | Efeito não implementado; a camada aparece sem ele. |
+| Matte | Shape Layer 1 | ADBE Fractal Noise | Efeito não implementado; a camada aparece sem ele. |
+| Matte | Shape Layer 1 | ADBE CurvesCustom | Efeito não implementado; a camada aparece sem ele. |
+| L01 LOGO | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
+| L01 STROKE | Dynamic Anime Burst 01 Logo Placeholder Comp | APC Vegas | Gerador não implementado que substitui a camada; a camada é omitida. |
+| L01 COLOR_LOGO 02 | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
+| L01 COLOR_LOGO 02 | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Displacement Map | Efeito não implementado; a camada aparece sem ele. |
+| L01 LOGO | Blink 03 | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
+| L01 REF_MAP | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE CurvesCustom | Efeito não implementado; a camada aparece sem ele. |
+| L01 LOGO | Blink 04 | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
+| L01 LOGO | Blink 01 | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
+| L01 LOGO | Blink 02 | ADBE Turbulent Displace | Efeito não implementado; a camada aparece sem ele. |
+| L01 STROKE | Dynamic Anime Burst 01 Logo Placeholder Comp | ADBE Turbulent Displace | Efeito não implementado (Fase 3B); não é reproduzido. |
+| Energy 25 Glow | Shape Layer 2 | ADBE Scribble Fill | Efeito não implementado (Fase 3B); não é reproduzido. |
 
-| Composição | Resolução | FPS Nativo | Duração | Camadas | Máscaras Bézier Reais |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| `Transition 01` | 1920×1080 | 15 fps | 1.667s | 2 | 90 |
-| `L01 LOGO` | 1920×1080 | 30 fps | 7.267s | 2 | 0 |
-| `Dynamic Anime Burst Logo 01` | 1920×1080 | 30 fps | 7.267s | 7 | 0 |
+## Outras lacunas
 
----
+| Composição | Camada | Motivo |
+| :--- | :--- | :--- |
+| DABL_01 | Shape Layer 1 | Traço de shape não implementado. |
 
-## 3. Proveniência das 90 Máscaras Bézier Reais
+## Aproximações
 
-| Métrica de Auditoria | Valor |
-| :--- | :---: |
-| Total de máscaras extraídas do binário `.aep` (`ADBE Mask Parade`) | **90** |
-| Total de keyframes de máscara extraídos (`omks/shap`) | **450** |
-| Máscaras únicas reais rasterizadas durante os 7,27s | **90** |
-| Total de rasterizações de máscara executadas | **1826** |
-| Total de vértices Bézier rasterizados | **8536** |
-| Origem verificada exclusivamente do binário `.aep` | **SIM** |
+- Recolher transformações: mais resolução (até 2x); só pré-composições com texto deixam de cortar nas bordas.
+- Drop Shadow: desfoque por três box blurs, com queda próxima da do After Effects.
+- Glow: bloom próprio; cores A e B usam a média, e só Add/atrás são distinguidos.
+- Noise: grão determinístico próprio, com outro padrão de pixels.
+- wiggle(): ruído determinístico próprio, com curva diferente da do After Effects.
+- Set Matte com origem recolhida: usa o espaço da composição; regra inferida, sem quadro do After Effects para comparar.
+- Fonte "Montserrat-Bold" não vem no .mogrt: se não estiver instalada, o rasterizador usa outra.
 
----
-
-## 4. MP4s Completos Renderizados (7,27s @ 30fps, H.264)
-
-| Variante | Arquivo MP4 | Logo Substituída | Paleta / Texto | Duração (ffprobe) | Frames | Tamanho | Tempo de Render |
-| :--- | :--- | :--- | :--- | :---: | :---: | :---: | :---: |
-| **V1 (Base)** | `renders/mogrt-phase3a/model01-logo1-paletteA.mp4` | Logo 1 (SVG) | Magenta `#ff5eff` / Branco / Indigo — `AETHERA STUDIO` | **7.267s** | 218 | 10376.7 KB | 57.27s |
-| **V2 (Logo 2)** | `renders/mogrt-phase3a/model01-logo2-paletteA.mp4` | Logo 2 (PNG) | Magenta `#ff5eff` / Branco / Indigo — `AETHERA STUDIO` | **7.267s** | 218 | 10635.0 KB | 52.63s |
-| **V3 (Paleta B)** | `renders/mogrt-phase3a/model01-logo1-paletteB.mp4` | Logo 1 (SVG) | Cyber Gold `#fbbf24` / Cyan `#22d3ee` / Teal — `MOTIONVELIX PRO` | **7.267s** | 218 | 9842.8 KB | 53.10s |
-
----
-
-## 5. Efeitos Executados na Fase 3A vs. Efeitos Não Suportados (Sem Substituição Silenciosa)
-
-### 5.1 Efeitos suportados executados nativamente
-- `ADBE Tint`: **218** execuções
-- `ADBE Fill`: **52** execuções
-- `ADBE Box Blur2`: **26** execuções
-- `ADBE Simple Choker`: **26** execuções
-- `ADBE Glo2`: **256** execuções
-- `ADBE Noise2`: **218** execuções
-- `ADBE Set Matte3`: **204** execuções
-
-### 5.2 Expressões avaliadas
-- Expressões detectadas no `.aep`: **7**
-- Avaliações suportadas executadas (vínculos `comp().layer().effect()()`, `thisComp.layer()`, `var ...; [s, s]`): **922**
-- Expressões não suportadas registradas: **0**
-
-### 5.3 Efeitos proprietários Adobe NÃO suportados (mantidos sem substituição procedural)
-| Composição | Camada | MatchName | Nome | Status |
-| :--- | :--- | :--- | :--- | :--- |
-| `Dynamic Anime Burst Logo 01` | `BG Placeholder` | `ADBE Fractal Noise` | BG Fractal Texture | Efeito proprietário/não suportado na Fase 3A — camada mantida sem substituição procedural silenciosa. |
-| `L01 LOGO` | `Logo Placeholder` | `ADBE Turbulent Displace` | Turbulent Displace | Efeito proprietário/não suportado na Fase 3A — camada mantida sem substituição procedural silenciosa. |
-| `L01 LOGO` | `Logo Placeholder` | `APC Vegas` | Vegas Stroke | Efeito proprietário/não suportado na Fase 3A — camada mantida sem substituição procedural silenciosa. |
-| `L01 LOGO` | `Logo Placeholder` | `ADBE Scribble Fill` | Scribble Reveal | Efeito proprietário/não suportado na Fase 3A — camada mantida sem substituição procedural silenciosa. |
-
----
-
-## 6. Comparação Visual de Frames
-
-| Comparação | Imagem Gerada | MAE RGB (0–255) | PSNR (dB) | Interpretação |
-| :--- | :--- | :---: | :---: | :--- |
-| Referência `thumb.png` vs V1 (t=2.50s) | `renders/mogrt-phase3a/compare-vs-thumb.png` | 19.65 | 14.58 dB | Diferença esperada pela substituição real da Logo 1 (SVG) + efeitos ausentes (`Turbulent Displace`/`Vegas`/`Fractal Noise`). |
-| V1 (Logo 1 SVG) vs V2 (Logo 2 PNG) em t=2.50s | `renders/mogrt-phase3a/compare-logo1-vs-logo2.png` | 7.13 | 16.86 dB | Confirma substituição real e visível de `Logo Placeholder` mantendo composição e texto idênticos. |
-| V1 (Paleta A) vs V3 (Paleta B) no burst 90 máscaras (t=0.73s) | `renders/mogrt-phase3a/compare-paletteA-vs-paletteB-burst.png` | 32.84 | 13.25 dB | Confirma que as expressões `Primary Color` / `Accent Color` / `BG Color` recolorizam em tempo real as 90 máscaras reais + Glow + Tint. |
-| V1 (Paleta A) vs V3 (Paleta B) no hero reveal (t=2.50s) | `renders/mogrt-phase3a/compare-paletteA-vs-paletteB-hero.png` | 13.31 | 19.25 dB | Confirma edição simultânea de cor do fundo, cor do texto, texto (`MOTIONVELIX PRO`), escala da logo (`108%`) e rim glow. |
-| Strip cronológico completo (5 instantes dos 7,27s) | `renders/mogrt-phase3a/timeline-strip-model01.png` | — | — | Mostra burst inicial (0.40s / 0.73s), revelação hero (2.50s) e burst final (5.95s / 6.40s). |
-
----
-
-## 7. Como Executar no Arquivo Comercial Real (Windows)
+## Como repetir
 
 ```bash
-npx tsx scripts/validate-mogrt-phase3a.ts --mogrt "C:/Users/Pheli/Desktop/Dynamic Anime Burst Logo 01.mogrt"
+npx tsx scripts/validate-mogrt-phase3a.ts --mogrt "<caminho>/Dynamic Anime Burst Logo 01.mogrt"
 ```
-
-O comando inspeciona uma cópia isolada do `.mogrt` original (sem jamais alterá-lo), valida SHA-256 antes/depois, renderiza os 3 MP4s de 7,27s, compara o frame equivalente contra o `thumb.png` real do pacote comercial e regenera este relatório com as métricas reais do arquivo comercial.
