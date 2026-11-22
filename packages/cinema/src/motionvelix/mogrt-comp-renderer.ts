@@ -24,6 +24,15 @@ import {
 } from './aep-comp-graph.js';
 import { evaluateAnimatedMaskAtTime, type Vec2 } from './aep-mask-extractor.js';
 import {
+	applyEffectCurves,
+	applyEffectExposure,
+	applyEffectMosaic,
+	applyEffectRadialZoom,
+	applyEffectRamp,
+	type ExposureChannel,
+	type RadialZoomType,
+} from './mogrt-effects-color.js';
+import {
 	applyEffectBoxBlur,
 	applyEffectDropShadow,
 	applyEffectFill,
@@ -48,7 +57,7 @@ import {
 	type ExpressionPropertyRef,
 } from './mogrt-expression-eval.js';
 import { inspectMogrtFile, type MogrtInspectionResult } from './mogrt-importer.js';
-import { rasterizeMaskStack, rasterizePaths, type Affine } from './mogrt-mask-renderer.js';
+import { rasterizeMaskStack, rasterizePaths, strokeConvexPath, type Affine } from './mogrt-mask-renderer.js';
 import { loadLogoImageRgba, renderTextLayerRgba, sha256File, writeRgbaBufferToPng } from './mogrt-media-loader.js';
 
 export interface MogrtRenderOverrides {
@@ -184,6 +193,12 @@ function transformPoint([a, b, c, d, e, f]: Affine, x: number, y: number): Vec2 
 }
 
 /** Stored units to the units expressions and controls show. */
+function invert([a, b, c, d, e, f]: Affine): Affine | undefined {
+	const det = a * d - b * c;
+	if (Math.abs(det) < 1e-12) return undefined;
+	return [d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det];
+}
+
 function toUserUnits(prop: AepAnimatedProperty, value: number[]): number[] {
 	if (prop.unit === 'fraction_percent') return value.map((v) => v * 100);
 	if (prop.unit !== 'color_argb255') return value;
@@ -818,7 +833,7 @@ class CompositionRenderer {
 			const prop = node.properties.get(name);
 			return prop ? this.value(prop, comp, layer, tSec) : fallback;
 		};
-		const fills: Array<{ paths: Vec2[][]; color: number[]; opacity: number }> = [];
+		const paints: Array<{ paths: Vec2[][]; color: number[]; opacity: number }> = [];
 
 		const visit = (items: AepVectorNode[], parentMatrix: Affine, opacity: number): Vec2[][] => {
 			const paths: Vec2[][] = [];
@@ -866,17 +881,34 @@ class CompositionRenderer {
 						break;
 					}
 					case 'ADBE Vector Graphic - Fill':
-						fills.push({
+						paints.push({
 							paths: [...paths],
 							color: get(node, 'ADBE Vector Fill Color', [255, 255, 0, 0]),
 							opacity: (opacity * get(node, 'ADBE Vector Fill Opacity', [100])[0]!) / 100,
 						});
 						break;
-					case 'ADBE Vector Graphic - Stroke':
-						if (get(node, 'ADBE Vector Stroke Width', [2])[0]! > 0) {
-							this.gap(comp, layer, 'Traço de shape não implementado.');
-						}
+					case 'ADBE Vector Graphic - Stroke': {
+						const strokeWidth = get(node, 'ADBE Vector Stroke Width', [2])[0]!;
+						const toStroke = invert(parentMatrix);
+						if (strokeWidth <= 0 || !toStroke) break;
+						const styled =
+							get(node, 'ADBE Vector Stroke Line Join', [1])[0] !== 1 ||
+							node.children.some((child) => child.properties.size > 0);
+						if (styled) this.gap(comp, layer, 'Traço desenhado sem tracejado, afinamento, onda ou junção arredondada.');
+						// Offset in the stroke's own space, so that a non-uniform transform scales it as AE does.
+						const outlines = paths.flatMap((path) => {
+							const local = path.map((point) => transformPoint(toStroke, point.x, point.y));
+							return strokeConvexPath(local, strokeWidth).map((ring) =>
+								ring.map((point) => transformPoint(parentMatrix, point.x, point.y)),
+							);
+						});
+						paints.push({
+							paths: outlines,
+							color: get(node, 'ADBE Vector Stroke Color', [255, 255, 255, 255]),
+							opacity: (opacity * get(node, 'ADBE Vector Stroke Opacity', [100])[0]!) / 100,
+						});
 						break;
+					}
 					case 'ADBE Vector Materials Group':
 						break;
 					default:
@@ -888,7 +920,7 @@ class CompositionRenderer {
 		visit(layer.shapes!.children, matrix, 1);
 
 		// Items listed first are painted on top.
-		for (const fill of fills.reverse()) {
+		for (const fill of paints.reverse()) {
 			if (fill.paths.length === 0 || fill.opacity <= 0) continue;
 			const coverage = new Float32Array(buffer.width * buffer.height);
 			const bounds = rasterizePaths(fill.paths, coverage, buffer.width, buffer.height);
@@ -1053,6 +1085,76 @@ class CompositionRenderer {
 				case 'ADBE Set Matte3':
 					if (this.applySetMatte(buffer, space, effect)) break;
 					continue;
+				case 'ADBE CurvesCustom':
+					if (effect.curveTables) {
+						applyEffectCurves(buffer, effect.curveTables);
+						break;
+					}
+					this.effectGap(space, effect, 'Curvas animadas ou não decodificadas; efeito ignorado.');
+					continue;
+				case 'ADBE Exposure2': {
+					this.approximations.add('Exposure: luz linear com gama 2,2, sem o espaço de trabalho do projeto.');
+					const channel = (id: number): ExposureChannel => {
+						const at = (n: number): number => read(String(id + n).padStart(4, '0'));
+						return { exposure: at(0), offset: at(1), gamma: at(2) };
+					};
+					const master = channel(3);
+					const perChannel = read('0001') === 2;
+					applyEffectExposure(
+						buffer,
+						perChannel ? [channel(8), channel(13), channel(18)] : [master, master, master],
+						read('0022') > 0,
+					);
+					break;
+				}
+				case 'ADBE Ramp': {
+					const point = (id: string): Vec2 => {
+						const [x = 0, y = 0] = this.param(space, effect, id);
+						return { x: x * scale + padding, y: y * scale + padding };
+					};
+					const blendWithOriginal = read('0007');
+					if (blendWithOriginal < 1 && read('0006') > 0) this.effectGap(space, effect, 'Dispersão do Ramp ignorada.');
+					applyEffectRamp(buffer, {
+						start: point('0001'),
+						end: point('0003'),
+						startColor: rgb('0002'),
+						endColor: rgb('0004'),
+						radial: read('0005') === 2,
+						blendWithOriginal,
+					});
+					break;
+				}
+				case 'ADBE Mosaic': {
+					// Blocks finer than the layer's own pixels change nothing, at any render scale.
+					const full = layer.sourceSize ?? comp;
+					if (read('0001') >= full.width && read('0002') >= full.height) break;
+					applyEffectMosaic(buffer, {
+						columns: read('0001'),
+						rows: read('0002'),
+						sharp: read('0003') > 0,
+						x: padding,
+						y: padding,
+						width: space.width,
+						height: space.height,
+					});
+					break;
+				}
+				case 'CC Radial Blur': {
+					const types: Record<number, RadialZoomType> = { 1: 'straight', 2: 'fading', 3: 'centred' };
+					const type = types[read('0001')];
+					if (!type) {
+						this.effectGap(space, effect, 'Tipo rotacional do CC Radial Blur não implementado; efeito ignorado.');
+						continue;
+					}
+					this.approximations.add('CC Radial Blur: zoom por amostragem própria, com queda exponencial no rastro.');
+					const [x = 0, y = 0] = this.param(space, effect, '0004');
+					applyEffectRadialZoom(buffer, {
+						centre: { x: x * scale + padding, y: y * scale + padding },
+						amount: read('0002'),
+						type,
+					});
+					break;
+				}
 				default: {
 					// These generators replace the layer: without them its raw content would be wrong content.
 					const replacesLayer =

@@ -3,6 +3,7 @@ import {
 	anchorToPixels,
 	cosGet,
 	decodeCompHeader,
+	decodeCurvesData,
 	decodeKeyframeRecord,
 	decodeLayerHeader,
 	decodeParamDefault,
@@ -102,6 +103,8 @@ export interface AepEffectInstance {
 	enabled: boolean;
 	supportedInPhase3A: boolean;
 	params: AepEffectParam[];
+	/** Curves only: RGB, red, green, blue and alpha tables. Absent when they are animated or unreadable. */
+	curveTables?: Uint8Array[];
 }
 
 export interface AepTextDocument {
@@ -246,6 +249,11 @@ export const PHASE3A_SUPPORTED_EFFECTS = new Set<string>([
 	'ADBE Shift Channels',
 	'ADBE Geometry2',
 	'ADBE Posterize Time',
+	'ADBE CurvesCustom',
+	'ADBE Exposure2',
+	'ADBE Ramp',
+	'ADBE Mosaic',
+	'CC Radial Blur',
 ]);
 
 const MAX_DIMENSION = 30000;
@@ -443,9 +451,17 @@ function decodeEffects(
 				params.push(param);
 			}
 
+			let curveTables: Uint8Array[] | undefined;
+			if (matchName === 'ADBE CurvesCustom') {
+				// The arbitrary data sits beside its tdbs; more than one blob means keyframed curves.
+				const blobs = findDescendants(body ? [body] : [], 'aRbp');
+				if (blobs.length === 1) curveTables = decodeCurvesData(blobs[0]!.data);
+			}
+
 			return {
 				index,
 				matchName,
+				...(curveTables ? { curveTables } : {}),
 				displayName:
 					customName && customName !== UNNAMED ? customName : readWrappedText(findChild(value, 'fnam')) || matchName,
 				enabled: isEnabled(body),

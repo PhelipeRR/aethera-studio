@@ -149,6 +149,42 @@ export function rasterizePaths(paths: Vec2[][], out: Float32Array, width: number
 	return bounds;
 }
 
+/** Outline of a centred, mitred stroke around a closed convex path, to fill with `rasterizePaths`. */
+export function strokeConvexPath(path: readonly Vec2[], strokeWidth: number): Vec2[][] {
+	const count = path.length;
+	let area = 0;
+	for (let i = 0; i < count; i++) {
+		const p = path[i]!;
+		const q = path[(i + 1) % count]!;
+		area += p.x * q.y - q.x * p.y;
+	}
+	if (count < 3 || area === 0) return [];
+	// Outward normals of the edges.
+	const sign = area > 0 ? 1 : -1;
+	const normals = path.map((p, i) => {
+		const q = path[(i + 1) % count]!;
+		const length = Math.hypot(q.x - p.x, q.y - p.y) || 1;
+		return { x: (sign * (q.y - p.y)) / length, y: (-sign * (q.x - p.x)) / length };
+	});
+	const offset = (distance: number): Vec2[] =>
+		path.map((p, i) => {
+			const before = normals[(i + count - 1) % count]!;
+			const next = normals[i]!;
+			const k = distance / Math.max(1e-6, 1 + before.x * next.x + before.y * next.y);
+			return { x: p.x + (before.x + next.x) * k, y: p.y + (before.y + next.y) * k };
+		});
+	const half = strokeWidth / 2;
+	const outer = offset(half);
+	// A stroke wider than the shape leaves no hole.
+	const width = Math.min(
+		...path.map((p, i) => {
+			const normal = normals[i]!;
+			return Math.max(...path.map((q) => (p.x - q.x) * normal.x + (p.y - q.y) * normal.y));
+		}),
+	);
+	return half * 2 >= width ? [outer] : [outer, offset(-half).reverse()];
+}
+
 export interface MaskStackEntry {
 	mode: AepMaskMode;
 	inverted: boolean;

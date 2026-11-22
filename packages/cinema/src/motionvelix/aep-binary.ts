@@ -363,6 +363,7 @@ const PARAM_CHECKBOX = 4;
 const PARAM_COLOR = 5;
 const PARAM_POINT = 6;
 const PARAM_POPUP = 7;
+const PARAM_FLOAT_SLIDER = 10;
 
 /**
  * Default value from a `pard` definition, used when an effect omits the parameter.
@@ -377,6 +378,8 @@ export function decodeParamDefault(pard: Buffer): { name: string; value: number[
 			return { name, value: [i32(140)] };
 		case PARAM_SLIDER:
 			return { name, value: [i32(140) / 65536] };
+		case PARAM_FLOAT_SLIDER:
+			return { name, value: [pard.length >= 124 ? pard.readFloatBE(120) : 0] };
 		case PARAM_ANGLE:
 			return { name, value: [i32(60) / 65536] };
 		case PARAM_CHECKBOX:
@@ -391,6 +394,21 @@ export function decodeParamDefault(pard: Buffer): { name: string; value: number[
 		default:
 			return { name, value: [0] };
 	}
+}
+
+const CURVE_TABLE_COUNT = 5;
+const CURVE_TABLE_SIZE = 256;
+
+/**
+ * The `aRbp` blob of a Curves effect. After a 4-byte version come the evaluated tables for RGB, red,
+ * green, blue and alpha; the control points that follow them are not needed.
+ */
+export function decodeCurvesData(aRbp: Buffer): Uint8Array[] | undefined {
+	if (aRbp.length < 4 + CURVE_TABLE_COUNT * CURVE_TABLE_SIZE) return undefined;
+	return Array.from({ length: CURVE_TABLE_COUNT }, (_, i) => {
+		const start = 4 + i * CURVE_TABLE_SIZE;
+		return new Uint8Array(aRbp.subarray(start, start + CURVE_TABLE_SIZE));
+	});
 }
 
 // ---------------------------------------------------------------------------
