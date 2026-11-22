@@ -52,7 +52,16 @@ export {
 } from './gate-f-panel-integrity.js';
 
 // ─── Checkpoint Persistence ──────────────────────────────────────────────────
-export { saveCheckpoint, loadCheckpoint, computePanelCacheKey, invalidateCheckpointCache, clearCheckpoint, RECAP_ANALYZER_VERSION } from './checkpoint-persistence.js';
+export {
+	saveCheckpoint,
+	loadCheckpoint,
+	computePanelCacheKey,
+	computeScriptCacheKey,
+	invalidateCheckpointCache,
+	clearCheckpoint,
+	RECAP_ANALYZER_VERSION,
+	RECAP_SCRIPT_GENERATOR_VERSION,
+} from './checkpoint-persistence.js';
 
 // ─── PDF Import Adapter ──────────────────────────────────────────────────────
 export { renderPdfToImages } from './pdf-import-adapter.js';
@@ -139,12 +148,18 @@ export {
 export {
 	runScriptGenerator,
 	refineScriptWithPort,
+	extractNarrativeEventsFromBeat,
+	detectTechnicalVisualDescription,
+	detectUngroundedInventions,
+	detectAnticipatedNextSceneEvents,
 	isGenericNarration,
 	isReviewRequiredPlaceholder,
 	estimateNarrationDurationSec,
 	REVIEW_REQUIRED_PREFIX,
 	type ScriptGeneratorOptions,
 	type ScriptGenerationResult,
+	type StructuredNarrativeEvent,
+	type TechnicalVisualDetection,
 } from './script-generator.js';
 
 // ─── Gate G — Narrative Fidelity ─────────────────────────────────────────────

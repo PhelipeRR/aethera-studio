@@ -121,6 +121,10 @@ export const recapCheckpointSchema = z.object({
 	panelAnalyses: z.array(z.any()).optional(),
 	/** Cache keyed by panel imageHash (Phase 2.2.4) for deduplicated/resumable vision analysis. */
 	analysisCacheByHash: z.record(z.string(), z.any()).optional(),
+	/** Script generator version & style cache metadata to prevent stale script reuse. */
+	scriptGeneratorVersion: z.string().optional(),
+	scriptStyle: z.string().optional(),
+	scriptCacheKey: z.string().optional(),
 	warnings: z.array(z.string()).optional(),
 });
 export type RecapCheckpoint = z.infer<typeof recapCheckpointSchema>;
@@ -292,8 +296,13 @@ export const storyBeatSchema = z.object({
 	beatId: z.string().min(1),
 	panelIds: z.array(z.string().min(1)).min(1),
 	summary: z.string().min(1),
-	/** Observable visual description aggregated across the beat's panels. */
+	/** Observable visual description aggregated across the beat's panels (internal analysis only). */
 	visualSummary: z.string().optional(),
+	/** Structured actions extracted from panel analyses (used to build natural narration). */
+	actions: z.array(z.object({
+		type: z.enum(ACTION_TYPE_VALUES),
+		description: z.string(),
+	})).optional(),
 	/** Setting / location for this beat. */
 	setting: z.string().optional(),
 	/** Ordered dialogues/thoughts/narrations/SFX extracted from this beat's panels. */
@@ -352,8 +361,13 @@ export const sceneSchema = z.object({
 	narrationText: z.string().min(1),
 	characters: z.array(z.string()),
 	eventDescription: z.string().min(1),
-	/** Rich visual summary observed in the source panels for side-by-side review. */
+	/** Rich visual summary observed in the source panels for side-by-side review (never used as narration). */
 	visualSummary: z.string().optional(),
+	/** Structured actions identified in the source panels for side-by-side review. */
+	actions: z.array(z.object({
+		type: z.enum(ACTION_TYPE_VALUES),
+		description: z.string(),
+	})).optional(),
 	/** Setting / location observed in the scene's panels. */
 	setting: z.string().optional(),
 	/** Extracted speech bubbles / narration boxes / thoughts from the scene's panels. */
@@ -415,7 +429,13 @@ export interface GateGFidelityHint {
 		| 'ungrounded_description'
 		| 'ignored_dialogue'
 		| 'scene_contradiction'
-		| 'duration_speech_mismatch';
+		| 'duration_speech_mismatch'
+		| 'technical_visual_description'
+		| 'missing_event_from_actions'
+		| 'repetitive_narration'
+		| 'excessive_visual_detail'
+		| 'anticipated_event'
+		| 'cross_scene_repetition';
 	detail: string;
 }
 
@@ -492,6 +512,8 @@ export interface HumanizeOptions {
 	enabled: boolean;
 	/** Target narration style. Must match the original script style. */
 	style: HumanizeStyle;
+	/** Humor level configured in UI (0..100). Shapes tone without inventing facts. */
+	humorVolume?: number;
 	/** Maximum allowed duration deviation (0.0–1.0). Default: 0.10 (10%). */
 	maxDurationDeviation?: number;
 	/** Word budget per scene. When set, humanized text must stay within ±tolerance. */
@@ -620,6 +642,8 @@ export interface StoryEngineOptions {
 	analysisConcurrency?: number;
 	/** Optional LLM port for rich narrative script generation from verified beats + continuity. */
 	scriptPort?: TextEnhancementPort;
+	/** When true, preserves approved panel analyses & Story Memory and regenerates only continuity + script + Gate G. */
+	regenerateScriptOnly?: boolean;
 	/** Phase 2.2: optional humanization after script generation. */
 	humanize?: HumanizeOptions & { port: TextEnhancementPort };
 	/** Phase 2.2.3: optional contextual research before script generation. */

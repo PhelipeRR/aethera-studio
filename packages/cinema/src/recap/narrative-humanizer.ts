@@ -26,7 +26,14 @@ import type {
 	ExtractedPanel,
 } from './recap-types.js';
 import { runGateGNarrativeFidelity } from './gate-g-narrative-fidelity.js';
-import { isGenericNarration, isReviewRequiredPlaceholder, estimateNarrationDurationSec } from './script-generator.js';
+import {
+	isGenericNarration,
+	isReviewRequiredPlaceholder,
+	estimateNarrationDurationSec,
+	detectTechnicalVisualDescription,
+	detectUngroundedInventions,
+	detectAnticipatedNextSceneEvents,
+} from './script-generator.js';
 import { isLikelyOcrGarbage } from './dialogue-extractor.js';
 
 // ─── System Prompt Template ──────────────────────────────────────────────────
@@ -43,11 +50,13 @@ REGRAS OBRIGATÓRIAS:
    - Bom: "De repente, alguém pisa com força em um galho no meio da mata noturna, estalando a madeira."
 2. ZERO RUÍDO DE OCR:
    - Se o texto original contiver fragmentos ilegíveis de OCR (ex.: "a k ie pe", "o. pia ; + : ae pe nia", "1 - y g"), IGNORE-OS completamente. Nunca narre texto corrompido como se fosse fala de personagem.
-3. FIDELIDADE TOTAL AOS FATOS:
-   - Não invente eventos, nomes ou falas que não existam na cena.
-   - Preserve todos os acontecimentos reais, nomes confirmados e diálogos verdadeiros relevantes entre aspas, na ordem cronológica.
-4. RITMO DE NARRAÇÃO HUMANA:
+3. FIDELIDADE TOTAL AOS FATOS (ZERO INVENÇÃO):
+   - Não invente eventos, nomes, falas, temperatura ("noite fria", "vento gelado"), motivações ("para se vingar") ou consequências futuras ("mal sabia ele") que não estejam comprovados nos painéis da cena.
+   - Preserve todos os acontecimentos reais, nomes confirmados, emoções comprovadas e diálogos verdadeiros relevantes entre aspas, na ordem cronológica.
+   - NUNCA repita acontecimentos já narrados na cena anterior e NUNCA antecipe acontecimentos da cena seguinte.
+4. RITMO DE NARRAÇÃO HUMANA E HUMOR:
    - Estilo "{style}" ({styleDescription}).
+   - Nível de humor configurado pelo usuário: {humorVolume}% ({humorGuidance}).
    - Nunca repita conectivos robóticos ("Nesse momento, o jovem diz:" várias vezes seguidas) e nunca gere gramática quebrada ("A história começa quando uma paisagem...").
    - Remova detalhes visuais irrelevantes (folhas, poeira, texturas, cores de fundo, roupas repetidas) quando não ajudam a entender a ação.
    - Seja direto, natural e envolvente como um narrador humano contando a cena em voz alta.
@@ -66,6 +75,14 @@ function getStyleDescription(style: string): string {
 		case 'documentary': return 'narração factual e informativa';
 		default: return 'narração natural em português brasileiro';
 	}
+}
+
+function getHumorGuidance(humorVolume: number): string {
+	const v = Math.max(0, Math.min(100, Math.round(humorVolume)));
+	if (v === 0) return 'tom sério e direto, sem piadas ou ironias';
+	if (v <= 35) return 'humor leve e pontual apenas quando a situação real dos painéis permitir, sem distorcer fatos';
+	if (v <= 70) return 'comentários bem-humorados e observações leves sobre o que realmente acontece nos painéis, mantendo 100% de fidelidade aos fatos';
+	return 'tom descontraído e espirituoso de recap de YouTube sobre os eventos reais dos painéis, sem jamais inventar falas, eventos ou spoilers';
 }
 
 // ─── Duration Validation ─────────────────────────────────────────────────────
@@ -115,10 +132,70 @@ function isVisualDescriptorPlaceholder(name: string): boolean {
 	return name.trim().length > 26 || /\b(de cabelos|em t[úu]nica|com faixa|de manto|vestindo)\b/i.test(name);
 }
 
-function checkStructuralIntegrity(original: Scene, humanizedText: string, isNaturalStyle = false): StructuralCheck {
+function checkStructuralIntegrity(
+	original: Scene,
+	humanizedText: string,
+	isNaturalStyle = false,
+	adjacent?: { prevSceneText?: string; nextSceneGrounding?: string[] },
+): StructuralCheck {
 	// Reject generic filler replacement
 	if (isGenericNarration(humanizedText)) {
 		return { ok: false, reason: 'Humanized text replaced scene narration with a generic filler phrase.' };
+	}
+
+	const currGrounding = [
+		original.narrationText,
+		original.visualSummary,
+		original.setting,
+		...(original.actions ?? []).map((a) => a.description),
+		...(original.extractedDialogues ?? []).map((d) => d.translatedText ?? d.text),
+	];
+
+	// Reject ungrounded inventions (temperature, motivations, consequences not in panel evidence)
+	const inventionCheck = detectUngroundedInventions(humanizedText, currGrounding);
+	if (inventionCheck.hasInvention) {
+		const first = inventionCheck.findings[0]!;
+		return {
+			ok: false,
+			reason: `Humanized text introduced ungrounded invention (${first.label}: "${first.matchedText}").`,
+		};
+	}
+
+	// Reject anticipated events belonging to the next scene
+	if (adjacent?.nextSceneGrounding && adjacent.nextSceneGrounding.length > 0) {
+		const antCheck = detectAnticipatedNextSceneEvents(humanizedText, currGrounding, adjacent.nextSceneGrounding);
+		if (antCheck.hasAnticipation) {
+			return {
+				ok: false,
+				reason: `Humanized text anticipated next-scene events (${antCheck.anticipatedTokens.join(', ')}).`,
+			};
+		}
+	}
+
+	// Reject cross-scene repetition with previous scene
+	if (adjacent?.prevSceneText) {
+		const prevTokens = new Set(extractFactualTokens(adjacent.prevSceneText).filter((t) => t.length >= 5));
+		const humTokens = [...new Set(extractFactualTokens(humanizedText).filter((t) => t.length >= 5))];
+		if (prevTokens.size >= 3 && humTokens.length >= 3) {
+			const shared = humTokens.filter((t) => prevTokens.has(t));
+			if (shared.length >= 3 && shared.length / humTokens.length >= 0.65) {
+				return {
+					ok: false,
+					reason: `Humanized text repeated events from previous scene (${shared.join(', ')}).`,
+				};
+			}
+		}
+	}
+
+	// In natural_recap, reject any output that re-introduces technical visual analysis jargon or copies raw visualSummary
+	if (isNaturalStyle) {
+		const tech = detectTechnicalVisualDescription(humanizedText, original.visualSummary);
+		if (tech.isTechnical || tech.isRawCopy) {
+			return {
+				ok: false,
+				reason: `Humanized text contains technical visual analysis language (${tech.matchedPatterns.join(', ') || 'raw visual copy'}).`,
+			};
+		}
 	}
 
 	// Verify that confirmed named characters explicitly mentioned in the original narration are preserved
@@ -233,9 +310,12 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 	const indexedWarnings: string[][] = Array.from({ length: humanizedScenes.length }, () => []);
 
 	const isNaturalStyle = options.style === 'natural_recap';
+	const humorVolume = Math.max(0, Math.min(100, Math.round(options.humorVolume ?? 0)));
 	const systemPrompt = HUMANIZE_SYSTEM_PROMPT
 		.replace('{style}', options.style)
-		.replace('{styleDescription}', getStyleDescription(options.style));
+		.replace('{styleDescription}', getStyleDescription(options.style))
+		.replace('{humorVolume}', String(humorVolume))
+		.replace('{humorGuidance}', getHumorGuidance(humorVolume));
 
 	const processSceneAt = async (i: number): Promise<void> => {
 		const scene = humanizedScenes[i]!;
@@ -261,12 +341,26 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 		}
 
 		try {
+			const prevScene = i > 0 ? humanizedScenes[i - 1] : undefined;
+			const nextScene = i < humanizedScenes.length - 1 ? humanizedScenes[i + 1] : undefined;
+			const nextSceneGrounding = nextScene
+				? [
+						nextScene.setting,
+						...(nextScene.actions ?? []).map((a) => a.description),
+						...(nextScene.extractedDialogues ?? []).map((d) => d.translatedText ?? d.text),
+					].filter((v): v is string => Boolean(v))
+				: undefined;
 			const enhanceInput: TextEnhancementRequest = {
 				text: originalText,
 				context: {
 					sceneId: scene.sceneId,
+					humorVolume,
 					characters: scene.characters,
-					eventDescription: scene.eventDescription,
+					setting: scene.setting,
+					actions: scene.actions ?? [],
+					extractedDialogues: scene.extractedDialogues ?? [],
+					...(prevScene ? { previousSceneNarration: prevScene.narrationText } : {}),
+					...(nextScene ? { nextSceneActions: (nextScene.actions ?? []).map((a) => a.description) } : {}),
 					panelIds: scene.panelIds,
 					estimatedDurationSec: scene.estimatedDurationSec,
 					emotion: scene.emotion,
@@ -304,8 +398,11 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 				humanizedText = result.text.trim().length > 0 ? result.text.trim() : originalText;
 			}
 
-			// Check structural integrity BEFORE duration to catch invented content first
-			const structuralCheck = checkStructuralIntegrity(scene, humanizedText, isNaturalStyle);
+			// Check structural integrity BEFORE duration to catch invented/anticipated/repeated content first
+			const structuralCheck = checkStructuralIntegrity(scene, humanizedText, isNaturalStyle, {
+				...(prevScene ? { prevSceneText: prevScene.narrationText } : {}),
+				...(nextSceneGrounding ? { nextSceneGrounding } : {}),
+			});
 			if (!structuralCheck.ok) {
 				sceneWarnings.push(`Scene ${scene.sceneId}: structural integrity violation — ${structuralCheck.reason}. Reverting.`);
 				const structDiff: HumanizeSceneDiff = { sceneId: scene.sceneId, originalText, humanizedText: originalText, reverted: true };

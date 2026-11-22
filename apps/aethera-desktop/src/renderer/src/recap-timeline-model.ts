@@ -133,6 +133,7 @@ export interface RecapScriptSceneView {
   characters?: string[];
   eventDescription?: string;
   visualSummary?: string;
+  actions?: Array<{ type: string; description: string }>;
   setting?: string;
   extractedDialogues?: RecapDialogueEntryView[];
   uncertainties?: string[];

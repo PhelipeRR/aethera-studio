@@ -101,6 +101,7 @@ interface EditableSceneRow {
   characters: string[];
   eventDescription?: string;
   visualSummary?: string;
+  actions?: Array<{ type: string; description: string }>;
   setting?: string;
   extractedDialogues: RecapDialogueEntryView[];
   uncertainties: string[];
@@ -727,6 +728,7 @@ function scenesFromScript(script: RecapScriptView | null, plan: RecapAudiovisual
       characters: scene.characters ?? [],
       ...(scene.eventDescription ? { eventDescription: scene.eventDescription } : {}),
       ...(scene.visualSummary ? { visualSummary: scene.visualSummary } : {}),
+      ...(scene.actions ? { actions: scene.actions } : {}),
       ...(scene.setting ? { setting: scene.setting } : {}),
       extractedDialogues: scene.extractedDialogues ?? [],
       uncertainties: scene.uncertainties ?? [],
@@ -4653,9 +4655,9 @@ export function RecapProductionPanel() {
           humorVolume={humorVolume}
           scriptStyleLabel={
             scriptStyle === 'natural_recap'
-              ? 'Narração Natural'
+              ? 'natural_recap (Narração Natural)'
               : scriptStyle === 'cinematic_recap'
-                ? 'Cinematográfico'
+                ? 'cinematic_recap (Cinematográfico)'
                 : scriptStyle
           }
           gateG={activeGateG}
@@ -5046,12 +5048,17 @@ export function RecapProductionPanel() {
                             {/* Editable Narration */}
                             <div>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                                <label
-                                  htmlFor={`narration-${row.sceneId}`}
-                                  style={{ fontSize: 11, fontWeight: 600, color: T.inkMuted }}
-                                >
-                                  Narração gerada
-                                </label>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <label
+                                    htmlFor={`narration-${row.sceneId}`}
+                                    style={{ fontSize: 11, fontWeight: 600, color: T.inkMuted }}
+                                  >
+                                    Narração da cena
+                                  </label>
+                                  <span style={{ fontSize: 10, fontWeight: 700, color: T.accentInk, background: '#f4f4f6', padding: '1px 7px', borderRadius: 9999 }}>
+                                    {scriptStyle}
+                                  </span>
+                                </div>
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -5070,7 +5077,7 @@ export function RecapProductionPanel() {
                                     cursor: 'pointer',
                                   }}
                                 >
-                                  {showVisualComparison ? 'Ocultar análise visual' : 'Comparar análise visual'}
+                                  {showVisualComparison ? 'Ocultar análise visual detalhada' : 'Ver análise visual detalhada'}
                                 </button>
                               </div>
                               <textarea
@@ -5092,25 +5099,55 @@ export function RecapProductionPanel() {
                               />
                             </div>
 
-                            {/* Collapsible visual analysis comparison */}
+                            {/* Collapsible visual analysis comparison (strictly separated from narration) */}
                             {showVisualComparison && (
                               <div
                                 style={{
-                                  padding: '8px 10px',
+                                  padding: '10px 12px',
                                   borderRadius: T.radiusSm,
                                   background: '#f8f7fc',
                                   border: `1px solid ${T.border}`,
                                   fontSize: 12,
                                   color: T.inkMuted,
                                   lineHeight: 1.5,
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: 6,
                                 }}
                               >
-                                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: T.accentInk, marginBottom: 4 }}>
-                                  Análise visual observada nos painéis
+                                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: T.accentInk }}>
+                                  Análise visual detalhada (separada do roteiro)
                                 </div>
-                                <p style={{ margin: 0, color: T.ink }}>
-                                  {row.visualSummary || row.eventDescription || 'Sem descrição visual detalhada registrada.'}
-                                </p>
+                                <div>
+                                  <strong style={{ color: T.ink }}>Descrição técnica: </strong>
+                                  <span style={{ color: T.ink }}>
+                                    {row.visualSummary || row.eventDescription || 'Sem descrição visual detalhada registrada.'}
+                                  </span>
+                                </div>
+                                <div>
+                                  <strong style={{ color: T.ink }}>Ações identificadas: </strong>
+                                  {row.actions && row.actions.length > 0 ? (
+                                    <span>{row.actions.map((a) => `[${a.type}] ${a.description}`).join(' · ')}</span>
+                                  ) : (
+                                    <span>Nenhuma ação específica registrada.</span>
+                                  )}
+                                </div>
+                                <div>
+                                  <strong style={{ color: T.ink }}>Diálogos extraídos: </strong>
+                                  {row.extractedDialogues.length > 0 ? (
+                                    <span>
+                                      {row.extractedDialogues
+                                        .map((d) => `${d.speaker ? `${d.speaker}: ` : ''}"${d.translatedText?.trim() || d.text}"`)
+                                        .join(' | ')}
+                                    </span>
+                                  ) : (
+                                    <span>Nenhum diálogo extraído.</span>
+                                  )}
+                                </div>
+                                <div>
+                                  <strong style={{ color: T.ink }}>Personagens reconhecidos: </strong>
+                                  <span>{row.characters.length > 0 ? row.characters.join(', ') : 'Nenhum personagem identificado.'}</span>
+                                </div>
                               </div>
                             )}
 
@@ -5144,7 +5181,7 @@ export function RecapProductionPanel() {
                                   }}
                                 >
                                   <RefreshCw style={{ width: 12, height: 12 }} />
-                                  {isRegeneratingThis ? 'Regenerando…' : 'Regenerar cena'}
+                                  {isRegeneratingThis ? 'Regenerando…' : 'Regenerar narração'}
                                 </button>
                               )}
                             </div>

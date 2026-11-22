@@ -84,15 +84,20 @@ function ensureSentenceEnding(text: string): string {
 
 const VISUAL_ANALYSIS_NOISE_PATTERNS: readonly RegExp[] = [
 	/\b(em\s+)?plano\s+(geral|m[ée]dio|fechado|superfechado|detalhe)(\s+vertical|\s+frontal|\s+visto\s+de\s+cima)?(\s*\([^)]+\))?(\s+de\s+ambienta[çc][ãa]o\s+noturna)?(\s+mostrando)?[,:]?\s*/gi,
-	/\b(?:em\s+um\s+|um\s+|o\s+)?painel(\s+vertical|\s+horizontal|\s+longo|\s+estreito|\s+de\s+p[áa]gina\s+inteira|\s+de\s+sequ[êe]ncia\s+de\s+movimento)*\s+(retratando|mostrando|exibindo|apresentando|capturando|destacando|estabelecendo|revelando|acompanhando|ilustrando|registrando)\s+/gi,
+	/\b(?:em\s+um\s+|um\s+|o\s+)?painel(\s+vertical|\s+horizontal|\s+longo|\s+estreito|\s+de\s+p[áa]gina\s+inteira|\s+de\s+sequ[êe]ncia\s+de\s+movimento)*(\s+de\s+[a-zÀ-ú\s]+)?(\s+em\s+estilo\s+[a-zÀ-ú\s]+)?[,:]?\s*(retratando|mostrando|exibindo|apresentando|capturando|destacando|estabelecendo|revelando|acompanhando|ilustrando|registrando)\s+/gi,
+	/\b(?:em\s+um\s+|um\s+|o\s+)?painel(\s+vertical|\s+horizontal|\s+longo|\s+estreito|\s+de\s+p[áa]gina\s+inteira|\s+de\s+sequ[êe]ncia\s+de\s+movimento)+(\s+de\s+[a-zÀ-ú\s]+)?[,:]?\s*/gi,
 	/\b(?:um\s+|o\s+)?quadro(?:\s+de\s+(?:manhwa|mang[áa]|webtoon|a[çc][ãa]o|luta))?(?:\s+de\s+[a-zÀ-ú]+)?(?:\s+em\s+estilo\s+[a-zÀ-ú\s]+)?\s+(?:mostrando|retratando|exibindo|apresentando|estabelecendo|revelando)\s+/gi,
 	/\bem\s+um\s+painel(\s+vertical|\s+horizontal)?(\s+longo)?(\s+de\s+sequ[êe]ncia\s+de\s+movimento)?[,:]?\s*/gi,
-	/\b(o\s+painel\s+apresenta|a\s+imagem\s+(mostra|sugere|exibe|retrata)|a\s+cena\s+(mostra|retrata|exibe|apresenta)|[ée]\s+poss[íi]vel\s+observar|nota-se\s+que)\b[,:]?\s*/gi,
-	/\bem\s+estilo\s+de\s+pintura\s+digital\b/gi,
-	/n[ãa]o\s+h[áa]\s+personagens(?:[,\s]+nem|\s*,\s*)?\s+bal[õo]es\s+de\s+texto[^.]*\.?/gi,
+	/\b(o\s+painel\s+apresenta|a\s+imagem\s+(mostra|sugere|exibe|retrata|apresenta)|a\s+cena\s+(mostra|retrata|exibe|apresenta)|[ée]\s+poss[íi]vel\s+observar|nota-se\s+que)\b[,:]?\s*/gi,
+	/\b(?:em\s+)?estilo\s+(?:de\s+)?(?:pintura\s+digital|digital\s+pintado|ilustra[çc][ãa]o\s+digital|arte\s+digital)\b[,:]?\s*/gi,
+	/\b(?:com\s+)?elementos\s+de\s+interface(?:\s+vis[íi]veis)?\b[,:]?\s*/gi,
+	/\b(?:composi[çc][ãa]o\s+visual|enquadramento(?:\s+[a-zÀ-ú]+)?)\b[,:]?\s*/gi,
+	/n[ãa]o\s+h[áa]\s+personagens(?:[,\s]+(?:nem|vis[íi]veis)|\s*,\s*)?(?:\s*bal[õo]es\s+de\s+texto)?[^.]*\.?/gi,
+	/\b(?:sem\s+personagens\s+vis[íi]veis|nenhum\s+personagem\s+vis[íi]vel)\b[^.]*\.?/gi,
 	/nenhum\s+personagem,\s*objeto\s+ou\s+cen[áa]rio\s+aparece\s+vis[íi]vel\.?/gi,
 	/(?:galhos\s+e\s+)?folhagens\s+escuras(?:\s+e\s+densas)?(?:\s+em\s+silhueta)?\s+emolduram\s+(?:toda\s+a\s+cena|os\s+cantos\s+da\s+imagem)[^.]*\.?/gi,
-	/no\s+primeiro\s+plano\s+inferior[^.]*\.?/gi,
+	/\bno\s+primeiro\s+plano(?:\s+inferior|\s+superior)?[^.]*\.?/gi,
+	/\bno\s+segundo\s+plano[^.]*\.?/gi,
 	/a\s+express[ãa]o\s+de\s+[^.]+\s+refor[çc]a\s+o\s+clima\s+da\s+cena\.?/gi,
 	/\b(?:no|do|ao)\s+(?:canto|quadrante)\s+(superior|inferior)\s+(esquerdo|direito)[^.,;]*[.,;]?/gi,
 	/\b(?:na|pela)\s+lateral\s+(esquerda|direita)[^.,;]*[.,;]?/gi,
@@ -104,6 +109,162 @@ const VISUAL_ANALYSIS_NOISE_PATTERNS: readonly RegExp[] = [
 	/\blinhas(\s+verticais)?\s+de\s+velocidade(\s+radiais)?[^,.]*/gi,
 	/\bcortad[oa]s?\s+pela\s+borda\s+da\s+imagem\b/gi,
 ];
+
+export const TECHNICAL_VISUAL_JARGON_PATTERNS: readonly RegExp[] = [
+	/\bpainel\s+(?:vertical|horizontal|longo|estreito|de\s+p[áa]gina|de\s+paisagem)\b/i,
+	/\b(?:em\s+um|no|do|o)\s+painel\b/i,
+	/\bestilo\s+(?:digital\s+pintado|de\s+pintura\s+digital|ilustra[çc][ãa]o\s+digital)\b/i,
+	/\b(?:no\s+)?(?:primeiro|segundo)\s+plano\b/i,
+	/\bplano\s+(?:geral|m[ée]dio|fechado|superfechado|detalhe)\b/i,
+	/\belementos\s+de\s+interface\b/i,
+	/\b(?:n[ãa]o\s+h[áa]|sem|nenhum)\s+personagens?\s+vis[íi]ve(?:l|is)\b/i,
+	/\ba\s+imagem\s+(?:mostra|exibe|retrata|apresenta|sugere)\b/i,
+	/\bcomposi[çc][ãa]o\s+visual\b/i,
+	/\benquadramento\b/i,
+	/\bquadrante\s+(?:superior|inferior)\b/i,
+	/\blateral\s+(?:esquerda|direita)\b/i,
+	/\bborda\s+da\s+imagem\b/i,
+	/\befei?to\s+sonoro\s+(?:coreano|japon[êe]s|chin[êe]s)\b/i,
+	/\bbal[õo]es\s+de\s+texto\b/i,
+	/\bclose-up\b/i,
+	/\bplong[ée]e\b/i,
+];
+
+export interface TechnicalVisualDetection {
+	isTechnical: boolean;
+	isRawCopy: boolean;
+	matchedPatterns: string[];
+}
+
+function tokenizeSignificantForOverlap(text: string): string[] {
+	return text
+		.toLowerCase()
+		.normalize('NFD')
+		.replace(/[\u0300-\u036f]/g, '')
+		.replace(/[^a-z0-9\s]/g, ' ')
+		.split(/\s+/)
+		.filter((w) => w.length >= 4);
+}
+
+/**
+ * Detects whether a narration string contains raw visual-analysis jargon
+ * or is a near-verbatim copy of an internal technical visualSummary.
+ */
+export function detectTechnicalVisualDescription(
+	narrationText: string,
+	rawVisualSummary?: string,
+): TechnicalVisualDetection {
+	const trimmed = narrationText.trim();
+	const matchedPatterns: string[] = [];
+	for (const re of TECHNICAL_VISUAL_JARGON_PATTERNS) {
+		const m = trimmed.match(re);
+		if (m) matchedPatterns.push(m[0]);
+	}
+
+	let isRawCopy = false;
+	if (rawVisualSummary && rawVisualSummary.trim().length >= 30) {
+		const rawTrimmed = rawVisualSummary.trim();
+		const rawHasTech = TECHNICAL_VISUAL_JARGON_PATTERNS.some((re) => re.test(rawTrimmed));
+		if (rawHasTech) {
+			const nTokens = new Set(tokenizeSignificantForOverlap(trimmed));
+			const rTokens = new Set(tokenizeSignificantForOverlap(rawTrimmed));
+			if (nTokens.size >= 5 && rTokens.size >= 5) {
+				let shared = 0;
+				for (const t of nTokens) {
+					if (rTokens.has(t)) shared++;
+				}
+				const jaccard = shared / (nTokens.size + rTokens.size - shared);
+				if (jaccard >= 0.72) {
+					isRawCopy = true;
+				}
+			}
+		}
+	}
+
+	return {
+		isTechnical: matchedPatterns.length > 0,
+		isRawCopy,
+		matchedPatterns,
+	};
+}
+
+export interface StructuredNarrativeEvent {
+	beatId: string;
+	setting?: string;
+	actors: string[];
+	actions: string[];
+	dialogues: DialogueEntry[];
+	emotion: Emotion;
+	actionType: string;
+	previousContext?: string;
+	nextContext?: string;
+}
+
+const UNGROUNDED_INVENTION_PATTERNS: readonly { label: string; pattern: RegExp }[] = [
+	{ label: 'temperatura não comprovada', pattern: /\b(noite\s+fria|clima\s+frio|vento\s+gelado|ar\s+gelado|frio\s+cortante|calor\s+intenso|calor\s+escaldante|g[ée]lid[oa]s?)\b/i },
+	{ label: 'motivação inventada', pattern: /\b(para\s+se\s+vingar|em\s+busca\s+de\s+vingan[çc]a|por\s+causa\s+de\s+seu\s+passado|decidiu\s+que|prometeu\s+a\s+si\s+mesmo|sabia\s+que\s+precisava|com\s+o\s+objetivo\s+de)\b/i },
+	{ label: 'consequência/antecipação não comprovada', pattern: /\b(sem\s+saber\s+que|mal\s+sabia\s+ele|isso\s+mudaria\s+sua\s+vida|a\s+partir\s+daquele\s+momento\s+tudo\s+mudou|o\s+destino\s+estava\s+selado)\b/i },
+];
+
+export interface UngroundedInventionDetection {
+	hasInvention: boolean;
+	findings: Array<{ label: string; matchedText: string }>;
+}
+
+/**
+ * Detects whether narration introduces ungrounded temperature, motivations,
+ * or future consequences not supported by the scene's panel evidence.
+ */
+export function detectUngroundedInventions(
+	narrationText: string,
+	groundingSources: readonly (string | undefined)[],
+): UngroundedInventionDetection {
+	const groundingLower = groundingSources.filter(Boolean).join(' ').toLowerCase();
+	const findings: Array<{ label: string; matchedText: string }> = [];
+
+	for (const { label, pattern } of UNGROUNDED_INVENTION_PATTERNS) {
+		const m = narrationText.match(pattern);
+		if (!m) continue;
+		const matched = m[0].toLowerCase();
+		// Allow only if the core words were already present in the scene's visual/dialogue evidence
+		const coreTokens = tokenizeSignificantForOverlap(matched);
+		const isGrounded = coreTokens.length > 0 && coreTokens.every((t) => groundingLower.includes(t));
+		if (!isGrounded) {
+			findings.push({ label, matchedText: m[0] });
+		}
+	}
+
+	return {
+		hasInvention: findings.length > 0,
+		findings,
+	};
+}
+
+/**
+ * Detects whether scene i's narration anticipates distinctive action/setting tokens
+ * that only exist in scene i+1's panels (not in scene i's own evidence).
+ */
+export function detectAnticipatedNextSceneEvents(
+	narrationText: string,
+	currGroundingSources: readonly (string | undefined)[],
+	nextSceneGroundingSources: readonly (string | undefined)[],
+): { hasAnticipation: boolean; anticipatedTokens: string[] } {
+	const currTokens = new Set(tokenizeSignificantForOverlap(currGroundingSources.filter(Boolean).join(' ')));
+	const nextTokens = new Set(tokenizeSignificantForOverlap(nextSceneGroundingSources.filter(Boolean).join(' ')));
+	const narrationTokens = new Set(tokenizeSignificantForOverlap(narrationText));
+
+	const anticipatedTokens: string[] = [];
+	for (const tok of narrationTokens) {
+		if (tok.length >= 6 && nextTokens.has(tok) && !currTokens.has(tok)) {
+			anticipatedTokens.push(tok);
+		}
+	}
+
+	return {
+		hasAnticipation: anticipatedTokens.length >= 2,
+		anticipatedTokens,
+	};
+}
 
 function toNaturalCharacterLabel(rawName: string): string {
 	const trimmed = rawName.trim();
@@ -123,7 +284,7 @@ function toNaturalCharacterLabel(rawName: string): string {
 	return trimmed;
 }
 
-function simplifyVisualForNaturalRecap(rawVisual: string): string {
+function cleanTechnicalVisualText(rawVisual: string): string {
 	let text = rawVisual.trim();
 	text = text.replace(/\batravessa\s+diagonalmente\s+o\s+painel\b/gi, 'atravessa o caminho');
 	text = text.replace(/\bdo\s+topo\s+(?:do\s+painel|da\s+imagem)\b/gi, 'de cima');
@@ -137,6 +298,12 @@ function simplifyVisualForNaturalRecap(rawVisual: string): string {
 		.replace(/\s+/g, ' ')
 		.replace(/\s+([.,!?;])/g, '$1')
 		.trim();
+	return text.replace(/^[,;:\-\s]+/, '').replace(/[;,\s]+$/, '').trim();
+}
+
+function simplifyVisualForNaturalRecap(rawVisual: string): string {
+	const text = cleanTechnicalVisualText(rawVisual);
+	if (!text) return '';
 	// Keep at most the 2 most informative sentences to stay concise and natural
 	const sentences = text
 		.split(/(?<=[.!?])\s+/)
@@ -150,6 +317,59 @@ function simplifyVisualForNaturalRecap(rawVisual: string): string {
 	const finalStr = (picked || text).replace(/^[,;:\-\s]+/, '').replace(/[;,\s]+$/, '').trim();
 	if (!finalStr) return '';
 	return finalStr.charAt(0).toUpperCase() + finalStr.slice(1);
+}
+
+/**
+ * Explicit transformation step: Visual Analysis (StoryBeat) -> StructuredNarrativeEvent.
+ * Separates internal visual analysis from narrative facts (actors, setting, actions, dialogues)
+ * so raw technical visual descriptions are never copied directly into narration.
+ */
+export function extractNarrativeEventsFromBeat(
+	beat: StoryBeat,
+	style: ScriptStyle = 'natural_recap',
+): StructuredNarrativeEvent {
+	const isNatural = style === 'natural_recap';
+	const actors = [...new Set(
+		beat.characters
+			.map((c) => (isNatural ? toNaturalCharacterLabel(c) : c.trim()))
+			.filter(Boolean),
+	)];
+
+	const cleanedSetting = beat.setting ? cleanTechnicalVisualText(beat.setting) : undefined;
+
+	const seenActions = new Set<string>();
+	const actions: string[] = [];
+	for (const act of beat.actions ?? []) {
+		const cleaned = cleanTechnicalVisualText(act.description);
+		if (!cleaned || cleaned.length < 6) continue;
+		if (detectTechnicalVisualDescription(cleaned).isTechnical) continue;
+		const key = cleaned.toLowerCase();
+		if (seenActions.has(key)) continue;
+		seenActions.add(key);
+		actions.push(cleaned);
+	}
+
+	// If structured actions are absent, extract only non-technical narrative clauses from visualSummary
+	if (actions.length === 0 && beat.visualSummary) {
+		const cleaned = simplifyVisualForNaturalRecap(beat.visualSummary);
+		if (cleaned && !detectTechnicalVisualDescription(cleaned).isTechnical) {
+			actions.push(cleaned);
+		}
+	}
+
+	const dialogues = (beat.dialogues ?? []).filter((d) => isSubstantiveSpokenLine(d));
+
+	return {
+		beatId: beat.beatId,
+		...(cleanedSetting ? { setting: cleanedSetting } : {}),
+		actors,
+		actions,
+		dialogues,
+		emotion: beat.emotion,
+		actionType: beat.actionType,
+		...(beat.previousContext ? { previousContext: cleanTechnicalVisualText(beat.previousContext) } : {}),
+		...(beat.nextContext ? { nextContext: cleanTechnicalVisualText(beat.nextContext) } : {}),
+	};
 }
 
 const NON_VERBAL_SCREAM_PATTERN = /^[aeioughrkc!?.…~\-\s]+$/i;
@@ -219,11 +439,15 @@ function combineConnectorAndVisual(connector: string, visualText: string, beatIn
 	const cleaned = visualText.trim();
 	if (!cleaned) return '';
 	if (style === 'natural_recap' && beatIndex === 0) {
-		// Avoid broken grammar like "A história começa quando uma paisagem montanhosa..."
-		const startsWithSettingNoun = /^(uma?\s+paisagem|montanhas|picos|noite|c[ée]u|floresta|vila|templo|castelo|academia|florestas|neblina)/i.test(cleaned);
+		// Avoid broken grammar like "A história começa quando paisagem montanhosa..."
+		const startsWithSettingNoun = /^(?:uma?\s+)?paisagem|^(?:uma?\s+)?floresta|^montanhas|^picos|^noite|^c[ée]u|^vila|^templo|^castelo|^academia|^neblina/i.test(cleaned);
 		if (startsWithSettingNoun) {
 			const lowerFirst = cleaned.charAt(0).toLowerCase() + cleaned.slice(1);
-			return ensureSentenceEnding(`A história começa em ${lowerFirst}`);
+			if (/^c[ée]u\b/i.test(lowerFirst)) {
+				return ensureSentenceEnding(`A história começa sob um ${lowerFirst}`);
+			}
+			const needsArticle = /^(paisagem|floresta|noite|vila|academia|neblina)\b/i.test(lowerFirst);
+			return ensureSentenceEnding(`A história começa em ${needsArticle ? `uma ${lowerFirst}` : lowerFirst}`);
 		}
 		const startsWithArticleOnly = /^(uma?\s+perna|um\s+galho|folhas|silhuetas?)/i.test(cleaned);
 		if (startsWithArticleOnly) {
@@ -294,35 +518,52 @@ function generateGroundedNarrationText(
 	beatIndex: number,
 	totalBeats: number,
 	style: ScriptStyle,
-): { text: string; needsManualReview: boolean; reviewNote?: string } {
+	previousSceneActions?: ReadonlySet<string>,
+): { text: string; needsManualReview: boolean; reviewNote?: string; usedActions: string[] } {
 	if (!hasSubstantiveBeatEvidence(beat)) {
 		const uncertaintyDetail = beat.uncertainties?.slice(0, 2).join(' | ') || 'análise visual e OCR sem conteúdo suficiente';
 		return {
 			text: `${REVIEW_REQUIRED_PREFIX} Painéis ${beat.panelIds.join(', ')} não puderam ser interpretados com evidência suficiente (${uncertaintyDetail}). Revise os painéis originais antes da produção.`,
 			needsManualReview: true,
 			reviewNote: `Evidência visual/textual insuficiente para narrar sem inventar: ${uncertaintyDetail}`,
+			usedActions: [],
 		};
 	}
 
 	const isNatural = style === 'natural_recap';
+	const event = extractNarrativeEventsFromBeat(beat, style);
+	const deduplicatedActions = previousSceneActions
+		? event.actions.filter((act) => !previousSceneActions.has(act.toLowerCase().trim()))
+		: event.actions;
+	const activeActions = deduplicatedActions.length > 0 ? deduplicatedActions : event.actions;
 	const parts: string[] = [];
 	const connector = selectTransitionConnector(beat, beatIndex, style);
 
-	// 1. Visual description condensed into natural storytelling (no camera/frame analysis jargon in natural_recap)
-	const rawVisual = beat.visualSummary?.trim();
-	if (rawVisual) {
-		const cleanedVisual = simplifyVisualForNaturalRecap(rawVisual);
-		if (cleanedVisual) {
-			parts.push(combineConnectorAndVisual(connector, cleanedVisual, beatIndex, style));
+	// 1. Build narration from structured narrative events (never raw visualDescription)
+	if (activeActions.length > 0) {
+		const primaryAction = activeActions[0]!;
+		parts.push(combineConnectorAndVisual(connector, primaryAction, beatIndex, style));
+		const remainingActions = activeActions.slice(1, isNatural ? 4 : 3);
+		for (const nextAct of remainingActions) {
+			const joined = parts.join(' ').toLowerCase();
+			if (!joined.includes(nextAct.toLowerCase())) {
+				parts.push(ensureSentenceEnding(nextAct.charAt(0).toUpperCase() + nextAct.slice(1)));
+			}
 		}
 	} else {
 		const introParts: string[] = [];
-		if (connector) introParts.push(connector);
-		if (beat.characters.length > 0) {
-			const labels = isNatural ? beat.characters.map(toNaturalCharacterLabel) : beat.characters;
-			introParts.push(`${labels.join(' e ')} protagonizam este momento`);
-		} else if (beat.setting) {
-			introParts.push(`o foco recai sobre ${beat.setting}`);
+		if (event.actors.length > 0) {
+			if (connector) introParts.push(connector);
+			introParts.push(`${event.actors.join(' e ')} protagonizam este momento`);
+		} else if (event.setting) {
+			if (beatIndex === 0 && isNatural) {
+				const lowerSetting = event.setting.charAt(0).toLowerCase() + event.setting.slice(1);
+				const hasArticle = /^(uma?|o|a|os|as)\s+/i.test(lowerSetting);
+				introParts.push(`A história começa em ${hasArticle ? lowerSetting : `uma ${lowerSetting}`}`);
+			} else {
+				if (connector) introParts.push(connector);
+				introParts.push(`a cena se passa em ${event.setting}`);
+			}
 		}
 		if (introParts.length > 0) {
 			parts.push(ensureSentenceEnding(introParts.join(' ')));
@@ -339,8 +580,7 @@ function generateGroundedNarrationText(
 
 	// 2. Incorporate essential speech bubbles (dialogue, thought, narration) preserving reading order
 	// Always filter out SFX and garbled OCR noise (e.g. "a k ie pe", "1 - y g")
-	const substantiveDialogues = (beat.dialogues ?? []).filter((d) => isSubstantiveSpokenLine(d));
-	const incorporated = substantiveDialogues.slice(0, isNatural ? 3 : 4);
+	const incorporated = event.dialogues.slice(0, isNatural ? 3 : 4);
 	let dialogueIdx = 0;
 	for (const entry of incorporated) {
 		const sentence = formatDialogueSentence(entry, beat.characters, isNatural, dialogueIdx);
@@ -358,15 +598,25 @@ function generateGroundedNarrationText(
 	}
 
 	const combined = parts.join(' ').replace(/\s+/g, ' ').trim();
+	const techCheck = detectTechnicalVisualDescription(combined, beat.visualSummary);
 	if (!combined || isGenericNarration(combined)) {
 		return {
 			text: `${REVIEW_REQUIRED_PREFIX} Não foi possível compor narração específica para os painéis ${beat.panelIds.join(', ')}.`,
 			needsManualReview: true,
 			reviewNote: 'Narração resultante foi classificada como genérica ou vazia.',
+			usedActions: [],
+		};
+	}
+	if (techCheck.isTechnical || techCheck.isRawCopy) {
+		return {
+			text: combined,
+			needsManualReview: true,
+			reviewNote: `Narração ainda contém linguagem técnica de análise visual (${techCheck.matchedPatterns.join(', ') || 'cópia de descrição visual'}).`,
+			usedActions: activeActions,
 		};
 	}
 
-	return { text: combined, needsManualReview: false };
+	return { text: combined, needsManualReview: false, usedActions: activeActions };
 }
 
 /**
@@ -456,10 +706,12 @@ export function runScriptGenerator(options: ScriptGeneratorOptions): ScriptGener
 
 	const scenes: Scene[] = [];
 	let totalDuration = 0;
+	let previousSceneActions = new Set<string>();
 
 	for (let i = 0; i < sequence.beats.length; i++) {
 		const beat = sequence.beats[i]!;
-		const generated = generateGroundedNarrationText(beat, i, sequence.beats.length, style);
+		const generated = generateGroundedNarrationText(beat, i, sequence.beats.length, style, previousSceneActions);
+		previousSceneActions = new Set(generated.usedActions.map((a) => a.toLowerCase().trim()));
 
 		const croppedImagePaths: string[] = [];
 		for (const panelId of beat.panelIds) {
@@ -487,6 +739,7 @@ export function runScriptGenerator(options: ScriptGeneratorOptions): ScriptGener
 			characters: beat.characters,
 			eventDescription: beat.summary,
 			...(beat.visualSummary ? { visualSummary: beat.visualSummary } : {}),
+			...(beat.actions && beat.actions.length > 0 ? { actions: beat.actions } : {}),
 			...(beat.setting ? { setting: beat.setting } : {}),
 			...(beat.dialogues && beat.dialogues.length > 0 ? { extractedDialogues: beat.dialogues } : {}),
 			...(beat.uncertainties && beat.uncertainties.length > 0 ? { uncertainties: beat.uncertainties } : {}),
@@ -570,18 +823,20 @@ export async function refineScriptWithPort(input: {
 		}
 
 		try {
+			const narrativeEvent = extractNarrativeEventsFromBeat(beat, script.style);
 			const res = await port.enhance({
 				text: scene.narrationText,
 				context: {
 					sceneId: scene.sceneId,
 					style: script.style,
 					humorVolume,
-					characters: beat.characters,
-					setting: beat.setting,
-					visualSummary: beat.visualSummary,
-					dialogues: beat.dialogues ?? [],
-					previousContext: beat.previousContext,
-					nextContext: beat.nextContext,
+					narrativeEvent,
+					characters: narrativeEvent.actors,
+					setting: narrativeEvent.setting,
+					actions: narrativeEvent.actions,
+					dialogues: narrativeEvent.dialogues,
+					previousContext: narrativeEvent.previousContext,
+					nextContext: narrativeEvent.nextContext,
 					continuityState: sequence.continuityState,
 				},
 				systemPrompt: LLM_SCRIPT_SYSTEM_PROMPT.replace('{humorVolume}', String(Math.max(0, Math.min(100, humorVolume)))),
@@ -606,8 +861,9 @@ export async function refineScriptWithPort(input: {
 				}
 			}
 
-			if (isGenericNarration(candidate) || isReviewRequiredPlaceholder(candidate)) {
-				warnings.push(`Scene ${scene.sceneId}: LLM script candidate rejected as generic; keeping grounded narration.`);
+			const techCandidate = detectTechnicalVisualDescription(candidate, beat.visualSummary);
+			if (isGenericNarration(candidate) || isReviewRequiredPlaceholder(candidate) || techCandidate.isTechnical || techCandidate.isRawCopy) {
+				warnings.push(`Scene ${scene.sceneId}: LLM script candidate rejected (${techCandidate.isTechnical || techCandidate.isRawCopy ? 'technical visual description' : 'generic'}); keeping grounded narration.`);
 				candidate = scene.narrationText;
 			}
 

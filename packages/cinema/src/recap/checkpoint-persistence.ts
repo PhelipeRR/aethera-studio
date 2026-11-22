@@ -5,6 +5,7 @@ import { panelAnalysisSchema, recapCheckpointSchema } from './recap-types.js';
 
 const CHECKPOINT_FILENAME = 'recap-checkpoint.json';
 export const RECAP_ANALYZER_VERSION = '2.3.0';
+export const RECAP_SCRIPT_GENERATOR_VERSION = '3.0.0';
 
 /**
  * Builds a deterministic cache key binding imageHash, model, and analyzer version.
@@ -17,6 +18,21 @@ export function computePanelCacheKey(input: {
 	const model = (input.model ?? 'default').trim() || 'default';
 	const version = (input.analyzerVersion ?? RECAP_ANALYZER_VERSION).trim() || RECAP_ANALYZER_VERSION;
 	return `${input.imageHash}::${model}::${version}`;
+}
+
+/**
+ * Builds a deterministic cache key for script generation binding chapter, style,
+ * script generator version, and panel analyses signature.
+ */
+export function computeScriptCacheKey(input: {
+	chapterId: string;
+	scriptStyle: string;
+	scriptGeneratorVersion?: string;
+	analysesSignature?: string;
+}): string {
+	const version = (input.scriptGeneratorVersion ?? RECAP_SCRIPT_GENERATOR_VERSION).trim() || RECAP_SCRIPT_GENERATOR_VERSION;
+	const sig = (input.analysesSignature ?? 'default').trim() || 'default';
+	return `${input.chapterId}::${input.scriptStyle}::${version}::${sig}`;
 }
 
 /**

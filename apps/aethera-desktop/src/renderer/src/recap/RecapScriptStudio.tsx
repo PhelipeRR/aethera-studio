@@ -22,6 +22,7 @@ export interface ScriptStudioScene {
   characters: string[];
   eventDescription?: string;
   visualSummary?: string;
+  actions?: Array<{ type: string; description: string }>;
   setting?: string;
   extractedDialogues: RecapDialogueEntryView[];
   uncertainties: string[];
@@ -596,10 +597,25 @@ export function RecapScriptStudio({
 
               {/* Comfortable Narration Editor */}
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <label htmlFor={`studio-narration-${row.sceneId}`} style={{ fontSize: 12, fontWeight: 700, color: '#111111' }}>
-                    Narração da cena
-                  </label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <label htmlFor={`studio-narration-${row.sceneId}`} style={{ fontSize: 12, fontWeight: 700, color: '#111111' }}>
+                      Narração da cena
+                    </label>
+                    <span
+                      style={{
+                        padding: '2px 8px',
+                        borderRadius: 9999,
+                        background: '#f4f4f6',
+                        border: '1px solid #e3e3e8',
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: '#2a1d5c',
+                      }}
+                    >
+                      {scriptStyleLabel}
+                    </span>
+                  </div>
                   <button
                     type="button"
                     onClick={() => setShowVisualByScene((prev) => ({ ...prev, [row.sceneId]: !prev[row.sceneId] }))}
@@ -610,9 +626,10 @@ export function RecapScriptStudio({
                       fontSize: 12,
                       fontWeight: 600,
                       color: '#6a46d8',
+                      cursor: 'pointer',
                     }}
                   >
-                    {showVisual ? 'Ocultar análise visual' : 'Ver análise visual detalhada'}
+                    {showVisual ? 'Ocultar análise visual detalhada' : 'Ver análise visual detalhada'}
                   </button>
                 </div>
                 <textarea
@@ -655,25 +672,63 @@ export function RecapScriptStudio({
                 </div>
               )}
 
-              {/* Progressive Disclosure: Detailed Visual Analysis */}
+              {/* Progressive Disclosure: Detailed Visual Analysis (strictly separated from narration) */}
               {showVisual && (
                 <div
                   style={{
-                    padding: '10px 12px',
+                    padding: '12px 14px',
                     borderRadius: 14,
                     background: '#f8f7fc',
                     border: '1px solid #e3e3e8',
                     fontSize: 12,
                     color: '#52525b',
                     lineHeight: 1.55,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
                   }}
                 >
-                  <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#2a1d5c', marginBottom: 4 }}>
-                    Análise visual interna (preservada para fidelidade)
+                  <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#2a1d5c' }}>
+                    Análise visual detalhada (separada do roteiro)
                   </div>
-                  <p style={{ margin: 0, color: '#111111' }}>
-                    {row.visualSummary || row.eventDescription || 'Sem análise visual registrada.'}
-                  </p>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#111111', marginBottom: 2 }}>Descrição técnica</div>
+                    <p style={{ margin: 0, color: '#3f3f46' }}>
+                      {row.visualSummary || row.eventDescription || 'Sem descrição técnica registrada.'}
+                    </p>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#111111', marginBottom: 2 }}>Ações identificadas</div>
+                    {row.actions && row.actions.length > 0 ? (
+                      <ul style={{ margin: 0, paddingLeft: 18, color: '#3f3f46' }}>
+                        {row.actions.map((act, aIdx) => (
+                          <li key={aIdx}>[{act.type}] {act.description}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <span style={{ color: '#71717a' }}>Nenhuma ação específica registrada.</span>
+                    )}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#111111', marginBottom: 2 }}>Diálogos extraídos</div>
+                    {row.extractedDialogues.length > 0 ? (
+                      <ul style={{ margin: 0, paddingLeft: 18, color: '#3f3f46' }}>
+                        {row.extractedDialogues.map((d, dIdx) => (
+                          <li key={dIdx}>
+                            {d.speaker ? `${d.speaker}: ` : ''}"{d.translatedText?.trim() || d.text}"
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <span style={{ color: '#71717a' }}>Nenhum diálogo extraído nos painéis.</span>
+                    )}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#111111', marginBottom: 2 }}>Personagens reconhecidos</div>
+                    <span style={{ color: '#3f3f46' }}>
+                      {row.characters.length > 0 ? row.characters.join(', ') : 'Nenhum personagem identificado.'}
+                    </span>
+                  </div>
                 </div>
               )}
 

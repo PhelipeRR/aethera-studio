@@ -139,6 +139,7 @@ function buildBeatEvidence(
 ): {
 	summary: string;
 	visualSummary?: string;
+	actions: Array<{ type: ActionType; description: string }>;
 	setting?: string;
 	dialogues: DialogueEntry[];
 	relevantObjects: string[];
@@ -187,9 +188,19 @@ function buildBeatEvidence(
 	const visualDescriptions = dedupeStrings(
 		analyses.map((a) => a.visualDescription).filter(isObservableDescription),
 	);
-	const actionDescriptions = dedupeStrings(
-		analyses.flatMap((a) => a.actions.map((act) => act.description)).filter(isObservableDescription),
-	);
+	const seenActionDesc = new Set<string>();
+	const actions: Array<{ type: ActionType; description: string }> = [];
+	for (const a of analyses) {
+		for (const act of a.actions) {
+			if (!isObservableDescription(act.description)) continue;
+			const desc = act.description.trim();
+			const key = desc.toLowerCase();
+			if (seenActionDesc.has(key)) continue;
+			seenActionDesc.add(key);
+			actions.push({ type: act.type, description: desc });
+		}
+	}
+	const actionDescriptions = actions.map((a) => a.description);
 	const visualFragments = visualDescriptions.length > 0 ? visualDescriptions : actionDescriptions;
 	const visualSummary = visualFragments.length > 0 ? visualFragments.join(' ') : undefined;
 
@@ -245,6 +256,7 @@ function buildBeatEvidence(
 	return {
 		summary,
 		...(visualSummary ? { visualSummary } : {}),
+		actions,
 		...(setting ? { setting } : {}),
 		dialogues,
 		relevantObjects,
@@ -470,6 +482,7 @@ export function runStoryContinuityEngine(options: ContinityEngineOptions): Conti
 			panelIds: raw.panelIds,
 			summary: raw.info.summary,
 			...(raw.info.visualSummary ? { visualSummary: raw.info.visualSummary } : {}),
+			...(raw.info.actions.length > 0 ? { actions: raw.info.actions } : {}),
 			...(raw.info.setting ? { setting: raw.info.setting } : {}),
 			...(raw.info.dialogues.length > 0 ? { dialogues: raw.info.dialogues } : {}),
 			...(raw.info.relevantObjects.length > 0 ? { relevantObjects: raw.info.relevantObjects } : {}),

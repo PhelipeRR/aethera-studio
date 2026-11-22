@@ -20,7 +20,14 @@ import { runScriptGenerator, refineScriptWithPort } from './script-generator.js'
 import { runGateGNarrativeFidelity, buildGateGDivergenceReport } from './gate-g-narrative-fidelity.js';
 import { runNarrativeHumanizer } from './narrative-humanizer.js';
 import { runContextualResearch } from './contextual-research.js';
-import { saveCheckpoint, loadCheckpoint, computePanelCacheKey, RECAP_ANALYZER_VERSION } from './checkpoint-persistence.js';
+import {
+	saveCheckpoint,
+	loadCheckpoint,
+	computePanelCacheKey,
+	computeScriptCacheKey,
+	RECAP_ANALYZER_VERSION,
+	RECAP_SCRIPT_GENERATOR_VERSION,
+} from './checkpoint-persistence.js';
 import {
 	createOrLoadStoryMemoryProject,
 	getMemoryContextForChapter,
@@ -91,6 +98,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		minBeatConfidence = 0.5,
 		analysisConcurrency = 1,
 		scriptPort,
+		regenerateScriptOnly = false,
 		humanize,
 		research,
 		storyMemory,
@@ -126,7 +134,11 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		...((existingCheckpoint?.analysisCacheByHash ?? {}) as Record<string, PanelAnalysis>),
 	};
 	if (cachedAnalyses.length > 0 || Object.keys(analysisCacheByHash).length > 0) {
-		warnings.push(`Resuming from checkpoint with ${cachedAnalyses.length} cached panel analyses and ${Object.keys(analysisCacheByHash).length} hash cache entries.`);
+		warnings.push(
+			regenerateScriptOnly
+				? `Regenerating script only: preserving ${cachedAnalyses.length} approved panel analyses and Story Memory.`
+				: `Resuming from checkpoint with ${cachedAnalyses.length} cached panel analyses and ${Object.keys(analysisCacheByHash).length} hash cache entries.`,
+		);
 	}
 
 	const incrementalMap = new Map<string, PanelAnalysis>();
@@ -315,11 +327,67 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		warnings.push(...refined.warnings);
 	}
 
-	// ─── Stage 5: Gate G Initial — Narrative Fidelity ─────────────────────────
-	const preHumanizeGateG = runGateGNarrativeFidelity({
+	// ─── Stage 5: Gate G Initial — Narrative Fidelity (with bounded retry) ─────
+	const MAX_SCRIPT_REGEN_ATTEMPTS = 2;
+	let preHumanizeGateG = runGateGNarrativeFidelity({
 		script: workingScript,
 		panels,
 		minSceneConfidence: minBeatConfidence * 0.8,
+	});
+
+	for (let attempt = 1; attempt <= MAX_SCRIPT_REGEN_ATTEMPTS && preHumanizeGateG.verdict === 'fail'; attempt++) {
+		const regenerableHints = preHumanizeGateG.hints.filter((h) =>
+			h.issueCode === 'technical_visual_description' ||
+			h.issueCode === 'repetitive_narration' ||
+			h.issueCode === 'missing_event_from_actions',
+		);
+		if (regenerableHints.length === 0) break;
+
+		warnings.push(
+			`Gate G reprovou roteiro (tentativa ${attempt}/${MAX_SCRIPT_REGEN_ATTEMPTS}): ${preHumanizeGateG.reasons.join('; ')}. Regenerando a partir de eventos narrativos estruturados.`,
+		);
+		if (scriptPort) {
+			const retried = await refineScriptWithPort({
+				script: workingScript,
+				sequence: continuityResult.sequence,
+				port: scriptPort,
+				humorVolume,
+			});
+			workingScript = retried.script;
+			warnings.push(...retried.warnings);
+		} else {
+			break;
+		}
+		preHumanizeGateG = runGateGNarrativeFidelity({
+			script: workingScript,
+			panels,
+			minSceneConfidence: minBeatConfidence * 0.8,
+		});
+	}
+
+	// If still invalid after retries, mark affected scenes as needs_review (never silently approve)
+	if (preHumanizeGateG.verdict === 'fail') {
+		const flaggedIds = new Set(preHumanizeGateG.hints.map((h) => h.sceneId).filter(Boolean));
+		workingScript = {
+			...workingScript,
+			scenes: workingScript.scenes.map((sc) => {
+				if (!flaggedIds.has(sc.sceneId)) return sc;
+				const sceneHints = preHumanizeGateG.hints.filter((h) => h.sceneId === sc.sceneId);
+				return {
+					...sc,
+					reviewStatus: 'needs_review' as const,
+					reviewNotes: sceneHints.map((h) => h.detail).join(' | '),
+				};
+			}),
+		};
+	}
+
+	const analysesSignature = analyses.map((a) => `${a.panelId}:${a.analyzedAtIso}`).join('|').slice(0, 120);
+	const scriptCacheKey = computeScriptCacheKey({
+		chapterId,
+		scriptStyle,
+		scriptGeneratorVersion: RECAP_SCRIPT_GENERATOR_VERSION,
+		analysesSignature,
 	});
 
 	// Apply Humanize ONLY after a valid factual script exists (never humanize a failed/empty script)
@@ -333,6 +401,9 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 			extractedPanels: panels,
 			panelAnalyses: analyses,
 			analysisCacheByHash,
+			scriptGeneratorVersion: RECAP_SCRIPT_GENERATOR_VERSION,
+			scriptStyle,
+			scriptCacheKey,
 			warnings,
 		});
 		const earlyResult: StoryEngineResult = {
@@ -357,6 +428,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 			const humanizeOpts: import('./recap-types.js').HumanizeOptions & { port: import('./recap-types.js').TextEnhancementPort } = {
 				enabled: humanize.enabled,
 				style: humanize.style,
+				humorVolume: humanize.humorVolume ?? humorVolume,
 				port: humanize.port,
 			};
 			if (humanize.maxDurationDeviation !== undefined) humanizeOpts.maxDurationDeviation = humanize.maxDurationDeviation;
@@ -397,6 +469,9 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		extractedPanels: panels,
 		panelAnalyses: analyses,
 		analysisCacheByHash,
+		scriptGeneratorVersion: RECAP_SCRIPT_GENERATOR_VERSION,
+		scriptStyle,
+		scriptCacheKey,
 		warnings,
 	});
 

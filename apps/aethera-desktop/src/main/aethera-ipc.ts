@@ -5880,6 +5880,7 @@ productionConsole,
                 humanize: {
                   enabled: true,
                   style: resolvedStyle,
+                  ...(input.humorVolume !== undefined ? { humorVolume: input.humorVolume } : {}),
                   port: recapHumanizePort,
                 },
               }
@@ -6087,7 +6088,7 @@ productionConsole,
       const resolvedStyle: ScriptStyle =
         detail.record.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(detail.record.scriptStyle)
           ? (detail.record.scriptStyle as ScriptStyle)
-          : 'narrative_recap';
+          : 'natural_recap';
       const visionAdapter = buildRecapVisionAdapter(recapWorkspace);
       const humanizePort = buildRecapHumanizePort();
       const regenCheckpointDir = join(recapWorkspace, 'checkpoints', `${detail.record.chapterId}-regen-${Date.now()}`);
@@ -6101,9 +6102,19 @@ productionConsole,
           checkpointDir: regenCheckpointDir,
           visionAdapter,
           scriptStyle: resolvedStyle,
+          regenerateScriptOnly: true,
           ...(detail.record.language ? { language: detail.record.language } : {}),
           ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
-          ...(humanizePort ? { humanize: { enabled: true, style: resolvedStyle, port: humanizePort } } : {}),
+          ...(humanizePort
+            ? {
+                humanize: {
+                  enabled: true,
+                  style: resolvedStyle,
+                  ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
+                  port: humanizePort,
+                },
+              }
+            : {}),
         });
         const mergedNarration = storyRes.script.scenes.map((s) => s.narrationText).join(' ').trim();
         const firstRegen = storyRes.script.scenes[0];
@@ -6118,6 +6129,7 @@ productionConsole,
                 characters: firstRegen.characters.length > 0 ? firstRegen.characters : sc.characters,
                 eventDescription: firstRegen.eventDescription,
                 ...(firstRegen.visualSummary ? { visualSummary: firstRegen.visualSummary } : {}),
+                ...(firstRegen.actions ? { actions: firstRegen.actions } : {}),
                 ...(firstRegen.setting ? { setting: firstRegen.setting } : {}),
                 ...(firstRegen.extractedDialogues ? { extractedDialogues: firstRegen.extractedDialogues } : {}),
                 ...(firstRegen.uncertainties ? { uncertainties: firstRegen.uncertainties } : {}),
@@ -6131,6 +6143,7 @@ productionConsole,
         );
         const updatedScript: RecapScript = {
           ...detail.script,
+          style: resolvedStyle,
           scenes: updatedScenes,
           totalEstimatedDurationSec: Math.max(
             1,
@@ -6138,8 +6151,14 @@ productionConsole,
           ),
         };
         const gateGReport = runGateGNarrativeFidelity({ script: updatedScript, panels: allPanels });
+        const invalidatedSteps = (detail.record.completedSteps ?? []).filter(
+          (st) => st !== 'tts' && st !== 'timeline' && st !== 'render_preview' && st !== 'render_master',
+        );
+        const { previewMp4Path: _dropPrev, masterMp4Path: _dropMaster, ...restRecord } = detail.record;
         const updatedRecord: RecapOrchestratorRecord = {
-          ...detail.record,
+          ...restRecord,
+          scriptStyle: resolvedStyle,
+          completedSteps: invalidatedSteps,
           gateGVerdict: gateGReport.verdict,
           updatedAtIso: new Date().toISOString(),
         };
@@ -6200,13 +6219,38 @@ productionConsole,
           checkpointDir,
           visionAdapter,
           scriptStyle: resolvedStyle,
-          ...(seriesMemory ? { seriesMemory } : {}),
+          regenerateScriptOnly: input.invalidateCache !== true,
+          ...(seriesMemory
+            ? {
+                storyMemory: {
+                  workspaceDir: recapWorkspace,
+                  projectId: seriesMemory.projectId,
+                  chapterNumber: 1,
+                  autoConsolidate: false,
+                },
+              }
+            : {}),
           ...(detail.record.language ? { language: detail.record.language } : {}),
           ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
-          ...(humanizePort ? { humanize: { enabled: true, style: resolvedStyle, port: humanizePort } } : {}),
+          ...(humanizePort
+            ? {
+                humanize: {
+                  enabled: true,
+                  style: resolvedStyle,
+                  ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
+                  port: humanizePort,
+                },
+              }
+            : {}),
         });
+        const invalidatedSteps = (detail.record.completedSteps ?? []).filter(
+          (st) => st !== 'tts' && st !== 'timeline' && st !== 'render_preview' && st !== 'render_master',
+        );
+        const { previewMp4Path: _dropPrev, masterMp4Path: _dropMaster, ...restRecord } = detail.record;
         const updatedRecord: RecapOrchestratorRecord = {
-          ...detail.record,
+          ...restRecord,
+          scriptStyle: resolvedStyle,
+          completedSteps: invalidatedSteps,
           sceneCount: storyRes.script.scenes.length,
           gateGVerdict: storyRes.gateGReport.verdict,
           updatedAtIso: new Date().toISOString(),
