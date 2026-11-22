@@ -200,8 +200,16 @@ function classifyAssetKind(relPath: string): MogrtEmbeddedAsset['kind'] {
 
 function unpackZipSafe(zipPath: string, targetDir: string): void {
 	mkdirSync(targetDir, { recursive: true });
-	// Windows 10/11 ships bsdtar (`tar -xf`) which natively handles ZIP archives regardless of extension (.mogrt / .aegraphic / .zip).
-	execFileSync('tar', ['-xf', zipPath, '-C', targetDir]);
+	if (process.platform === 'win32') {
+		// Windows 10/11 ships bsdtar (`tar -xf`) which natively handles ZIP archives regardless of extension (.mogrt / .aegraphic / .zip).
+		execFileSync('tar', ['-xf', zipPath, '-C', targetDir]);
+		return;
+	}
+	try {
+		execFileSync('unzip', ['-qo', zipPath, '-d', targetDir]);
+	} catch {
+		execFileSync('python3', ['-m', 'zipfile', '-e', zipPath, targetDir]);
+	}
 }
 
 /**
