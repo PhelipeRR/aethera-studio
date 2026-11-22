@@ -748,12 +748,31 @@ function scenesFromScript(script: RecapScriptView | null, plan: RecapAudiovisual
 function RealPipelineTimeline({
   record,
   liveMessage,
+  isActivelyRunning = false,
+  onResumeFromCheckpoint,
 }: {
   record: RecapProjectRecordView | null;
   liveMessage: string | null;
+  isActivelyRunning?: boolean;
+  onResumeFromCheckpoint?: () => void;
 }) {
   const timeline = useMemo(() => derivePipelineTimeline(record, liveMessage), [record, liveMessage]);
-  const headerTone = toneColors(timeline.tone);
+  const isOrphanedRun = Boolean(
+    record &&
+      !isActivelyRunning &&
+      (record.state === 'importing' ||
+        record.state === 'preflight' ||
+        record.state === 'story_engine' ||
+        record.state === 'audiovisual_preview' ||
+        record.state === 'master_export'),
+  );
+  const canResume = Boolean(
+    onResumeFromCheckpoint &&
+      record &&
+      !isActivelyRunning &&
+      (isOrphanedRun || record.state === 'failed' || record.state === 'paused_for_review'),
+  );
+  const headerTone = isOrphanedRun ? toneColors('warning') : toneColors(timeline.tone);
 
   return (
     <BentoBlock>
@@ -770,10 +789,35 @@ function RealPipelineTimeline({
         <div>
           <SectionLabel>Timeline Real do Processo</SectionLabel>
           <p style={{ margin: 0, fontSize: 13, color: T.ink, fontWeight: 500 }}>
-            {timeline.detailMessage}
+            {isOrphanedRun
+              ? 'Produção interrompida ao reiniciar o app. O checkpoint salvo está preservado — clique em Continuar para retomar de onde parou.'
+              : timeline.detailMessage}
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {canResume && (
+            <button
+              type="button"
+              onClick={onResumeFromCheckpoint}
+              className="recap-pressable"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '6px 14px',
+                borderRadius: T.radiusFull,
+                border: 'none',
+                background: '#111111',
+                color: '#ffffff',
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              <Play style={{ width: 13, height: 13, color: '#b6f500' }} />
+              Continuar do checkpoint
+            </button>
+          )}
           <span
             style={{
               fontSize: 12,
@@ -785,7 +829,7 @@ function RealPipelineTimeline({
               borderRadius: T.radiusSm,
             }}
           >
-            {timeline.stateLabel}
+            {isOrphanedRun ? 'Interrompido · Checkpoint salvo' : timeline.stateLabel}
           </span>
           <span
             style={{
@@ -1673,14 +1717,7 @@ export function RecapProductionPanel() {
     [activeProject, activeGateG, activeGateH],
   );
 
-  const isRunning =
-    isSubmitting ||
-    isApproving ||
-    activeProject?.state === 'importing' ||
-    activeProject?.state === 'preflight' ||
-    activeProject?.state === 'story_engine' ||
-    activeProject?.state === 'audiovisual_preview' ||
-    activeProject?.state === 'master_export';
+  const isRunning = isSubmitting || isApproving;
 
   useEffect(() => {
     if (!isRunning) {
@@ -4388,7 +4425,12 @@ export function RecapProductionPanel() {
           )}
 
           {/* Existing RealPipelineTimeline + Production Settings */}
-          <RealPipelineTimeline record={activeProject} liveMessage={statusNote} />
+          <RealPipelineTimeline
+            record={activeProject}
+            liveMessage={statusNote}
+            isActivelyRunning={isRunning}
+            onResumeFromCheckpoint={() => void handleStart(true)}
+          />
 
           <AudiovisualTrackTimeline
             plan={activePlan}
