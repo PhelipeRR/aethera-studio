@@ -630,6 +630,39 @@ function BentoBlock({
   );
 }
 
+/** A card-sized native disclosure for secondary panels (keyboard and screen-reader friendly by default). */
+function DisclosureCard({
+  title,
+  hint,
+  open,
+  onToggle,
+  id,
+  children,
+}: {
+  title: string;
+  hint?: React.ReactNode;
+  open: boolean;
+  onToggle: (open: boolean) => void;
+  id?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <details
+      id={id}
+      className="recap-disclosure recap-disclosure-card"
+      open={open}
+      onToggle={(e) => onToggle((e.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary>
+        <span>{title}</span>
+        {hint ? <span style={{ fontSize: 12, fontWeight: 500, color: T.inkMuted }}>{hint}</span> : null}
+        <ChevronRight className="recap-disclosure-chevron" style={{ width: 15, height: 15, marginLeft: 'auto', color: T.inkMuted, flexShrink: 0 }} aria-hidden="true" />
+      </summary>
+      <div style={{ paddingTop: 8 }}>{children}</div>
+    </details>
+  );
+}
+
 function toneColors(tone: 'neutral' | 'active' | 'warning' | 'success' | 'error') {
   switch (tone) {
     case 'success':
@@ -1515,6 +1548,11 @@ export function RecapProductionPanel() {
   const [subTab, setSubTab] = useState<SubTab>('projeto');
   const [productionElapsedSec, setProductionElapsedSec] = useState(0);
   const [showTechDiagnostics, setShowTechDiagnostics] = useState(false);
+  // Disclosure state for secondary panels. `projectsOpen === null` follows the default (open without a project).
+  const [projectsOpen, setProjectsOpen] = useState<boolean | null>(null);
+  const [engineOpen, setEngineOpen] = useState(false);
+  const [trackTimelineOpen, setTrackTimelineOpen] = useState(false);
+  const [outroOpen, setOutroOpen] = useState(false);
 
   // Recent & Active Project state
   const [persistedProjects, setPersistedProjects] = useState<RecapProjectRecordView[]>([]);
@@ -1712,6 +1750,8 @@ export function RecapProductionPanel() {
     () => mergeActiveProjectIntoRecentList(persistedProjects, activeProject),
     [persistedProjects, activeProject],
   );
+
+  const isProjectsOpen = projectsOpen ?? !activeProject;
 
   const activeMediaPath = activeProject?.masterMp4Path ?? activeProject?.previewMp4Path ?? null;
   const scorecard = useMemo(
@@ -3001,19 +3041,206 @@ export function RecapProductionPanel() {
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
+  // Timeline and outro editor are shared by the production and review steps, collapsed by default.
+  const advancedPanels = (
+    <>
+      <DisclosureCard
+        title="Timeline audiovisual"
+        hint={activePlan ? `${activePlan.shots.length} shots · V1 / A1 / A2 / T1` : 'Disponível após o plano audiovisual'}
+        open={trackTimelineOpen}
+        onToggle={setTrackTimelineOpen}
+      >
+        <AudiovisualTrackTimeline
+          plan={activePlan}
+          motionVelix={activeProject?.motionVelix ?? null}
+          selectedShotId={selectedShotId}
+          onSelectShot={(shotId) => setSelectedShotId(shotId)}
+          outroConfig={outroConfig}
+          onSelectOutro={() => {
+            setSubTab('producao');
+            setOutroOpen(true);
+            setTimeout(() => {
+              const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+              document
+                .getElementById('recap-motionvelix-outro-panel')
+                ?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+            }, 80);
+          }}
+        />
+      </DisclosureCard>
+
+      <DisclosureCard
+        id="recap-motionvelix-outro-panel"
+        title="Encerramento do vídeo"
+        hint="Templates MotionVelix, logotipo e CTA"
+        open={outroOpen}
+        onToggle={setOutroOpen}
+      >
+        <MotionVelixOutroPanel
+          projectId={activeProject?.runId || activeProject?.chapterId || 'recap-default'}
+          channelName={workTitle}
+          onConfigChange={setOutroConfig}
+        />
+      </DisclosureCard>
+    </>
+  );
+
+  const productionConfigCard = (
+    <BentoBlock>
+      <SectionLabel>Configuração da Produção</SectionLabel>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 14 }}>
+        <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          Título da obra
+          <input
+            value={workTitle}
+            onChange={(e) => setWorkTitle(e.target.value)}
+            style={inputStyle}
+            placeholder="Ex: Solo Leveling Cap. 01"
+          />
+        </label>
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          Formato
+          <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value as '16:9' | '9:16')} style={inputStyle}>
+            <option value="16:9">16:9 Horizontal (YouTube)</option>
+            <option value="9:16">9:16 Vertical (Shorts / Reels)</option>
+          </select>
+        </label>
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          Voz (TTS)
+          <select value={ttsProvider} onChange={(e) => setTtsProvider(e.target.value)} style={inputStyle}>
+            <option value="voicestudio_tts">VoiceStudio Local</option>
+            <option value="elevenlabs_tts">ElevenLabs</option>
+            <option value="windows_sapi_tts">Windows SAPI</option>
+          </select>
+        </label>
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          Idioma da narração
+          <select value={language} onChange={(e) => setLanguage(e.target.value as 'pt-BR' | 'en-US' | 'es-ES')} style={inputStyle}>
+            <option value="pt-BR">Português (BR)</option>
+            <option value="en-US">English (US)</option>
+            <option value="es-ES">Español (ES)</option>
+          </select>
+        </label>
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          Estilo de roteiro
+          <select value={scriptStyle} onChange={(e) => setScriptStyle(e.target.value)} style={inputStyle}>
+            <option value="natural_recap">Narração Natural (Padrão)</option>
+            <option value="narrative_recap">Recap Narrativo Detalhado</option>
+            <option value="cinematic_recap">Recap Cinematográfico</option>
+            <option value="mystery">Mistério</option>
+            <option value="suspense">Suspense</option>
+            <option value="documentary">Documentário</option>
+          </select>
+        </label>
+
+        <div style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Volume de humor</span>
+            <span style={{ fontFamily: T.mono, color: T.accent }}>{humorVolume}%</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={humorVolume}
+            onChange={(e) => setHumorVolume(Number(e.target.value))}
+            style={{ width: '100%', accentColor: T.accent, cursor: 'pointer', marginTop: 4 }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: T.inkSubtle }}>
+            <span>Sério</span>
+            <span>Equilibrado</span>
+            <span>Máximo</span>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: T.ink, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={enableOcr}
+            onChange={(e) => setEnableOcr(e.target.checked)}
+            style={{ accentColor: T.accent }}
+          />
+          Executar OCR (Tesseract) na extração dos painéis
+        </label>
+
+        <span style={{ fontSize: 12, fontFamily: T.mono, color: T.inkSubtle }}>
+          {resolvedArchivePath ? `Fonte: ${resolvedArchivePath.split(/[/\\]/).pop()}` : 'Nenhuma fonte selecionada'}
+        </span>
+      </div>
+
+      {/* Primary Actions */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginTop: 16 }}>
+        <button
+          type="button"
+          disabled={isRunning}
+          onClick={() => void handleStart(false)}
+          style={{ ...btnLime, opacity: isRunning ? 0.55 : 1 }}
+        >
+          {isRunning ? (
+            <>
+              <RefreshCw className="animate-spin" style={{ width: 14, height: 14 }} /> Produzindo…
+            </>
+          ) : (
+            <>
+              <Play style={{ width: 14, height: 14 }} /> Iniciar Produção
+            </>
+          )}
+        </button>
+
+        {readiness.checkpoint.canResume && (
+          <button
+            type="button"
+            disabled={isRunning}
+            onClick={() => void handleStart(true)}
+            style={{ ...btnSecondary, opacity: isRunning ? 0.55 : 1 }}
+          >
+            Retomar Checkpoint ({readiness.checkpoint.completedPanels}/{readiness.checkpoint.totalPanels})
+          </button>
+        )}
+
+        <button
+          type="button"
+          disabled={readinessLoading}
+          onClick={() => void refreshReadiness(activeProject?.chapterId)}
+          style={btnGhost}
+        >
+          <RefreshCw className={readinessLoading ? 'animate-spin' : undefined} style={{ width: 13, height: 13 }} />
+          Verificar Provedores
+        </button>
+
+        <button
+          type="button"
+          disabled={testingVision || isRunning}
+          onClick={() => void handleTestVisionReal()}
+          style={btnGhost}
+        >
+          <Sparkles className={testingVision ? 'animate-spin' : undefined} style={{ width: 13, height: 13 }} />
+          {testingVision ? 'Testando visão…' : 'Testar visão'}
+        </button>
+      </div>
+    </BentoBlock>
+  );
+
   return (
-    <div style={{ maxWidth: 1280, margin: '0 auto', color: T.ink, display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {/* Top Studio Header */}
+    <div className="recap-scope" style={{ maxWidth: 1280, margin: '0 auto', color: T.ink, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Studio header: identity, one status line, and two quiet disclosures (projects, engine) */}
       <BentoBlock style={{ padding: '20px 24px' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <SectionLabel>Aethera Studio · Mangá Recap</SectionLabel>
-            <h1 style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.025em', margin: 0, color: T.ink }}>
-              {activeProject ? activeProject.workTitle : 'Mangá Recap'}
+          <div style={{ minWidth: 0, flex: '1 1 280px' }}>
+            <SectionLabel>Mangá Recap</SectionLabel>
+            <h1 className="recap-heading-display" style={{ fontSize: 26, fontWeight: 700, margin: 0, color: T.ink, overflowWrap: 'anywhere' }}>
+              {activeProject ? activeProject.workTitle : 'Novo recap de mangá'}
             </h1>
             <p style={{ fontSize: 13, color: T.inkMuted, margin: '6px 0 0', lineHeight: 1.5 }}>
               {activeProject
-                ? `Projeto atual · ID ${activeProject.runId} · Atualizado em ${formatDateTimePt(activeProject.updatedAtIso)}`
+                ? `Atualizado em ${formatDateTimePt(activeProject.updatedAtIso)} · ID ${activeProject.runId}`
                 : 'Importe capítulos CBZ/PDF, Links ou CDN, produza com MotionVelix + TTS real e valide nos Release Gates.'}
             </p>
           </div>
@@ -3034,122 +3261,113 @@ export function RecapProductionPanel() {
           </div>
         </div>
 
-        {/* MotionVelix Engine Verification Strip */}
+        {/* Separated import vs production status, kept as one compact line (Requirement 4 & 9) */}
         <div
-          style={{
-            marginTop: 16,
-            paddingTop: 14,
-            borderTop: `1px solid ${T.border}`,
-            display: 'flex',
-            flexWrap: 'wrap',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: 12,
-          }}
+          role="region"
+          aria-label="Status separado de importação e produção"
+          style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 10 }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
-            <div
-              style={{
-                width: 34,
-                height: 34,
-                borderRadius: T.radiusSm,
-                background: motionVelixStatus?.installed ? T.limeSoft : T.warningBg,
-                border: `1px solid ${motionVelixStatus?.installed ? '#c3e85a' : T.warningBorder}`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-              }}
-            >
-              <Wand2 style={{ width: 16, height: 16, color: motionVelixStatus?.installed ? T.success : T.warning }} />
-            </div>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 700, color: T.ink }}>
-                <span>Motor de Edição: MotionVelix + FFmpeg Híbrido</span>
+          {(
+            [
+              [
+                'Importação do capítulo',
+                separatedStatus.importStatus,
+                separatedStatus.importStatus.state === 'validated'
+                  ? 'CBZ Pronto'
+                  : separatedStatus.importStatus.state === 'importing'
+                    ? 'Em andamento'
+                    : separatedStatus.importStatus.state === 'error'
+                      ? 'Requer atenção'
+                      : 'Pendente',
+              ],
+              [
+                'Produção',
+                separatedStatus.productionStatus,
+                separatedStatus.productionStatus.state === 'ready_to_start'
+                  ? 'Liberado'
+                  : separatedStatus.productionStatus.state === 'running'
+                    ? 'Executando'
+                    : separatedStatus.productionStatus.state === 'completed'
+                      ? 'Finalizado'
+                      : separatedStatus.productionStatus.state === 'failed'
+                        ? 'Falhou'
+                        : 'Aguardando',
+              ],
+            ] as const
+          ).map(([heading, status, badge]) => {
+            const tone = toneColors(status.tone);
+            return (
+              <div
+                key={heading}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  padding: '10px 12px',
+                  borderRadius: T.radiusInner,
+                  background: T.surfaceSubtle,
+                  minWidth: 0,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: T.inkMuted }}>{heading}</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 2 }}>{status.label}</div>
+                  <div style={{ fontSize: 12, color: T.inkMuted, marginTop: 2, lineHeight: 1.4 }}>{status.detail}</div>
+                </div>
                 <span
                   style={{
-                    fontFamily: T.mono,
                     fontSize: 11,
-                    fontWeight: 600,
-                    color: motionVelixStatus?.installed ? T.success : T.warning,
+                    fontWeight: 700,
+                    padding: '3px 9px',
+                    borderRadius: T.radiusFull,
+                    background: tone.bg,
+                    border: `1px solid ${tone.border}`,
+                    color: tone.fg,
+                    flexShrink: 0,
+                    whiteSpace: 'nowrap',
                   }}
                 >
-                  {motionVelixStatus
-                    ? motionVelixStatus.installed
-                      ? `Kit ativo (${motionVelixStatus.availableSfx.length}/5 SFX)`
-                      : 'Kit SFX ausente'
-                    : 'Verificando kit…'}
+                  {badge}
                 </span>
-                {activeProject?.motionVelix && (
-                  <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkMuted }}>
-                    · Último render: {activeProject.motionVelix.sfxApplied}/{activeProject.motionVelix.sfxPlanned} SFX · {activeProject.motionVelix.vfxAppliedShots} VFX · {activeProject.motionVelix.transitionsApplied} transições
-                  </span>
-                )}
               </div>
-              <p style={{ margin: '2px 0 0', fontSize: 11, color: T.inkMuted }}>
-                {motionVelixStatus?.sfxDir
-                  ? `SFX MotionVelix: ${motionVelixStatus.sfxDir}`
-                  : motionVelixStatus?.summary ?? 'Detectando diretório do kit MotionVelix…'}
+            );
+          })}
+        </div>
+
+        {/* Recent projects: open by default only when there is no project in focus */}
+        <details
+          className="recap-disclosure"
+          open={isProjectsOpen}
+          onToggle={(e) => setProjectsOpen((e.currentTarget as HTMLDetailsElement).open)}
+          style={{ marginTop: 14, borderTop: `1px solid ${T.border}` }}
+        >
+          <summary>
+            <FolderOpen style={{ width: 15, height: 15, color: T.inkMuted }} aria-hidden="true" />
+            <span>Projetos recentes</span>
+            <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkMuted }}>{recentProjects.length}</span>
+            <ChevronRight className="recap-disclosure-chevron" style={{ width: 15, height: 15, marginLeft: 'auto', color: T.inkMuted }} aria-hidden="true" />
+          </summary>
+          <div style={{ padding: '4px 0 6px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+              <p style={{ margin: 0, fontSize: 12, color: T.inkMuted }}>
+                Projeto atual e produções salvas, da mais recente para a mais antiga.
               </p>
+              <button
+                type="button"
+                onClick={() => void refreshProjects()}
+                disabled={projectsLoading}
+                style={{ ...btnGhost, border: `1px solid ${T.border}` }}
+              >
+                <RefreshCw className={projectsLoading ? 'animate-spin' : undefined} style={{ width: 13, height: 13 }} />
+                {projectsLoading ? 'Atualizando…' : 'Atualizar'}
+              </button>
             </div>
-          </div>
-
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button
-              type="button"
-              onClick={() => void refreshMotionVelixStatus()}
-              style={{ ...btnGhost, border: `1px solid ${T.border}` }}
-              title="Reverificar kit MotionVelix"
-            >
-              <RefreshCw style={{ width: 12, height: 12 }} /> Verificar Kit
-            </button>
-            <a
-              href="#/video/remotion"
-              style={{
-                ...btnGhost,
-                border: `1px solid ${T.border}`,
-                textDecoration: 'none',
-                color: T.ink,
-              }}
-            >
-              MotionVelix Studio <ExternalLink style={{ width: 12, height: 12 }} />
-            </a>
-            <a
-              href="#/video"
-              style={{
-                ...btnGhost,
-                border: `1px solid ${T.border}`,
-                textDecoration: 'none',
-                color: T.ink,
-              }}
-            >
-              Editor Multifaixa <ExternalLink style={{ width: 12, height: 12 }} />
-            </a>
-          </div>
-        </div>
-      </BentoBlock>
-
-      {/* Recent Projects (Always includes Current Project + Latest Persisted Projects) */}
-      <BentoBlock>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-          <div>
-            <SectionLabel>Projetos Recentes ({recentProjects.length})</SectionLabel>
-            <p style={{ margin: 0, fontSize: 12, color: T.inkMuted }}>
-              Exibe o projeto atual e todas as produções salvas em ordem da mais recente para a mais antiga.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => void refreshProjects()}
-            disabled={projectsLoading}
-            style={{ ...btnGhost, border: `1px solid ${T.border}` }}
-          >
-            <RefreshCw className={projectsLoading ? 'animate-spin' : undefined} style={{ width: 13, height: 13 }} />
-            {projectsLoading ? 'Atualizando…' : 'Atualizar'}
-          </button>
-        </div>
-
-        {recentProjects.length === 0 ? (
+        {projectsLoading && recentProjects.length === 0 ? (
+          <p role="status" style={{ margin: 0, padding: '18px 0', fontSize: 13, color: T.inkMuted, textAlign: 'center' }}>
+            Carregando projetos salvos…
+          </p>
+        ) : recentProjects.length === 0 ? (
           <div
             style={{
               padding: '22px 16px',
@@ -3168,7 +3386,7 @@ export function RecapProductionPanel() {
             </p>
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 260px), 1fr))', gap: 12 }}>
             {recentProjects.map((project) => {
               const isCurrent = activeProject?.runId === project.runId;
               const isDeleting = deletingProjectId === project.runId;
@@ -3322,120 +3540,127 @@ export function RecapProductionPanel() {
             })}
           </div>
         )}
+          </div>
+        </details>
+
+        {/* Editing engine: technical detail lives one level down; the summary still shows health */}
+        <details
+          className="recap-disclosure"
+          open={engineOpen}
+          onToggle={(e) => setEngineOpen((e.currentTarget as HTMLDetailsElement).open)}
+          style={{ borderTop: `1px solid ${T.border}` }}
+        >
+          <summary>
+            <Wand2 style={{ width: 15, height: 15, color: motionVelixStatus?.installed ? T.success : T.warning }} aria-hidden="true" />
+            <span>Motor de edição</span>
+            <span
+              style={{
+                fontFamily: T.mono,
+                fontSize: 11,
+                fontWeight: 600,
+                color: !motionVelixStatus ? T.inkMuted : motionVelixStatus.installed ? T.success : T.warning,
+              }}
+            >
+              {motionVelixStatus
+                ? motionVelixStatus.installed
+                  ? `Kit ativo (${motionVelixStatus.availableSfx.length}/5 SFX)`
+                  : 'Kit SFX ausente'
+                : 'Verificando kit…'}
+            </span>
+            <ChevronRight className="recap-disclosure-chevron" style={{ width: 15, height: 15, marginLeft: 'auto', color: T.inkMuted }} aria-hidden="true" />
+          </summary>
+          <div
+            style={{
+              padding: '4px 0 6px',
+              display: 'flex',
+              flexWrap: 'wrap',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
+            }}
+          >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: '1 1 300px' }}>
+            <div
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: T.radiusSm,
+                background: motionVelixStatus?.installed ? T.limeSoft : T.warningBg,
+                border: `1px solid ${motionVelixStatus?.installed ? '#c3e85a' : T.warningBorder}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <Wand2 style={{ width: 16, height: 16, color: motionVelixStatus?.installed ? T.success : T.warning }} />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 700, color: T.ink }}>
+                <span>Motor de Edição: MotionVelix + FFmpeg Híbrido</span>
+                <span
+                  style={{
+                    fontFamily: T.mono,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: motionVelixStatus?.installed ? T.success : T.warning,
+                  }}
+                >
+                  {motionVelixStatus
+                    ? motionVelixStatus.installed
+                      ? `Kit ativo (${motionVelixStatus.availableSfx.length}/5 SFX)`
+                      : 'Kit SFX ausente'
+                    : 'Verificando kit…'}
+                </span>
+                {activeProject?.motionVelix && (
+                  <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkMuted }}>
+                    · Último render: {activeProject.motionVelix.sfxApplied}/{activeProject.motionVelix.sfxPlanned} SFX · {activeProject.motionVelix.vfxAppliedShots} VFX · {activeProject.motionVelix.transitionsApplied} transições
+                  </span>
+                )}
+              </div>
+              <p style={{ margin: '2px 0 0', fontSize: 11, color: T.inkMuted }}>
+                {motionVelixStatus?.sfxDir
+                  ? `SFX MotionVelix: ${motionVelixStatus.sfxDir}`
+                  : motionVelixStatus?.summary ?? 'Detectando diretório do kit MotionVelix…'}
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => void refreshMotionVelixStatus()}
+              style={{ ...btnGhost, border: `1px solid ${T.border}` }}
+              title="Reverificar kit MotionVelix"
+            >
+              <RefreshCw style={{ width: 12, height: 12 }} /> Verificar Kit
+            </button>
+            <a
+              href="#/video/remotion"
+              style={{
+                ...btnGhost,
+                border: `1px solid ${T.border}`,
+                textDecoration: 'none',
+                color: T.ink,
+              }}
+            >
+              MotionVelix Studio <ExternalLink style={{ width: 12, height: 12 }} />
+            </a>
+            <a
+              href="#/video"
+              style={{
+                ...btnGhost,
+                border: `1px solid ${T.border}`,
+                textDecoration: 'none',
+                color: T.ink,
+              }}
+            >
+              Editor Multifaixa <ExternalLink style={{ width: 12, height: 12 }} />
+            </a>
+          </div>
+          </div>
+        </details>
       </BentoBlock>
-
-      {/* Separated Import Status vs General Production Status Strip (Requirement 4 & 9) */}
-      <div
-        role="region"
-        aria-label="Status separado de importação e produção"
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-          gap: 12,
-        }}
-      >
-        {(() => {
-          const impTone = toneColors(separatedStatus.importStatus.tone);
-          const prodTone = toneColors(separatedStatus.productionStatus.tone);
-          return (
-            <>
-              <div
-                style={{
-                  padding: '14px 18px',
-                  borderRadius: T.radiusInner,
-                  background: T.surface,
-                  border: `1px solid ${impTone.border}`,
-                  boxShadow: T.shadow,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: T.inkMuted }}>
-                    Status da Importação (CBZ / Capítulo)
-                  </div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: T.ink, marginTop: 3 }}>
-                    {separatedStatus.importStatus.label}
-                  </div>
-                  <div style={{ fontSize: 12, color: T.inkMuted, marginTop: 2 }}>
-                    {separatedStatus.importStatus.detail}
-                  </div>
-                </div>
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 700,
-                    padding: '4px 10px',
-                    borderRadius: T.radiusFull,
-                    background: impTone.bg,
-                    border: `1px solid ${impTone.border}`,
-                    color: impTone.fg,
-                    flexShrink: 0,
-                  }}
-                >
-                  {separatedStatus.importStatus.state === 'validated'
-                    ? 'CBZ Pronto'
-                    : separatedStatus.importStatus.state === 'importing'
-                      ? 'Em andamento'
-                      : separatedStatus.importStatus.state === 'error'
-                        ? 'Requer atenção'
-                        : 'Pendente'}
-                </span>
-              </div>
-
-              <div
-                style={{
-                  padding: '14px 18px',
-                  borderRadius: T.radiusInner,
-                  background: T.surface,
-                  border: `1px solid ${prodTone.border}`,
-                  boxShadow: T.shadow,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: T.inkMuted }}>
-                    Status Geral da Produção (Pipeline)
-                  </div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: T.ink, marginTop: 3 }}>
-                    {separatedStatus.productionStatus.label}
-                  </div>
-                  <div style={{ fontSize: 12, color: T.inkMuted, marginTop: 2 }}>
-                    {separatedStatus.productionStatus.detail}
-                  </div>
-                </div>
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 700,
-                    padding: '4px 10px',
-                    borderRadius: T.radiusFull,
-                    background: prodTone.bg,
-                    border: `1px solid ${prodTone.border}`,
-                    color: prodTone.fg,
-                    flexShrink: 0,
-                  }}
-                >
-                  {separatedStatus.productionStatus.state === 'ready_to_start'
-                    ? 'Liberado'
-                    : separatedStatus.productionStatus.state === 'running'
-                      ? 'Executando'
-                      : separatedStatus.productionStatus.state === 'completed'
-                        ? 'Finalizado'
-                        : separatedStatus.productionStatus.state === 'failed'
-                          ? 'Falhou'
-                          : 'Aguardando'}
-                </span>
-              </div>
-            </>
-          );
-        })()}
-      </div>
 
       {/* 8-Stage Workflow Stepper (UX/UI Pro Max + Apple Design Translucent Chrome) */}
       <RecapWorkflowStepper steps={workflowSteps} activeStep={subTab} onSelectStep={setSubTab} />
@@ -3662,43 +3887,6 @@ export function RecapProductionPanel() {
                   </span>
                 </div>
               </div>
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  flexWrap: 'wrap',
-                  padding: '8px 10px',
-                  marginBottom: 12,
-                  borderRadius: T.radiusSm,
-                  background: T.surfaceSubtle,
-                  border: `1px solid ${T.border}`,
-                }}
-              >
-                <span style={{ fontSize: 11, fontWeight: 600, color: T.inkMuted }}>Endpoint Firecrawl Local:</span>
-                <input
-                  value={firecrawlEndpointInput}
-                  onChange={(e) => setFirecrawlEndpointInput(e.target.value)}
-                  placeholder="http://127.0.0.1:3002"
-                  style={{ ...inputStyle, flex: 1, minWidth: 180, padding: '6px 10px', fontSize: 12, fontFamily: T.mono }}
-                />
-                <button
-                  type="button"
-                  disabled={firecrawlChecking}
-                  onClick={() => void handleSaveFirecrawlConfig(firecrawlStatus ? !firecrawlStatus.enabled : true)}
-                  style={{ ...btnGhost, padding: '6px 10px', fontSize: 11 }}
-                >
-                  {firecrawlStatus?.enabled === false ? 'Ativar' : 'Desativar'}
-                </button>
-                <button
-                  type="button"
-                  disabled={firecrawlChecking}
-                  onClick={() => void handleSaveFirecrawlConfig()}
-                  style={{ ...btnGhost, padding: '6px 10px', fontSize: 11 }}
-                >
-                  <RefreshCw style={{ width: 12, height: 12 }} /> Testar / Salvar
-                </button>
-              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {linkInputs.map((url, idx) => (
                   <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -3766,64 +3954,113 @@ export function RecapProductionPanel() {
                 </div>
               </div>
 
-              {/* Universal Importer 7-State Status Strip */}
-              <div
-                aria-label="Estados do Importador Universal"
-                style={{
-                  marginTop: 12,
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: 6,
-                }}
-              >
-                {(
-                  [
-                    ['source_recognized', 'Fonte reconhecida'],
-                    ['analyzing_page', 'Analisando página'],
-                    ['chapter_identified', 'Capítulo identificado'],
-                    ['verifying_images', 'Verificando imagens'],
-                    ['importing', 'Importando'],
-                    ['import_not_permitted', 'Importação não permitida'],
-                    ['content_not_recognized', 'Conteúdo não reconhecido'],
-                  ] as const
-                ).map(([stKey, stLabel]) => {
-                  const firstJobItemState = linkImportJob?.items?.[0]?.universalState;
-                  const activeState =
-                    universalAnalyzeState !== 'idle' ? universalAnalyzeState : (firstJobItemState ?? 'idle');
-                  const isActive = activeState === stKey;
-                  const isNegative = stKey === 'import_not_permitted' || stKey === 'content_not_recognized';
-                  return (
-                    <span
-                      key={stKey}
-                      style={{
-                        fontSize: 11,
-                        fontWeight: isActive ? 700 : 500,
-                        padding: '4px 10px',
-                        borderRadius: T.radiusFull,
-                        border: `1px solid ${
-                          isActive
+              {/* Firecrawl endpoint is setup, not part of the everyday import path */}
+              <details className="recap-disclosure" style={{ marginTop: 8 }}>
+                <summary>
+                  <span style={{ fontSize: 12 }}>Configurar Firecrawl Local</span>
+                  <ChevronRight className="recap-disclosure-chevron" style={{ width: 14, height: 14, color: T.inkMuted }} aria-hidden="true" />
+                </summary>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    flexWrap: 'wrap',
+                    padding: '8px 10px',
+                    marginTop: 4,
+                    borderRadius: T.radiusSm,
+                    background: T.surfaceSubtle,
+                    border: `1px solid ${T.border}`,
+                  }}
+                >
+                  <span style={{ fontSize: 11, fontWeight: 600, color: T.inkMuted }}>Endpoint Firecrawl Local:</span>
+                  <input
+                    value={firecrawlEndpointInput}
+                    onChange={(e) => setFirecrawlEndpointInput(e.target.value)}
+                    placeholder="http://127.0.0.1:3002"
+                  aria-label="Endpoint do Firecrawl Local"
+                    style={{ ...inputStyle, flex: 1, minWidth: 180, padding: '6px 10px', fontSize: 12, fontFamily: T.mono }}
+                  />
+                  <button
+                    type="button"
+                    disabled={firecrawlChecking}
+                    onClick={() => void handleSaveFirecrawlConfig(firecrawlStatus ? !firecrawlStatus.enabled : true)}
+                    style={{ ...btnGhost, padding: '6px 10px', fontSize: 11 }}
+                  >
+                    {firecrawlStatus?.enabled === false ? 'Ativar' : 'Desativar'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={firecrawlChecking}
+                    onClick={() => void handleSaveFirecrawlConfig()}
+                    style={{ ...btnGhost, padding: '6px 10px', fontSize: 11 }}
+                  >
+                    <RefreshCw style={{ width: 12, height: 12 }} /> Testar / Salvar
+                  </button>
+                </div>
+              </details>
+
+              {/* Universal Importer 7-State Status Strip (shown once an import is under way) */}
+              {(universalAnalyzeState !== 'idle' || Boolean(linkImportJob?.items?.[0]?.universalState)) && (
+                <div
+                  role="status"
+                  aria-label="Estados do Importador Universal"
+                  style={{
+                    marginTop: 12,
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 6,
+                  }}
+                >
+                  {(
+                    [
+                      ['source_recognized', 'Fonte reconhecida'],
+                      ['analyzing_page', 'Analisando página'],
+                      ['chapter_identified', 'Capítulo identificado'],
+                      ['verifying_images', 'Verificando imagens'],
+                      ['importing', 'Importando'],
+                      ['import_not_permitted', 'Importação não permitida'],
+                      ['content_not_recognized', 'Conteúdo não reconhecido'],
+                    ] as const
+                  ).map(([stKey, stLabel]) => {
+                    const firstJobItemState = linkImportJob?.items?.[0]?.universalState;
+                    const activeState =
+                      universalAnalyzeState !== 'idle' ? universalAnalyzeState : (firstJobItemState ?? 'idle');
+                    const isActive = activeState === stKey;
+                    const isNegative = stKey === 'import_not_permitted' || stKey === 'content_not_recognized';
+                    return (
+                      <span
+                        key={stKey}
+                        style={{
+                          fontSize: 11,
+                          fontWeight: isActive ? 700 : 500,
+                          padding: '4px 10px',
+                          borderRadius: T.radiusFull,
+                          border: `1px solid ${
+                            isActive
+                              ? isNegative
+                                ? T.errorBorder
+                                : T.accent
+                              : T.border
+                          }`,
+                          background: isActive
                             ? isNegative
-                              ? T.errorBorder
-                              : T.accent
-                            : T.border
-                        }`,
-                        background: isActive
-                          ? isNegative
-                            ? T.errorBg
-                            : T.accentSoft
-                          : T.surfaceSubtle,
-                        color: isActive
-                          ? isNegative
-                            ? T.error
-                            : T.accentInk
-                          : T.inkMuted,
-                      }}
-                    >
-                      {stLabel}
-                    </span>
-                  );
-                })}
-              </div>
+                              ? T.errorBg
+                              : T.accentSoft
+                            : T.surfaceSubtle,
+                          color: isActive
+                            ? isNegative
+                              ? T.error
+                              : T.accentInk
+                            : T.inkMuted,
+                        }}
+                      >
+                        {stLabel}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
 
               {/* Pre-CBZ Image Review Panel (Requirement 5: Exibir o método utilizado e permitir revisar as imagens identificadas antes de criar o CBZ) */}
               {analyzedChapterPreview && (
@@ -4340,7 +4577,7 @@ export function RecapProductionPanel() {
                 opacity: !isChapterArchiveValidated || Boolean(archiveIntegrity?.checking) ? 0.45 : 1,
               }}
             >
-              {archiveIntegrity?.checking ? 'Verificando integridade do CBZ…' : 'Continuar para Produção'}{' '}
+              {archiveIntegrity?.checking ? 'Verificando integridade do CBZ…' : 'Continuar para Análise'}{' '}
               <ChevronRight style={{ width: 15, height: 15 }} />
             </button>
           </div>
@@ -4350,253 +4587,6 @@ export function RecapProductionPanel() {
       {/* ─── STEP 3: ANÁLISE · STEP 5: NARRAÇÃO · STEP 7: PRODUÇÃO ──────── */}
       {(subTab === 'analise' || subTab === 'narracao' || subTab === 'producao') && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {subTab === 'producao' && (
-            <BentoBlock>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
-                <div>
-                  <SectionLabel>Acompanhamento Real da Produção</SectionLabel>
-                  <p style={{ margin: '4px 0 0', fontSize: 12, color: T.inkMuted }}>
-                    {pipelineTimeline.detailMessage}
-                  </p>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: T.mono, fontSize: 12 }}>
-                  {isRunning && (
-                    <span style={{ padding: '4px 10px', borderRadius: T.radiusFull, background: T.accentSoft, color: T.accentInk, fontWeight: 700 }}>
-                      Tempo decorrido: {Math.floor(productionElapsedSec / 60)}m {String(productionElapsedSec % 60).padStart(2, '0')}s
-                    </span>
-                  )}
-                  <span style={{ padding: '4px 10px', borderRadius: T.radiusFull, background: T.surfaceSubtle, color: T.ink, fontWeight: 700 }}>
-                    {pipelineTimeline.overallProgressPct}% real ({pipelineTimeline.completedCount}/{pipelineTimeline.totalCount})
-                  </span>
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', marginBottom: 14 }}>
-                <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
-                  <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Narração (TTS)</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4 }}>
-                    {ttsProvider === 'voicestudio_tts' ? 'VoiceStudio' : ttsProvider === 'elevenlabs_tts' ? 'ElevenLabs' : 'Windows SAPI'}
-                  </div>
-                </div>
-                <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
-                  <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Motion Velix</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4 }}>
-                    {activeProject?.motionVelix
-                      ? `${activeProject.motionVelix.sfxApplied}/${activeProject.motionVelix.sfxPlanned} SFX · ${activeProject.motionVelix.vfxAppliedShots} VFX`
-                      : motionVelixStatus?.installed
-                        ? 'Kit pronto'
-                        : 'Aguardando'}
-                  </div>
-                </div>
-                <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
-                  <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Renderização</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4 }}>
-                    {activeProject?.masterMp4Path ? 'Master concluído' : activeProject?.previewMp4Path ? 'Prévia pronta' : isRunning ? 'Renderizando…' : 'Pendente'}
-                  </div>
-                </div>
-                <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
-                  <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Release Gates</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4, fontFamily: T.mono }}>
-                    F:{activeProject?.gateFVerdict ?? '—'} · G:{activeGateG?.verdict ?? activeProject?.gateGVerdict ?? '—'} · H:{activeGateH?.verdict ?? activeProject?.gateHVerdict ?? '—'}
-                  </div>
-                </div>
-              </div>
-
-              <details
-                open={showTechDiagnostics}
-                onToggle={(e) => setShowTechDiagnostics((e.target as HTMLDetailsElement).open)}
-                style={{
-                  borderRadius: T.radiusSm,
-                  border: `1px solid ${T.border}`,
-                  background: T.surfaceSubtle,
-                  padding: '8px 12px',
-                  fontSize: 12,
-                }}
-              >
-                <summary style={{ cursor: 'pointer', fontWeight: 600, color: T.ink }}>
-                  Diagnóstico técnico (provedores, checkpoints e logs detalhados)
-                </summary>
-                <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6, fontFamily: T.mono, fontSize: 11, color: T.inkMuted }}>
-                  <div>Run ID: {activeProject?.runId ?? 'nenhum'}</div>
-                  <div>Capítulo: {activeProject?.chapterId ?? '—'} · Painéis: {activeProject?.panelCount ?? 0} · Cenas: {scenes.length}</div>
-                  <div>Provedores operacionais: {readiness?.operationalProviders?.join(', ') || 'verificando…'}</div>
-                  {activeProject?.lastError && <div style={{ color: T.error }}>Último erro: {activeProject.lastError}</div>}
-                </div>
-              </details>
-            </BentoBlock>
-          )}
-
-          {/* Existing RealPipelineTimeline + Production Settings */}
-          <RealPipelineTimeline
-            record={activeProject}
-            liveMessage={statusNote}
-            isActivelyRunning={isRunning}
-            onResumeFromCheckpoint={() => void handleStart(true)}
-          />
-
-          <AudiovisualTrackTimeline
-            plan={activePlan}
-            motionVelix={activeProject?.motionVelix ?? null}
-            selectedShotId={selectedShotId}
-            onSelectShot={(shotId) => setSelectedShotId(shotId)}
-            outroConfig={outroConfig}
-            onSelectOutro={() => {
-              setSubTab('producao');
-              setTimeout(() => {
-                document.getElementById('recap-motionvelix-outro-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              }, 80);
-            }}
-          />
-
-          <div id="recap-motionvelix-outro-panel">
-            <MotionVelixOutroPanel
-              projectId={activeProject?.runId || chapterId || 'recap-default'}
-              channelName={workTitle}
-              onConfigChange={setOutroConfig}
-            />
-          </div>
-
-          <BentoBlock>
-            <SectionLabel>Configuração da Produção</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 14 }}>
-              <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                Título da obra
-                <input
-                  value={workTitle}
-                  onChange={(e) => setWorkTitle(e.target.value)}
-                  style={inputStyle}
-                  placeholder="Ex: Solo Leveling Cap. 01"
-                />
-              </label>
-
-              <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                Formato
-                <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value as '16:9' | '9:16')} style={inputStyle}>
-                  <option value="16:9">16:9 Horizontal (YouTube)</option>
-                  <option value="9:16">9:16 Vertical (Shorts / Reels)</option>
-                </select>
-              </label>
-
-              <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                Voz (TTS)
-                <select value={ttsProvider} onChange={(e) => setTtsProvider(e.target.value)} style={inputStyle}>
-                  <option value="voicestudio_tts">VoiceStudio Local</option>
-                  <option value="elevenlabs_tts">ElevenLabs</option>
-                  <option value="windows_sapi_tts">Windows SAPI</option>
-                </select>
-              </label>
-
-              <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                Idioma da narração
-                <select value={language} onChange={(e) => setLanguage(e.target.value as 'pt-BR' | 'en-US' | 'es-ES')} style={inputStyle}>
-                  <option value="pt-BR">Português (BR)</option>
-                  <option value="en-US">English (US)</option>
-                  <option value="es-ES">Español (ES)</option>
-                </select>
-              </label>
-
-              <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                Estilo de roteiro
-                <select value={scriptStyle} onChange={(e) => setScriptStyle(e.target.value)} style={inputStyle}>
-                  <option value="natural_recap">Narração Natural (Padrão)</option>
-                  <option value="narrative_recap">Recap Narrativo Detalhado</option>
-                  <option value="cinematic_recap">Recap Cinematográfico</option>
-                  <option value="mystery">Mistério</option>
-                  <option value="suspense">Suspense</option>
-                  <option value="documentary">Documentário</option>
-                </select>
-              </label>
-
-              <div style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span>Volume de humor</span>
-                  <span style={{ fontFamily: T.mono, color: T.accent }}>{humorVolume}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={humorVolume}
-                  onChange={(e) => setHumorVolume(Number(e.target.value))}
-                  style={{ width: '100%', accentColor: T.accent, cursor: 'pointer', marginTop: 4 }}
-                />
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: T.inkSubtle }}>
-                  <span>Sério</span>
-                  <span>Equilibrado</span>
-                  <span>Máximo</span>
-                </div>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: T.ink, cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={enableOcr}
-                  onChange={(e) => setEnableOcr(e.target.checked)}
-                  style={{ accentColor: T.accent }}
-                />
-                Executar OCR (Tesseract) na extração dos painéis
-              </label>
-
-              <span style={{ fontSize: 12, fontFamily: T.mono, color: T.inkSubtle }}>
-                {resolvedArchivePath ? `Fonte: ${resolvedArchivePath.split(/[/\\]/).pop()}` : 'Nenhuma fonte selecionada'}
-              </span>
-            </div>
-
-            {/* Primary Actions */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginTop: 16 }}>
-              <button
-                type="button"
-                disabled={isRunning}
-                onClick={() => void handleStart(false)}
-                style={{ ...btnLime, opacity: isRunning ? 0.55 : 1 }}
-              >
-                {isRunning ? (
-                  <>
-                    <RefreshCw className="animate-spin" style={{ width: 14, height: 14 }} /> Produzindo…
-                  </>
-                ) : (
-                  <>
-                    <Play style={{ width: 14, height: 14 }} /> Iniciar Produção
-                  </>
-                )}
-              </button>
-
-              {readiness.checkpoint.canResume && (
-                <button
-                  type="button"
-                  disabled={isRunning}
-                  onClick={() => void handleStart(true)}
-                  style={{ ...btnSecondary, opacity: isRunning ? 0.55 : 1 }}
-                >
-                  Retomar Checkpoint ({readiness.checkpoint.completedPanels}/{readiness.checkpoint.totalPanels})
-                </button>
-              )}
-
-              <button
-                type="button"
-                disabled={readinessLoading}
-                onClick={() => void refreshReadiness(activeProject?.chapterId)}
-                style={btnGhost}
-              >
-                <RefreshCw className={readinessLoading ? 'animate-spin' : undefined} style={{ width: 13, height: 13 }} />
-                Verificar Provedores
-              </button>
-
-              <button
-                type="button"
-                disabled={testingVision || isRunning}
-                onClick={() => void handleTestVisionReal()}
-                style={btnGhost}
-              >
-                <Sparkles className={testingVision ? 'animate-spin' : undefined} style={{ width: 13, height: 13 }} />
-                {testingVision ? 'Testando visão…' : 'Testar visão'}
-              </button>
-            </div>
-          </BentoBlock>
-
           {/* Preview Approval Gate (Real IPC wired to recap:approve-preview) */}
           {activeProject?.state === 'awaiting_preview_approval' && (
             <BentoBlock style={{ border: `2px solid ${T.ink}`, background: '#fbfbfe' }}>
@@ -4644,6 +4634,106 @@ export function RecapProductionPanel() {
               </div>
             </BentoBlock>
           )}
+
+          {activeProject ? (
+            <>
+              {subTab === 'producao' && (
+                <BentoBlock>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+                    <div>
+                      <SectionLabel>Acompanhamento Real da Produção</SectionLabel>
+                      <p style={{ margin: '4px 0 0', fontSize: 12, color: T.inkMuted }}>
+                        {pipelineTimeline.detailMessage}
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: T.mono, fontSize: 12 }}>
+                      {isRunning && (
+                        <span style={{ padding: '4px 10px', borderRadius: T.radiusFull, background: T.accentSoft, color: T.accentInk, fontWeight: 700 }}>
+                          Tempo decorrido: {Math.floor(productionElapsedSec / 60)}m {String(productionElapsedSec % 60).padStart(2, '0')}s
+                        </span>
+                      )}
+                      <span style={{ padding: '4px 10px', borderRadius: T.radiusFull, background: T.surfaceSubtle, color: T.ink, fontWeight: 700 }}>
+                        {pipelineTimeline.overallProgressPct}% real ({pipelineTimeline.completedCount}/{pipelineTimeline.totalCount})
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', marginBottom: 14 }}>
+                    <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
+                      <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Narração (TTS)</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4 }}>
+                        {ttsProvider === 'voicestudio_tts' ? 'VoiceStudio' : ttsProvider === 'elevenlabs_tts' ? 'ElevenLabs' : 'Windows SAPI'}
+                      </div>
+                    </div>
+                    <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
+                      <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Motion Velix</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4 }}>
+                        {activeProject?.motionVelix
+                          ? `${activeProject.motionVelix.sfxApplied}/${activeProject.motionVelix.sfxPlanned} SFX · ${activeProject.motionVelix.vfxAppliedShots} VFX`
+                          : motionVelixStatus?.installed
+                            ? 'Kit pronto'
+                            : 'Aguardando'}
+                      </div>
+                    </div>
+                    <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
+                      <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Renderização</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4 }}>
+                        {activeProject?.masterMp4Path ? 'Master concluído' : activeProject?.previewMp4Path ? 'Prévia pronta' : isRunning ? 'Renderizando…' : 'Pendente'}
+                      </div>
+                    </div>
+                    <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
+                      <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Release Gates</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4, fontFamily: T.mono }}>
+                        F:{activeProject?.gateFVerdict ?? '—'} · G:{activeGateG?.verdict ?? activeProject?.gateGVerdict ?? '—'} · H:{activeGateH?.verdict ?? activeProject?.gateHVerdict ?? '—'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <details
+                    open={showTechDiagnostics}
+                    onToggle={(e) => setShowTechDiagnostics((e.target as HTMLDetailsElement).open)}
+                    style={{
+                      borderRadius: T.radiusSm,
+                      border: `1px solid ${T.border}`,
+                      background: T.surfaceSubtle,
+                      padding: '8px 12px',
+                      fontSize: 12,
+                    }}
+                  >
+                    <summary style={{ cursor: 'pointer', fontWeight: 600, color: T.ink }}>
+                      Diagnóstico técnico (provedores, checkpoints e logs detalhados)
+                    </summary>
+                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6, fontFamily: T.mono, fontSize: 11, color: T.inkMuted }}>
+                      <div>Run ID: {activeProject?.runId ?? 'nenhum'}</div>
+                      <div>Capítulo: {activeProject?.chapterId ?? '—'} · Painéis: {activeProject?.panelCount ?? 0} · Cenas: {scenes.length}</div>
+                      <div>Provedores operacionais: {readiness?.operationalProviders?.join(', ') || 'verificando…'}</div>
+                      {activeProject?.lastError && <div style={{ color: T.error }}>Último erro: {activeProject.lastError}</div>}
+                    </div>
+                  </details>
+                </BentoBlock>
+              )}
+              <RealPipelineTimeline
+                record={activeProject}
+                liveMessage={statusNote}
+                isActivelyRunning={isRunning}
+                onResumeFromCheckpoint={() => void handleStart(true)}
+              />
+              {productionConfigCard}
+            </>
+          ) : (
+            <>
+              {productionConfigCard}
+              <RealPipelineTimeline
+                record={activeProject}
+                liveMessage={statusNote}
+                isActivelyRunning={isRunning}
+                onResumeFromCheckpoint={() => void handleStart(true)}
+              />
+            </>
+          )}
+
+          {/* Advanced views, one level below the main path */}
+          {advancedPanels}
         </div>
       )}
 
@@ -4698,31 +4788,9 @@ export function RecapProductionPanel() {
       {/* ─── STEP 8: REVISÃO & APROVAÇÃO FINAL ──────────────────────────── */}
       {subTab === 'revisao' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <AudiovisualTrackTimeline
-            plan={activePlan}
-            motionVelix={activeProject?.motionVelix ?? null}
-            selectedShotId={selectedShotId}
-            onSelectShot={(shotId) => setSelectedShotId(shotId)}
-            outroConfig={outroConfig}
-            onSelectOutro={() => {
-              setSubTab('producao');
-              setTimeout(() => {
-                document.getElementById('recap-motionvelix-outro-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              }, 80);
-            }}
-          />
-
-          <div id="recap-motionvelix-outro-panel">
-            <MotionVelixOutroPanel
-              projectId={activeProject?.runId || chapterId || 'recap-default'}
-              channelName={workTitle}
-              onConfigChange={setOutroConfig}
-            />
-          </div>
-
-          <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'minmax(0, 1fr) 360px', alignItems: 'start' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
             {/* Left: Video + Humanized Script + Prompt Revision */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ flex: '999 1 460px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
               <BentoBlock style={{ padding: 14 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, padding: '0 4px' }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: T.ink }}>
@@ -5228,7 +5296,7 @@ export function RecapProductionPanel() {
             </div>
 
             {/* Right: Real Quality Scorecard + Publication + Providers */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ flex: '1 1 300px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
               <BentoBlock>
                 <SectionLabel>Release Gates (Real)</SectionLabel>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, marginBottom: 12 }}>
@@ -5343,14 +5411,14 @@ export function RecapProductionPanel() {
                   />
                   Verifiquei os direitos de uso editorial, áudio e ausência de marcas d&apos;água proibidas
                 </label>
-                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
                   <button
                     type="button"
                     disabled={!activeMediaPath || !scorecard.approvedForRelease || !publishRightsConfirmed}
                     onClick={() => void handleSchedulePublication()}
                     style={{
                       ...btnLime,
-                      flex: 1,
+                      flex: '1 1 150px',
                       opacity: activeMediaPath && scorecard.approvedForRelease && publishRightsConfirmed ? 1 : 0.45,
                     }}
                   >
@@ -5358,7 +5426,7 @@ export function RecapProductionPanel() {
                   </button>
                   <a
                     href="#/aethera/calendar"
-                    style={{ ...btnSecondary, flex: 1, textDecoration: 'none' }}
+                    style={{ ...btnSecondary, flex: '1 1 110px', textDecoration: 'none' }}
                   >
                     Calendário
                   </a>
@@ -5460,6 +5528,8 @@ export function RecapProductionPanel() {
               </BentoBlock>
             </div>
           </div>
+
+          {advancedPanels}
         </div>
       )}
 

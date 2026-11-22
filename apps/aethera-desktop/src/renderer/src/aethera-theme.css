@@ -141,6 +141,60 @@ body:has([data-studio-theme='aethera']) {
   box-shadow: var(--elevation-2);
 }
 
+/* Recap screen: disclosure rows hold secondary/advanced panels one level below the main path. */
+.recap-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 2px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: #111111;
+  border-radius: 10px;
+}
+.recap-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.recap-disclosure > summary:hover {
+  color: #2a1d5c;
+}
+.recap-disclosure-chevron {
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.recap-disclosure[open] > summary .recap-disclosure-chevron {
+  transform: rotate(90deg);
+}
+.recap-disclosure-card {
+  background: var(--card, #ffffff);
+  border: 1px solid var(--border, #e3e3e8);
+  border-radius: 24px;
+  padding: 6px 20px;
+  box-shadow: var(--elevation-1);
+}
+/* Open: the panels inside are cards themselves, so the wrapper steps back instead of nesting a card in a card. */
+.recap-disclosure-card[open] {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  padding: 0 4px;
+}
+
+/* Recap screen: buttons are styled inline, so hover/disabled feedback is layered here. */
+.recap-scope button:not(:disabled),
+.recap-scope a[href] {
+  transition: box-shadow 160ms ease, filter 160ms ease;
+}
+.recap-scope button:not(:disabled):hover,
+.recap-scope a[href]:hover {
+  box-shadow: 0 0 0 3px rgba(106, 70, 216, 0.14);
+}
+.recap-scope button:disabled {
+  cursor: not-allowed;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .recap-pressable,
   .recap-card-hover {
@@ -148,6 +202,11 @@ body:has([data-studio-theme='aethera']) {
   }
   .recap-pressable:not(:disabled):active {
     transform: none !important;
+  }
+  .recap-disclosure-chevron,
+  .recap-scope button,
+  .recap-scope a[href] {
+    transition: none !important;
   }
 }
 
