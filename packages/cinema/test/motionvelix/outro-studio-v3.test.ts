@@ -22,10 +22,23 @@ import {
 	validatePaletteContrast,
 } from '../../src/index.js';
 
-async function makeTestLogoPng(label: string, colorHex: string, width = 320, height = 320): Promise<Buffer> {
+async function makeTestLogoPng(label: string, colorHex: string, width = 360, height = 360): Promise<Buffer> {
+	// Clean sculpted emblem crest with alpha transparency (no crude circle-with-initials placeholder)
+	const cx = Math.round(width / 2);
+	const cy = Math.round(height / 2);
+	const r = Math.round(Math.min(width, height) * 0.42);
 	const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
-		<circle cx="${Math.round(width / 2)}" cy="${Math.round(height / 2)}" r="${Math.round(Math.min(width, height) * 0.42)}" fill="${colorHex}"/>
-		<text x="${Math.round(width / 2)}" y="${Math.round(height / 2) + 18}" text-anchor="middle" font-family="Arial" font-size="56" font-weight="bold" fill="#FFFFFF">${label}</text>
+		<defs>
+			<linearGradient id="emblemGrad" x1="0" y1="0" x2="1" y2="1">
+				<stop offset="0%" stop-color="#FFFFFF"/>
+				<stop offset="45%" stop-color="${colorHex}"/>
+				<stop offset="100%" stop-color="#1E1B4B"/>
+			</linearGradient>
+		</defs>
+		<polygon points="${cx},${cy - r} ${cx + Math.round(r * 0.88)},${cy - Math.round(r * 0.35)} ${cx + Math.round(r * 0.62)},${cy + Math.round(r * 0.78)} ${cx},${cy + r} ${cx - Math.round(r * 0.62)},${cy + Math.round(r * 0.78)} ${cx - Math.round(r * 0.88)},${cy - Math.round(r * 0.35)}" fill="url(#emblemGrad)" stroke="#FFFFFF" stroke-width="6"/>
+		<polygon points="${cx},${cy - Math.round(r * 0.62)} ${cx + Math.round(r * 0.46)},${cy} ${cx},${cy + Math.round(r * 0.62)} ${cx - Math.round(r * 0.46)},${cy}" fill="#09090B" fill-opacity="0.72" stroke="#FFFFFF" stroke-width="4"/>
+		<polygon points="${cx},${cy - Math.round(r * 0.32)} ${cx + Math.round(r * 0.22)},${cy} ${cx},${cy + Math.round(r * 0.32)} ${cx - Math.round(r * 0.22)},${cy}" fill="#FFFFFF"/>
+		<!-- ${label} -->
 	</svg>`;
 	return sharp(Buffer.from(svg)).png().toBuffer();
 }

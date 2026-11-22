@@ -1,5 +1,152 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
+
+// Deterministic 2D FBM permutation table for real-time Fluid Fire Canvas preview
+const FIRE_PERM = new Uint8Array(512);
+(() => {
+  const p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+  let s = 133791;
+  for (let i = 255; i > 0; i--) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    const j = s % (i + 1);
+    const t = p[i]!;
+    p[i] = p[j]!;
+    p[j] = t;
+  }
+  for (let i = 0; i < 512; i++) FIRE_PERM[i] = p[i & 255]!;
+})();
+
+function fFade(t: number): number { return t * t * t * (t * (t * 6 - 15) + 10); }
+function fLerp(a: number, b: number, t: number): number { return a + (b - a) * t; }
+function fSmooth(e0: number, e1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - e0) / Math.max(1e-6, e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+function fNoise(x: number, y: number): number {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const ux = fFade(x - ix), uy = fFade(y - iy);
+  const h = (a: number, b: number) => FIRE_PERM[(FIRE_PERM[a & 255]! + (b & 255)) & 255]! / 255;
+  return fLerp(fLerp(h(ix, iy), h(ix + 1, iy), ux), fLerp(h(ix, iy + 1), h(ix + 1, iy + 1), ux), uy);
+}
+function fFbm(x: number, y: number): number {
+  let v = 0, a = 0.52, f = 1;
+  for (let i = 0; i < 3; i++) {
+    v += a * fNoise(x * f, y * f);
+    const nx = x * 0.8 - y * 0.6;
+    const ny = x * 0.6 + y * 0.8;
+    x = nx; y = ny; f *= 2.04; a *= 0.5;
+  }
+  return v;
+}
+function parseHexRgb(hex: string): [number, number, number] {
+  const c = hex.replace('#', '');
+  const full = c.length === 3 ? c.split('').map((ch) => ch + ch).join('') : c;
+  const n = parseInt(full, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+const FluidFirePreviewCanvas: React.FC<{
+  tSec: number;
+  totalSec: number;
+  intensity: number;
+  aspectRatio: '16:9' | '9:16';
+  palette: OutroCompositionPalette;
+  reducedMotion: boolean;
+}> = ({ tSec, totalSec, intensity, aspectRatio, palette, reducedMotion }) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const simW = aspectRatio === '9:16' ? 120 : 200;
+  const simH = aspectRatio === '9:16' ? 200 : 112;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const img = ctx.createImageData(simW, simH);
+    const data = img.data;
+    const pPrim = parseHexRgb(palette.primary);
+    const pEn = parseHexRgb(palette.energy);
+    const pGlow = parseHexRgb(palette.glow);
+    const norm = Math.max(0, Math.min(1, intensity / 100));
+    const power = 0.55 + 0.75 * norm;
+    const s = totalSec / 15;
+    const edgeSurge = fSmooth(1.1 * s, 5.0 * s, tSec);
+    const centerInv = fSmooth(2.0 * s, 5.3 * s, tSec) * (1 - fSmooth(5.5 * s, 7.8 * s, tSec) * 0.72);
+    const riseT = reducedMotion ? 1.5 : tSec * (1.85 + 0.65 * norm);
+    const aspect = simW / simH;
+    const cy = aspectRatio === '9:16' ? 0.38 : 0.39;
+
+    let p = 0;
+    for (let y = 0; y < simH; y++) {
+      const v = y / simH;
+      const invV = 1 - v;
+      for (let x = 0; x < simW; x++) {
+        const u = x / simW;
+        const dx = (u - 0.5) * aspect;
+        const dy = v - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const nx = u * (aspectRatio === '9:16' ? 4.2 : 5.4);
+        const ny = v * (aspectRatio === '9:16' ? 6.0 : 4.2);
+        const wx = fFbm(nx * 0.85, ny * 0.85 + riseT * 0.65) - 0.5;
+        const wy = fFbm(nx * 0.85 + 5.2, ny * 0.85 + 1.3 + riseT * 0.8) - 0.5;
+        const turb = fFbm(nx + wx * 2.1, ny + riseT + wy * 1.6);
+
+        const wallH = 0.22 + 0.26 * edgeSurge * power;
+        const bottom = Math.max(0, Math.min(1, (1 - invV / Math.max(0.08, wallH)) * 1.15 + (turb - 0.46) * 1.15));
+        const edgeD = Math.min(u, 1 - u, 1 - v);
+        const edgeW = centerInv > 0.01 ? Math.max(0, Math.min(1, (1 - edgeD / (0.04 + 0.52 * centerInv)) * 0.95 + (turb - 0.44) * 1.25)) * centerInv : 0;
+        const ringRadius = aspectRatio === '9:16' ? 0.145 : 0.175;
+        const turbDist = dist + (turb - 0.5) * 0.085;
+        const ring = Math.exp(-Math.pow((turbDist - ringRadius) / 0.044, 2));
+        const angle = Math.atan2(dy, dx);
+        const topNotch = 1 - 0.65 * Math.exp(-Math.pow(angle + Math.PI / 2, 2) * 3.5);
+        const bottomClear = 1 - 0.45 * Math.exp(-Math.pow(angle - Math.PI / 2, 2) * 4.0);
+        const corona = Math.max(0, Math.min(1, ring * topNotch * bottomClear * (0.28 + turb * 1.15) * (0.2 + 0.8 * edgeSurge) * power * 0.88));
+        const temp = Math.max(0, Math.min(1, Math.max(bottom, edgeW, corona) * power));
+
+        if (temp <= 0.14) {
+          data[p] = 0; data[p + 1] = 0; data[p + 2] = 0; data[p + 3] = 0;
+        } else {
+          const alpha = fSmooth(0.14, 0.42, temp);
+          let r: number, g: number, b: number;
+          if (temp < 0.36) {
+            const t = (temp - 0.14) / 0.22;
+            r = fLerp(pPrim[0] * 0.25, pPrim[0], t); g = fLerp(pPrim[1] * 0.25, pPrim[1], t); b = fLerp(pPrim[2] * 0.25, pPrim[2], t);
+          } else if (temp < 0.64) {
+            const t = (temp - 0.36) / 0.28;
+            r = fLerp(pPrim[0], pEn[0], t); g = fLerp(pPrim[1], pEn[1], t); b = fLerp(pPrim[2], pEn[2], t);
+          } else if (temp < 0.86) {
+            const t = (temp - 0.64) / 0.22;
+            r = fLerp(pEn[0], pGlow[0], t); g = fLerp(pEn[1], pGlow[1], t); b = fLerp(pEn[2], pGlow[2], t);
+          } else {
+            const t = Math.min(1, (temp - 0.86) / 0.14);
+            r = fLerp(pGlow[0], 255, t); g = fLerp(pGlow[1], 255, t); b = fLerp(pGlow[2], 255, t);
+          }
+          data[p] = Math.round(r); data[p + 1] = Math.round(g); data[p + 2] = Math.round(b); data[p + 3] = Math.round(alpha * 255);
+        }
+        p += 4;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }, [tSec, totalSec, intensity, aspectRatio, palette, reducedMotion, simW, simH]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={simW}
+      height={simH}
+      style={{
+        position: 'absolute',
+        inset: 0,
+        width: '100%',
+        height: '100%',
+        objectFit: 'cover',
+        filter: 'contrast(1.08) saturate(1.15)',
+      }}
+    />
+  );
+};
 
 export interface OutroCompositionPalette {
   primary: string;
@@ -271,45 +418,16 @@ export const OutroStudioComposition: React.FC<OutroStudioCompositionProps> = ({
       );
     }
 
-    // Default: `fire_reveal` — organic turbulent flames + heat glow + rising embers
-    const plumeCount = 9;
-    const emberCount = Math.max(14, Math.round(14 + 28 * normIntensity));
+    // Default: `fire_reveal` — True 2D FBM Domain-Warped Fluid Fire Shader Canvas (ZERO triangles/geometric shapes)
     return (
-      <svg width={width} height={height} style={{ position: 'absolute', inset: 0, opacity: baseOpacity }}>
-        <defs>
-          <radialGradient id="rmFireHalo" cx="50%" cy="46%" r="58%">
-            <stop offset="0%" stopColor={palette.glow} stopOpacity={0.58 * pulse} />
-            <stop offset="48%" stopColor={palette.energy} stopOpacity={0.34} />
-            <stop offset="100%" stopColor="#000000" stopOpacity={0} />
-          </radialGradient>
-        </defs>
-        <rect width={width} height={height} fill="url(#rmFireHalo)" />
-        {Array.from({ length: plumeCount }).map((_, i) => {
-          const frac = i / (plumeCount - 1);
-          const bx = width * (0.08 + frac * 0.84);
-          const wave = reducedMotion ? 0 : Math.sin(tSec * 3.8 + i * 1.35) * (24 * (0.4 + normIntensity));
-          const tipHeight = height * (0.34 + (1 - Math.abs(frac - 0.5) * 1.4) * 0.38) * energyAppear;
-          const tipY = height - tipHeight + wave * 0.6;
-          const spread = width * 0.11;
-          const fill = i % 3 === 0 ? palette.glow : i % 2 === 0 ? palette.energy : palette.primary;
-          return (
-            <path
-              key={i}
-              d={`M ${bx - spread},${height} Q ${bx - spread * 0.45 + wave},${(height + tipY) / 2} ${bx + wave * 0.5},${tipY} Q ${bx + spread * 0.45 + wave},${(height + tipY) / 2} ${bx + spread},${height} Z`}
-              fill={fill}
-              opacity={0.42 * pulse}
-            />
-          );
-        })}
-        {Array.from({ length: emberCount }).map((_, i) => {
-          const riseSpeed = 0.08 + (i % 5) * 0.03;
-          const rawY = 1 - ((progress * (1.2 + riseSpeed * 5) + i * 0.13) % 1);
-          const ex = width * (((i * 37 + 13) % 92 + 4) / 100) + (reducedMotion ? 0 : Math.sin(tSec * 2.5 + i) * 14);
-          const ey = rawY * height;
-          const r = 1.6 + (i % 4) * 1.3;
-          return <circle key={i} cx={ex} cy={ey} r={r} fill={palette.particles} opacity={0.75 * (1 - Math.abs(rawY - 0.5))} />;
-        })}
-      </svg>
+      <FluidFirePreviewCanvas
+        tSec={tSec}
+        totalSec={totalSec}
+        intensity={intensity}
+        aspectRatio={aspectRatio}
+        palette={palette}
+        reducedMotion={reducedMotion}
+      />
     );
   };
 

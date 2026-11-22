@@ -8,11 +8,15 @@
  * - Full integration with OutroCacheManager (Level C render cache hit/miss/invalidation).
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { resolveMotionVelixKit } from '../recap/phase3/recap-motionvelix.js';
+import {
+	parseFirePaletteRgb,
+	renderFireRevealFrameRgba,
+} from './procedural-fire-shader.js';
 import {
 	computeRenderCacheKey,
 	OUTRO_RENDERER_VERSION,
@@ -157,38 +161,87 @@ function buildTemplateEnergySvg(
 </svg>`;
 	}
 
-	// Default: `fire_reveal` — multi-layered organic flame plumes + rising ember sparks + heat halo
-	const flames: string[] = [];
-	const plumeCount = 9;
-	for (let i = 0; i < plumeCount; i++) {
-		const frac = i / (plumeCount - 1);
-		const bx = Math.round(width * (0.08 + frac * 0.84));
-		const tipY = Math.round(height * (0.28 + Math.abs(frac - 0.5) * 0.34));
-		const spread = Math.round(width * 0.11);
-		const fill = i % 2 === 0 ? p.energy : p.primary;
-		flames.push(
-			`<path d="M ${bx - spread},${height} Q ${bx - Math.round(spread * 0.4)},${Math.round((height + tipY) / 2)} ${bx},${tipY} Q ${bx + Math.round(spread * 0.45)},${Math.round((height + tipY) / 2)} ${bx + spread},${height} Z" fill="${fill}" opacity="${(0.42 * iv.energyOpacity).toFixed(2)}"/>`,
+	// Default: `fire_reveal` — 2D Anime Cel-Shaded Sakuga Fire (per-frame animated)
+	return buildSakugaFireFrameSvg(config, width, height, 0, 24);
+}
+
+/**
+ * Generates one frame of 2D Anime Cel-Shaded Sakuga Fire (animated on 2s @ 12fps):
+ * - Deep smoky radial glow
+ * - Twin curved cel-shaded crescent flame wings cradling the user's logo
+ * - 3-tone cel-shaded roaring anime bottom flame wall (primary shadow + energy body + hot core + white highlight)
+ * - Rising flickering flame droplets
+ */
+function buildSakugaFireFrameSvg(
+	config: OutroStudioConfigV3,
+	width: number,
+	height: number,
+	frameIdx: number,
+	loopFrames: number,
+): string {
+	const p = config.palette;
+	const iv = mapIntensityToVisualParams(config.intensity, config.templateId);
+	const isVertical = config.aspectRatio === '9:16';
+	const phase = (frameIdx / Math.max(1, loopFrames)) * Math.PI * 2;
+	const cx = Math.round(width / 2);
+	const cradleY = Math.round(height * (isVertical ? 0.36 : 0.36));
+	const cradleR = Math.round(Math.min(width, height) * (isVertical ? 0.24 : 0.22));
+	const swayA = Math.round(Math.sin(phase) * 18 * iv.turbulenceScale);
+	const swayB = Math.round(Math.cos(phase * 2) * 12 * iv.turbulenceScale);
+
+	const buildCelWall = (yBase: number, ampScale: number, phOff: number): string => {
+		const steps = 11;
+		let d = `M -40,${height + 40} L -40,${Math.round(yBase)}`;
+		for (let i = 0; i < steps; i++) {
+			const x0 = (i / steps) * (width + 80) - 40;
+			const xMid = ((i + 0.5) / steps) * (width + 80) - 40;
+			const x1 = ((i + 1) / steps) * (width + 80) - 40;
+			const flicker = Math.sin(phase * (1 + (i % 2)) + i * 1.7 + phOff) * 26;
+			const curl = Math.cos(phase + i * 2.1 + phOff) * 22;
+			const peakY = yBase - height * (0.14 + (i % 3) * 0.055) * ampScale + flicker;
+			const valleyY = yBase - height * 0.03 * ampScale - flicker * 0.3;
+			d += ` Q ${Math.round(x0 + (xMid - x0) * 0.35 + curl)},${Math.round(peakY + 32)} ${Math.round(xMid + curl)},${Math.round(peakY)} Q ${Math.round(xMid + (x1 - xMid) * 0.55 - curl * 0.4)},${Math.round(valleyY - 8)} ${Math.round(x1)},${Math.round(valleyY)}`;
+		}
+		d += ` L ${width + 40},${height + 40} Z`;
+		return d;
+	};
+
+	const droplets: string[] = [];
+	const dropCount = Math.max(12, Math.round(iv.particleCount * 0.75));
+	for (let i = 0; i < dropCount; i++) {
+		const pFrac = ((frameIdx / loopFrames) + i * 0.17) % 1;
+		const ex = Math.round(width * (((i * 43 + 11) % 90 + 5) / 100) + Math.sin(phase + i * 1.9) * 18);
+		const ey = Math.round(height * (0.94 - pFrac * 0.82));
+		const sz = Math.max(3, Math.round((5 + (i % 4) * 3.2) * (1 - pFrac * 0.5)));
+		const fill = i % 3 === 0 ? '#FFFFFF' : i % 2 === 0 ? p.glow : p.energy;
+		droplets.push(
+			`<path d="M ${ex},${ey - Math.round(sz * 1.6)} Q ${ex + sz},${ey} ${ex},${ey + sz} Q ${ex - sz},${ey} ${ex},${ey - Math.round(sz * 1.6)} Z" fill="${fill}" opacity="${(0.85 * (1 - pFrac)).toFixed(2)}"/>`,
 		);
 	}
-	const embers: string[] = [];
-	for (let i = 0; i < iv.particleCount; i++) {
-		const ex = Math.round(((i * 137 + 41) % 92 + 4) * (width / 100));
-		const ey = Math.round(((i * 89 + 19) % 80 + 10) * (height / 100));
-		const r = (1.5 + (i % 4) * 1.4).toFixed(1);
-		embers.push(`<circle cx="${ex}" cy="${ey}" r="${r}" fill="${p.particles}" opacity="0.72"/>`);
-	}
+
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
   <defs>
-    <radialGradient id="fireHalo" cx="50%" cy="48%" r="58%">
-      <stop offset="0%" stop-color="${p.glow}" stop-opacity="${(0.52 * iv.energyOpacity).toFixed(2)}"/>
-      <stop offset="50%" stop-color="${p.energy}" stop-opacity="${(0.3 * iv.energyOpacity).toFixed(2)}"/>
-      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    <radialGradient id="sakugaHalo" cx="50%" cy="42%" r="60%">
+      <stop offset="0%" stop-color="${p.energy}" stop-opacity="${(0.42 * iv.energyOpacity).toFixed(2)}"/>
+      <stop offset="50%" stop-color="${p.primary}" stop-opacity="${(0.24 * iv.energyOpacity).toFixed(2)}"/>
+      <stop offset="100%" stop-color="#05070D" stop-opacity="0"/>
     </radialGradient>
   </defs>
-  <rect width="${width}" height="${height}" fill="url(#fireHalo)"/>
-  ${flames.join('\n  ')}
-  ${embers.join('\n  ')}
+  <rect width="${width}" height="${height}" fill="url(#sakugaHalo)"/>
+  <!-- Twin Curved Anime Flame Wings Cradling the Logo -->
+  <g opacity="${(0.75 + 0.25 * iv.normalized).toFixed(2)}" transform="translate(0, ${Math.round(swayB * 0.35)})">
+    <path d="M ${cx},${Math.round(cradleY + cradleR * 0.92)} C ${Math.round(cx - cradleR * 1.15)},${Math.round(cradleY + cradleR * 0.72)} ${Math.round(cx - cradleR * 1.38 + swayA)},${Math.round(cradleY - cradleR * 0.25)} ${Math.round(cx - cradleR * 0.58 + swayB)},${Math.round(cradleY - cradleR * 1.05)} C ${Math.round(cx - cradleR * 0.92)},${Math.round(cradleY - cradleR * 0.28)} ${Math.round(cx - cradleR * 0.78)},${Math.round(cradleY + cradleR * 0.48)} ${cx},${Math.round(cradleY + cradleR * 0.78)} Z" fill="${p.energy}"/>
+    <path d="M ${cx - 4},${Math.round(cradleY + cradleR * 0.86)} C ${Math.round(cx - cradleR * 0.92)},${Math.round(cradleY + cradleR * 0.62)} ${Math.round(cx - cradleR * 1.08 + swayA * 0.7)},${Math.round(cradleY - cradleR * 0.18)} ${Math.round(cx - cradleR * 0.56 + swayB * 0.7)},${Math.round(cradleY - cradleR * 0.82)} C ${Math.round(cx - cradleR * 0.78)},${Math.round(cradleY - cradleR * 0.18)} ${Math.round(cx - cradleR * 0.66)},${Math.round(cradleY + cradleR * 0.44)} ${cx - 4},${Math.round(cradleY + cradleR * 0.76)} Z" fill="${p.glow}"/>
+    <path d="M ${cx},${Math.round(cradleY + cradleR * 0.92)} C ${Math.round(cx + cradleR * 1.15)},${Math.round(cradleY + cradleR * 0.72)} ${Math.round(cx + cradleR * 1.38 - swayA)},${Math.round(cradleY - cradleR * 0.25)} ${Math.round(cx + cradleR * 0.58 - swayB)},${Math.round(cradleY - cradleR * 1.05)} C ${Math.round(cx + cradleR * 0.92)},${Math.round(cradleY - cradleR * 0.28)} ${Math.round(cx + cradleR * 0.78)},${Math.round(cradleY + cradleR * 0.48)} ${cx},${Math.round(cradleY + cradleR * 0.78)} Z" fill="${p.energy}"/>
+    <path d="M ${cx + 4},${Math.round(cradleY + cradleR * 0.86)} C ${Math.round(cx + cradleR * 0.92)},${Math.round(cradleY + cradleR * 0.62)} ${Math.round(cx + cradleR * 1.08 - swayA * 0.7)},${Math.round(cradleY - cradleR * 0.18)} ${Math.round(cx + cradleR * 0.56 - swayB * 0.7)},${Math.round(cradleY - cradleR * 0.82)} C ${Math.round(cx + cradleR * 0.78)},${Math.round(cradleY - cradleR * 0.18)} ${Math.round(cx + cradleR * 0.66)},${Math.round(cradleY + cradleR * 0.44)} ${cx + 4},${Math.round(cradleY + cradleR * 0.76)} Z" fill="${p.glow}"/>
+  </g>
+  <!-- 3-Tone Cel-Shaded Roaring Bottom Anime Flame Wall -->
+  <path d="${buildCelWall(height * 0.9, 1.32, 0.4)}" fill="${p.primary}" opacity="0.45"/>
+  <path d="${buildCelWall(height * 0.96, 1.15, 1.2)}" fill="${p.energy}"/>
+  <path d="${buildCelWall(height * 1.01, 0.78, 2.0)}" fill="${p.glow}"/>
+  <path d="${buildCelWall(height * 1.05, 0.45, 2.8)}" fill="#FFFFFF" opacity="0.88"/>
+  ${droplets.join('\n  ')}
 </svg>`;
 }
 
@@ -414,11 +467,13 @@ export async function renderOutroStudioV3Mp4(
 			await sharp(Buffer.from(fallbackSvg)).png().toFile(bgPng);
 		}
 
-		// Layer 2 & 3: Energy / Flames / Electric / Particles / Glitch
-		await sharp(Buffer.from(buildTemplateEnergySvg(config, width, height)))
-			.resize(width, height)
-			.png()
-			.toFile(energyPng);
+		// Layer 2 & 3: Energy layer for non-fire templates (fire_reveal uses the real 2D FBM Fluid Fire Shader below)
+		if (config.templateId !== 'fire_reveal') {
+			await sharp(Buffer.from(buildTemplateEnergySvg(config, width, height)))
+				.resize(width, height)
+				.png()
+				.toFile(energyPng);
+		}
 
 		// Layer 4 & 5: User Logo placed inside safe zone preserving exact aspect ratio & alpha
 		const safe = getOutroSafeZone(config.aspectRatio, quality);
@@ -504,6 +559,195 @@ export async function renderOutroStudioV3Mp4(
 			input.outputDir,
 			input.outputFilename ?? `outro-v3-${config.templateId}-${config.aspectRatio.replace(':', 'x')}-${Math.round(durationSec)}s.mp4`,
 		);
+
+		// True 2D FBM Domain-Warped Fluid Fire Shader pipeline for `fire_reveal`
+		if (config.templateId === 'fire_reveal') {
+			const simW = config.aspectRatio === '9:16' ? 270 : 480;
+			const simH = config.aspectRatio === '9:16' ? 480 : 270;
+			const fireFps = 24;
+			const fireTotalFrames = Math.max(fireFps * 5, Math.round(durationSec * fireFps));
+
+			let bgRgba: Uint8Array | null = null;
+			if (config.backgroundImagePath && existsSync(config.backgroundImagePath)) {
+				const rawBg = await sharp(config.backgroundImagePath)
+					.resize(simW, simH, { fit: 'cover' })
+					.ensureAlpha()
+					.raw()
+					.toBuffer();
+				bgRgba = new Uint8Array(rawBg.buffer, rawBg.byteOffset, rawBg.byteLength);
+			}
+
+			let logoRgba: Uint8Array | null = null;
+			if (effectiveLogoPath) {
+				const rawLogo = await sharp(logoCanvasPng)
+					.resize(simW, simH, { fit: 'fill' })
+					.ensureAlpha()
+					.raw()
+					.toBuffer();
+				logoRgba = new Uint8Array(rawLogo.buffer, rawLogo.byteOffset, rawLogo.byteLength);
+			}
+
+			const fadeOutDur = Math.max(0.4, Math.min(2.0, config.audio.fadeOutSec || 0.8));
+			const fadeOutStart = Math.max(0.5, durationSec - fadeOutDur).toFixed(2);
+			const titleRevealDur = Math.max(0.4, (keyframes.channelRevealEndSec - keyframes.channelRevealStartSec) * 0.6).toFixed(2);
+			const ctaRevealDur = Math.max(0.35, (keyframes.ctaEndSec - keyframes.ctaStartSec) * 0.5).toFixed(2);
+
+			const fireArgs: string[] = [
+				'-y',
+				'-f', 'rawvideo',
+				'-pix_fmt', 'rgba',
+				'-s', `${simW}x${simH}`,
+				'-r', String(fireFps),
+				'-i', 'pipe:0',
+				'-loop', '1', '-t', String(durationSec), '-i', titlePng,
+				'-loop', '1', '-t', String(durationSec), '-i', ctaPng,
+			];
+
+			const audioFilters: string[] = [];
+			const mixLabels: string[] = [];
+			let nextIdx = 3;
+			if (musicPath) {
+				fireArgs.push('-stream_loop', '-1', '-t', String(durationSec), '-i', musicPath);
+				audioFilters.push(
+					`[${nextIdx}:a]aformat=sample_rates=48000:channel_layouts=stereo,atrim=0:${durationSec},asetpts=PTS-STARTPTS,volume=${config.audio.musicVolume.toFixed(2)}[base_a]`,
+				);
+				mixLabels.push('[base_a]');
+				nextIdx++;
+			} else {
+				fireArgs.push('-f', 'lavfi', '-t', String(durationSec), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
+				audioFilters.push(
+					`[${nextIdx}:a]aformat=sample_rates=48000:channel_layouts=stereo,atrim=0:${durationSec},asetpts=PTS-STARTPTS[base_a]`,
+				);
+				mixLabels.push('[base_a]');
+				nextIdx++;
+			}
+			sfxCues.forEach((cue, idx) => {
+				fireArgs.push('-i', cue.path);
+				const label = `[sfx${idx}]`;
+				audioFilters.push(
+					`[${nextIdx}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=${cue.volume.toFixed(2)},adelay=${cue.delayMs}|${cue.delayMs}${label}`,
+				);
+				mixLabels.push(label);
+				nextIdx++;
+			});
+			if (mixLabels.length > 1) {
+				audioFilters.push(
+					`${mixLabels.join('')}amix=inputs=${mixLabels.length}:duration=first:normalize=0,afade=t=in:st=0:d=${config.audio.fadeInSec || 0.5},afade=t=out:st=${fadeOutStart}:d=${fadeOutDur}[aout]`,
+				);
+			} else {
+				audioFilters.push(
+					`[base_a]afade=t=in:st=0:d=${config.audio.fadeInSec || 0.5},afade=t=out:st=${fadeOutStart}:d=${fadeOutDur}[aout]`,
+				);
+			}
+
+			const fireVideoFilters = [
+				`[0:v]scale=${width}:${height}:flags=lanczos,format=gbrp,split[vb0][vb1]`,
+				`[vb1]gblur=sigma=10[vglow]`,
+				`[vb0][vglow]blend=all_mode=screen:all_opacity=0.26,format=rgba[vfire]`,
+				`[1:v]scale=${width}:${height},fps=${fireFps},format=rgba,fade=t=in:st=${keyframes.channelRevealStartSec}:d=${titleRevealDur}:alpha=1,fade=t=out:st=${fadeOutStart}:d=${fadeOutDur}:alpha=1[vtitle]`,
+				`[2:v]scale=${width}:${height},fps=${fireFps},format=rgba,fade=t=in:st=${keyframes.ctaStartSec}:d=${ctaRevealDur}:alpha=1,fade=t=out:st=${fadeOutStart}:d=${fadeOutDur}:alpha=1[vcta]`,
+				`[vfire][vtitle]overlay=0:0:shortest=1[c1]`,
+				`[c1][vcta]overlay=0:0:shortest=1,format=yuv420p[vout]`,
+			];
+
+			fireArgs.push(
+				'-filter_complex', [...fireVideoFilters, ...audioFilters].join(';'),
+				'-map', '[vout]',
+				'-map', '[aout]',
+				'-t', String(durationSec),
+				'-r', String(fireFps),
+				'-c:v', 'libx264',
+				'-preset', quality === 'master' ? 'medium' : 'veryfast',
+				'-crf', quality === 'master' ? '18' : '21',
+				'-pix_fmt', 'yuv420p',
+				'-c:a', 'aac',
+				'-b:a', '192k',
+				'-ar', '48000',
+				'-ac', '2',
+				'-movflags', '+faststart',
+				outputMp4Path,
+			);
+
+			const firePalRgb = parseFirePaletteRgb(config.palette);
+			const frameBuf = new Uint8Array(simW * simH * 4);
+
+			await new Promise<void>((resolvePromise, rejectPromise) => {
+				const child = spawn('ffmpeg', fireArgs, { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });
+				let stderr = '';
+				child.stderr?.on('data', (chunk: Buffer) => {
+					stderr += chunk.toString('utf-8');
+				});
+				child.on('error', rejectPromise);
+				child.on('close', (code) => {
+					if (code === 0) resolvePromise();
+					else rejectPromise(new Error(`FFmpeg Fire Shader exited with code ${code}: ${stderr.slice(-400)}`));
+				});
+
+				(async () => {
+					try {
+						for (let f = 0; f < fireTotalFrames; f++) {
+							renderFireRevealFrameRgba({
+								width: simW,
+								height: simH,
+								tSec: f / fireFps,
+								keyframes,
+								intensity: config.intensity,
+								palette: firePalRgb,
+								bgRgba,
+								logoRgba,
+								outRgba: frameBuf,
+								parallaxEnabled: config.parallaxEnabled,
+							});
+							if (!child.stdin!.write(frameBuf)) {
+								await new Promise<void>((r) => child.stdin!.once('drain', r));
+							}
+						}
+						child.stdin!.end();
+					} catch (writeErr) {
+						child.kill('SIGKILL');
+						rejectPromise(writeErr);
+					}
+				})();
+			});
+
+			const probe = await probeMediaFile(outputMp4Path);
+			if (!probe.hasVideo || !probe.hasAudio || probe.fileSizeBytes === 0) {
+				throw new Error('Falha na validação do MP4 final do Fire Reveal.');
+			}
+			if (input.cacheManager) {
+				input.cacheManager.putFile({
+					level: 'renders',
+					key: cacheKey,
+					sourceFilePath: outputMp4Path,
+					extension: '.mp4',
+					templateId: config.templateId,
+					logoId: config.selectedLogoId,
+					logoVersion,
+				});
+			}
+			return {
+				ok: true,
+				outputMp4Path,
+				cacheKey,
+				cacheHit: false,
+				templateId: config.templateId,
+				templateVersion: config.templateVersion,
+				durationSec: Number(probe.durationSec.toFixed(2)),
+				width: probe.width,
+				height: probe.height,
+				aspectRatio: config.aspectRatio,
+				keyframes,
+				logoApplied: Boolean(effectiveLogoPath),
+				logoVersion,
+				sfxApplied: sfxCues.map((c) => c.name),
+				musicApplied: Boolean(musicPath),
+				hasVideo: probe.hasVideo,
+				hasAudio: probe.hasAudio,
+				fileSizeBytes: probe.fileSizeBytes,
+				renderDurationMs: Date.now() - startedAt,
+				engine: 'motionvelix_studio_v3_ffmpeg',
+			};
+		}
 
 		// Build deterministic FFmpeg filter_complex honoring proportional 6-phase keyframes
 		const fadeOutDur = Math.max(0.4, Math.min(2.0, config.audio.fadeOutSec || 0.8));
