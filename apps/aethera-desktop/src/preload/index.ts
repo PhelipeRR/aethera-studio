@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { MogrtBridge, MogrtProgress } from '../renderer/src/mogrt-studio-contract.js';
 import '../../../../packages/desktop-shared/src/preload/index.js';
 
 contextBridge.exposeInMainWorld('aetheraBridge', {
@@ -358,6 +359,21 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
   cinemaOutroPresetRename: (input: { presetId: string; name: string }) =>
     ipcRenderer.invoke('cinema:outro-preset-rename', input),
   cinemaOutroPresetDelete: (input: { presetId: string }) => ipcRenderer.invoke('cinema:outro-preset-delete', input),
+  mogrt: {
+    importTemplate: () => ipcRenderer.invoke('mogrt:import'),
+    pickMedia: (input) => ipcRenderer.invoke('mogrt:pick-media', input),
+    clearMedia: (input) => ipcRenderer.invoke('mogrt:clear-media', input),
+    preview: (input) => ipcRenderer.invoke('mogrt:preview', input),
+    render: (input) => ipcRenderer.invoke('mogrt:render', input),
+    cancel: () => ipcRenderer.invoke('mogrt:cancel'),
+    saveRender: (input) => ipcRenderer.invoke('mogrt:save-render', input),
+    revealRender: (input) => ipcRenderer.invoke('mogrt:reveal-render', input),
+    onProgress: (listener) => {
+      const wrapped = (_event: unknown, payload: MogrtProgress) => listener(payload);
+      ipcRenderer.on('mogrt:progress', wrapped);
+      return () => void ipcRenderer.removeListener('mogrt:progress', wrapped);
+    },
+  } satisfies MogrtBridge,
   onRecapProductionProgress: (listener: (event: unknown) => void) => {
     const wrapped = (_event: unknown, payload: unknown) => listener(payload);
     ipcRenderer.on('recap:production-progress', wrapped);

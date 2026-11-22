@@ -11,6 +11,7 @@ import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js
 import { VisionPriorityStore, type MultimodalAgentId } from './vision-priority-store.js';
 import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, classifyVisionError, composeVideoWithOutroMp4, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRecapVisionAdapter, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, inspectPassiveMultimodalHealth, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, loadVisionHealthCheckCache, mergeChapterArchivesForProduction, mergeStoryMemoryCharacters, parseResetAtMs, planRecapRevisionImpact, RecapImportJobManager, renderMotionVelixOutroMp4, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runMultimodalVisionHealthCheck, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, VideoOutroConfigStore, type MultimodalProviderHealthRecord, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type RecapVisualAnalysisPort, type ScriptStyle, type VideoOutroConfig, type VisionErrorCode, type VisionHealthProbeCandidate } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
+import { registerMogrtStudioIpc } from './mogrt-studio-ipc.js';
 import {
   createDefaultOutroStudioConfigV3,
   extractPaletteFromImage,
@@ -7127,6 +7128,8 @@ productionConsole,
     ensureTrusted(event.senderFrame);
     return { ok: true, stats: outroCacheManager.getStats() };
   });
+
+  registerMogrtStudioIpc({ ensureTrusted, userDataDir, ffmpegPath: studioMediaTools?.ffmpeg });
 
   // Keep unused imports referenced for proxy/agent orchestration readiness
   void AetheraMediaProxyRepository;

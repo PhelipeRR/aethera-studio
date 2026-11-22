@@ -88,6 +88,7 @@ export default defineConfig({
           index: resolve('src/main/index.ts'),
           'mcp-server': resolve('../../packages/mcp-server/src/cli.ts'),
           core: resolve('../../packages/desktop-shared/src/core-host/main.ts'),
+          'mogrt-worker': resolve('src/main/mogrt-worker.ts'),
           'history-sync-worker': resolve('../../packages/desktop-shared/src/main/history-sync-worker.ts'),
         },
       },

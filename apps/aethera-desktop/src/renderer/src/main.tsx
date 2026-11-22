@@ -8,6 +8,7 @@ import {
   FolderKanban,
   Home,
   ImagePlus,
+  LayoutTemplate,
   Library,
   ListOrdered,
   Radio,
@@ -40,6 +41,7 @@ import { ContentProjectPage } from '@/features/aethera/ContentProjectPage';
 import { ContentQueuePage } from '@/features/aethera/ContentQueuePage';
 import { ContentVariantsPage } from '@/features/aethera/ContentVariantsPage';
 import { CreativeStudioPanel } from './CreativeStudioPanel';
+import { MogrtStudioPage } from './MogrtStudioPage';
 import { RecapProductionPanel } from './RecapProductionPanel';
 import '@/styles.css';
 import './aethera-theme.css';
@@ -55,6 +57,7 @@ const AETHERA_ROUTES: readonly AppRoute[] = [
   { path: '/aethera/recap', label: 'Mangá Recap', icon: BookOpen, group: 'Trabalho', description: 'Gerador de recap de mangá/manhwa e importação por link.' },
   { path: '/aethera/console', label: 'Console Geral', icon: SquareTerminal, group: 'Trabalho', description: 'Eventos de todas as produções e serviços.' },
   { path: '/aethera/creative', label: 'Thumbs & Artes', icon: ImagePlus, group: 'Trabalho', description: 'Creative Studio: thumbnails, banners, avatar e marca d’água.' },
+  { path: '/aethera/mogrt', label: 'Templates MOGRT', icon: LayoutTemplate, group: 'Trabalho', description: 'Templates do After Effects (.mogrt) renderizados sem Adobe.' },
   { path: '/video', label: 'Editor', icon: Film, group: 'Trabalho', description: 'Editor profissional com timeline multifaixa.' },
   { path: '/aethera/library', label: 'Biblioteca', icon: Library, group: 'Conhecimento', description: 'Mídias, áudios, roteiros e direitos.' },
   { path: '/agents', label: 'Agentes', icon: Bot, group: 'Integrações', description: 'Equipe cinematográfica de IA com fallback RF-07.' },
@@ -130,6 +133,7 @@ const router = createHashRouter([
           { path: 'recap', element: <div className="mx-auto max-w-[1600px] p-4 lg:p-6"><RecapProductionPanel /></div> },
           { path: 'console', element: <GeneralConsolePage /> },
           { path: 'creative', element: <div className="mx-auto max-w-[1600px] p-4 lg:p-6"><CreativeStudioPanel /></div> },
+          { path: 'mogrt', element: <MogrtStudioPage /> },
           { path: 'editor', element: <AetheraStudioEditor /> },
           { path: 'review', element: <AetheraReviewRoomPage /> },
           { path: 'queue', element: <ContentQueuePage /> },
