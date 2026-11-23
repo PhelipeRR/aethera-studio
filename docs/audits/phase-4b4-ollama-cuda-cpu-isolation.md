@@ -545,3 +545,89 @@ O esqueleto do v3 traz `0.0`, e o `qwen3.5` **não copiou** esse valor. As confi
   2. Rodar um piloto de confirmação (os mesmos 10 painéis + `p0_0` + os 4 que excedem o contexto, com `temperature` baixa e 2 execuções para medir a variância), avaliado por fidelidade de cada painel.
   3. Só então trocar `NB_LOCAL_VLM_MODEL`.
 - A separação recomendada no Adendo 13 continua válida: SFX e identidade de personagens na etapa narrativa, com contexto de vários painéis.
+
+## Adendo 15 — ajustes de adoção no provider (modo `fix`) + piloto de confirmação (20:44–20:46)
+
+### Ajustes aplicados em `vision-providers.ts` (**não commitados**)
+O arquivo continua misturado com o provider Ollama da outra sessão. Os testes novos dependem desse código, por isso também ficam fora do commit.
+1. **`think`:** o provider passa a enviar `think` sempre; o padrão é `false`. Só a opção `think: true` ou `NB_LOCAL_VLM_THINK=1` liga o thinking. Validado ao vivo: o `qwen2.5vl:3b` aceita `think:false` sem mudar nada e recusa `think:true` ("does not support thinking").
+   - Se uma resposta vier só com thinking (`content` vazio), o erro diz isso: `thinkingChars=…, done_reason=…; use think=false`. Antes era um "sem conteúdo" genérico.
+2. **`detect()`:** a regex `isKnownVisionModel` foi removida. A multimodalidade agora é comprovada só pela capacidade `vision` em `/api/show`, que já era obrigatória. A mensagem de recusa passou a dizer "modelo não multimodal/visual".
+3. **Repetição abortada:** `OLLAMA_RUNTIME_REPETITION_ABORTED` / `OllamaRepetitionAbortedError` cobrem o HTTP 500 "token repeat limit reached" e também o mesmo erro no corpo de uma resposta 200 ou NDJSON. Nesse caso não há fallback CPU nem retry, e a mensagem diz que o painel precisa de revisão.
+4. **Opção `temperature`** (`NB_LOCAL_VLM_TEMPERATURE`): sem valor, mantém o padrão do Modelfile; também vale no fallback CPU.
+
+**O modelo padrão continua `qwen2.5vl:3b`.**
+
+**Testes:**
+- `test/ollama-qwen35-adoption.test.ts`, novo, com 7 testes: o arquivo falhou antes da implementação (export ausente) e passa depois.
+- Suítes Ollama e de capacidades (`ollama-qwen35-adoption`, `ollama-local-contract`, `ollama-degenerate-fallback`, `ollama-local-vlm-protocol`, `phase4a-provider-capabilities`): **33/33**.
+- `aethera-vision-capabilities.test.ts` usa vitest, que não está instalado no workspace. Não foi executado, mas os casos de `detect` dele foram lidos e não dependem da regex.
+- `tsc`: 123 erros que já existiam; nenhum nos arquivos tocados.
+
+### Piloto de confirmação
+- Script `scratchpad/p4b4/pilot-confirm.mts`, saída em `run16-qwen35-confirm`.
+- Provider já ajustado (o `think:false` vem do próprio provider, sem injeção no script), `temperature 0.2`, sem fallback CPU, sem retries.
+- **15 painéis × 2 execuções = 30 chamadas:** os 10 do piloto, o `p0_0` e os 4 que excediam o contexto do `qwen2.5vl` (`p24_1`, `p28_1`, `p58_12`, `p71_0`).
+- Todas as chamadas rodaram 100% na GPU, com wall total de 151 s.
+
+| Grupo | Chamadas | Schema válido | Entrada (média) | Saída (média) | Latência (média) | VRAM |
+| --- | --- | --- | --- | --- | --- | --- |
+| `p0_0` | 2 | **2/2** | 1615 | 148 | 3,7 s | 5,6–5,7 GB |
+| Os 10 do piloto | 20 | 12/20 | 566–991 (770) | 69–466 (341) | 4,8 s | 5,6–5,8 GB |
+| Painéis grandes | 8 | 4/8 | 2416–3291 (2950) | 391–571 (482) | 7,6 s | 5,6–5,8 GB |
+| **Total** | 30 | **18/30** | | | | ≤ 5,8 GB |
+
+### Falhas
+- **Schema (10), todas de forma:**
+  - `confidence`/`natureConfidence` ausente: 5;
+  - `region` fora do enum (`left-center`, `bottom-right`, `right`), sempre em SFX ou balões laterais: 4;
+  - `frames` com 11 itens no `p26_3`, nas 2 execuções;
+  - `frames[1]` como string ou null: 2.
+  - O conteúdo dessas respostas era, na maioria, fiel. Structured outputs eliminariam esse tipo de falha.
+- **Contexto:** `p28_1` pediu 4369 tokens com `num_ctx` 4096. O Ollama devolveu HTTP 400 explícito, sem falha silenciosa. A estimativa do provider (2048 por imagem) não previu isso. O caso precisaria de `num_ctx` maior ou de recorte do painel.
+- **Repetição abortada:** 1 (`p47_3`, execução 2), classificada corretamente como `OLLAMA_RUNTIME_REPETITION_ABORTED`. Somando o piloto anterior (`p10_1`), são 2 em 40 chamadas.
+- **Degeneração CUDA (`@`):** 0 em 30.
+
+### Variância
+- **Com `temperature 0.2`, o resultado não ficou estável:** em 8 dos 15 painéis, o status do schema mudou entre as execuções (`p0_1`, `p10_1`, `p19_1`, `p31_7`, `p47_3`, `p58_12`, `p59_0`, `p71_0`).
+- Nos 10 painéis originais, o schema válido foi 5/10 na execução 1 e 7/10 na execução 2. No piloto anterior, com `temperature 1`, tinha sido 8/10.
+- **Baixar a temperatura não melhorou o schema.**
+
+### Confiança
+- `natureConfidence` = 0.95 em 16 de 18 respostas válidas; `confidence` entre 0.90 e 0.95.
+- Com temperatura baixa, os valores ficaram ancorados de novo e não distinguem respostas certas de erradas. **Não usar como evidência.**
+
+### Fidelidade (verificação visual de cada resposta com conteúdo, 28 de 30)
+| Painel | Execução 1 | Execução 2 |
+| --- | --- | --- |
+| `p0_0` | Fiel | Fiel |
+| `p0_1` | Fiel (schema FAIL) | Fiel |
+| `p10_1` | Fiel no visual (ferido, ensanguentado, choque); **SFX lido como "폭음" e posto como fala** (o real é 푸욱) | Igual (schema FAIL) |
+| `p19_1` | Fiel (íris violeta, cabelo cinza, suor; schema FAIL) | "wide-eyed" e "dark hair" errados (o olho está semicerrado e o cabelo é cinza) |
+| `p24_1` | OCR das caixas correto; poses de luta e de meditação corretas; descrição com "Moomin" (é "Moorim") | Fiel |
+| `p26_3` | Fiel (sem personagem; schema FAIL) | Fiel (schema FAIL) |
+| `p28_1` | Contexto excedido | Contexto excedido |
+| `p31_7` | Fiel, falas separadas (schema FAIL) | Fiel |
+| `p39_1` | Fiel; deduziu corretamente que o personagem visível é o "Prince" | Fiel |
+| `p47_3` | OCR completo e correto; meta-texto "(Partial text visible…)" posto como fala | Repetição abortada |
+| `p55_8` | Fiel; OCR exato ("SCANNING") | Fiel |
+| `p58_12` | **Identidade invertida:** a mulher acamada recebeu o nome "Guard Jang", a quem ela se dirige; OCR só do 1º balão, omitindo 3 caixas; o homem de pé foi omitido | Fiel: mulher = Lady Hwa, homem de costas = Guard Jang; OCR das 5 falas correto (schema FAIL) |
+| `p59_0` | Fiel; SFX "음칫" como fala (schema FAIL) | Fiel |
+| `p67_0` | Fiel ("garfo" em vez de hashi) | Fiel |
+| `p71_0` | **Identidade invertida** (a criança vira "Guard Jang"); "personagem feminina" (é um menino) | **Identidade invertida**; "deitado na cama" (está debruçado) |
+
+### Resumo
+- **Conteúdo sem erro grave:** 23/28 respostas. Os 5 erros graves são 2 SFX inventados como fala (`p10_1`) e 3 inversões de identidade por vocativo ("Guard Jang").
+- **Válidos e fiéis:** 13/30; com ressalvas menores, 15/30. Nos 10 painéis originais, 9/20, o que confirma ~50% do piloto anterior.
+- **Inversão de identidade:** não sumiu. Ela acontece com **vocativos** ("GUARD JANG, …" → o personagem visível vira Guard Jang). Com "Prince", o modelo acertou nas 4 respostas, mas o mecanismo de erro é o mesmo do `qwen2.5vl`.
+- **Ganho do `qwen3.5` confirmado:**
+  - sem degeneração CUDA;
+  - 3 dos 4 painéis grandes que o `qwen2.5vl` nem conseguia tentar foram analisados com OCR longo correto;
+  - menos tokens e menos VRAM.
+
+### Recomendação atualizada
+1. **Modelo:** `qwen3.5:4b-q4_K_M`, com os ajustes deste adendo, é a melhor opção local medida. Mesmo assim, **não deve virar padrão para os 437 painéis ainda**: o schema válido é de 50–80% por execução, com alta variância, e as inversões de identidade por vocativo continuam.
+2. **Próximo passo de maior retorno: structured outputs** (`format` = JSON schema com enums de `region`/`nature`, `confidence` obrigatório, `maxItems` em `frames`). Isso ataca as 10 falhas de forma, cujo conteúdo era em sua maioria fiel; o potencial é subir de ~60% para ~80% de respostas válidas e fiéis. Precisa de aprovação, porque muda o contrato `format:'json'` testado pela outra sessão.
+3. **Identidade:** tirar os nomes do esquema por painel (apenas `visualLabel`) e resolver vocativos e nomes na etapa narrativa. Nenhum dos dois modelos é confiável para isso por painel.
+4. **SFX:** tratar Hangul isolado como `sfx`, nunca como diálogo.
+5. **Contexto:** para painéis acima de ~3500 tokens de imagem (como o `p28_1`), aumentar `num_ctx` ou recortar o painel.
