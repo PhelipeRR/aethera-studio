@@ -95,6 +95,16 @@ G10: `panels_total=1` (sintético), `model_calls=1`, `retry_calls=0`, `quota_eve
 - Trecho do log de servidor desta chamada salvo em `scratchpad/p4b4/run1/server-log-slice.txt`.
 - Não executados: chamada de controle GPU e teste com flash-attn desligado, por causa da restrição de chamada única.
 
+## Adendo — chamada de controle GPU (19:53:59): INVÁLIDA como controle
+Mesma imagem e mesmos parâmetros, com `num_gpu` omitido. Resultado: HTTP 200, `done=true` e resposta idêntica. **Mas o log mostra que a chamada não rodou na GPU:**
+- Nenhum `starting llama-server`: o runner CPU-only da chamada anterior (`-ngl 0 --no-mmproj-offload`) foi reaproveitado. `load_duration` foi de 2,8 ms e a VRAM ficou em 2126 MiB, sem mudança.
+- `selected slot by LCP similarity, f_sim_best = 1.000` e `prompt eval time = 51.59 ms / 1 tokens`. O prompt com a imagem veio inteiro do cache, e o encoder não executou.
+
+Consequências:
+1. A falha CUDA continua **não reproduzida com a mesma entrada**. A causa segue como forte evidência, sem confirmação.
+2. **Achado novo (P2):** omitir `num_gpu` não força um novo carregamento. Uma requisição com `num_gpu:0` deixa o modelo residente em CPU, e as requisições seguintes sem `num_gpu` rodam silenciosamente em CPU enquanto o modelo estiver carregado. Se o Aethera misturar os dois modos, a latência e o dispositivo ficam imprevisíveis.
+3. Um controle válido exige antes descarregar o modelo (`ollama stop qwen2.5vl:3b`, sem inferência) e conferir no log `CLIP using CUDA0 backend`. Para evitar o cache de prompt, a imagem precisa ser nova ou o runner precisa ter sido recarregado.
+
 ## Recomendação para retomar a Fase 4B
 1. Com autorização: rodar **uma** chamada GPU de controle com `synthetic.png` e parâmetros idênticos (`num_gpu` omitido). Se falhar com `@`/500, a causa CUDA fica confirmada.
 2. Se confirmada: testar **uma** chamada GPU com `OLLAMA_FLASH_ATTENTION=0`, que exige reiniciar o Ollama.
