@@ -61,7 +61,7 @@ const AETHERA_ROUTES: readonly AppRoute[] = [
   { path: '/video', label: 'Editor', icon: Film, group: 'Trabalho', description: 'Editor profissional com timeline multifaixa.' },
   { path: '/aethera/library', label: 'Biblioteca', icon: Library, group: 'Conhecimento', description: 'Mídias, áudios, roteiros e direitos.' },
   { path: '/agents', label: 'Agentes', icon: Bot, group: 'Integrações', description: 'Equipe cinematográfica de IA com fallback RF-07.' },
-  { path: '/aethera/review', label: 'Revisão e Qualidade', icon: ShieldCheck, group: 'Trabalho', description: 'Sala de revisão audiovisual e Release Gates.' },
+  { path: '/aethera/review', label: 'Revisão e Qualidade', icon: ShieldCheck, group: 'Trabalho', description: 'Sala de revisão audiovisual e controles de qualidade.' },
   { path: '/aethera/queue', label: 'Pipeline', icon: ListOrdered, group: 'Trabalho', description: 'Fila de produção e renderizações.' },
   { path: '/aethera/calendar', label: 'Calendário', icon: Calendar, group: 'Trabalho', description: 'Calendário editorial e agendamentos.' },
   { path: '/aethera/channels/new', label: 'Publicação', icon: Radio, group: 'Integrações', description: 'Canais YouTube, OAuth e distribuição.' },

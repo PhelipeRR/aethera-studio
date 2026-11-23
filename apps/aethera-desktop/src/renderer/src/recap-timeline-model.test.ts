@@ -10,6 +10,8 @@ import {
   formatTimecodeMs,
   getStateMetadata,
   mergeActiveProjectIntoRecentList,
+  RECAP_PIPELINE_STAGES,
+  RECAP_RELEASE_GATE_LABELS,
   reconcileQueueWithSuccessfulImport,
   toAetheraMediaUrl,
   type MotionVelixRenderTelemetry,
@@ -38,6 +40,17 @@ test('derivePipelineTimeline returns 0% idle timeline when no record exists', ()
   assert.equal(tl.overallProgressPct, 0);
   assert.equal(tl.tone, 'neutral');
   assert.equal(tl.stages.every((s) => s.status === 'pending'), true);
+});
+
+test('uses friendly names for release gates while preserving technical identifiers', () => {
+  assert.deepEqual(RECAP_RELEASE_GATE_LABELS.gateF, {
+    label: 'Validação do capítulo',
+    shortLabel: 'Validação',
+    technicalLabel: 'Gate F',
+  });
+  assert.equal(RECAP_PIPELINE_STAGES.find((stage) => stage.id === 'gate-f')?.label, 'Validação do capítulo');
+  assert.equal(RECAP_PIPELINE_STAGES.find((stage) => stage.id === 'script')?.label, 'Fidelidade do roteiro');
+  assert.equal(RECAP_PIPELINE_STAGES.find((stage) => stage.id === 'gate-h')?.label, 'Qualidade audiovisual');
 });
 
 test('derivePipelineTimeline marks exact active, completed, failed, and paused stages from real record', () => {

@@ -35,6 +35,7 @@ import {
   getStateMetadata,
   mergeActiveProjectIntoRecentList,
   reconcileQueueWithSuccessfulImport,
+  RECAP_RELEASE_GATE_LABELS,
   toAetheraMediaUrl,
   type MotionVelixKitStatusView,
   type MotionVelixRenderTelemetry,
@@ -3104,7 +3105,7 @@ export function RecapProductionPanel() {
       return;
     }
     if (!scorecard.approvedForRelease) {
-      setPublishNote('Os Gates de qualidade obrigatórios (Gate F/G/H) ainda não foram aprovados para publicação.');
+      setPublishNote('As verificações de qualidade obrigatórias ainda não foram aprovadas para publicação.');
       return;
     }
     if (!publishRightsConfirmed) {
@@ -3447,7 +3448,7 @@ export function RecapProductionPanel() {
             <p style={{ fontSize: 13, color: T.inkMuted, margin: '6px 0 0', lineHeight: 1.5 }}>
               {activeProject
                 ? `Atualizado em ${formatDateTimePt(activeProject.updatedAtIso)} · ID ${activeProject.runId}`
-                : 'Importe capítulos CBZ/PDF, Links ou CDN, produza com MotionVelix + TTS real e valide nos Release Gates.'}
+                : 'Importe capítulos CBZ/PDF, Links ou CDN, produza com MotionVelix + TTS real e valide a qualidade do resultado.'}
             </p>
           </div>
 
@@ -4888,9 +4889,9 @@ export function RecapProductionPanel() {
                       </div>
                     </div>
                     <div style={{ padding: 12, borderRadius: T.radiusInner, background: T.surfaceSubtle, border: `1px solid ${T.border}` }}>
-                      <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Release Gates</div>
+                      <div style={{ fontSize: 11, color: T.inkSubtle, fontWeight: 600 }}>Verificações de qualidade</div>
                       <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginTop: 4, fontFamily: T.mono }}>
-                        F:{activeProject?.gateFVerdict ?? '—'} · G:{activeGateG?.verdict ?? activeProject?.gateGVerdict ?? '—'} · H:{activeGateH?.verdict ?? activeProject?.gateHVerdict ?? '—'}
+                        {RECAP_RELEASE_GATE_LABELS.gateF.shortLabel}: {activeProject?.gateFVerdict ?? '—'} · {RECAP_RELEASE_GATE_LABELS.gateG.shortLabel}: {activeGateG?.verdict ?? activeProject?.gateGVerdict ?? '—'} · {RECAP_RELEASE_GATE_LABELS.gateH.shortLabel}: {activeGateH?.verdict ?? activeProject?.gateHVerdict ?? '—'}
                       </div>
                     </div>
                   </div>
@@ -5506,7 +5507,7 @@ export function RecapProductionPanel() {
             {/* Right: Real Quality Scorecard + Publication + Providers */}
             <div style={{ flex: '1 1 300px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
               <BentoBlock>
-                <SectionLabel>Release Gates (Real)</SectionLabel>
+                <SectionLabel>Verificações de qualidade</SectionLabel>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, marginBottom: 12 }}>
                   <MetricScore score={scorecard.technicalScore} label="Técnica" />
                   <MetricScore score={scorecard.narrativeScore} label="Narrativa" />
@@ -5552,9 +5553,9 @@ export function RecapProductionPanel() {
                       color: T.inkMuted,
                     }}
                   >
-                    <span>Gate F: <strong style={{ color: T.ink }}>{scorecard.gateFVerdict ?? '—'}</strong></span>
-                    <span>Gate G: <strong style={{ color: T.ink }}>{scorecard.gateGVerdict ?? '—'}</strong></span>
-                    <span>Gate H: <strong style={{ color: T.ink }}>{scorecard.gateHVerdict ?? '—'}</strong></span>
+                    <span title={RECAP_RELEASE_GATE_LABELS.gateF.technicalLabel}>{RECAP_RELEASE_GATE_LABELS.gateF.shortLabel}: <strong style={{ color: T.ink }}>{scorecard.gateFVerdict ?? '—'}</strong></span>
+                    <span title={RECAP_RELEASE_GATE_LABELS.gateG.technicalLabel}>{RECAP_RELEASE_GATE_LABELS.gateG.shortLabel}: <strong style={{ color: T.ink }}>{scorecard.gateGVerdict ?? '—'}</strong></span>
+                    <span title={RECAP_RELEASE_GATE_LABELS.gateH.technicalLabel}>{RECAP_RELEASE_GATE_LABELS.gateH.shortLabel}: <strong style={{ color: T.ink }}>{scorecard.gateHVerdict ?? '—'}</strong></span>
                   </div>
                 )}
 

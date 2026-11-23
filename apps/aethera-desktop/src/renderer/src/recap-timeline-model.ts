@@ -26,15 +26,22 @@ export interface RecapStageMeta {
   shortLabel: string;
 }
 
+/** Friendly UI names for the technical release-gate identifiers used in logs and persistence. */
+export const RECAP_RELEASE_GATE_LABELS = {
+  gateF: { label: 'Validação do capítulo', shortLabel: 'Validação', technicalLabel: 'Gate F' },
+  gateG: { label: 'Fidelidade do roteiro', shortLabel: 'Roteiro', technicalLabel: 'Gate G' },
+  gateH: { label: 'Qualidade audiovisual', shortLabel: 'Qualidade', technicalLabel: 'Gate H' },
+} as const;
+
 export const RECAP_PIPELINE_STAGES: readonly RecapStageMeta[] = [
   { id: 'import', label: 'Importação', shortLabel: 'Import' },
-  { id: 'gate-f', label: 'Integridade (Gate F)', shortLabel: 'Gate F' },
+  { id: 'gate-f', label: RECAP_RELEASE_GATE_LABELS.gateF.label, shortLabel: RECAP_RELEASE_GATE_LABELS.gateF.shortLabel },
   { id: 'vision', label: 'Visão Multimodal', shortLabel: 'Visão' },
   { id: 'continuity', label: 'Continuidade', shortLabel: 'Contin.' },
-  { id: 'script', label: 'Roteiro (Gate G)', shortLabel: 'Roteiro' },
+  { id: 'script', label: RECAP_RELEASE_GATE_LABELS.gateG.label, shortLabel: RECAP_RELEASE_GATE_LABELS.gateG.shortLabel },
   { id: 'humanize', label: 'Humanização', shortLabel: 'Human.' },
   { id: 'motion', label: 'MotionVelix & Áudio', shortLabel: 'Motion' },
-  { id: 'gate-h', label: 'Qualidade (Gate H)', shortLabel: 'Gate H' },
+  { id: 'gate-h', label: RECAP_RELEASE_GATE_LABELS.gateH.label, shortLabel: RECAP_RELEASE_GATE_LABELS.gateH.shortLabel },
 ] as const;
 
 export interface MotionVelixRenderTelemetry {
@@ -611,7 +618,7 @@ export function deriveQualityScorecard(
       gateGVerdict: null,
       gateHVerdict: null,
       reasons: [],
-      summary: 'Aguardando execução dos Release Gates (Gate F, G e H).',
+      summary: 'Aguardando as verificações de qualidade do capítulo, do roteiro e do audiovisual.',
     };
   }
 
@@ -651,9 +658,9 @@ export function deriveQualityScorecard(
     gateG !== 'fail';
 
   const summary = approvedForRelease
-    ? 'Aprovado nos Release Gates (Gate F, G e H).'
+    ? 'Aprovado nas verificações de qualidade.'
     : gateH === 'fail' || gateG === 'fail' || gateF === 'fail'
-      ? 'Reprovado em um ou mais Release Gates — revise os apontamentos abaixo.'
+      ? 'Uma ou mais verificações precisam de atenção — revise os apontamentos abaixo.'
       : 'Requer revisão editorial/técnica antes da publicação final.';
 
   return {
@@ -1071,7 +1078,7 @@ export function deriveSeparatedImportAndProductionStatus(input: {
     productionStatus = {
       state: 'completed',
       label: 'Produção Concluída',
-      detail: 'Vídeo Master renderizado e aprovado nos Release Gates.',
+      detail: 'Vídeo Master renderizado e aprovado nas verificações de qualidade.',
       tone: 'success',
     };
   } else if (projState === 'awaiting_preview_approval') {
