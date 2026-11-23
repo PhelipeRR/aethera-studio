@@ -63,7 +63,7 @@ G10: `panels_total=1` (sintético), `model_calls=1`, `retry_calls=0`, `quota_eve
 - 19:10:59 e 19:36:06: `llama-server terminated error="exit status 1"`, ocorrido em momentos de ociosidade/descarregamento. A relação com a falha não foi confirmada.
 - 19:03 e 19:05: `request (4109|16173 tokens) exceeds the available context size (4096 tokens)`. Isso é um problema de orçamento de contexto, separado da falha CUDA.
 
-## 6. Causa raiz
+## 6. Causa raiz (superada pelo Adendo 2)
 - **Confirmado:** o modelo, os pesos GGUF, o template e o runtime 0.40.16 produzem visão correta quando o encoder e o LLM rodam em CPU. Isso descarta incompatibilidade geral entre modelo e runtime.
 - **Forte evidência, ainda não confirmada:** a falha está no caminho CUDA (CLIP em `CUDA0` e/ou LLM com 37/37 camadas na GPU, `flash-attn auto`, `cuda_v13`).
 - **Hipóteses restantes:**
@@ -73,7 +73,7 @@ G10: `panels_total=1` (sintético), `model_calls=1`, `retry_calls=0`, `quota_eve
   - H4: o 500 de 19:28 tem outra causa, já que nenhuma mensagem foi registrada.
 - Para fechar a causa: uma chamada GPU de controle com a mesma imagem e os mesmos parâmetros, mudando só `num_gpu`. Depois, se reproduzir, uma chamada com `OLLAMA_FLASH_ATTENTION=0` para testar H2.
 
-## 7. Workaround mínimo
+## 7. Workaround mínimo (superado pelo Adendo 2)
 - **Imediato e comprovado:** `options.num_gpu = 0` por requisição, só no caminho de visão local. Não é padrão: custa ~10 s por painel com o modelo quente (8,5 s de prefill + ~1,5 s de geração) e ~1058 tokens de entrada por painel.
 - **A testar (específico do Ollama, sem tocar no Aethera):** `OLLAMA_FLASH_ATTENTION=0` com a GPU. Isso exige reiniciar o servidor Ollama, o que é uma mudança de configuração e precisa da aprovação do usuário.
 - **Fora de alcance:** "LLM na GPU + encoder na CPU". O Ollama 0.40.16 só emite `--no-mmproj-offload` no modo cpu-only.
@@ -105,9 +105,38 @@ Consequências:
 2. **Achado novo (P2):** omitir `num_gpu` não força um novo carregamento. Uma requisição com `num_gpu:0` deixa o modelo residente em CPU, e as requisições seguintes sem `num_gpu` rodam silenciosamente em CPU enquanto o modelo estiver carregado. Se o Aethera misturar os dois modos, a latência e o dispositivo ficam imprevisíveis.
 3. Um controle válido exige antes descarregar o modelo (`ollama stop qwen2.5vl:3b`, sem inferência) e conferir no log `CLIP using CUDA0 backend`. Para evitar o cache de prompt, a imagem precisa ser nova ou o runner precisa ter sido recarregado.
 
-## Recomendação para retomar a Fase 4B
-1. Com autorização: rodar **uma** chamada GPU de controle com `synthetic.png` e parâmetros idênticos (`num_gpu` omitido). Se falhar com `@`/500, a causa CUDA fica confirmada.
-2. Se confirmada: testar **uma** chamada GPU com `OLLAMA_FLASH_ATTENTION=0`, que exige reiniciar o Ollama.
-3. Só depois disso escolher entre GPU com workaround, `num_gpu:0` restrito à visão (com benchmark de latência e qualidade em ~10 painéis reais deduplicados) ou outro modelo multimodal.
-4. Independentemente do caminho, ajustar o orçamento: cada painel custa ≥ ~1058 tokens de entrada por causa de `image-min-tokens 1024`. Com `num_ctx 4096`, cabem no máximo ~3 imagens por requisição, o que explica os erros 4109/16173.
-5. Atualizar o Ollama só como experimento controlado, se as duas hipóteses CUDA falharem.
+## Adendo 2 — controle GPU válido (19:54:47): PASS, hipótese CUDA refutada para esta entrada
+Antes da chamada, o modelo foi descarregado (`ollama stop qwen2.5vl:3b`; `ollama ps` vazio, sem `llama-server`). Depois, uma única chamada com a mesma imagem e os mesmos parâmetros, `num_gpu` omitido.
+
+| | CPU (19:52) | GPU (19:54) |
+| --- | --- | --- |
+| Runner | `-ngl 0 --no-mmproj-offload` | `--flash-attn auto`, sem `-ngl` (offload total) |
+| Encoder | `CLIP using CPU backend` | `CLIP using CUDA0 backend`, `Flash Attention enabled` |
+| LLM | CPU / CPU_REPACK | `offloaded 37/37 layers to GPU` |
+| HTTP / done | 200 / `true` (`stop`) | 200 / `true` (`stop`) |
+| Resposta | correta | **idêntica** e correta |
+| Tokens (entrada/saída) | 1058 / 33 | 1058 / 33 (imagem codificada por inteiro, sem cache) |
+| Load | 5 609 ms | 3 253 ms |
+| Decode da imagem | ~2 945 ms | ~73 ms |
+| Prefill | 8 480 ms | 663 ms (1595 tok/s) |
+| Geração | 1 447 ms (~23 tok/s) | 352 ms (~94 tok/s) |
+| Total | 15 546 ms | 4 277 ms (cold) |
+| VRAM pico | sem uso | 6 102 MiB (de 2 075; ~4,0 GB do runner) |
+| RAM do runner | 3 804 MiB | 842 MiB |
+
+### Causa raiz revisada (substitui a seção 6)
+- **Refutado:** "o caminho CUDA/flash-attn quebra a visão do qwen2.5vl:3b" como causa geral. Com a mesma entrada, GPU e CPU dão o mesmo resultado correto.
+- **Confirmado:** modelo, runtime 0.40.16, CUDA (`cuda_v13`), encoder em CUDA0 e Flash Attention funcionam para uma imagem simples, sem JSON mode.
+- **Hipóteses restantes** para as falhas anteriores. Todas as chamadas que falharam diferiam em mais de uma variável:
+  - **H5 (mais forte):** saída estruturada com grammar (`format`/JSON mode). As duas falhas com `@` são exceções do grammar sampler (`Unexpected empty grammar stack after accepting piece: @`). Esse caminho nunca foi testado em CPU, então não há nada que o ligue ao dispositivo.
+  - **H6:** conteúdo e tamanho de painéis reais (resolução, várias imagens por requisição). As chamadas de 4109 e 16173 tokens estouraram o `num_ctx`.
+  - **H7:** o HTTP 500 de 19:28:21 não deixou mensagem no servidor. A causa é desconhecida, e o corpo da resposta do cliente daquela execução não foi preservado.
+- **Workaround CPU (`num_gpu:0`) não recomendado:** é ~3,6× mais lento (15,5 s contra 4,3 s cold), sem ganho de qualidade.
+
+### Recomendação revisada para retomar a Fase 4B
+1. Manter a GPU. Não adotar `num_gpu:0` e não trocar o modelo por enquanto.
+2. Isolar H5 com **uma** chamada GPU usando a mesma `synthetic.png` e os mesmos parâmetros, mudando só a adição de `format: "json"` (ou o schema que o adapter do Recap usa). Se falhar com `@`, a causa fica no grammar/JSON mode, e o workaround seria pedir texto e fazer o parse/validação no adapter, ou usar um schema mais simples.
+3. Se H5 passar, isolar H6 com **um** painel real deduplicado, sem JSON e em GPU, e conferir os tokens de entrada com `num_ctx` folgado.
+4. Corrigir o orçamento de contexto: cada imagem custa ≥ ~1058 tokens (`image-min-tokens 1024`). Com `num_ctx 4096`, cabem no máximo ~3 imagens por requisição.
+5. Achado P2 (adendo 1): não misturar requisições com e sem `num_gpu` no mesmo modelo residente. Se algum dia houver um modo CPU, fixar `num_gpu` explicitamente em todas as chamadas.
+6. Atualizar o Ollama deixou de ser necessário para esta falha.
