@@ -393,3 +393,65 @@ Script `scratchpad/p4b4/pilot.mts` com o adapter real, `cpuFallbackOnDegenerateO
 - Esqueleto sem valores que o modelo copie: `nature` como um único valor válido, com o enum listado separadamente; confiança sem número fixo (descrita como "número 0–1 que você estimar"); e um item de exemplo em `characters`, `actions` e `dialogue` mostrando **todos** os campos, incluindo `evidence`.
 - Para caber no limite de 2000 caracteres do teste, tirar texto redundante da linha de formatos. A alternativa é Ollama structured outputs (`format` = JSON schema, que restringe tipos e enums na geração), mas isso muda o contrato `format:'json'` do teste da outra sessão e precisa de aprovação.
 - O piloto deve gravar a saída bruta de cada painel (local, limitada) para diagnosticar valores fora do enum.
+
+## Adendo 13 — piloto v3 com os mesmos 10 painéis + verificação visual de cada painel
+Mesmo script e mesmos painéis do Adendo 12, agora com o prompt v3 (esqueleto sem valores copiáveis, item de exemplo completo em `characters`/`actions`/`dialogue`) e a proteção contra placeholder. Desta vez a saída bruta foi gravada (`scratchpad/p4b4/run13-pilot-v3/raw-responses.json`, local). O v2 não tinha captura bruta: dos painéis inválidos do v2, só há a mensagem de erro. Nenhum código foi alterado depois do piloto, e nenhum outro piloto foi executado.
+
+### Métricas v2 × v3
+| Métrica | v2 (Adendo 12) | v3 |
+| --- | --- | --- |
+| Chamadas ao modelo | 11 | 11 |
+| Degeneração na GPU → fallback CPU | 1/10 (`p39_1`), CPU 29,8 s | 1/10 (de novo `p39_1`), CPU 27,0 s. A falha é determinística por conteúdo |
+| Schema válido | 3/10 | 4/10 (`p10_1`, `p19_1`, `p47_3`, `p55_8`) |
+| Válidos com conteúdo real | **0/3**: os 3 tinham `description: "..."` (placeholder ecoado; a proteção do v3 os reprovaria) | 4/4 sem placeholder |
+| Válidos **e fiéis à imagem** | 0 | **1/4** (`p55_8`) |
+| Campo ausente dominante | `characters[].evidence` (7/10) | `characters[].confidence` (6/10) |
+| Outros desvios | `region` fora do enum (1); `nature` = string do enum inteiro (1) | `region: null` (1, `p31_7`); `environment` em formato livre (3: objeto, string, objeto aninhado) |
+| Normalizações aplicadas | `nature` → `other` (`p19_1`) | `frames 2→1` (`p55_8`) |
+| Tokens de entrada / saída por painel | 1404–1439 (média 1420) / 171–451 (média 305) | 1410–1445 (média 1426) / 228–326 (média 274) |
+| Tempo na GPU (9 painéis) | 2,2–5,4 s, média 3,9 s | 2,8–5,3 s, média 3,6 s |
+| Wall total | ~64,6 s | ~59,5 s |
+| VRAM após cada chamada na GPU | ≤ ~6,2 GB | 6,1–6,2 GB (CPU: 2,2 GB, com o runner descarregado) |
+
+### Confiança e evidência no v3
+- `natureConfidence` = 0.9 em 10/10; `confidence` = 0.8 ou 0.9 em 10/10; confiança de ação = 0.8 em 10/10; confiança de personagem, quando presente, = 0.9.
+- Não há relação entre confiança e acerto: `p10_1` tem personagem com 0.9 e diálogo inventado. **As confianças locais não servem como gate.**
+- `evidence` veio em 10/10 dos painéis com personagens (no v2, faltava em 7/10). Mas muitas vezes é tautológica ou é a própria inferência: "The character responding with 'Prince?!' is likely the Prince" (`p59_0`) e "The speech bubble contains the dialogue" (`p26_3`).
+
+### Verificação visual por painel (v3; v2 quando havia conteúdo)
+| # | Painel | O que a imagem mostra | Saída v3 | Schema | Fidelidade | Erros / invenções |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `p0_1` | Figura descalça, de roupa branca e faixa roxa, correndo numa floresta escura | "Person running through the forest" | FAIL (`confidence`) | Alta | "kimono" é aproximado |
+| 2 | `p10_1` | Personagem ferido e ensanguentado, em choque; SFX coreano 푸욱 (perfuração) embaixo, à direita | "dark hair, white shirt, speaking"; diálogo "フー" (top) | **PASS** | **Baixa** | Diálogo **inventado** (o SFX coreano virou fala japonesa, na região errada); "speaking" inventado; ferimento e sangue omitidos |
+| 3 | `p19_1` | Close de um olho semicerrado, pupila rosa, cabelo cinza | Descrição do olho ok; `nature: action`; ação "cena de ação ou exploração" | **PASS** | Média-baixa | `nature` e ação **inventadas**. O v2 inventou "olho arregalado, surpresa" e trazia `description: "..."` |
+| 4 | `p26_3` | Só um balão de texto, sem personagem | OCR correto; personagem "Unknown character" | FAIL (`confidence`) | Média | Personagem **inventado** |
+| 5 | `p31_7` | Homem de pé, de coque, inclinado sobre o jovem deitado (o Príncipe) | OCR dos 2 balões correto; "Prince" = o homem de pé | FAIL (`region` null) | Média-baixa | **Identidade invertida** |
+| 6 | `p39_1` (CPU) | Jovem de cabelo longo e roupa tradicional (o Príncipe), machucado; a mão de alguém fora do quadro estende-se até ele; SFX 척 | Descrição e OCR corretos; ação "Character 1 agradece **e** pede desculpas" | FAIL (`confidence`) | Média | As 2 falas são de falantes diferentes ("I'M SORRY, PRINCE!" é dito **ao** Príncipe); SFX omitido |
+| 7 | `p47_3` | Close extremo dos olhos, cabelo roxo, suor, choque; SFX 헉 | "dark hair, **plaid shirt**, speaking"; OCR "IF A POINT THAT CAN IMMobilIZE IS POKED AT…" | **PASS** | **Baixa** | Camisa xadrez **inventada** (só há olhos e cabelo); OCR truncado (falta "THE BODY OF THE PERSON WILL BE IMMOBILIZED WHICH CAN…") e com caixa corrompida; choque omitido |
+| 8 | `p55_8` | Vista de cima de um homem de rabo de cavalo e roupa branca, apoiado no parapeito de uma janela treliçada aberta, em prédio tradicional; 2 caixas de narração do sistema | "standing by a window, looking out"; as 2 caixas transcritas sem erro | **PASS** (normalizado, `frames 2→1`) | Alta | Caixas de narração classificadas como diálogo; `environment` null, apesar do cenário claro |
+| 9 | `p59_0` | Close de homem musculoso, de barba rala e roupa vinho, em choque; SFX 흠칫; balões "AAHH...!" e "PRINCE?!" | OCR correto; "Prince" = quem diz "Prince?!" | FAIL (`confidence`) | Média-baixa | **Identidade invertida**: quem chama "Prince?!" não é o Príncipe; SFX omitido |
+| 10 | `p67_0` | Pessoa de branco comendo às pressas com hashi (SFX 우걱 ×2); homem de coque e colete escuro, de pé à direita, de costas | Descrição e OCR corretos; "Character 2 aconselha a comer devagar" | FAIL (`confidence`, `environment`) | Alta | "atrás" é impreciso (ele está ao lado, à direita); SFX omitido |
+
+### Padrões de erro (v3)
+- **OCR de balões em inglês:** 8 de 9 painéis com texto em inglês foram transcritos corretamente. A exceção é `p47_3`, truncado e com caixa corrompida.
+- **SFX coreano:** 0 de 7 foram transcritos. Em 6, o SFX foi omitido, o que é aceitável. Em 1 (`p10_1`), virou diálogo japonês inventado, o que é grave.
+- **Identidade e atribuição de falas:** houve erro em 3 dos 4 painéis com o nome "Prince" ou com 2 falantes (`p31_7`, `p39_1`, `p59_0`). O modelo dá o nome citado no balão a quem está visível. Num recap, isso troca os personagens da narrativa.
+- **Atributos inventados:** 4 painéis (`p10_1` fala, `p19_1` ação, `p26_3` personagem, `p47_3` roupa).
+- **Ações:** genéricas ("Speaking") ou inferidas do texto. A ação física visível (correr, comer, inclinar-se) só aparece quando é óbvia.
+- **Posições:** `region` está correto quando vem preenchido. A posição relativa dos personagens é imprecisa (`p67_0`), e não há campo para ela.
+
+### Conclusão
+- **FAIL para produção.** No v3, 4/10 passam no schema, mas só 1/10 passa no schema **e** é fiel à imagem. Os outros 3 aprovados trazem fala, ação ou roupa inventadas, com confiança de 0.8 a 0.9. Aprovar pelo schema alimentaria o roteiro com alucinações.
+- O v3 consertou o que o prompt controla (`evidence`, enum copiado, placeholder) e trocou o defeito: agora falta `confidence`. Com 1983 de 2000 caracteres, refinar o prompt vira trocar um campo por outro.
+- A falha CUDA em `p39_1` continua determinística (2 de 2 pilotos). O fallback CPU funcionou nas duas vezes.
+- **Não processar os 437 painéis.**
+
+### Opções para a decisão do usuário (nada foi executado)
+1. **Continuar refinando o prompt do Qwen.** Não é recomendado como caminho principal: o orçamento de prompt acabou, e os erros de fidelidade (identidade, invenção) não são de formato.
+2. **Structured outputs do Ollama** (`format` = JSON schema). Deve eliminar as falhas de forma: os 6 casos de `confidence` ausente, `region` null e `environment` livre. **Não corrige a fidelidade.** Riscos: muda o contrato `format:'json'` testado pela outra sessão; e a falha CUDA ocorre justamente no sampler de grammar ("empty grammar stack"), então `p39_1` e `p0_0` precisam entrar no teste.
+3. **Separar visão, OCR e normalização.** É o que ataca a fidelidade:
+   - (a) uma etapa visual restrita ao que é observável (quem aparece, aparência, ação física, posição), sem nomes e sem atribuição de falas;
+   - (b) uma etapa de OCR para balões e caixas, com os SFX marcados como "sfx não transcrito" em vez de traduzidos;
+   - (c) normalização determinística em código, como hoje;
+   - (d) identidade ("quem é o Príncipe") e atribuição de falas resolvidas na etapa narrativa, com contexto de vários painéis, e não por painel.
+- **Recomendação técnica:** 2 + 3 juntos. Structured outputs para a forma, com um piloto barato nos mesmos 10 painéis que inclua os casos CUDA. Separação de responsabilidades para a fidelidade, com um esquema por painel sem nomes, sem atribuição e sem usar a confiança autodeclarada como gate. O critério de aceite do próximo piloto deve ser a **fidelidade verificada por painel**, não a taxa de schema.
