@@ -140,3 +140,27 @@ Antes da chamada, o modelo foi descarregado (`ollama stop qwen2.5vl:3b`; `ollama
 4. Corrigir o orçamento de contexto: cada imagem custa ≥ ~1058 tokens (`image-min-tokens 1024`). Com `num_ctx 4096`, cabem no máximo ~3 imagens por requisição.
 5. Achado P2 (adendo 1): não misturar requisições com e sem `num_gpu` no mesmo modelo residente. Se algum dia houver um modo CPU, fixar `num_gpu` explicitamente em todas as chamadas.
 6. Atualizar o Ollama deixou de ser necessário para esta falha.
+
+## Adendo 3 — GPU + JSON mode (19:56:07): PASS; H5 sozinha não reproduz
+Modelo descarregado antes. Uma única chamada, igual ao controle GPU válido, mudando só `format: 'json'`, que é o mesmo valor do adapter (`vision-providers.ts:545`).
+- Log: `CLIP using CUDA0 backend`, `offloaded 37/37 layers to GPU`, `Flash Attention enabled`, imagem codificada por inteiro (1058 tokens, `prompt_eval_cached_count=0`). Sem `grammar`/`exception`.
+- Resposta: HTTP 200, `done=true` (`stop`), `{ "red": "red", "blue": "blue" }`. O JSON é válido e o conteúdo é pobre porque o prompt não pedia estrutura, mas não aparece `@`.
+- Métricas: 2 912 ms no total (2 130 de load cold, 640 de prefill, 134 de geração), 1058/15 tokens, pico de VRAM 6 103 MiB.
+
+### Reexame das falhas originais (`server.log`)
+
+| Hora | Tokens (total / texto) | Lotes de imagem | Resultado |
+| --- | --- | --- | --- |
+| 19:05:10 | 4036 / 36 (~4000 de imagem, a 60 tokens do `num_ctx`) | 8 | exceção `@` no **1º token** |
+| 19:23:49 | 1974 / 263 (~1711 de imagem) | 4 | exceção `@` no **1º token** |
+| 19:28:21 | 1070 / 34 | 3 | HTTP 500 sem mensagem (prompt idêntico com cache deu 200 às 19:31) |
+| testes 4B.4 | 1058 / 34 (1024 de imagem) | 2 | PASS em CPU, GPU e GPU+JSON |
+
+### Causa raiz revisada (substitui a do Adendo 2)
+- O `@` é o **primeiro** token amostrado logo depois do prefill. Isso aponta para logits degenerados (NaN/Inf ou distribuição colapsada) depois do encoder, e não para um erro de grammar no meio da geração. A grammar só torna o problema visível.
+- **H8 (mais forte agora):** a falha depende do **tamanho da imagem** (mais de ~1024 tokens, 4 ou mais lotes de 512, mais janelas na atenção em janela do qwen2.5-VL e sequências longas no Flash Attention). As imagens sintéticas da 4B.4 eram pequenas demais para reproduzir. **O isolamento CPU vs. GPU continua em aberto para imagens grandes**, porque a CPU nunca recebeu uma imagem com mais de 1024 tokens.
+- H6 e H7 continuam abertas. H5 (JSON mode como causa isolada) não se reproduziu.
+
+### Próxima isolação recomendada (até 2 chamadas)
+1. Sintética grande, sem conteúdo protegido (por exemplo ~1000×1400 px, mirando ~1700 tokens de imagem, o mesmo da falha de 19:23), com GPU e `format:'json'` e `num_ctx 4096`. Se aparecer `@`, H8 se reproduz.
+2. Se reproduzir: a mesma chamada com `num_gpu:0`, descarregando o modelo antes. Se a CPU passar, a falha é do caminho CUDA para imagens grandes, e o próximo passo seria testar `OLLAMA_FLASH_ATTENTION=0`. Se a CPU também falhar, a causa é modelo/runtime com imagens grandes, e a mitigação seria limitar a resolução do painel antes do envio.
