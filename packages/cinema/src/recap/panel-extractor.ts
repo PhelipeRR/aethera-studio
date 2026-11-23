@@ -15,6 +15,76 @@ import type {
 import { extractedPanelSchema } from './recap-types.js';
 
 /**
+ * Splits a vertical (webtoon) strip into panels from its per-row brightness.
+ *
+ * Webtoons sit on a white background with balloons and SFX floating between panels, so cutting on
+ * every white row slices one balloon or one SFX letter into its own "panel". Here a cut needs a
+ * real gutter (a white band at least ~2% of the width tall) and any piece shorter than a quarter
+ * of the width is merged into its closest neighbour instead of becoming a panel (never dropped:
+ * it may carry dialogue). Specks of a few pixels are ignored.
+ */
+export function segmentVerticalStrip(
+	rowAvg: ArrayLike<number>,
+	width: number,
+	whiteThreshold = 240,
+): Array<{ start: number; end: number }> {
+	const height = rowAvg.length;
+	const minGutter = Math.max(4, Math.round(width * 0.02));
+	const minPanel = Math.max(minGutter * 2, Math.round(width * 0.25));
+	const noise = Math.max(2, Math.round(width * 0.005));
+
+	// Content runs separated by gutters tall enough to be real panel breaks.
+	const segments: Array<{ start: number; end: number }> = [];
+	let contentStart = -1;
+	let whiteRun = 0;
+	let lastContentEnd = 0;
+	for (let y = 0; y < height; y++) {
+		const white = (rowAvg[y] ?? 0) > whiteThreshold;
+		if (white) {
+			whiteRun += 1;
+			if (contentStart >= 0 && whiteRun >= minGutter) {
+				segments.push({ start: contentStart, end: lastContentEnd });
+				contentStart = -1;
+			}
+		} else {
+			if (contentStart < 0) contentStart = y;
+			whiteRun = 0;
+			lastContentEnd = y + 1;
+		}
+	}
+	if (contentStart >= 0) segments.push({ start: contentStart, end: lastContentEnd });
+
+	const pieces = segments.filter((s) => s.end - s.start >= noise);
+	// Merge fragments into the neighbour across the smaller gap until every piece is a panel.
+	for (;;) {
+		if (pieces.length <= 1) break;
+		let idx = -1;
+		let smallest = Infinity;
+		pieces.forEach((s, i) => {
+			const h = s.end - s.start;
+			if (h < minPanel && h < smallest) {
+				smallest = h;
+				idx = i;
+			}
+		});
+		if (idx < 0) break;
+		const cur = pieces[idx]!;
+		const prev = pieces[idx - 1];
+		const next = pieces[idx + 1];
+		const gapPrev = prev ? cur.start - prev.end : Infinity;
+		const gapNext = next ? next.start - cur.end : Infinity;
+		if (gapPrev <= gapNext && prev) {
+			prev.end = cur.end;
+			pieces.splice(idx, 1);
+		} else if (next) {
+			next.start = cur.start;
+			pieces.splice(idx, 1);
+		} else break;
+	}
+	return pieces;
+}
+
+/**
  * Detects panels in a page image using contrast-based segmentation.
  * For manga (RTL): scans for vertical gutters to split columns.
  * For manhwa (vertical): scans for horizontal gutters in long-strip layout.
@@ -52,35 +122,10 @@ async function detectPanelsInPage(
 		const MIN_PANEL_SIZE = Math.min(width, height) * 0.05;
 
 		if (readingOrder === 'vertical') {
-			const gaps: Array<{ start: number; end: number }> = [];
-			let inGap = false;
-			let gapStart = 0;
-			for (let y = 0; y < info.height; y++) {
-				if ((rowAvg[y] ?? 0) > GUTTER_THRESHOLD) {
-					if (!inGap) { gapStart = y; inGap = true; }
-				} else {
-					if (inGap) { gaps.push({ start: gapStart, end: y }); inGap = false; }
-				}
-			}
-			if (inGap) gaps.push({ start: gapStart, end: info.height });
-
-			const panels: Array<{ boundingBox: { x: number; y: number; w: number; h: number }; classification: PanelClassification }> = [];
-			let lastEnd = 0;
-			for (const gap of gaps) {
-				if (gap.start - lastEnd > MIN_PANEL_SIZE) {
-					panels.push({
-						boundingBox: { x: 0, y: lastEnd, w: width, h: gap.start - lastEnd },
-						classification: panels.length === 0 ? 'establishing' : 'dialogue',
-					});
-				}
-				lastEnd = gap.end;
-			}
-			if (info.height - lastEnd > MIN_PANEL_SIZE) {
-				panels.push({
-					boundingBox: { x: 0, y: lastEnd, w: width, h: info.height - lastEnd },
-					classification: 'dialogue',
-				});
-			}
+			const panels = segmentVerticalStrip(rowAvg, width, GUTTER_THRESHOLD).map((seg, idx) => ({
+				boundingBox: { x: 0, y: seg.start, w: width, h: seg.end - seg.start },
+				classification: (idx === 0 ? 'establishing' : 'dialogue') as PanelClassification,
+			}));
 			if (panels.length > 0) return panels;
 		} else {
 			const vGaps: Array<{ start: number; end: number }> = [];

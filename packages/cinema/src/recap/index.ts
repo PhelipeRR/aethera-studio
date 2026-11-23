@@ -38,7 +38,7 @@ export {
 export { importChapter } from './chapter-importer.js';
 
 // ─── Panel Extractor ─────────────────────────────────────────────────────────
-export { extractPanels, type ExtractPanelsOptions } from './panel-extractor.js';
+export { extractPanels, segmentVerticalStrip, type ExtractPanelsOptions } from './panel-extractor.js';
 
 // ─── Tesseract OCR Adapter ───────────────────────────────────────────────────
 export { createTesseractOcrAdapter, type TesseractOcrOptions } from './tesseract-ocr-adapter.js';
