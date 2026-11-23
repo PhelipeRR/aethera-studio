@@ -288,3 +288,25 @@ Desligar o FA **não serve** como workaround: não corrige a falha, aumenta a VR
 2. **Piloto de ~10 painéis reais deduplicados na GPU** para medir a taxa de falha. Se ela for baixa, a GPU continua como padrão e o fallback CPU fica só para os painéis que falharem. Se for alta, partir para o passo 3.
 3. **Experimento controlado de runtime:** testar outra versão do Ollama/ggml (o bug está no backend CUDA) ou outro modelo multimodal local, usando `p0_0` como caso de regressão. Isso exige autorização, porque envolve download ou atualização.
 4. Limitar a resolução dos painéis (4/437 passam de ~2600 tokens de imagem).
+
+## Adendo 9 — Patch P1 no adapter (modo `fix`), aplicado e **não commitado**
+**Correção do Adendo 6:** no working tree atual, `readOllamaChatResponse` (`vision-providers.ts`) **já rejeitava** `done !== true`, com a mensagem "resposta incompleta". O envelope de 96 bytes **não** virava "JSON de análise inválido". Essa afirmação foi baseada só nas linhas 555-568 e estava errada. O defeito real era outro: a falha não tinha classificação nem caminho de recuperação.
+
+Mudanças em `packages/orchestrator/src/aethera/vision-providers.ts`:
+- `OLLAMA_RUNTIME_DEGENERATE_OUTPUT` e `OllamaDegenerateOutputError` (`code`) foram exportados. `done !== true` **com conteúdo vazio** (JSON único ou NDJSON sem evento final) passa a lançar esse erro classificado. A mensagem anterior foi preservada como sufixo, e `done:false` com conteúdo parcial continua sendo um erro genérico.
+- Fallback CPU **por painel**, **opt-in**: opção `cpuFallbackOnDegenerateOutput` ou env `NB_LOCAL_VLM_CPU_FALLBACK=1`. **O padrão é desligado.** Funcionamento:
+  - Só é acionado por `OllamaDegenerateOutputError`. HTTP de erro, JSON inválido, timeout e cancelamento não o acionam.
+  - Faz uma única tentativa extra com o mesmo prompt e a mesma imagem, `options.num_gpu: 0` e `keep_alive: 0`, para que o runner CPU não fique residente e capture as chamadas seguintes (achado do Adendo 1).
+  - Tem orçamento por instância, `maxCpuFallbacks` / `NB_LOCAL_VLM_MAX_CPU_FALLBACKS` (padrão 10), e timeout próprio, `cpuFallbackTimeoutMs` / `NB_LOCAL_VLM_CPU_FALLBACK_TIMEOUT_MS` (padrão 180 s).
+  - Se a CPU também degenerar, rejeita com o mesmo `code` depois de exatamente 2 chamadas. Com o orçamento esgotado, rejeita sem nova chamada.
+- A rota padrão **não foi alterada**: não envia `num_gpu` nem `keep_alive`. `lastRoute()` (`'default' | 'cpu-fallback'`) foi exposto como extensão opcional, sem mudar a interface `VisualAnalysisProvider`.
+
+Testes (TDD):
+- `packages/orchestrator/test/ollama-degenerate-fallback.test.ts` (novo, 7 casos, usando o envelope real de 96 bytes). Falhou antes da implementação (export ausente) e passa 7/7 depois.
+- `ollama-local-vlm-protocol.test.ts`: 6/6. `phase4a-provider-capabilities.test.ts`: 5/5. `packages/cinema/test/recap/phase4a-routing.test.ts` + `apps/aethera-remote-host/test/phase4a-capabilities.test.ts`: 5/5.
+- **BLOCKED (ambiente):** `aethera-vision-capabilities.test.ts` importa `vitest`, que não está instalado no workspace. Isso independe do patch.
+- `tsc --noEmit -p packages/orchestrator`: 0 erros em `vision-providers.ts` e no teste novo. Os 123 erros restantes estão em arquivos não tocados (`router.test.ts`, `spotify-adapter.test.ts`, etc.) e já existiam.
+
+**Por que não foi commitado:** o provider Ollama inteiro (~347 linhas) e `ollama-local-vlm-protocol.test.ts` são alterações não commitadas/não rastreadas de outra sessão. Commitar o patch levaria esse trabalho junto, e o teste novo depende dele. Rollback: reverter os blocos marcados com `OLLAMA_RUNTIME_DEGENERATE_OUTPUT`, `requestChat`, `cpuFallback*` e `lastRoute`, e apagar o teste novo.
+
+**Ainda não verificado ao vivo:** o fluxo real com `p0_0` (padrão → degenerado → CPU com `keep_alive:0` → próxima chamada recarregando na GPU). Validar exige 2 a 3 chamadas locais.
