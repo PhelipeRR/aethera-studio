@@ -220,3 +220,16 @@ Modelo descarregado antes. Uma única chamada com a mesma imagem sintética de 9
 1. **Um** painel real deduplicado, o mesmo da falha de 19:23 se for identificável pelo checkpoint e sem reprocessar o lote, com o mesmo prompt e na GPU. Isso precisa de autorização explícita, porque envolve conteúdo real.
 2. Se reproduzir o `@`: a mesma chamada com `num_gpu:0`, e só depois disso concluir sobre o dispositivo.
 3. Independentemente do resultado: (a) limitar a resolução do painel para que imagem + prompt + 1200 de saída caibam em `num_ctx` (hoje ~1945 + 1200 = 3145 de 4096; uma imagem de ~4000 tokens nunca cabe); (b) avaliar se `adaptLocalPanelAnalysis` trata os tipos-string vistos acima.
+
+## Adendo 6 — painel real, GPU, prompt do adapter (20:05:01): FAIL reproduzido
+Escolha do painel: os 437 painéis de `nanomachine-cap-1-5/panels` foram perfilados apenas pelo cabeçalho do arquivo, sem nenhuma chamada de modelo: 437 únicos por sha256, tokens de imagem estimados p10/p50/p90/máx = 377/725/1334/**9106**, e 4 painéis acima de ~2600 tokens. `nanomachine-cap-1-5_p0_0.png` (800×1645) estima exatamente **1711** tokens de imagem, o mesmo valor da falha de 19:23. O painel foi lido sem cópia e não foi gravado em nenhum relatório.
+
+Chamada: modelo descarregado antes, prompt e formato iguais aos do adapter (`panel_id=nanomachine-cap-1-5_p0_0`), `format:'json'`, `num_ctx 4096`, `num_predict 1200`, GPU.
+- Log: `CLIP using CUDA0 backend`, `offloaded 37/37 layers to GPU`, `Flash Attention enabled`, lotes de imagem **512/512/512/175** (os mesmos de 19:23), `tokens: text = 238, total = 1949`, seguido de **`got exception: Unexpected empty grammar stack after accepting piece: @ (31)`** no primeiro token.
+- Resposta HTTP: **200**, corpo bruto de 96 bytes: `{"model":"","created_at":"0001-01-01T00:00:00Z","message":{"role":"","content":""},"done":false}`.
+- Métricas: 3 496 ms de wall, pico de VRAM de 6 128 MiB, 0 tokens gerados.
+
+### Conclusões
+- **Confirmado:** a falha depende do **conteúdo do painel**, já que imagens sintéticas do mesmo tamanho, com o mesmo prompt e no mesmo caminho GPU, passam. É determinística para `p0_0` e reprodutível.
+- **Achado P1 (adapter):** o Ollama 0.40.16 sinaliza essa exceção com **HTTP 200** e envelope vazio (`done:false`, `content:""`). Em `vision-providers.ts:555-568`, `res.ok` passa e o erro vira "Ollama retornou JSON de análise inválido". O erro de runtime fica mascarado como saída ruim do modelo, o que é ruim para o diagnóstico e para a política de retry. O adapter deveria tratar `done !== true` ou `content === ''` como falha de provedor e não repetir a chamada às cegas.
+- **Ainda em aberto:** CPU vs. GPU **para este painel**. Esse é o teste decisivo que falta.
