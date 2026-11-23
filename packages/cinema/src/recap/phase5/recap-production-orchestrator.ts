@@ -195,6 +195,19 @@ export interface RunRecapProductionOrchestratorResult {
 	motionVelix?: MotionVelixRenderReport;
 }
 
+/** Keeps resume messaging truthful when the visual checkpoint is already complete. */
+export function formatVisionProgressMessage(completedPanels: number, totalPanels: number, provider = 'VisionRouter'): string {
+	const safeTotal = Math.max(0, totalPanels);
+	const safeCompleted = Math.max(0, Math.min(completedPanels, safeTotal));
+	if (safeTotal > 0 && safeCompleted >= safeTotal) {
+		return `Análise visual concluída (${safeTotal}/${safeTotal}); continuando para o roteiro…`;
+	}
+	if (safeCompleted > 0) {
+		return `Retomando análise visual do painel ${safeCompleted + 1}/${safeTotal} (${safeCompleted} em checkpoint)…`;
+	}
+	return `Analisando painéis (0/${safeTotal}) via ${provider}…`;
+}
+
 export async function runRecapProductionOrchestrator(
 	input: RunRecapProductionOrchestratorInput,
 ): Promise<RunRecapProductionOrchestratorResult> {
@@ -396,12 +409,12 @@ export async function runRecapProductionOrchestrator(
 			updatedAtIso: new Date().toISOString(),
 		};
 
+		const visionCheckpointComplete = totalPanelsCount > 0 && liveCompletedPanels >= totalPanelsCount;
+		if (visionCheckpointComplete) completedSteps.add('vision');
 		persist(
 			'story_engine',
-			'vision',
-			liveCompletedPanels > 0
-				? `Retomando análise visual do painel ${liveCompletedPanels + 1}/${totalPanelsCount} (${liveCompletedPanels} em checkpoint)…`
-				: `Analisando painéis (0/${totalPanelsCount}) via ${initialTelemetry.activeProvider ?? 'VisionRouter'}…`,
+			visionCheckpointComplete ? 'continuity' : 'vision',
+			formatVisionProgressMessage(liveCompletedPanels, totalPanelsCount, initialTelemetry.activeProvider ?? 'VisionRouter'),
 			{ readiness, visionTelemetry: initialTelemetry },
 		);
 

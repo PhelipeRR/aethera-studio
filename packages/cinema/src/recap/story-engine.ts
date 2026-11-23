@@ -378,10 +378,20 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		warnings.push(
 			`Gate G reprovou o roteiro. Acionando fallback textual ${scriptFallbackPort.name} (tentativa ${attempt}/${MAX_SCRIPT_FALLBACK_ATTEMPTS}) sem reprocessar a visão dos painéis.`,
 		);
+		const fallbackSceneIds = new Set(
+			preHumanizeGateG.hints
+				.map((hint) => hint.sceneId)
+				.filter((sceneId): sceneId is string => Boolean(sceneId)),
+		);
+		if (fallbackSceneIds.size === 0) {
+			warnings.push('Fallback textual ignorado: Gate G não identificou cenas específicas para regeneração.');
+			break;
+		}
 		const retried = await refineScriptWithPort({
 			script: workingScript,
 			sequence: continuityResult.sequence,
 			port: scriptFallbackPort,
+			sceneIds: fallbackSceneIds,
 			humorVolume,
 		});
 		workingScript = retried.script;

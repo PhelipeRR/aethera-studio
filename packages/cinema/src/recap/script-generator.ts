@@ -801,11 +801,13 @@ export async function refineScriptWithPort(input: {
 	script: RecapScript;
 	sequence: NarrativeSequence;
 	port: TextEnhancementPort;
+	/** Optional allowlist used by Gate G recovery to avoid reprocessing unaffected scenes. */
+	sceneIds?: ReadonlySet<string>;
 	humorVolume?: number;
 	wordsPerSecond?: number;
 	signal?: AbortSignal;
 }): Promise<{ script: RecapScript; warnings: string[] }> {
-	const { script, sequence, port, humorVolume = 0, wordsPerSecond = 2.4, signal } = input;
+	const { script, sequence, port, sceneIds, humorVolume = 0, wordsPerSecond = 2.4, signal } = input;
 	const warnings: string[] = [];
 	const beatByIndex = sequence.beats;
 	const updatedScenes: Scene[] = [];
@@ -814,6 +816,14 @@ export async function refineScriptWithPort(input: {
 	for (let i = 0; i < script.scenes.length; i++) {
 		const scene = script.scenes[i]!;
 		const beat = beatByIndex[i];
+
+		// Gate G recovery should only spend remote calls on scenes implicated by its hints.
+		// Unselected scenes remain byte-for-byte unchanged and keep their original duration.
+		if (sceneIds && !sceneIds.has(scene.sceneId)) {
+			updatedScenes.push(scene);
+			totalDuration += scene.estimatedDurationSec;
+			continue;
+		}
 
 		// Never ask LLM to "fill in" a scene that lacks visual/OCR evidence
 		if (isReviewRequiredPlaceholder(scene.narrationText) || !beat) {
