@@ -333,3 +333,32 @@ Isso bate com o que se viu nos Adendos 5 e 7: confianças como `"high"`, `"null"
 1. **Contrato de saída local (P1 novo):** declarar no prompt tipos e enums explícitos (números 0–1, `nature` do enum, `observed` string, `schemaVersion: 1` numérico) e/ou adicionar uma camada de normalização limitada antes do `parse` (`"1"`→1, `"high|medium|low"`→0.85/0.6/0.35, `"null"`→null). Classificar a rejeição como `RECAP_LOCAL_SCHEMA_INVALID` com a lista de paths, sem o array bruto. Validar com `p0_0` + 2 a 3 painéis reais, mais o caso sintético.
 2. Só depois disso fazer o piloto de ~10 painéis na GPU, com `NB_LOCAL_VLM_CPU_FALLBACK=1` e orçamento baixo, medindo a taxa de degeneração, a taxa de schema válido e o tempo por painel.
 3. Commitar o provider Ollama (trabalho da outra sessão) junto com o P1, depois que os donos revisarem.
+
+## Adendo 11 — contrato de saída local (prompt + normalização limitada), aplicado e **não commitado**
+Mudanças em `packages/orchestrator/src/aethera/vision-providers.ts`, no mesmo working tree não commitado da outra sessão:
+- **Prompt:** a linha "Retorne somente JSON compacto com: …" virou um **esqueleto JSON tipado** com `schemaVersion:1` numérico, o enum completo de `nature`, `exatamente N item em frames`, `overlays` booleanos e confiança numérica, mais uma linha com os formatos de `dialogue`/`characters`/`actions`/`environment`, os enums de `region`/`basis` e "characters só pessoas/criaturas". As regras editoriais existentes ficaram intactas. Tamanho: 1213 caracteres sem contexto e **1988** com o contexto máximo de 800 (o teste existente exige menos de 2000; a folga é de só 12 caracteres). Custo medido: +121 tokens de texto por painel (238 → 359).
+- **Normalização limitada** (`normalizeLocalPanelAnalysis`, antes do `safeParse`):
+  - Sem perda: `"1"`→1, confiança numérica em string → número, `"null"/"none"/""`→null ou [], `limitations` string/objeto → lista, trim e truncamento nos limites do schema.
+  - Com perda, sempre declarada numa nota `Saída local normalizada: …` em `limitations`: rótulos `very high/high/medium|moderate/low/very low` → 0.95/0.85/0.6/0.35/0.15; `nature` fora do enum → `other`; N frames com `observed` string para 1 imagem → 1 frame com as observações unidas; `observed` não-string em frame único → `description` do próprio modelo; `environment` sem `description` → null; `overlays` ausente/`[]`/`"null"` → ausentes.
+  - O que não tem mapeamento determinístico (rótulos como "maybe", `observed` booleano com vários frames, texto vazio) **não é convertido** e falha.
+- **Erro classificado:** `RECAP_LOCAL_SCHEMA_INVALID` (`LocalPanelSchemaError.code`), com até 8 `path: mensagem` em ≤600 caracteres, sem o array bruto do zod. A divergência de contagem de frames também usa esse código.
+
+Testes (TDD): `packages/orchestrator/test/ollama-local-contract.test.ts` (novo, 6 casos com os formatos reais de `p0_0` em CPU e da grade sintética em GPU). Antes da implementação falhou por falta do export; depois passa 6/6. Suíte relacionada: **29/29** (contrato 6, fallback 7, protocolo 6, capacidades 5, roteamento Recap + Remote Host 5). `tsc`: 0 erros nos arquivos tocados (os 123 que já existiam continuam iguais). `git diff --check` limpo.
+
+### Verificação ao vivo pelo adapter real (20:20:18–20:21:00, 3 chamadas)
+| Chamada | Log | Resultado |
+| --- | --- | --- |
+| `p0_0`, rota padrão | `CLIP using CUDA0`, text=359/total=2070, `@ (31)` | degenerado → fallback |
+| `p0_0`, fallback CPU | `reason=cpu-only`, `CLIP using CPU backend`, 32,25 s | **schema válido**, `landscape`, descrição coerente em PT-BR (noite, montanhas com névoa, árvores, céu estrelado, lua), `characters=[]`, `environment` preenchido, `limitations=[]`; runner descarregado depois |
+| Grade sintética 980×1372, rota padrão | `CLIP using CUDA0`, 100% GPU, 4,89 s | **schema válido**, `characters=[]` (antes as formas viravam personagens) |
+
+**Nenhuma das duas precisou de normalização** (sem nota em `limitations`): só o prompt já produziu o contrato. A normalização fica como rede de segurança testada.
+
+### Riscos e limitações remanescentes
+- **Confianças ancoradas no exemplo:** `natureConfidence` e `confidence` vieram exatamente 0.8 nos dois casos, o mesmo valor do esqueleto. Não use essas confianças locais como gate até haver calibração (por exemplo, remover o número do exemplo ou medir a dispersão num piloto).
+- **Qualidade semântica na grade sintética:** `nature: landscape` e "four squares" para 6 painéis. Normalização não corrige isso; é uma limitação do modelo de 3B.
+- Na descrição de `p0_0`, "lua no horizonte" está errado (ela está no alto). É uma imprecisão menor.
+- A folga do prompt é de 12 caracteres em relação ao limite de 2000 do teste: qualquer acréscimo exige rever esse orçamento.
+
+### Próximo passo da Fase 4B
+Piloto de ~10 painéis reais deduplicados na GPU, com `NB_LOCAL_VLM_CPU_FALLBACK=1` e `NB_LOCAL_VLM_MAX_CPU_FALLBACKS` baixo, medindo a taxa de degeneração, a taxa de schema válido, a frequência das notas de normalização, a dispersão das confianças e o tempo por painel. Depois, commitar o provider Ollama junto com o P1 e o contrato, com a revisão dos donos.
