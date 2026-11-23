@@ -59,45 +59,6 @@ function validateSsrfUrl(raw: string): URL {
   return u;
 }
 
-function isSupportedHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
-  return ['asurascans.com', 'www.asurascans.com', 'asuracomic.net', 'www.asuracomic.net', 'asuracomics.com', 'www.asuracomics.com'].some(
-    (s) => h === s || h.endsWith(`.${s}`),
-  );
-}
-
-function extractPagesFromHtml(html: string, baseUrl: URL): Array<{ pageNumber: number; imageUrl: string }> {
-  const found: Array<{ order: number; idx: number; url: string }> = [];
-  const re = /<([a-z0-9]+)\b[^>]*\bdata-page\s*=\s*(?:"(\d+)"|'(\d+)'|(\d+))[^>]*>([\s\S]*?)<\/\1>|<img\b[^>]*\bdata-page\s*=\s*(?:"(\d+)"|'(\d+)'|(\d+))[^>]*\/?>/gi;
-  let m: RegExpExecArray | null;
-  let idx = 0;
-  while ((m = re.exec(html)) !== null) {
-    idx++;
-    const isImg = m[0].toLowerCase().startsWith('<img');
-    const order = Number.parseInt((isImg ? (m[6] ?? m[7] ?? m[8]) : (m[2] ?? m[3] ?? m[4])) ?? String(idx), 10);
-    const tag = isImg ? m[0] : (/<img\b[^>]*>/i.exec(m[5] ?? '')?.[0] ?? '');
-    if (!tag) continue;
-    const srcMatch = /\b(?:data-src|data-lazy-src|src)\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
-    const rawSrc = (srcMatch?.[1] ?? srcMatch?.[2] ?? '').trim();
-    if (!rawSrc || rawSrc.startsWith('data:')) continue;
-    try {
-      const resolved = new URL(rawSrc, baseUrl);
-      if (resolved.protocol === 'https:') found.push({ order, idx, url: resolved.toString() });
-    } catch {
-      // ignore invalid
-    }
-  }
-  found.sort((a, b) => (a.order !== b.order ? a.order - b.order : a.idx - b.idx));
-  const seen = new Set<string>();
-  const pages: Array<{ pageNumber: number; imageUrl: string }> = [];
-  for (const f of found) {
-    if (seen.has(f.url)) continue;
-    seen.add(f.url);
-    pages.push({ pageNumber: pages.length + 1, imageUrl: f.url });
-  }
-  return pages;
-}
-
 async function safeFetch(rawUrl: string, referer?: string, signal?: AbortSignal): Promise<Response> {
   let current = validateSsrfUrl(rawUrl);
   for (let hop = 0; hop < 5; hop++) {
