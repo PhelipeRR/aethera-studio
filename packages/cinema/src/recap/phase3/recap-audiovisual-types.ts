@@ -58,6 +58,25 @@ export interface RecapPanelShot {
 	framingCropRisk: { atRisk: boolean; reason?: string };
 	emotion: Emotion;
 	narrativeIntent: NarrativeIntent;
+	/**
+	 * Multi-panel layout: compact panels that would leave most of the frame empty share the
+	 * screen. Each panel is revealed when the narration reaches it and stays until the shot ends.
+	 * `panelId`/`imagePath` keep pointing at the first panel for backward compatibility.
+	 */
+	layout?: RecapShotLayout;
+}
+
+export interface RecapShotLayoutPanel {
+	panelId: string;
+	imagePath: string;
+	/** Reveal time relative to the shot start (the first panel is 0). */
+	revealAtMs: number;
+}
+
+export interface RecapShotLayout {
+	/** `row`: side by side (landscape frames); `column`: stacked (portrait frames). */
+	kind: 'row' | 'column';
+	panels: RecapShotLayoutPanel[];
 }
 
 export interface RecapSfxCue {
@@ -216,6 +235,8 @@ export interface GateHReport {
 }
 
 export interface RecapVisualPlannerOptions {
+	/** Let compact consecutive panels share the screen, revealed with the narration (default true). */
+	multiPanelLayout?: boolean;
 	renderTarget?: 'preview' | 'master';
 	aspectRatio?: '16:9' | '9:16';
 	width?: number;

@@ -22,6 +22,7 @@ import type {
 	RecapMotionKeyframe,
 	RecapMotionStyle,
 	RecapPanelShot,
+	RecapShotLayout,
 	RecapSfxCue,
 	RecapSfxKind,
 	RecapTransitionKind,
@@ -29,6 +30,7 @@ import type {
 	RecapVisualPlannerOptions,
 } from './recap-audiovisual-types.js';
 import type { AlignedBeatInterval } from './recap-semantic-alignment.js';
+import { readImageDimensionsFast } from './recap-motionvelix.js';
 
 function selectMotionForScene(
 	scene: Scene,
@@ -455,6 +457,9 @@ export function buildRecapAudiovisualPlan(input: {
 		}
 	}
 
+	// 2b. Compact panels share the screen, each revealed when the narration reaches it.
+	const finalShots = options.multiPanelLayout === false ? shots : stackCompactPanelShots(shots, panelMap, width, height);
+
 	// 3. Synchronized Smart Captions (reusing captions/smart-captions.ts)
 	const captions = compileSmartCaptions({
 		words: captionWords,
@@ -497,7 +502,7 @@ export function buildRecapAudiovisualPlan(input: {
 		height,
 		fps,
 		totalDurationMs,
-		shots,
+		shots: finalShots,
 		sfxCues,
 		vfxSpecs,
 		ducking,
@@ -506,4 +511,93 @@ export function buildRecapAudiovisualPlan(input: {
 		...(hasAlignedBeats ? { beatAlignments: [...alignedBeats!] } : {}),
 		createdAtIso: new Date().toISOString(),
 	};
+}
+
+// ─── Multi-panel layout ─────────────────────────────────────────────────────
+
+/** Panels taller than this (height/width) keep the dedicated vertical-scroll compositor. */
+const STACK_MAX_TALL_RATIO = 2.0;
+/** Gap and outer margin as a fraction of the frame's long side. */
+const STACK_GAP_RATIO = 0.02;
+
+function panelAspect(panel: ExtractedPanel | undefined, imagePath: string): number | null {
+	const box = panel?.metadata.boundingBox;
+	if (box && box.w > 0 && box.h > 0) return box.w / box.h;
+	const dims = imagePath ? readImageDimensionsFast(imagePath) : null;
+	return dims && dims.width > 0 && dims.height > 0 ? dims.width / dims.height : null;
+}
+
+/**
+ * How many copies of a panel fit along the frame's long side without shrinking it below its
+ * full-frame size. 1 means the panel already fills the frame and should stay alone.
+ */
+export function compactPanelSlots(aspect: number, width: number, height: number): number {
+	if (!Number.isFinite(aspect) || aspect <= 0) return 1;
+	const gap = Math.round(Math.max(width, height) * STACK_GAP_RATIO);
+	if (width > height) {
+		// Landscape: panels side by side. Very tall strips scroll instead.
+		if (1 / aspect > STACK_MAX_TALL_RATIO) return 1;
+		const usableH = height - 2 * gap;
+		const panelW = usableH * aspect;
+		return Math.max(1, Math.min(3, Math.floor((width - gap) / (panelW + gap))));
+	}
+	// Portrait: panels stacked vertically.
+	const usableW = width - 2 * gap;
+	const panelH = usableW / aspect;
+	return Math.max(1, Math.min(3, Math.floor((height - gap) / (panelH + gap))));
+}
+
+/**
+ * Merges runs of consecutive shots from the same scene whose panels are compact enough to share
+ * the frame. The merged shot spans the run; each panel keeps its own narration start as reveal time.
+ */
+export function stackCompactPanelShots(
+	shots: readonly RecapPanelShot[],
+	panelMap: ReadonlyMap<string, ExtractedPanel>,
+	width: number,
+	height: number,
+): RecapPanelShot[] {
+	const kind: RecapShotLayout['kind'] = width > height ? 'row' : 'column';
+	const slotsFor = (shot: RecapPanelShot) => {
+		const aspect = panelAspect(panelMap.get(shot.panelId), shot.imagePath);
+		return aspect === null ? 1 : compactPanelSlots(aspect, width, height);
+	};
+	const out: RecapPanelShot[] = [];
+	let i = 0;
+	while (i < shots.length) {
+		const first = shots[i]!;
+		const capacity = slotsFor(first);
+		const run: RecapPanelShot[] = [first];
+		while (capacity > 1 && run.length < capacity && i + run.length < shots.length) {
+			const next = shots[i + run.length]!;
+			if (next.sceneIndex !== first.sceneIndex || !next.imagePath) break;
+			if (run.some((r) => r.panelId === next.panelId)) break;
+			// Every panel in the run must fit the same number of slots, or the smallest one wins.
+			if (slotsFor(next) < run.length + 1) break;
+			run.push(next);
+		}
+		if (run.length < 2) {
+			out.push(first);
+			i += 1;
+			continue;
+		}
+		const last = run[run.length - 1]!;
+		out.push({
+			...first,
+			endMs: last.endMs,
+			durationMs: Math.max(1, last.endMs - first.startMs),
+			// The composite holds still: panel reveals carry the motion; balloons stay readable.
+			motionStyle: 'static_focus',
+			focalStart: { x: 0.5, y: 0.5, zoom: 1 },
+			focalEnd: { x: 0.5, y: 0.5, zoom: 1 },
+			balloonSafeZoneProtected: true,
+			framingCropRisk: { atRisk: false },
+			layout: {
+				kind,
+				panels: run.map((r) => ({ panelId: r.panelId, imagePath: r.imagePath, revealAtMs: r.startMs - first.startMs })),
+			},
+		});
+		i += run.length;
+	}
+	return out;
 }

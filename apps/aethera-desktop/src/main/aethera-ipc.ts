@@ -5850,11 +5850,9 @@ productionConsole,
           outputDir: importDir,
           ...(input.enableOcr ? { ocrAdapter: createTesseractOcrAdapter({ languages: 'por+eng' }) } : {}),
         });
-        const maxPanels =
-          Array.isArray(input.archivePaths) && input.archivePaths.length > 1
-            ? Math.min(60, Math.max(24, input.archivePaths.length * 10))
-            : 24;
-        const panels = extracted.panels.slice(0, maxPanels);
+        // Every extracted panel is narrated: a cap here silently dropped most of a chapter
+        // (e.g. 80 pages reduced to the first 24 panels). Small panels share the screen at render time.
+        const panels = extracted.panels;
         const gateFReport = runGateFPanelIntegrity({ chapter: imported, panels });
         const initialSteps = gateFReport.verdict === 'fail' ? ['import'] : ['import', 'gate-f'];
         lastCompletedSteps = initialSteps;
@@ -5971,7 +5969,7 @@ productionConsole,
         readingOrder: 'vertical',
       });
       const extracted = await extractPanels({ chapter: imported, outputDir: importDir });
-      panels = extracted.panels.slice(0, 24);
+      panels = extracted.panels;
     }
 
     if (panels.length === 0) {

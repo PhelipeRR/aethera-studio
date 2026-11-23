@@ -327,3 +327,59 @@ export function buildVerticalPanelFilterComplex(
 
 	return { filterComplex, mapLabel: '[vout]' };
 }
+
+/**
+ * MotionVelix multi-panel compositor: compact panels share the frame (side by side in landscape,
+ * stacked in portrait) over a blurred backdrop of the first panel. Each panel fades in at its
+ * `revealAtMs`, i.e. when the narration reaches it, and stays until the shot ends.
+ *
+ * Inputs are the layout's images in order (`-loop 1 -i <panel>` for each).
+ */
+export function buildMultiPanelFilterComplex(
+	shot: RecapPanelShot,
+	width: number,
+	height: number,
+	fps: number,
+	vfx?: RecapVfxSpec,
+): { filterComplex: string; mapLabel: string; inputs: string[] } | null {
+	const layout = shot.layout;
+	if (!layout || layout.panels.length < 2) return null;
+	const n = layout.panels.length;
+	const gap = Math.round(Math.max(width, height) * 0.02);
+	const even = (v: number) => Math.max(2, Math.floor(v / 2) * 2);
+	const slotW = layout.kind === 'row' ? even((width - gap * (n + 1)) / n) : even(width - 2 * gap);
+	const slotH = layout.kind === 'row' ? even(height - 2 * gap) : even((height - gap * (n + 1)) / n);
+
+	const parts: string[] = [
+		`[0:v]split=2[bgsrc][p0src]`,
+		`[bgsrc]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},gblur=sigma=28,eq=brightness=-0.18:saturation=0.85,fps=${fps},setsar=1[bg0]`,
+	];
+	const fade = 0.25;
+	let prev = 'bg0';
+	for (let k = 0; k < n; k += 1) {
+		const src = k === 0 ? 'p0src' : `${k}:v`;
+		const revealSec = Math.max(0, layout.panels[k]!.revealAtMs / 1000);
+		const slotX = layout.kind === 'row' ? gap + k * (slotW + gap) : gap;
+		const slotY = layout.kind === 'row' ? gap : gap + k * (slotH + gap);
+		parts.push(
+			`[${src}]scale=${slotW}:${slotH}:force_original_aspect_ratio=decrease,format=rgba,fps=${fps},` +
+				`fade=t=in:st=${revealSec.toFixed(3)}:d=${fade}:alpha=1[p${k}]`,
+		);
+		const x = `${slotX}+(${slotW}-w)/2`;
+		const y = `${slotY}+(${slotH}-h)/2`;
+		const enable = revealSec > 0 ? `:enable='gte(t,${revealSec.toFixed(3)})'` : '';
+		parts.push(`[${prev}][p${k}]overlay=x='${x}':y='${y}'${enable}[bg${k + 1}]`);
+		prev = `bg${k + 1}`;
+	}
+
+	const post: string[] = [];
+	if (vfx && vfx.contrastBoost > 1.01) post.push(`eq=contrast=${Math.min(1.14, vfx.contrastBoost).toFixed(2)}`);
+	if (vfx && vfx.vignetteStrength > 0.05) post.push(`vignette=angle=${(Math.min(0.32, vfx.vignetteStrength) * 1.2).toFixed(3)}`);
+	const fadeDur = Math.min(0.28, Math.max(0.12, (shot.durationMs / 1000) * 0.14)).toFixed(2);
+	if (shot.transitionIn === 'dip_black' || shot.transitionIn === 'crossfade') post.push(`fade=t=in:st=0:d=${fadeDur}:color=black`);
+	else if (shot.transitionIn === 'flash_white') post.push('fade=t=in:st=0:d=0.16:color=white');
+	post.push('setsar=1', 'format=yuv420p');
+	parts.push(`[${prev}]${post.join(',')}[vout]`);
+
+	return { filterComplex: parts.join(';'), mapLabel: '[vout]', inputs: layout.panels.map((p) => p.imagePath) };
+}

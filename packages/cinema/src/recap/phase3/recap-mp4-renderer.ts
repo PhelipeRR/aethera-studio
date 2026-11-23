@@ -30,7 +30,7 @@ import type {
 import { buildRecapAudiovisualPlan } from './recap-visual-planner.js';
 import { runGateHAudiovisualQuality } from './recap-gate-h-quality.js';
 import { auditNarrationAudioClip } from './recap-tts-adapters.js';
-import { buildShotZoompanFilter, buildVerticalPanelFilterComplex, MOTIONVELIX_SFX_MAP, type MotionVelixRenderReport } from './recap-motionvelix.js';
+import { buildMultiPanelFilterComplex, buildShotZoompanFilter, buildVerticalPanelFilterComplex, MOTIONVELIX_SFX_MAP, type MotionVelixRenderReport } from './recap-motionvelix.js';
 import type { RecapVfxSpec } from './recap-audiovisual-types.js';
 import {
 	alignBeatsToRealWavAudio,
@@ -149,6 +149,7 @@ export function computeShotRenderHash(
 			transitionIn: shot.transitionIn,
 			focalStart: shot.focalStart,
 			focalEnd: shot.focalEnd,
+			layout: shot.layout ?? null,
 			vfx: vfx ?? null,
 			width,
 			height,
@@ -468,8 +469,23 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 				continue;
 			}
 
-			const verticalFx = buildVerticalPanelFilterComplex(shot, plan.width, plan.height, plan.fps, vfx);
-			const ffmpegShotArgs = verticalFx
+			const multiFx = buildMultiPanelFilterComplex(shot, plan.width, plan.height, plan.fps, vfx);
+			const verticalFx = multiFx ? null : buildVerticalPanelFilterComplex(shot, plan.width, plan.height, plan.fps, vfx);
+			const ffmpegShotArgs = multiFx
+				? [
+						'-y',
+						...multiFx.inputs.flatMap((img) => ['-loop', '1', '-i', img]),
+						'-filter_complex', multiFx.filterComplex,
+						'-map', multiFx.mapLabel,
+						'-t', (shot.durationMs / 1000).toFixed(3),
+						'-r', String(plan.fps),
+						'-c:v', 'libx264',
+						'-preset', renderTarget === 'master' ? 'medium' : 'ultrafast',
+						'-pix_fmt', 'yuv420p',
+						'-an',
+						clipPath,
+					]
+				: verticalFx
 				? [
 						'-y',
 						'-loop', '1',
