@@ -164,3 +164,28 @@ Modelo descarregado antes. Uma única chamada, igual ao controle GPU válido, mu
 ### Próxima isolação recomendada (até 2 chamadas)
 1. Sintética grande, sem conteúdo protegido (por exemplo ~1000×1400 px, mirando ~1700 tokens de imagem, o mesmo da falha de 19:23), com GPU e `format:'json'` e `num_ctx 4096`. Se aparecer `@`, H8 se reproduz.
 2. Se reproduzir: a mesma chamada com `num_gpu:0`, descarregando o modelo antes. Se a CPU passar, a falha é do caminho CUDA para imagens grandes, e o próximo passo seria testar `OLLAMA_FLASH_ATTENTION=0`. Se a CPU também falhar, a causa é modelo/runtime com imagens grandes, e a mitigação seria limitar a resolução do painel antes do envio.
+
+## Adendo 4 — imagem sintética grande, GPU + JSON (19:59:53): PASS; H8 refutada para ~1715 tokens
+Modelo descarregado antes. Uma única chamada com uma imagem sintética de 980×1372 px ("página" 2×3 com bordas pretas e uma forma colorida por painel), `format:'json'`, `num_ctx 4096`, `num_predict 128`, sem `num_gpu`. O prompt de texto é o mesmo dos testes anteriores.
+- Log: `CLIP using CUDA0 backend`, `offloaded 37/37 layers to GPU`, `Flash Attention enabled`, `task.n_tokens = 1749` (1715 de imagem e 34 de texto), **4 lotes de imagem (512, 512, 512, 179)**. É a mesma estrutura da falha de 19:23 (4 lotes, o último com 175). Sem `grammar`/`exception`.
+- Resposta: HTTP 200, `done=true` (`stop`), `{ "image": "https://www.example.com/image.jpg", "description": "A red circle, a blue square, a green circle, a yellow square, a purple circle, and an orange square." }`. As 6 formas e as 6 cores estão certas e na ordem. O campo `image` com URL foi inventado, um ponto fraco de qualidade do JSON livre.
+- Métricas: 3 776 ms no total (2 127 de load cold, 1 245 de prefill a 1405 tok/s, 392 de geração), 1749/44 tokens, pico de VRAM de 6 107 MiB, GPU a 100%.
+- A chamada em CPU **não foi feita**, porque a regra era só rodá-la se a GPU reproduzisse a falha.
+
+### Estado da causa raiz
+| Hipótese | Status |
+| --- | --- |
+| Caminho CUDA/flash-attn quebrado em geral | **refutada** (Adendos 2 a 4) |
+| H5: JSON mode sozinho | **refutada** (Adendo 3) |
+| H8: tamanho da imagem até ~1715 tokens / 4 lotes | **refutada** (este adendo) |
+| H8b: imagem perto do limite de contexto (~4000 tokens, 8 lotes, 60 tokens livres, falha de 19:05) | aberta |
+| H9: prompt real do adapter (263 tokens de texto com instruções de schema) | aberta, e é a diferença restante em relação à falha de 19:23 |
+| H10: conteúdo de painel real (traço, retícula, texto) | aberta |
+| H7: HTTP 500 de 19:28 sem mensagem | aberta |
+
+Conclusão: **não há evidência de que a falha dependa do dispositivo.** Com prompt curto, o modelo funciona em GPU e em CPU, com e sem JSON mode, e com imagens de até ~1715 tokens. O `@` no primeiro token só apareceu com o prompt e as imagens reais do pipeline.
+
+### Próxima isolação recomendada
+1. Uma chamada GPU com a mesma imagem sintética grande e o **prompt exato do adapter** (texto e `format` iguais aos de `vision-providers.ts`), testando H9 sem conteúdo protegido.
+2. Se passar: uma chamada GPU com **um** painel real deduplicado (H10), com `num_ctx` folgado e sem processar o lote.
+3. Em qualquer caso, limitar a resolução do painel para que imagem + prompt + saída fiquem bem abaixo de `num_ctx`. A falha de 19:05 tinha só 60 tokens livres, e não há recuperação segura nessa situação.
