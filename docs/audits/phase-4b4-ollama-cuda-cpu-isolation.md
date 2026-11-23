@@ -310,3 +310,26 @@ Testes (TDD):
 **Por que não foi commitado:** o provider Ollama inteiro (~347 linhas) e `ollama-local-vlm-protocol.test.ts` são alterações não commitadas/não rastreadas de outra sessão. Commitar o patch levaria esse trabalho junto, e o teste novo depende dele. Rollback: reverter os blocos marcados com `OLLAMA_RUNTIME_DEGENERATE_OUTPUT`, `requestChat`, `cpuFallback*` e `lastRoute`, e apagar o teste novo.
 
 **Ainda não verificado ao vivo:** o fluxo real com `p0_0` (padrão → degenerado → CPU com `keep_alive:0` → próxima chamada recarregando na GPU). Validar exige 2 a 3 chamadas locais.
+
+## Adendo 10 — validação ao vivo do P1 pelo adapter real (20:14:22–20:15:07)
+Script `scratchpad/p4b4/live-p1.mts` (fora do repo) chamando `createOllamaLocalVlmProvider({ cpuFallbackOnDegenerateOutput: true, maxCpuFallbacks: 1 })`. As envs `NB_LOCAL_VLM_*` presentes (4096/1200/1) são iguais aos padrões. Modelo descarregado antes. **3 chamadas reais**, todas confirmadas no `server.log`:
+
+| # | Chamada | Log | Resultado do transporte |
+| --- | --- | --- | --- |
+| 1 | A: `p0_0`, rota padrão | `offloaded 37/37`, `CLIP using CUDA0`, `@ (31)` exception, HTTP 200 em 3,35 s | `OLLAMA_RUNTIME_DEGENERATE_OUTPUT` → fallback |
+| 2 | A: fallback CPU | `reason=cpu-only`, `CLIP using CPU backend`, HTTP 200 em 37,16 s | `done=true`, 1949/411 tokens, `lastRoute()='cpu-fallback'`; `ollama ps` logo depois: **nada carregado** (`keep_alive:0` funcionou) |
+| 3 | B: sintética 128 px, rota padrão | runner novo, `offloaded 37/37`, `CLIP using CUDA0`, HTTP 200 em 4,92 s | `done=true`, 1254/253 tokens, `lastRoute()='default'`; `ollama ps`: **100% GPU**, VRAM 6064 MiB |
+
+**P1: PASS.** O erro foi classificado, houve uma única tentativa em CPU, sem loop, o runner CPU não ficou residente e a chamada seguinte voltou para a GPU.
+
+### Novo achado P1, fora do patch: a saída real do modelo não passa no schema do adapter
+Nas duas análises, A (CPU) e B (GPU), `adaptLocalPanelAnalysis` → `localPanelAnalysisSchema.parse` rejeitou o JSON. Issues capturadas (lista parcial, porque a mensagem foi truncada em 600 caracteres):
+- A: `schemaVersion` "expected 1" (veio `"1"` string), `natureConfidence` "expected number, received string", `frames[0].observed` "expected string, received boolean", entre outras.
+- B: `schemaVersion` "expected 1", `nature` fora do enum, entre outras.
+
+Isso bate com o que se viu nos Adendos 5 e 7: confianças como `"high"`, `"null"` como string, `characters` com entradas espúrias. **Hoje a rota local falharia na validação na maioria dos painéis, independentemente do dispositivo.** O erro também não é classificado (`code=null`), e vem como um array zod bruto. Não corrigi nada aqui, porque está fora do escopo do P1.
+
+### Recomendação para retomar a Fase 4B (atualizada)
+1. **Contrato de saída local (P1 novo):** declarar no prompt tipos e enums explícitos (números 0–1, `nature` do enum, `observed` string, `schemaVersion: 1` numérico) e/ou adicionar uma camada de normalização limitada antes do `parse` (`"1"`→1, `"high|medium|low"`→0.85/0.6/0.35, `"null"`→null). Classificar a rejeição como `RECAP_LOCAL_SCHEMA_INVALID` com a lista de paths, sem o array bruto. Validar com `p0_0` + 2 a 3 painéis reais, mais o caso sintético.
+2. Só depois disso fazer o piloto de ~10 painéis na GPU, com `NB_LOCAL_VLM_CPU_FALLBACK=1` e orçamento baixo, medindo a taxa de degeneração, a taxa de schema válido e o tempo por painel.
+3. Commitar o provider Ollama (trabalho da outra sessão) junto com o P1, depois que os donos revisarem.
