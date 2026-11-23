@@ -92,7 +92,7 @@ G10: `panels_total=1` (sintético), `model_calls=1`, `retry_calls=0`, `quota_eve
 
 ## Execução
 - Cliente: `scratchpad/p4b4/cpu-probe.mjs` (Node 24, fora do repositório). Grava `response.raw` com limite de 1 MiB, `result.json` e `samples.json` (amostras a cada 1 s via `nvidia-smi`/`tasklist`). No terminal, imprime só o resumo.
-- Trecho do log de servidor desta chamada salvo em `scratchpad/p4b4/run1/server-log-slice.txt`.
+- Trecho do log de servidor desta chamada salvo em `scratchpad/p4b4/run1/server-log-slice.txt` (o log completo foi rotacionado para `server-1.log` às 20:08).
 - Não executados: chamada de controle GPU e teste com flash-attn desligado, por causa da restrição de chamada única.
 
 ## Adendo — chamada de controle GPU (19:53:59): INVÁLIDA como controle
@@ -265,3 +265,26 @@ Modelo descarregado antes. Mesma chamada do Adendo 6 (painel `p0_0`, prompt e fo
 2. Patch P1 no adapter (`vision-providers.ts`): tratar `done !== true` ou conteúdo vazio como falha de provedor classificada (`OLLAMA_RUNTIME_DEGENERATE_OUTPUT`), sem retry na GPU, com fallback opcional para CPU nesse painel. Incluir teste unitário com o envelope de 96 bytes capturado.
 3. Limitar a resolução dos painéis antes do envio: 4 dos 437 passam de ~2600 tokens de imagem e não cabem com `num_predict 1200`; o máximo é ~9106.
 4. Só depois disso fazer um piloto com ~10 painéis reais deduplicados, medindo a taxa de falha na GPU, antes de processar os 437.
+
+## Adendo 8 — painel real na GPU com Flash Attention desligado (20:07:46): FAIL. H2 refutada
+Procedimento: `ollama app.exe` e o servidor foram parados. Um `ollama serve` temporário subiu com `OLLAMA_FLASH_ATTENTION=0` definido **só no ambiente desse processo**, com logs em `scratchpad/p4b4/run9-gpu-real-panel-noFA/serve.err.log`. Depois do teste, o servidor temporário foi encerrado e o `ollama app.exe` original foi reaberto. Nenhuma variável persistente de usuário ou máquina foi alterada (`OLLAMA_FLASH_ATTENTION` de usuário continua vazia). O servidor restaurado (0.40.16) imprime a mesma configuração de 18:59. Com o reinício, o log anterior foi rotacionado para `%LOCALAPPDATA%\Ollama\server-1.log`, onde estão as evidências dos Adendos 1–7.
+
+Chamada: idêntica à do Adendo 6 (painel `p0_0`, prompt e formato do adapter, `format:'json'`, `num_ctx 4096`, `num_predict 1200`, GPU).
+- Log: `llama_context: flash_attn = disabled`, `warmup: flash attention is disabled`, `offloaded 37/37 layers to GPU`, `CLIP using CUDA0 backend` (sem FA, o buffer de compute do CLIP sobe de 569,7 para **4 871,57 MiB**), lotes 512/512/512/175, `tokens: text = 238, total = 1949`, seguido de **`got exception: Unexpected empty grammar stack after accepting piece: @ (31)`**.
+- Resposta: HTTP 200, o mesmo envelope vazio de 96 bytes (`done:false`).
+- Métricas: 32 044 ms de wall (quase tudo load/reserve do buffer de 4,9 GB), **pico de VRAM de 7 367 MiB** (de 8 188), RAM do runner com pico de 4 257 MiB.
+
+### Conclusão atualizada
+| Hipótese | Status |
+| --- | --- |
+| Dispositivo (CUDA vs. CPU) | **confirmado**: mesmo byte a byte, falha na GPU e passa na CPU |
+| H2: Flash Attention | **refutada**: falha também com FA desligado |
+| Componente CUDA: encoder CLIP vs. LLM | **não separável no Ollama 0.40.16** (`--no-mmproj-offload` só existe em cpu-only) |
+
+Desligar o FA **não serve** como workaround: não corrige a falha, aumenta a VRAM em ~1,3 GB (perto do limite de 8 GB) e deixa o load muito mais lento.
+
+### Recomendação revisada para retomar a Fase 4B
+1. **Patch P1 no adapter** (precisa de autorização): tratar `done !== true` ou `content === ''` como `OLLAMA_RUNTIME_DEGENERATE_OUTPUT`, sem retry na GPU, com fallback **por painel** para `num_gpu:0`, limitado em quantidade e tempo (~37 s por painel). Teste unitário com o envelope de 96 bytes. Como `num_gpu:0` deixa o modelo residente em CPU (Adendo 1), o fallback deve sempre fixar `num_gpu` explicitamente nas duas rotas.
+2. **Piloto de ~10 painéis reais deduplicados na GPU** para medir a taxa de falha. Se ela for baixa, a GPU continua como padrão e o fallback CPU fica só para os painéis que falharem. Se for alta, partir para o passo 3.
+3. **Experimento controlado de runtime:** testar outra versão do Ollama/ggml (o bug está no backend CUDA) ou outro modelo multimodal local, usando `p0_0` como caso de regressão. Isso exige autorização, porque envolve download ou atualização.
+4. Limitar a resolução dos painéis (4/437 passam de ~2600 tokens de imagem).
