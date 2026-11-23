@@ -189,3 +189,34 @@ Conclusão: **não há evidência de que a falha dependa do dispositivo.** Com p
 1. Uma chamada GPU com a mesma imagem sintética grande e o **prompt exato do adapter** (texto e `format` iguais aos de `vision-providers.ts`), testando H9 sem conteúdo protegido.
 2. Se passar: uma chamada GPU com **um** painel real deduplicado (H10), com `num_ctx` folgado e sem processar o lote.
 3. Em qualquer caso, limitar a resolução do painel para que imagem + prompt + saída fiquem bem abaixo de `num_ctx`. A falha de 19:05 tinha só 60 tokens livres, e não há recuperação segura nessa situação.
+
+## Adendo 5 — prompt exato do adapter, GPU (20:01:18): PASS; H9 refutada
+Modelo descarregado antes. Uma única chamada com a mesma imagem sintética de 980×1372 px e o **prompt e o formato de requisição copiados literalmente** de `vision-providers.ts:519-548`: sem contexto narrativo (linha de fallback), `panel_id=synthetic-1 order=1 at_ms=0`, `format:'json'`, `num_ctx 4096`, `num_predict 1200` (padrão do adapter), `stream:false`, timeout de 120 s. O adapter não foi modificado.
+- Log: `CLIP using CUDA0 backend`, `offloaded 37/37 layers to GPU`, `Flash Attention enabled`, 4 lotes de imagem (512, 512, 512, 179), `tokens: text = 230, total = 1945`. A falha de 19:23 tinha texto = 263 e total = 1974. Sem `grammar`/`exception`.
+- Resultado: HTTP 200, `done=true` (`stop`). O JSON **faz parse** e traz todas as chaves do schema (`schemaVersion, nature, natureConfidence, description, frames, characters, actions, environment, overlays, limitations, confidence`).
+- Métricas: 8 564 ms no total (2 471 de load cold, 1 264 de prefill a 1539 tok/s, 4 816 de geração para 536 tokens a 111 tok/s), pico de VRAM de 6 113 MiB, GPU a 98%.
+
+### Qualidade da saída (achados P2 para o Recap, fora do escopo de dispositivo)
+- `description` fala em "four squares", mas a imagem tem 6 painéis. A lista em `frames` traz as 6 formas corretamente.
+- As formas aparecem em `characters` com `basis: "observed"`. Pelo prompt, deviam ficar fora de `characters` ou ter `basis=inferred`.
+- Há posições erradas: o círculo roxo aparece como "bottom left", repetindo a posição do verde, e o retângulo laranja como "bottom right", repetindo a do amarelo.
+- Os tipos não seguem o schema esperado: `schemaVersion: "1"` e as confianças (`"high"`) vêm como string, e `environment`/`overlays` vêm como a **string** `"null"`. `limitations` diz "No limitations provided.". Falta confirmar se `adaptLocalPanelAnalysis` normaliza ou rejeita esses tipos.
+
+### Estado da causa raiz
+| Hipótese | Status |
+| --- | --- |
+| Caminho CUDA/flash-attn | refutada |
+| H5 JSON mode | refutada |
+| H8 imagem de ~1715 tokens / 4 lotes | refutada |
+| **H9 prompt do adapter** | **refutada** (230 tokens de texto; a variante de 263 tinha contexto narrativo) |
+| H8b imagem perto do limite (~4000 tokens, 60 livres) | aberta |
+| H10 conteúdo de painel real | aberta, é a principal diferença que sobra |
+| H7 HTTP 500 de 19:28 | aberta |
+| H11 estado do servidor (as falhas de 19:05 e 19:23 ocorreram em runners que depois terminaram com `exit status 1`) | aberta, ainda sem evidência |
+
+**A falha `@` original não se reproduz com entradas sintéticas em nenhum dispositivo.** O dispositivo não é a causa provável. Trocar para CPU, atualizar o Ollama ou trocar o modelo continua sem justificativa.
+
+### Próxima isolação recomendada
+1. **Um** painel real deduplicado, o mesmo da falha de 19:23 se for identificável pelo checkpoint e sem reprocessar o lote, com o mesmo prompt e na GPU. Isso precisa de autorização explícita, porque envolve conteúdo real.
+2. Se reproduzir o `@`: a mesma chamada com `num_gpu:0`, e só depois disso concluir sobre o dispositivo.
+3. Independentemente do resultado: (a) limitar a resolução do painel para que imagem + prompt + 1200 de saída caibam em `num_ctx` (hoje ~1945 + 1200 = 3145 de 4096; uma imagem de ~4000 tokens nunca cabe); (b) avaliar se `adaptLocalPanelAnalysis` trata os tipos-string vistos acima.
