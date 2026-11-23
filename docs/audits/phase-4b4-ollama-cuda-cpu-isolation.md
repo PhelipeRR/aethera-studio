@@ -233,3 +233,35 @@ Chamada: modelo descarregado antes, prompt e formato iguais aos do adapter (`pan
 - **Confirmado:** a falha depende do **conteúdo do painel**, já que imagens sintéticas do mesmo tamanho, com o mesmo prompt e no mesmo caminho GPU, passam. É determinística para `p0_0` e reprodutível.
 - **Achado P1 (adapter):** o Ollama 0.40.16 sinaliza essa exceção com **HTTP 200** e envelope vazio (`done:false`, `content:""`). Em `vision-providers.ts:555-568`, `res.ok` passa e o erro vira "Ollama retornou JSON de análise inválido". O erro de runtime fica mascarado como saída ruim do modelo, o que é ruim para o diagnóstico e para a política de retry. O adapter deveria tratar `done !== true` ou `content === ''` como falha de provedor e não repetir a chamada às cegas.
 - **Ainda em aberto:** CPU vs. GPU **para este painel**. Esse é o teste decisivo que falta.
+
+## Adendo 7 — mesmo painel real em CPU (20:05:54): PASS. Causa isolada no caminho CUDA, dependente do conteúdo
+Modelo descarregado antes. Mesma chamada do Adendo 6 (painel `p0_0`, prompt e formato do adapter, `format:'json'`, `num_ctx 4096`, `num_predict 1200`), mudando **só** `num_gpu: 0`.
+- Log: `disabling multimodal projector offload reason=cpu-only`, apenas `CPU backend` carregado, `CLIP using CPU backend`, lotes de imagem **512/512/512/175** (os mesmos da falha), `tokens: text = 238, total = 1949`. Sem `grammar`/`exception`.
+- Resposta: HTTP 200, `done=true` (`stop`). O JSON faz parse e tem todas as chaves do schema.
+- Conteúdo, conferido visualmente contra o painel: cena noturna, lua, montanhas escarpadas com névoa e vegetação. **Coerente.** Imprecisões menores: lua em "center" (está no alto à direita), `weather: "clear"` (há nuvens), `characters` traz uma entrada "Unknown" em vez de lista vazia e `environment` vem com aninhamento livre fora de schema.
+- Métricas: total de 36 872 ms (load 2 057, prefill 15 571 a 125 tok/s, dos quais ~4,9 s são o decode da imagem; geração 19 185 para 411 tokens a 21 tok/s). VRAM sem uso (2080 → 2082). RAM do runner com pico de 3 946 MiB; RAM livre caiu de 14 648 para 10 816 MiB.
+
+### Resultado final da Fase 4B.4
+
+| Entrada | GPU (CUDA0, flash-attn) | CPU |
+| --- | --- | --- |
+| Sintética 128 px, prompt curto | PASS | PASS |
+| Sintética 128 px + JSON | PASS | — |
+| Sintética 980×1372 + JSON | PASS | — |
+| Sintética 980×1372 + prompt do adapter | PASS | — |
+| **Painel real `p0_0` + prompt do adapter** | **FAIL** (`@` no 1º token, HTTP 200 vazio) | **PASS** |
+
+**Causa raiz:** confirmada no caminho de execução CUDA do Ollama 0.40.16 / `cuda_v13` para certos conteúdos de imagem. Com a mesma entrada byte a byte, só o dispositivo muda o resultado. O primeiro token sai degenerado (`@`, id 31) logo depois do prefill, o que é compatível com NaN/overflow numérico em fp16. O painel que falha é escuro, de baixo contraste, com gradientes de névoa.
+**Componente exato ainda não separado:** o encoder CLIP em CUDA, o LLM em CUDA ou o Flash Attention. O Ollama não permite "LLM na GPU + CLIP na CPU" (`--no-mmproj-offload` só existe no modo cpu-only), então a próxima separação possível é desligar o Flash Attention.
+
+### Workaround mínimo
+1. **Imediato (sem mudar o Aethera por enquanto):** marcar o painel como `needs_review`/fallback quando o envelope vier com `done:false` ou `content:""`, em vez de repetir a chamada. Isso exige o patch P1 abaixo, que precisa de autorização.
+2. **A testar (1 chamada):** `OLLAMA_FLASH_ATTENTION=0` com reinício do servidor Ollama, e o mesmo painel `p0_0` na GPU. Se passar, é um workaround global barato que mantém a GPU. Precisa de autorização, porque muda a configuração do Ollama.
+3. **CPU como padrão: não recomendado.** ~37 s por painel (contra ~4–9 s na GPU) daria cerca de 4,5 h para 437 painéis. Pode servir como **fallback por painel** só para os que falharem na GPU, com limite de painéis e de tempo.
+4. **Atualizar o Ollama:** candidato controlado se o passo 2 não resolver, já que o bug está no backend CUDA/ggml, que muda entre versões.
+
+### Recomendação para retomar a Fase 4B
+1. Testar `OLLAMA_FLASH_ATTENTION=0` com `p0_0` (1 chamada, depois de autorizar o reinício).
+2. Patch P1 no adapter (`vision-providers.ts`): tratar `done !== true` ou conteúdo vazio como falha de provedor classificada (`OLLAMA_RUNTIME_DEGENERATE_OUTPUT`), sem retry na GPU, com fallback opcional para CPU nesse painel. Incluir teste unitário com o envelope de 96 bytes capturado.
+3. Limitar a resolução dos painéis antes do envio: 4 dos 437 passam de ~2600 tokens de imagem e não cabem com `num_predict 1200`; o máximo é ~9106.
+4. Só depois disso fazer um piloto com ~10 painéis reais deduplicados, medindo a taxa de falha na GPU, antes de processar os 437.
