@@ -631,3 +631,64 @@ O arquivo continua misturado com o provider Ollama da outra sessão. Os testes n
 3. **Identidade:** tirar os nomes do esquema por painel (apenas `visualLabel`) e resolver vocativos e nomes na etapa narrativa. Nenhum dos dois modelos é confiável para isso por painel.
 4. **SFX:** tratar Hangul isolado como `sfx`, nunca como diálogo.
 5. **Contexto:** para painéis acima de ~3500 tokens de imagem (como o `p28_1`), aumentar `num_ctx` ou recortar o painel.
+
+## Adendo 16 — structured outputs com `qwen3.5:4b-q4_K_M` (20:50–20:52)
+
+### Mudança (**não commitada**, no mesmo arquivo misturado)
+- `buildLocalPanelJsonSchema(frameCount)` gera o JSON schema do contrato compacto, com o formato que o esqueleto do prompt pede:
+  - todos os campos obrigatórios e `additionalProperties: false`;
+  - enums de `nature`, `region` e `basis` tirados do próprio zod, para não divergir;
+  - `frames` com `minItems` = `maxItems` = número de imagens;
+  - `environment` aceita `null` ou um objeto.
+- Faixas numéricas e tamanhos de texto continuam validados pelo zod depois da geração.
+- Nova opção `structuredOutput` (`NB_LOCAL_VLM_STRUCTURED_OUTPUT=1`), **desligada por padrão**: sem ela, o pedido continua com `format: 'json'`, e o contrato testado pela outra sessão fica intacto. O prompt não mudou.
+- **Testes:**
+  - `test/ollama-structured-output.test.ts`, novo, com 3 testes: falhou antes da implementação (export ausente) e passa depois.
+  - Suítes Ollama e de capacidades: **36/36**.
+  - `tsc`: os mesmos 123 erros que já existiam, nenhum nos arquivos tocados.
+
+### Piloto
+- Script `scratchpad/p4b4/pilot-structured.mts`, saída em `run17-qwen35-structured`.
+- Mesmo desenho do Adendo 15: 15 painéis × 2, `temperature 0.2`, `think:false`, sem fallback, sem retries. **A única variável alterada é o `format`** (confirmado: objeto em 30/30 pedidos).
+
+| Métrica | `format:'json'` (Adendo 15) | **JSON schema** |
+| --- | --- | --- |
+| Schema válido | 18/30 | **28/30**; as 2 falhas são o `p28_1`, que excede o contexto (HTTP 400) antes de gerar |
+| Nos 10 painéis originais | 12/20 | **20/20** |
+| Estabilidade entre execuções | o status mudou em 8/15 painéis | o status mudou em 0/15 |
+| Normalizações aplicadas | 15 notas | **0** |
+| Repetição abortada | 1 | 0 |
+| Degeneração CUDA | 0 | 0 |
+| Válidos **e** sem erro grave | 13/30 | **24/30** (nos 10 originais: 18/20, antes 9/20) |
+| Inversão de identidade | 3 (`p58_12`, `p71_0` ×2) | 2 (`p71_0` ×2); o `p58_12` agora sai certo nas 2 execuções |
+| Fala inventada a partir de SFX | 2 (`p10_1` "폭음") | 2 (`p10_1` "폭음", nas 2 execuções) |
+| Saída (média) | 341 nos painéis comuns | 307 no geral |
+| Latência (média) | 4,8 s nos painéis comuns, 7,6 s nos grandes | 4,7 s no geral |
+| Wall total | 151 s | 131 s |
+| VRAM | ≤ 5,8 GB | ≤ 5,9 GB |
+| Confiança | 0.95 quase constante | 0.95 quase constante (0.85–1.0). **Continua sem servir como evidência** |
+
+### Fidelidade (verificação visual das 28 respostas)
+- **Corretas nas 2 execuções:** `p0_0`, `p0_1`, `p19_1` (íris violeta, cabelo cinza, suor; o "olho arregalado" de antes sumiu), `p26_3` (sem personagem), `p31_7`, `p39_1`, `p55_8` e `p67_0` ("pinças" é impreciso). No `p31_7` da execução 1, o modelo deduziu **corretamente** que o deitado é o Príncipe e o de pé não é.
+- `p47_3`: OCR completo nas 2 execuções, sem o SFX inventado; "speaking" é suposição; caixa corrompida na execução 2.
+- `p59_0`: correto; na execução 1, o SFX "음칫" foi posto como fala.
+- `p24_1`: correto no visual, mas o OCR veio incompleto (1 das 4 caixas na execução 2). Na execução 1, aparece um "oponente atingido" que é discutível.
+- `p58_12`: **as identidades saem certas** (execução 1: "Woman (unnamed)"; execução 2: Lady Hwa e Guard Jang de costas). O OCR traz só 2 das 5 falas nas 2 execuções.
+- **Erros graves que restam:**
+  - `p10_1` ×2: o SFX 푸욱 vira o texto inexistente "폭음", posto como fala; na execução 1, também "cabelo cinza".
+  - `p71_0` ×2: a criança recebe o nome "Guard Jang" por causa do vocativo; a execução 2 também omite a fala "NEVER.".
+- **Padrão novo:** OCR **incompleto** em painéis altos com vários balões (`p24_1`, `p58_12`, `p71_0`). O modelo omite falas em vez de inventar.
+
+### Conclusão
+- **Structured outputs resolvem os problemas de forma e de estabilidade:** 28/28 válidos, nenhuma normalização, nenhuma repetição abortada, mesmo custo.
+- Com isso, **`qwen3.5:4b-q4_K_M` + `think:false` + `structuredOutput` é a primeira configuração local que passa no critério de fidelidade numa amostra:** 24/30 sem erro grave, 18/20 nos painéis originais.
+- **O que continua fora do alcance da análise por painel:**
+  1. nomes vindos de vocativos (`p71_0`);
+  2. SFX coreanos lidos ou inventados como fala (`p10_1`, `p59_0`);
+  3. OCR incompleto em painéis altos com muitos balões;
+  4. o `p28_1`, que precisa de `num_ctx` maior ou de recorte.
+- **Recomendação para produção do Recap:**
+  1. **Modelo `qwen3.5:4b-q4_K_M`, com `NB_LOCAL_VLM_STRUCTURED_OUTPUT=1`** e `think:false` (já é o padrão do provider). Manter o `qwen2.5vl:3b` instalado como reserva.
+  2. **Antes de trocar o padrão**, commitar o provider (o arquivo está misturado com a outra sessão; isso exige coordenação) e rodar um piloto maior, de 40 a 60 painéis.
+  3. Mitigações: tratar Hangul isolado como `sfx` em código; resolver nomes e vocativos na etapa narrativa; verificar a cobertura de OCR em painéis altos (contar balões ou usar uma etapa de OCR separada); usar `num_ctx` 6144 ou recorte para painéis com mais de ~3500 tokens.
+  4. **Não processar os 437 painéis** sem essas condições e sem autorização explícita.
