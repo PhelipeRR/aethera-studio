@@ -374,6 +374,16 @@ contextBridge.exposeInMainWorld('aetheraBridge', {
       return () => void ipcRenderer.removeListener('mogrt:progress', wrapped);
     },
   } satisfies MogrtBridge,
+  recapListJobs: (input?: { includeFinished?: boolean; limit?: number }) => ipcRenderer.invoke('recap:jobs-list', input),
+  recapGetJob: (input: { jobId: string }) => ipcRenderer.invoke('recap:job-get', input),
+  recapPauseJob: (input: { jobId: string }) => ipcRenderer.invoke('recap:job-pause', input),
+  recapResumeJob: (input: { jobId: string }) => ipcRenderer.invoke('recap:job-resume', input),
+  recapCancelJob: (input: { jobId: string }) => ipcRenderer.invoke('recap:job-cancel', input),
+  onRecapJobUpdate: (listener: (job: unknown) => void) => {
+    const wrapped = (_event: unknown, payload: unknown) => listener(payload);
+    ipcRenderer.on('recap:job-update', wrapped);
+    return () => ipcRenderer.removeListener('recap:job-update', wrapped);
+  },
   onRecapProductionProgress: (listener: (event: unknown) => void) => {
     const wrapped = (_event: unknown, payload: unknown) => listener(payload);
     ipcRenderer.on('recap:production-progress', wrapped);

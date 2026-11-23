@@ -30,6 +30,7 @@ import { runStoryEngine } from '../story-engine.js';
 
 import type { MotionVelixRenderReport } from '../phase3/recap-motionvelix.js';
 import { getRecapProjectDir, saveRecapProjectRecord, type RecapProjectArtifacts } from './recap-project-store.js';
+import { isRecapJobInterruptedError } from './recap-production-job-manager.js';
 
 export type RecapOrchestratorState =
 	| 'idle'
@@ -175,6 +176,12 @@ export interface RunRecapProductionOrchestratorInput {
 	gateFVerdict?: GateFReport['verdict'];
 	initialCompletedSteps?: readonly string[];
 	onProgress?: (event: RecapOrchestratorProgressEvent) => void;
+	/**
+	 * Cooperative job control. `checkpoint` is called only at safe points (before each fresh
+	 * panel analysis and between stages) and throws RecapJobInterruptedError to pause/cancel.
+	 * The interruption propagates to the caller; the record keeps its last persisted state.
+	 */
+	control?: { checkpoint(stage: string | null): void };
 }
 
 export interface RunRecapProductionOrchestratorResult {
@@ -410,6 +417,8 @@ export async function runRecapProductionOrchestrator(
 			? {
 					name: rawVisionAdapter.name,
 					analyze: async (imagePathOrBuffer, context) => {
+						// Every earlier panel is already in the incremental checkpoint: safe to stop here.
+						input.control?.checkpoint('vision');
 						const res = await rawVisionAdapter.analyze(imagePathOrBuffer, context);
 						liveCompletedPanels = Math.min(totalPanelsCount, liveCompletedPanels + 1);
 						const trace = rawVisionAdapter.getLastTrace?.() ?? null;
@@ -450,6 +459,7 @@ export async function runRecapProductionOrchestrator(
 			: undefined;
 
 		try {
+			input.control?.checkpoint('vision');
 			const resolvedStyle: ScriptStyle =
 				input.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(input.scriptStyle)
 					? (input.scriptStyle as ScriptStyle)
@@ -534,6 +544,7 @@ export async function runRecapProductionOrchestrator(
 				{ script, gateGReport },
 			);
 		} catch (err) {
+			if (isRecapJobInterruptedError(err)) throw err;
 			const errMsg = err instanceof Error ? err.message : String(err);
 			const postFailReadiness = await checkRecapProductionReadiness({
 				providers: input.providers,
@@ -587,6 +598,7 @@ export async function runRecapProductionOrchestrator(
 	}
 
 	// ─── Step 3: Phase 3 Audiovisual Preview Render ──────────────────────────
+	input.control?.checkpoint('motion');
 	persist(
 		'audiovisual_preview',
 		'motion',
@@ -726,6 +738,7 @@ export async function runRecapProductionOrchestrator(
 	}
 
 	// ─── Step 4: Master Export & Release Bundle (Phase 7.3) ──────────────────
+	input.control?.checkpoint('master_export');
 	persist('master_export', 'motion', 'Renderizando exportação Master e gerando pacote de entrega…', {
 		readiness,
 		previewMp4Path: previewResult.mp4Path,

@@ -9,9 +9,10 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } 
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
 import { VisionPriorityStore, type MultimodalAgentId } from './vision-priority-store.js';
-import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, classifyVisionError, composeVideoWithOutroMp4, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRecapVisionAdapter, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, inspectPassiveMultimodalHealth, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, loadVisionHealthCheckCache, mergeChapterArchivesForProduction, mergeStoryMemoryCharacters, parseResetAtMs, planRecapRevisionImpact, RecapImportJobManager, renderMotionVelixOutroMp4, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runMultimodalVisionHealthCheck, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, VideoOutroConfigStore, type MultimodalProviderHealthRecord, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type RecapVisualAnalysisPort, type ScriptStyle, type VideoOutroConfig, type VisionErrorCode, type VisionHealthProbeCandidate } from '@neuralbridge/cinema';
+import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, classifyVisionError, composeVideoWithOutroMp4, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRecapVisionAdapter, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, inspectPassiveMultimodalHealth, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, loadVisionHealthCheckCache, mergeChapterArchivesForProduction, mergeStoryMemoryCharacters, parseResetAtMs, planRecapRevisionImpact, RecapImportJobManager, RecapProductionJobManager, RECAP_JOB_RESUMABLE_STATUSES, isRecapJobInterruptedError, renderMotionVelixOutroMp4, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runMultimodalVisionHealthCheck, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, VideoOutroConfigStore, type MultimodalProviderHealthRecord, type RecapJobContext, type RecapJobOutcome, type RecapJobRecord, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type RecapVisualAnalysisPort, type ScriptStyle, type VideoOutroConfig, type VisionErrorCode, type VisionHealthProbeCandidate } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { registerMogrtStudioIpc } from './mogrt-studio-ipc.js';
+import { broadcastRecapJobUpdate, recapJobRecoveryBlocker, recapRecordToJobOutcome, registerRecapJobIpc } from './recap-production-jobs.js';
 import {
   createDefaultOutroStudioConfigV3,
   extractPaletteFromImage,
@@ -5732,35 +5733,47 @@ productionConsole,
     });
   });
 
-  ipcMain.handle(
-    'recap:start-production',
-    async (
-      event,
-      input: {
-        runId?: string;
-        archivePath: string;
-        archivePaths?: string[];
-        workTitle: string;
-        language?: string;
-        scriptStyle?: string;
-        aspectRatio?: '16:9' | '9:16';
-        ttsProvider?: string;
-        humorVolume?: number;
-        enableOcr?: boolean;
-        resumeCheckpoint?: boolean;
-        masterApproved?: boolean;
-        seriesProjectId?: string;
-        chapterNumber?: number;
-      },
-    ) => {
-      ensureTrusted(event.senderFrame);
-      // Clear any non-quota transient/configuration errors before a new production run while preserving known quota exhaustion
-      recapCircuitBreaker.reset({ preserveQuotaExhausted: true });
-      const workTitle = (input.workTitle || '').trim() || basename(input.archivePath).replace(/\.(cbz|pdf)$/i, '') || 'Aethera Recap';
-      const chapterId = workTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'recap-chapter';
-      const runId = input.runId?.trim() || `recap-${Date.now()}`;
+  // Recap production runs as a durable job owned by this (main) process, never by the renderer:
+  // leaving the screen, reloading or closing a window does not pause or cancel it.
+  type RecapStartProductionInput = {
+    runId?: string;
+    archivePath: string;
+    archivePaths?: string[];
+    workTitle: string;
+    language?: string;
+    scriptStyle?: string;
+    aspectRatio?: '16:9' | '9:16';
+    ttsProvider?: string;
+    humorVolume?: number;
+    enableOcr?: boolean;
+    resumeCheckpoint?: boolean;
+    masterApproved?: boolean;
+    seriesProjectId?: string;
+    chapterNumber?: number;
+  };
+
+  const reportRecapRecordToJob = (ctx: RecapJobContext, rec: RecapOrchestratorRecord, message: string) => {
+    ctx.report({
+      stage: rec.currentStage ?? null,
+      message,
+      completedSteps: rec.completedSteps,
+      ...(rec.visionTelemetry
+        ? {
+            completedPanels: rec.visionTelemetry.completedPanels,
+            totalPanels: rec.visionTelemetry.totalPanels,
+            canResume: rec.visionTelemetry.canResumeFromCheckpoint || rec.completedSteps.includes('vision'),
+          }
+        : {}),
+    });
+  };
+
+  const executeRecapProduction = async (job: RecapJobRecord, ctx: RecapJobContext): Promise<RecapJobOutcome> => {
+      const input = job.input as RecapStartProductionInput;
+      const workTitle = job.workTitle;
+      const chapterId = job.chapterId;
+      const runId = job.projectId;
       const importDir = join(recapWorkspace, 'import', chapterId);
-      const createdAtIso = new Date().toISOString();
+      const createdAtIso = job.createdAtIso;
       let effectiveArchivePath = input.archivePath;
       let lastReachedStage: RecapOrchestratorRecord['currentStage'] = 'import';
       let lastCompletedSteps: string[] = [];
@@ -5793,6 +5806,7 @@ productionConsole,
           ...extra,
         };
         saveRecapProjectRecord(recapWorkspace, rec);
+        reportRecapRecordToJob(ctx, rec, message);
         emitRecapProgress({
           runId,
           chapterId,
@@ -5826,6 +5840,7 @@ productionConsole,
           outputDir: importDir,
           readingOrder: 'vertical',
         });
+        ctx.checkpoint('import');
         lastReachedStage = 'gate-f';
         lastCompletedSteps = ['import'];
         persistAndEmit('importing', 'gate-f', ['import'], `Capítulo importado (${imported.pages.length} páginas). Extraindo painéis e validando Gate F…`);
@@ -5851,16 +5866,11 @@ productionConsole,
             gateFVerdict: gateFReport.verdict,
             lastError: errMsg,
           });
-          return {
-            ok: false,
-            runId,
-            chapterId,
-            state: failedRec.state,
-            message: errMsg,
-            record: failedRec,
-          };
+          return recapRecordToJobOutcome(failedRec, errMsg);
         }
 
+        // Gate F passed and its verdict is persisted: a safe point to pause or cancel.
+        ctx.checkpoint('gate-f');
         lastReachedStage = 'vision';
         persistAndEmit('preflight', 'vision', initialSteps, `Gate F aprovado (${panels.length} painéis). Iniciando orquestrador…`, {
           panelCount: panels.length,
@@ -5876,6 +5886,13 @@ productionConsole,
             ? (input.scriptStyle as ScriptStyle)
             : 'natural_recap';
 
+        // On resume, reuse a script already generated and persisted (its Gate G verdict stays on the record).
+        const priorDetail = ctx.isResume ? loadRecapProjectDetail(recapWorkspace, runId, legacyRecapCheckpointsRoot) : null;
+        const resumeScript =
+          priorDetail?.script && priorDetail.record.completedSteps.includes('script') && priorDetail.record.gateGVerdict !== 'fail'
+            ? priorDetail.script
+            : undefined;
+
         const result = await runRecapProductionOrchestrator({
           runId,
           chapterId,
@@ -5884,6 +5901,8 @@ productionConsole,
           workspaceDir: recapWorkspace,
           circuitBreaker: recapCircuitBreaker,
           visionAdapter: recapVisionAdapter,
+          ...(resumeScript ? { existingScript: resumeScript } : {}),
+          control: ctx,
           ...(input.seriesProjectId ? { seriesProjectId: input.seriesProjectId } : {}),
           ...(input.chapterNumber ? { chapterNumber: input.chapterNumber } : {}),
           ...(recapHumanizePort
@@ -5910,51 +5929,33 @@ productionConsole,
           ...(input.enableOcr !== undefined ? { enableOcr: input.enableOcr } : {}),
           gateFVerdict: gateFReport.verdict,
           initialCompletedSteps: initialSteps,
-          onProgress: (ev) => emitRecapProgress(ev),
+          onProgress: (ev) => {
+            emitRecapProgress(ev);
+            reportRecapRecordToJob(ctx, ev.record, ev.message);
+          },
           providers: buildRecapProviders(),
         });
 
-        return {
-          ok: result.record.state !== 'failed' && result.record.state !== 'paused_provider_unavailable',
-          runId: result.record.runId,
-          chapterId: result.record.chapterId,
-          state: result.record.state,
-          message:
-            result.record.lastError ??
-            `Estado atual: ${result.record.state}${result.record.previewMp4Path ? ' (prévia pronta)' : ''}.`,
-          record: result.record,
-          script: result.script ?? null,
-          plan: result.plan ?? null,
-          gateGReport: result.gateGReport ?? null,
-          gateHReport: result.gateHReport ?? null,
-          motionVelix: result.motionVelix ?? result.record.motionVelix ?? null,
-          previewMp4Path: result.record.previewMp4Path ?? undefined,
-          masterMp4Path: result.record.masterMp4Path ?? undefined,
-          exportBundleDir: result.record.exportBundleDir ?? undefined,
-        };
+        return recapRecordToJobOutcome(
+          result.record,
+          `Estado atual: ${result.record.state}${result.record.previewMp4Path ? ' (prévia pronta)' : ''}.`,
+        );
       } catch (err) {
+        // Pause/cancel requests are not failures: the job manager records them.
+        if (isRecapJobInterruptedError(err)) throw err;
         const errMsg = err instanceof Error ? err.message : String(err);
         const failedRec = persistAndEmit('failed', lastReachedStage, lastCompletedSteps, errMsg, { lastError: errMsg });
-        return {
-          ok: false,
-          runId,
-          chapterId,
-          state: 'failed',
-          message: errMsg,
-          record: failedRec,
-        };
+        return recapRecordToJobOutcome(failedRec, errMsg);
       }
-    },
-  );
+  };
 
-  ipcMain.handle('recap:approve-preview', async (event, input: { runId: string }) => {
-    ensureTrusted(event.senderFrame);
-    const detail = loadRecapProjectDetail(recapWorkspace, input.runId, legacyRecapCheckpointsRoot);
+  const executeRecapMasterExport = async (job: RecapJobRecord, ctx: RecapJobContext): Promise<RecapJobOutcome> => {
+    const detail = loadRecapProjectDetail(recapWorkspace, job.projectId, legacyRecapCheckpointsRoot);
     if (!detail) {
-      return { ok: false, message: 'Projeto não encontrado para aprovação.' };
+      return { status: 'failed', message: 'Projeto não encontrado para aprovação.' };
     }
     if (!detail.script) {
-      return { ok: false, message: 'Roteiro salvo não encontrado para exportação master.' };
+      return { status: 'failed', message: 'Roteiro salvo não encontrado para exportação master.' };
     }
 
     const checkpointDir = join(recapWorkspace, 'checkpoints', detail.record.chapterId);
@@ -5974,7 +5975,7 @@ productionConsole,
     }
 
     if (panels.length === 0) {
-      return { ok: false, message: 'Painéis extraídos não encontrados em disco para renderizar o master.' };
+      return { status: 'failed', message: 'Painéis extraídos não encontrados em disco para renderizar o master.' };
     }
 
     const motionVelixKit = resolveMotionVelixKit();
@@ -5994,6 +5995,7 @@ productionConsole,
         aspectRatio: detail.record.aspectRatio ?? '16:9',
       },
       masterApproved: true,
+      control: ctx,
       ...(detail.record.archivePath ? { archivePath: detail.record.archivePath } : {}),
       ...(detail.record.language ? { language: detail.record.language } : {}),
       ...(detail.record.scriptStyle ? { scriptStyle: detail.record.scriptStyle } : {}),
@@ -6002,26 +6004,103 @@ productionConsole,
       ...(detail.record.enableOcr !== undefined ? { enableOcr: detail.record.enableOcr } : {}),
       ...(detail.record.gateFVerdict ? { gateFVerdict: detail.record.gateFVerdict } : {}),
       initialCompletedSteps: detail.record.completedSteps,
-      onProgress: (ev) => emitRecapProgress(ev),
+      onProgress: (ev) => {
+        emitRecapProgress(ev);
+        reportRecapRecordToJob(ctx, ev.record, ev.message);
+      },
       providers: buildRecapProviders(),
     });
 
+    return recapRecordToJobOutcome(result.record, 'Exportação master concluída e pacote de entrega salvo.');
+  };
+
+  const recapJobs = new RecapProductionJobManager({
+    workspaceDir: recapWorkspace,
+    executor: (job, ctx) => (job.kind === 'master_export' ? executeRecapMasterExport(job, ctx) : executeRecapProduction(job, ctx)),
+    onEvent: (ev) => broadcastRecapJobUpdate(ev.job),
+  });
+  registerRecapJobIpc({ ipcMain, manager: recapJobs, ensureTrusted });
+
+  ipcMain.handle('recap:start-production', async (event, input: RecapStartProductionInput) => {
+    ensureTrusted(event.senderFrame);
+    const workTitle = (input.workTitle || '').trim() || basename(input.archivePath).replace(/\.(cbz|pdf)$/i, '') || 'Aethera Recap';
+    const chapterId = workTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'recap-chapter';
+    const runId = input.runId?.trim() || `recap-${Date.now()}`;
+    if (!recapJobs.findOpen({ projectId: runId, chapterId })) {
+      // Clear non-quota transient errors before a new production run while preserving known quota exhaustion
+      recapCircuitBreaker.reset({ preserveQuotaExhausted: true });
+    }
+    const { job: started, created } = recapJobs.start({
+      kind: 'production',
+      projectId: runId,
+      chapterId,
+      workTitle,
+      input: { ...input, workTitle, runId } as Record<string, unknown>,
+    });
+    let job = started;
+    if (!created && input.resumeCheckpoint && RECAP_JOB_RESUMABLE_STATUSES.includes(job.status)) {
+      recapCircuitBreaker.reset({ preserveQuotaExhausted: true });
+      job = recapJobs.resume(job.jobId) ?? job;
+    }
+    const record = loadRecapProjectDetail(recapWorkspace, job.projectId, legacyRecapCheckpointsRoot)?.record ?? null;
     return {
-      ok: result.record.state === 'completed',
-      runId: result.record.runId,
-      state: result.record.state,
-      message: result.record.lastError ?? 'Exportação master concluída e pacote de entrega salvo.',
-      record: result.record,
-      script: result.script ?? detail.script,
-      plan: result.plan ?? detail.plan,
-      gateGReport: result.gateGReport ?? detail.gateGReport,
-      gateHReport: result.gateHReport ?? detail.gateHReport,
-      motionVelix: result.motionVelix ?? result.record.motionVelix ?? null,
-      previewMp4Path: result.record.previewMp4Path ?? undefined,
-      masterMp4Path: result.record.masterMp4Path ?? undefined,
-      exportBundleDir: result.record.exportBundleDir ?? undefined,
+      ok: true,
+      jobId: job.jobId,
+      job,
+      deduplicated: !created,
+      runId: job.projectId,
+      chapterId: job.chapterId,
+      state: record?.state ?? 'importing',
+      message: created
+        ? `Produção de "${job.workTitle}" iniciada em segundo plano; você pode sair desta tela.`
+        : `Já existe uma produção para "${job.workTitle}" (${job.status}); acompanhando o mesmo job.`,
+      record,
     };
   });
+
+  ipcMain.handle('recap:approve-preview', async (event, input: { runId: string }) => {
+    ensureTrusted(event.senderFrame);
+    const detail = loadRecapProjectDetail(recapWorkspace, input.runId, legacyRecapCheckpointsRoot);
+    if (!detail) {
+      return { ok: false, message: 'Projeto não encontrado para aprovação.' };
+    }
+    if (!detail.script) {
+      return { ok: false, message: 'Roteiro salvo não encontrado para exportação master.' };
+    }
+    const { job, created } = recapJobs.start({
+      kind: 'master_export',
+      projectId: detail.record.runId,
+      chapterId: detail.record.chapterId,
+      workTitle: detail.record.workTitle,
+      input: { runId: detail.record.runId },
+    });
+    return {
+      ok: true,
+      jobId: job.jobId,
+      job,
+      deduplicated: !created,
+      runId: job.projectId,
+      state: detail.record.state,
+      message: created
+        ? 'Exportação Master iniciada em segundo plano.'
+        : `Já existe um job aberto para este projeto (${job.status}); acompanhando o mesmo job.`,
+      record: detail.record,
+    };
+  });
+
+  // After an executor restart, resume interrupted jobs from their checkpoint (or record why not).
+  // Deferred so every helper declared later in this module is initialised first.
+  setTimeout(() => {
+    try {
+      recapJobs.recoverOnStartup({
+        autoResume: true,
+        canRecover: (job) =>
+          recapJobRecoveryBlocker(job, (id) => loadRecapProjectDetail(recapWorkspace, id, legacyRecapCheckpointsRoot) !== null),
+      });
+    } catch (err) {
+      console.error('[recap-jobs] recovery failed', err);
+    }
+  }, 1500);
 
   ipcMain.handle(
     'recap:save-scene-edit',

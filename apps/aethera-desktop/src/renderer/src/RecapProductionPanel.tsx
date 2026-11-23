@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   AlertTriangle,
   BookOpen,
@@ -142,8 +142,55 @@ interface RecapProjectDetailResponse {
   gateHReport: RecapGateReportView | null;
 }
 
+type RecapJobStatusView =
+  | 'running'
+  | 'pause_requested'
+  | 'paused'
+  | 'cancel_requested'
+  | 'cancelled'
+  | 'interrupted'
+  | 'awaiting_approval'
+  | 'paused_provider_unavailable'
+  | 'completed'
+  | 'failed';
+
+/** Durable production job owned by the desktop main process (see recap-production-job-manager). */
+interface RecapJobView {
+  jobId: string;
+  kind: 'production' | 'master_export';
+  projectId: string;
+  chapterId: string;
+  workTitle: string;
+  status: RecapJobStatusView;
+  stage: string | null;
+  message: string;
+  progress: { completedSteps: string[]; completedPanels?: number; totalPanels?: number; percent: number };
+  checkpoint: { canResume: boolean; lastStage: string | null };
+  errors: Array<{ atIso: string; stage: string | null; message: string }>;
+  attempts: number;
+  updatedAtIso: string;
+}
+
+const RECAP_JOB_ACTIVE: readonly RecapJobStatusView[] = ['running', 'pause_requested', 'cancel_requested'];
+const RECAP_JOB_RESUMABLE: readonly RecapJobStatusView[] = ['paused', 'interrupted', 'paused_provider_unavailable'];
+const RECAP_JOB_STATUS_LABEL: Record<RecapJobStatusView, string> = {
+  running: 'Em execução',
+  pause_requested: 'Pausando…',
+  paused: 'Pausado',
+  cancel_requested: 'Cancelando…',
+  cancelled: 'Cancelado',
+  interrupted: 'Interrompido',
+  awaiting_approval: 'Aguardando aprovação',
+  paused_provider_unavailable: 'Pausado: provedores',
+  completed: 'Concluído',
+  failed: 'Falhou',
+};
+
 interface RecapProductionResponse {
   ok: boolean;
+  jobId?: string;
+  job?: RecapJobView;
+  deduplicated?: boolean;
   runId?: string;
   chapterId?: string;
   state?: string;
@@ -403,6 +450,11 @@ interface RecapBridge {
     error?: string;
   }>;
   recapApprovePreview?: (input: { runId: string }) => Promise<RecapProductionResponse>;
+  recapListJobs?: (input?: { includeFinished?: boolean; limit?: number }) => Promise<RecapJobView[]>;
+  recapPauseJob?: (input: { jobId: string }) => Promise<{ ok: boolean; job?: RecapJobView; message?: string }>;
+  recapResumeJob?: (input: { jobId: string }) => Promise<{ ok: boolean; job?: RecapJobView; message?: string }>;
+  recapCancelJob?: (input: { jobId: string }) => Promise<{ ok: boolean; job?: RecapJobView; message?: string }>;
+  onRecapJobUpdate?: (listener: (job: unknown) => void) => () => void;
   recapSaveSceneEdit?: (input: { runId: string; sceneId: string; narrationText: string }) => Promise<{
     ok: boolean;
     message?: string;
@@ -1683,6 +1735,10 @@ export function RecapProductionPanel() {
   // Production configuration
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
+  // The job lives in the main process; this is only a mirror for display and explicit control.
+  const [activeJob, setActiveJob] = useState<RecapJobView | null>(null);
+  const [jobActionPending, setJobActionPending] = useState(false);
+  const activeProjectRunIdRef = useRef<string | null>(null);
   const [workTitle, setWorkTitle] = useState('');
   const [language, setLanguage] = useState<'pt-BR' | 'en-US' | 'es-ES'>('pt-BR');
   const [humorVolume, setHumorVolume] = useState(35);
@@ -1759,7 +1815,9 @@ export function RecapProductionPanel() {
     [activeProject, activeGateG, activeGateH],
   );
 
-  const isRunning = isSubmitting || isApproving;
+  activeProjectRunIdRef.current = activeProject?.runId ?? null;
+  const jobIsActive = Boolean(activeJob && RECAP_JOB_ACTIVE.includes(activeJob.status));
+  const isRunning = isSubmitting || isApproving || jobIsActive;
 
   useEffect(() => {
     if (!isRunning) {
@@ -2129,8 +2187,14 @@ export function RecapProductionPanel() {
         refreshReadiness(),
         refreshStoryMemory(),
       ]);
+      // Reconnect to a production that kept running (or paused) while this screen was closed.
+      const bridge = getRecapBridge();
+      const openJobs = (await bridge?.recapListJobs?.().catch(() => [] as RecapJobView[])) ?? [];
+      const openJob = openJobs[0] ?? null;
+      if (openJob) setActiveJob(openJob);
+      const jobProject = openJob ? list.find((p) => p.runId === openJob.projectId) : undefined;
       // Only auto-bind the latest project if it is not a failed run; failed runs remain preserved in "Projetos Recentes" history without contaminating a new chapter import session.
-      const latestNonFailed = list.find((p) => p.state !== 'failed');
+      const latestNonFailed = jobProject ?? list.find((p) => p.state !== 'failed');
       if (latestNonFailed && !activeProject) {
         await openProjectDetail(latestNonFailed, false);
       }
@@ -2149,6 +2213,27 @@ export function RecapProductionPanel() {
       setStatusNote(ev.message);
       setPersistedProjects((prev) => mergeActiveProjectIntoRecentList(prev, ev.record));
     });
+  }, []);
+
+  // Mirror durable job updates. Losing this subscription never affects the job itself.
+  useEffect(() => {
+    const bridge = getRecapBridge();
+    if (!bridge?.onRecapJobUpdate) return;
+    return bridge.onRecapJobUpdate((raw) => {
+      const job = raw as RecapJobView;
+      if (!job?.jobId) return;
+      setActiveJob((prev) => (!prev || prev.jobId === job.jobId || RECAP_JOB_ACTIVE.includes(job.status) ? job : prev));
+      if (!RECAP_JOB_ACTIVE.includes(job.status)) {
+        // Finished, paused or cancelled: reload what the executor persisted (script, plan, gates).
+        void (async () => {
+          const list = await refreshProjects();
+          const project = list.find((p) => p.runId === job.projectId);
+          if (project && activeProjectRunIdRef.current === job.projectId) await openProjectDetail(project, false);
+          if (job.status === 'awaiting_approval' || job.status === 'completed') setSubTab('revisao');
+        })();
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Escape key closes delete confirmation modal
@@ -2799,6 +2884,7 @@ export function RecapProductionPanel() {
       });
 
       setStatusNote(res.message);
+      if (res.job) setActiveJob(res.job);
       if (res.record) setActiveProject(res.record);
       if (res.script) {
         setActiveScript(res.script);
@@ -2824,6 +2910,23 @@ export function RecapProductionPanel() {
     }
   };
 
+  const handleJobControl = async (action: 'pause' | 'resume' | 'cancel') => {
+    const bridge = getRecapBridge();
+    const job = activeJob;
+    const call = action === 'pause' ? bridge?.recapPauseJob : action === 'resume' ? bridge?.recapResumeJob : bridge?.recapCancelJob;
+    if (!job || !call) return;
+    setJobActionPending(true);
+    try {
+      const res = await call({ jobId: job.jobId });
+      if (res.job) setActiveJob(res.job);
+      setStatusNote(res.job?.message ?? res.message ?? null);
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setJobActionPending(false);
+    }
+  };
+
   const handleApprovePreview = async () => {
     const bridge = getRecapBridge();
     if (!bridge?.recapApprovePreview || !activeProject?.runId) {
@@ -2835,6 +2938,7 @@ export function RecapProductionPanel() {
     try {
       const res = await bridge.recapApprovePreview({ runId: activeProject.runId });
       setStatusNote(res.message);
+      if (res.job) setActiveJob(res.job);
       if (res.record) setActiveProject(res.record);
       if (res.plan) setActivePlan(res.plan);
       if (res.gateHReport) setActiveGateH(res.gateHReport);
@@ -3225,6 +3329,76 @@ export function RecapProductionPanel() {
           {testingVision ? 'Testando visão…' : 'Testar visão'}
         </button>
       </div>
+
+      {activeJob && (RECAP_JOB_ACTIVE.includes(activeJob.status) || RECAP_JOB_RESUMABLE.includes(activeJob.status)) && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            marginTop: 14,
+            padding: '12px 14px',
+            borderRadius: T.radiusInner,
+            background: T.surfaceSubtle,
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: 12,
+          }}
+        >
+          <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: T.ink }}>
+                {RECAP_JOB_STATUS_LABEL[activeJob.status]}
+                {activeJob.kind === 'master_export' ? ' · Exportação Master' : ''}
+              </span>
+              <span style={{ fontFamily: T.mono, fontSize: 12, color: T.inkMuted }}>
+                {activeJob.progress.percent}%
+                {activeJob.progress.totalPanels
+                  ? ` · painéis ${activeJob.progress.completedPanels ?? 0}/${activeJob.progress.totalPanels}`
+                  : ''}
+              </span>
+            </div>
+            <div
+              role="progressbar"
+              aria-label="Progresso do job de produção"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={activeJob.progress.percent}
+              style={{ height: 4, borderRadius: 2, background: T.border, marginTop: 8, overflow: 'hidden' }}
+            >
+              <div style={{ width: `${activeJob.progress.percent}%`, height: '100%', background: T.accent }} />
+            </div>
+            <p style={{ margin: '6px 0 0', fontSize: 12, color: T.inkMuted, lineHeight: 1.4 }}>
+              {activeJob.message}{' '}
+              {RECAP_JOB_ACTIVE.includes(activeJob.status)
+                ? 'Roda em segundo plano: pode sair desta tela.'
+                : 'Checkpoint preservado em disco.'}
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {activeJob.status === 'running' && (
+              <button type="button" disabled={jobActionPending} onClick={() => void handleJobControl('pause')} style={btnSecondary}>
+                <PauseCircle style={{ width: 14, height: 14 }} aria-hidden="true" /> Pausar
+              </button>
+            )}
+            {(RECAP_JOB_RESUMABLE.includes(activeJob.status) || activeJob.status === 'pause_requested') && (
+              <button type="button" disabled={jobActionPending} onClick={() => void handleJobControl('resume')} style={btnSecondary}>
+                <Play style={{ width: 14, height: 14 }} aria-hidden="true" /> Retomar
+              </button>
+            )}
+            {activeJob.status !== 'cancel_requested' && (
+              <button
+                type="button"
+                disabled={jobActionPending}
+                onClick={() => void handleJobControl('cancel')}
+                style={{ ...btnGhost, color: T.error, border: `1px solid ${T.errorBorder}` }}
+              >
+                <XCircle style={{ width: 14, height: 14 }} aria-hidden="true" /> Cancelar
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </BentoBlock>
   );
 

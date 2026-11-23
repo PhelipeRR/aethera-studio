@@ -15,6 +15,7 @@ import type {
 import { panelAnalysisSchema } from './recap-types.js';
 import { computePanelCacheKey, RECAP_ANALYZER_VERSION } from './checkpoint-persistence.js';
 import { AllVisionProvidersUnavailableError } from './vision-error-classifier.js';
+import { isRecapJobInterruptedError } from './phase5/recap-production-job-manager.js';
 import { extractStructuredOcrDialogues, mergeVisionAndOcrDialogues } from './dialogue-extractor.js';
 
 export interface NarrativeAnalyzerOptions {
@@ -190,7 +191,7 @@ async function analyzePanel(
 				});
 			}
 		} catch (err) {
-			if (err instanceof AllVisionProvidersUnavailableError) {
+			if (err instanceof AllVisionProvidersUnavailableError || isRecapJobInterruptedError(err)) {
 				throw err;
 			}
 			const msg = err instanceof Error ? err.message : String(err);
@@ -321,13 +322,15 @@ export async function runNarrativeAnalyzer(
 	let cacheHits = 0;
 	let analyzedFresh = 0;
 	let fatalProviderError: AllVisionProvidersUnavailableError | null = null;
+	// A pause/cancel requested at a panel boundary stops every worker and propagates unchanged.
+	let interruption: Error | null = null;
 
 	const maxWorkers = Math.max(1, Math.min(4, Math.floor(concurrency)));
 	let nextIndex = 0;
 
 	const worker = async () => {
 		while (true) {
-			if (fatalProviderError) break;
+			if (fatalProviderError || interruption) break;
 			const idx = nextIndex++;
 			if (idx >= orderedPanels.length) break;
 			const panel = orderedPanels[idx]!;
@@ -389,6 +392,10 @@ export async function runNarrativeAnalyzer(
 					);
 				}
 			} catch (err) {
+				if (isRecapJobInterruptedError(err)) {
+					if (!interruption) interruption = err;
+					break;
+				}
 				if (err instanceof AllVisionProvidersUnavailableError) {
 					if (!fatalProviderError) fatalProviderError = err;
 					break;
@@ -401,6 +408,9 @@ export async function runNarrativeAnalyzer(
 
 	await Promise.all(Array.from({ length: Math.min(maxWorkers, Math.max(1, orderedPanels.length)) }, () => worker()));
 
+	if (interruption) {
+		throw interruption;
+	}
 	if (fatalProviderError) {
 		throw fatalProviderError;
 	}

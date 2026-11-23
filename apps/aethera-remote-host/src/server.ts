@@ -1,4 +1,5 @@
 import { registerRecapUrlImportRoutes } from './recap-url-import-routes.js';
+import { registerRecapJobRoutes } from './recap-job-routes.js';
 import { existsSync as recapExistsSync, readdirSync as recapReaddirSync, readFileSync as recapReadFileSync, writeFileSync as recapWriteFileSync } from 'node:fs';
 import { join as recapJoin } from 'node:path';
 import crypto from 'node:crypto';
@@ -313,6 +314,13 @@ export function createRemoteHostApp(config: RemoteHostConfig): RemoteHostInstanc
     libraryRootDir: resolveRecapDataRoot(),
     requireRead: requireScope('jobs:read'),
     requireWrite: requireScope('jobs:write'),
+    requireControl: requireScope('jobs:control'),
+  });
+
+  registerRecapJobRoutes({
+    app,
+    workspaceDir: resolvedDesktopUserDataDir ? recapJoin(resolvedDesktopUserDataDir, 'recap-workspace') : null,
+    requireRead: requireScope('jobs:read'),
     requireControl: requireScope('jobs:control'),
   });
 

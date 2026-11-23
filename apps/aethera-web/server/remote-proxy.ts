@@ -481,6 +481,78 @@ export function registerRemoteProxyRoutes(
     await pipeSseUpstream(req, res, target, `/api/jobs/${jobId}/events`);
   });
 
+  // ─── Recap production jobs (executed by the desktop host; Web only observes and requests control) ───
+  const proxyRecapGet = async (req: AuthenticatedRequest, res: Response, upstreamPath: string) => {
+    const target = getTarget(req);
+    if (!target) {
+      res.status(404).json({ error: 'Nenhum computador vinculado ativo.' });
+      return;
+    }
+    try {
+      const upstream = await fetchRemoteGuarded(target.computer.baseUrl, upstreamPath, target.bearerToken, { method: 'GET' }, opts.ssrfOptions);
+      res.status(upstream.status).json(await upstream.json().catch(() => ({ error: 'Resposta inválida do Remote Host.' })));
+    } catch {
+      res.status(502).json({ error: 'PC Windows offline ao consultar produções Recap.' });
+    }
+  };
+
+  app.get('/api/remote-proxy/recap/jobs', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    const includeFinished = req.query.includeFinished === '1' ? '?includeFinished=1' : '';
+    await proxyRecapGet(req, res, `/api/recap/jobs${includeFinished}`);
+  });
+
+  app.get('/api/remote-proxy/recap/jobs/:jobId', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    await proxyRecapGet(req, res, `/api/recap/jobs/${encodeURIComponent(String(req.params.jobId))}`);
+  });
+
+  // Closing this stream aborts only the upstream SSE fetch, never the production job.
+  app.get('/api/remote-proxy/recap/jobs/:jobId/events', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    const target = getTarget(req);
+    if (!target) {
+      res.status(404).json({ error: 'Nenhum computador vinculado ativo.' });
+      return;
+    }
+    await pipeSseUpstream(req, res, target, `/api/recap/jobs/${encodeURIComponent(String(req.params.jobId))}/events`);
+  });
+
+  app.post(
+    '/api/remote-proxy/recap/jobs/:jobId/:action',
+    requireAuth,
+    requireCsrf,
+    async (req: AuthenticatedRequest, res: Response) => {
+      const action = String(req.params.action);
+      if (!['pause', 'resume', 'cancel'].includes(action)) {
+        res.status(400).json({ error: 'Ação inválida. Use pause, resume ou cancel.' });
+        return;
+      }
+      const target = getTarget(req);
+      if (!target) {
+        res.status(404).json({ error: 'Nenhum computador vinculado ativo.' });
+        return;
+      }
+      const jobId = encodeURIComponent(String(req.params.jobId));
+      try {
+        const upstream = await fetchRemoteGuarded(
+          target.computer.baseUrl,
+          `/api/recap/jobs/${jobId}/${action}`,
+          target.bearerToken,
+          { method: 'POST' },
+          opts.ssrfOptions,
+        );
+        const data = await upstream.json().catch(() => ({ error: 'Erro ao controlar produção Recap.' }));
+        authStore.recordAudit({
+          userId: req.auth!.user.id,
+          eventType: 'remote_recap_job_control',
+          ipAddress: getClientIp(req),
+          detail: `Pedido "${action}" para produção Recap ${req.params.jobId} em "${target.computer.name}".`,
+        });
+        res.status(upstream.status).json(data);
+      } catch {
+        res.status(502).json({ error: 'PC Windows offline ao controlar produção Recap.' });
+      }
+    },
+  );
+
   app.get('/api/remote-proxy/sync/events', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     const target = getTarget(req);
     if (!target) {
