@@ -43,6 +43,8 @@ export interface RecapVisualAnalysisPort {
 	readonly id: string;
 	readonly model: string;
 	readonly supportsMultimodal?: boolean;
+	/** Model the provider reports it actually ran on its last call, when it knows. */
+	lastReportedModel?(): string | null;
 	describe?(input: {
 		frames: readonly { hash: string; path: string; atMs?: number }[];
 		signal?: AbortSignal;

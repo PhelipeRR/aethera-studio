@@ -5487,7 +5487,8 @@ productionConsole,
         return {
           id: 'claude',
           model: claudeLean.model,
-          capabilities: ['analyze'],
+          lastReportedModel: () => claudeLean.lastReportedModel?.() ?? null,
+          capabilities: ['analyze', 'describe'],
           limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
           detect: async (signal) => {
             const base = await claudeLean.detect(signal);
@@ -5495,6 +5496,10 @@ productionConsole,
             return checkCachedMultimodalHealth('claude');
           },
           analyze: (req) => claudeLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
+          describe: async ({ frames, signal }) => {
+            const result = await claudeLean.analyze!({ frames, signal });
+            return { description: result.description, tags: result.entities?.map((e) => e.name).filter(Boolean).slice(0, 8) ?? [] };
+          },
         };
       }
       if (id === 'claude-gateway' && gwCfg && gwCfg.enabled && gwCfg.authToken && gwCfg.baseUrl) {
@@ -5507,7 +5512,8 @@ productionConsole,
         return {
           id: 'claude-gateway',
           model: gwLean.model,
-          capabilities: ['analyze'],
+          lastReportedModel: () => gwLean.lastReportedModel?.() ?? null,
+          capabilities: ['analyze', 'describe'],
           limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
           detect: async (signal) => {
             const base = await gwLean.detect(signal);
@@ -5515,16 +5521,25 @@ productionConsole,
             return checkCachedMultimodalHealth('claude-gateway');
           },
           analyze: (req) => gwLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
+          describe: async ({ frames, signal }) => {
+            const result = await gwLean.analyze!({ frames, signal });
+            return { description: result.description, tags: result.entities?.map((e) => e.name).filter(Boolean).slice(0, 8) ?? [] };
+          },
         };
       }
       return null;
     };
 
+    const unregisteredReasons: Record<string, string> = {};
     for (const id of priorityOrder) {
       const provider = createProviderForId(id);
       if (provider) {
         providers.push(provider);
         policyChain.push(id);
+      } else if (id === 'claude-gateway') {
+        unregisteredReasons[id] = gwCfg && !gwCfg.enabled
+          ? 'Claude Gateway desativado nas configurações do Aethera (é um endpoint próprio, separado do login do Claude Code).'
+          : 'Claude Gateway não configurado: informe URL e token nas configurações do Aethera (é um endpoint próprio, separado do login do Claude Code).';
       }
     }
 
@@ -5538,7 +5553,7 @@ productionConsole,
       cache,
       cooldowns: visionProviderCooldowns,
       timeoutFailures: visionProviderTimeoutFailures,
-      config: { priority: priorityOrder },
+      config: { priority: priorityOrder, unregisteredReasons },
     });
     return createRoutedRecapVisionAdapter({
       root: rootDir,

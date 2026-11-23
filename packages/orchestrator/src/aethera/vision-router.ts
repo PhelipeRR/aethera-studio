@@ -51,6 +51,8 @@ export interface VisionRouterConfig {
   perProviderTimeoutMs?: Readonly<Record<string, number>>;
   /** Bounds technical fallback attempts; never changes semantic thresholds. */
   maxAttempts?: number;
+  /** Why a prioritised provider was not registered (e.g. not configured or disabled), shown instead of a generic message. */
+  unregisteredReasons?: Readonly<Record<string, string>>;
 }
 export function isVisionQuotaError(message: string): boolean {
   return /QUOTA_EXHAUSTED|QUOTA_EXCEEDED|RESOURCE_EXHAUSTED|insufficient[_ ]?credits?|cr[ée]ditos?\s+insuficientes?|saldo\s+insuficiente|weekly limit|hit your (?:weekly|daily|monthly|usage) limit|out of (?:usage )?credits?|usage limit|quota|rate[- ]limit|too many requests|\b429\b|try again at|insufficient[_ ]quota|credit balance/i.test(message);
@@ -202,7 +204,7 @@ export class VisionRouter {
       }
       const provider = this.providers.get(id);
       if (!provider) {
-        out.push({ provider: id, available: false, reason: 'not configured' });
+        out.push({ provider: id, available: false, reason: this.notConfiguredReason(id) });
         continue;
       }
       if (provider.supportsMultimodal === false) {
@@ -294,6 +296,10 @@ export class VisionRouter {
     });
   }
 
+  private notConfiguredReason(id: string): string {
+    return `not_configured: ${this.config.unregisteredReasons?.[id] ?? 'provedor não configurado ou desativado neste ambiente.'}`;
+  }
+
   private async route(capability: VisionCapability, input: Request): Promise<VisionResult<unknown>> {
     const attempts: Attempt[] = [];
     let costUsd = 0;
@@ -321,7 +327,9 @@ export class VisionRouter {
         this.cooldowns.delete(id);
       }
       const provider = this.providers.get(id);
-      if (!provider || !provider.capabilities.includes(capability)) { attempts.push({ provider: id, outcome: 'unavailable', detail: `capability ${capability} unavailable` }); continue; }
+      // A provider missing from this router was never set up: say so, rather than blaming the capability.
+      if (!provider) { attempts.push({ provider: id, outcome: 'unavailable', detail: this.notConfiguredReason(id) }); continue; }
+      if (!provider.capabilities.includes(capability)) { attempts.push({ provider: id, outcome: 'unavailable', detail: `capability ${capability} unavailable` }); continue; }
       if (capability !== 'embed_text' && provider.supportsMultimodal === false) {
         attempts.push({ provider: id, outcome: 'unavailable', detail: 'model_incompatible: agente sem suporte multimodal real (apenas texto)' });
         continue;

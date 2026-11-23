@@ -193,10 +193,14 @@ function extractJsonFromResponse(text: string): LeanVisionResult | null {
 export function createClaudeVisionProvider(options: ClaudeVisionProviderOptions): RecapVisualAnalysisPort {
 	const { adapter, cwd, model, timeoutMs = 90_000 } = options;
 	const providerId = options.providerId ?? adapter.id ?? 'claude';
+	// Model the CLI says it actually ran (session event). Without an explicit model the CLI uses the
+	// account's own default, so no model name is assumed here.
+	let reportedModel: string | null = null;
 
 	return {
 		id: providerId,
-		model: model ?? 'claude-sonnet-4-20250514',
+		model: model ?? 'claude-cli-default',
+		lastReportedModel: () => reportedModel,
 
 		async detect() {
 			try {
@@ -243,7 +247,9 @@ export function createClaudeVisionProvider(options: ClaudeVisionProviderOptions)
 					},
 					input.signal,
 				)) {
-					if (event.kind === 'result' && event.text) {
+					if (event.kind === 'session' && event.model) {
+						reportedModel = event.model;
+					} else if (event.kind === 'result' && event.text) {
 						resultText = event.text;
 						if (event.ok === false) runFailed = true;
 					} else if (event.kind === 'text') {
