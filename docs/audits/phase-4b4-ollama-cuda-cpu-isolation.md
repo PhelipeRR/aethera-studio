@@ -455,3 +455,93 @@ Mesmo script e mesmos painéis do Adendo 12, agora com o prompt v3 (esqueleto se
    - (c) normalização determinística em código, como hoje;
    - (d) identidade ("quem é o Príncipe") e atribuição de falas resolvidas na etapa narrativa, com contexto de vários painéis, e não por painel.
 - **Recomendação técnica:** 2 + 3 juntos. Structured outputs para a forma, com um piloto barato nos mesmos 10 painéis que inclua os casos CUDA. Separação de responsabilidades para a fidelidade, com um esquema por painel sem nomes, sem atribuição e sem usar a confiança autodeclarada como gate. O critério de aceite do próximo piloto deve ser a **fidelidade verificada por painel**, não a taxa de schema.
+
+## Adendo 14 — avaliação do `qwen3.5:4b-q4_K_M` como substituto (20:36–20:39)
+Pedido do usuário: avaliar o Qwen3.5 4B sem substituir o modelo padrão. O download desse único modelo foi autorizado. Não processei os 437 painéis, não rodei TTS e não renderizei nada.
+
+### Compatibilidade
+- Pela página da biblioteca do Ollama, a família Qwen 3.5 é multimodal ("Text, Image") e a tag `4b-q4_K_M` tem 3,3 GB.
+- `ollama show` depois do pull: arquitetura `qwen35`, 4,2B parâmetros, `requires 0.30.0` (o ambiente tem a 0.40.16), capacidades `completion, vision, tools, thinking`, projetor CLIP de 333M e **thinking ligado por padrão**. Os padrões do Modelfile são `temperature 1`, `top_k 20`, `top_p 0.95` e `presence_penalty 1.5`.
+- O `qwen2.5vl:3b` continua instalado. O código, as variáveis `NB_LOCAL_VLM_*` e o modelo padrão (`qwen2.5vl:3b`) não foram alterados.
+- **Bloqueios para adoção (código, não aplicados):**
+  1. O provider não envia `think`. Com o padrão, o thinking consome os 1200 tokens de `num_predict` e a resposta volta vazia.
+  2. `isKnownVisionModel` (regex `…vl`) não reconhece `qwen3.5`, então `detect()` desabilita a rota local, mesmo com `vision` confirmado em `/api/show`.
+  3. O erro HTTP 500 "token repeat limit reached" não é classificado.
+- Os testes chamaram `analyze()` direto e injetaram `think:false` só no `fetch` do script (`scratchpad/p4b4/p0_0-qwen35.mts` e `pilot-qwen35.mts`).
+
+### `p0_0` direto na GPU, sem fallback
+| Execução | Resultado |
+| --- | --- |
+| Provider como está (thinking padrão) | 48,1 s, `done_reason: length`, 1200 tokens de saída, 4967 caracteres em `message.thinking` e `content` vazio. O adapter acusou "done=true sem conteúdo" |
+| `think:false` | **OK em 4,6 s, 100% GPU.** Sem o token `@` e sem degeneração. 1615 tokens de entrada e 133 de saída. VRAM de 5,5 GB |
+
+- A descrição do `p0_0` com `think:false` está correta: noite, lua alta, montanhas escarpadas com névoa, árvores em silhueta. Não inventou personagem (`characters: []`). O `qwen2.5vl` tinha inventado "Unknown" e posto a lua "no horizonte".
+- `environment` veio como string e foi descartado pela normalização.
+
+### Piloto com os mesmos 10 painéis
+- Execução: `run15-qwen35-pilot`, `cpuFallbackOnDegenerateOutput: false`, 10 chamadas, nenhum retry, todas na GPU.
+- A base de comparação é o piloto v3 do `qwen2.5vl:3b` (Adendo 13): mesmo prompt, mesmo código, mesmos painéis.
+
+| Métrica | qwen2.5vl:3b (v3) | qwen3.5:4b-q4_K_M |
+| --- | --- | --- |
+| Falha de runtime na GPU | 1/10 (`p39_1`, `@`/envelope vazio) → CPU 27 s | 1/10 (`p10_1`, HTTP 500 "token repeat limit reached", após 6,5 s); `p39_1` e `p0_0` **passam** na GPU |
+| Schema válido | 4/10 | **8/10** |
+| Inválidos por quê | `characters[].confidence` ausente (6), `region` null (1) | `region` fora do enum (1: SFX com `center-left`/`bottom-right`) |
+| Normalizações | 1 (`frames 2→1`) | 6 painéis: `nature` com 2 valores → `other` (2), `frames 2→1` (2), `environment` em texto livre descartado (4), item com `name:""` removido (1) |
+| Válidos **e fiéis** (sem fala, personagem, identidade ou roupa inventados) | **1/10** | **5/10** (`p0_1`, `p19_1`, `p26_3`, `p39_1`, `p67_0`); com ressalvas, outros 2 (`p31_7`, `p55_8`) |
+| Identidade invertida ("Prince") | 3 | **0** |
+| Personagem inventado | 1 (`p26_3`) | **0** |
+| Fala inventada | 1 (`p10_1` "フー") | 1 (`p47_3` "劍!" para o SFX 헉) |
+| Roupa ou atributo inventado | 1 (camisa xadrez) | 0 inventados; 2 imprecisos ("light blue eyes", "olho wide") |
+| OCR de balões em inglês | 8/9 corretos; `p47_3` truncado | 8/8 completos entre as respostas; 1 palavra errada ("SCAN TIME" ≠ "SCANNING TIME"); 1 fala duplicada (`p31_7`) |
+| SFX coreano | 6 omitidos, 1 virou fala japonesa | 3 lidos aproximadamente (음칫≈흠칫, 우각≈우걱) **como diálogo**, 1 virou "劍!", resto omitido |
+| Tokens de entrada / painel | 1410–1445 (média 1426; mínimo de 1024 por imagem) | **566–991 (média 766)**, proporcional ao tamanho |
+| Tokens de saída / painel | 228–326 (média 274) | 157–421 (média 325) |
+| Latência na GPU | média 3,6 s | média 4,9 s |
+| Wall total | 59,5 s (com 27 s de CPU) | 50,8 s |
+| VRAM após cada chamada | 6,1–6,2 GB | **5,5–5,7 GB** |
+
+### Confiança
+O esqueleto do v3 traz `0.0`, e o `qwen3.5` **não copiou** esse valor. As confianças variam de 0.6 a 1.0, mas continuam autodeclaradas e altas, sem relação com o acerto:
+- 0.97 numa "ação" deduzida só do texto da caixa (`p55_8`);
+- 0.95 para um personagem com olhos "light blue" (são claros/brancos) em `p59_0`;
+- 1.0 em `p26_3`.
+
+**Não usar confiança como evidência ou gate**, em nenhum dos dois modelos.
+
+### Verificação visual por painel (qwen3.5)
+| # | Painel | Saída | Fidelidade | Erros / invenções |
+| --- | --- | --- | --- | --- |
+| 1 | `p0_1` | Personagem de roupa branca com detalhes roxos, correndo entre árvores escuras | Alta | A normalização **removeu o personagem** porque `name` veio `""`, e restou só a ação; `nature` com 2 valores |
+| 2 | `p10_1` | HTTP 500, repetição abortada | — | Sem análise |
+| 3 | `p19_1` | `portrait`; olho em close, cabelo cinza, íris violeta, traços de tensão | Média-alta | "eye appears wide": o olho está semicerrado. Sem ação inventada (o qwen2.5 dizia "action") |
+| 4 | `p26_3` | Só o balão; OCR exato; `characters: []` | Alta | Nenhum |
+| 5 | `p31_7` | Um de pé gritando sobre outro deitado e ferido; 2 falas | Média-alta | Papéis **corretos** (sem inverter o Príncipe); OCR juntou as 2 falas na 1ª e repetiu a 2ª (fala duplicada); "tendendo" no lugar de "deitado"; SFX 후다닥 omitido |
+| 6 | `p39_1` | Jovem de roupa tradicional, surpreso; "mão de alguém fora do quadro"; 2 falas | Alta | Nenhum relevante. Não atribuiu as 2 falas à mesma pessoa. Rodou na GPU |
+| 7 | `p47_3` | Close com suor e choque; OCR completo | Média | SFX 헉 virou **"劍!" como fala**; caixa corrompida ("IMMobilize") |
+| 8 | `p55_8` | Personagem de branco numa janela aberta de prédio tradicional, luzes ciano; 2 caixas | Média | "pendurado" (está apoiado); "SCAN TIME" (é "SCANNING TIME"); `nature: interface` discutível; ação deduzida do texto |
+| 9 | `p59_0` | Close masculino, barba rala, choque, fundo de velocidade; 3 textos | Alta no visual, mas o schema falhou | SFX como fala com região fora do enum; "light blue eyes"; **sem** inversão de identidade |
+| 10 | `p67_0` | Um sentado comendo, outro de pé; fala correta | Média-alta | A descrição diz "duas pessoas sentadas", contradizendo os personagens; "pinças" (são hashi); SFX como fala |
+
+### Conclusão
+- **O `qwen3.5:4b-q4_K_M` é melhor que o `qwen2.5vl:3b` em quase tudo que importa para o Recap.**
+  - Fidelidade: 5/10 contra 1/10 válidos e fiéis.
+  - Nenhuma inversão de identidade, contra 3.
+  - Nenhum personagem inventado.
+  - `p0_0` e `p39_1` rodam na GPU, sem o fallback CPU de ~30 s.
+  - 46% menos tokens de entrada.
+  - ~0,5 GB menos de VRAM.
+- Custo: +1,3 s por painel na GPU.
+- **Ainda não está pronto para produção:**
+  1. Precisa de `think:false` no provider (sem isso, 0% de sucesso).
+  2. Precisa liberar o `detect()` para `qwen3.5` (usando a capacidade `vision` do `/api/show` em vez da regex).
+  3. Precisa classificar o "token repeat limit" como falha de runtime recuperável ou `needs_review`.
+  4. Os SFX coreanos ainda viram diálogo, e "劍!" foi uma invenção. Precisam de tratamento (classe `sfx` ou filtro de texto só em Hangul).
+  5. A normalização descarta `environment` em texto e personagens com `name:""`. Structured outputs ou um mapeamento explícito resolveriam.
+  6. `temperature 1` (padrão do Modelfile) deixa a saída não determinística. A variância não foi medida (1 execução por painel).
+- **Amostra pequena:** 10 painéis, 1 execução cada. A vantagem é grande e consistente nos erros graves, mas não é estatisticamente fechada.
+- **Recomendação:** adotar o `qwen3.5:4b-q4_K_M` como **candidato** a modelo do Recap e manter o `qwen2.5vl:3b` instalado como reserva, **sem trocar o padrão ainda**. Próximos passos:
+  1. Aplicar os itens 1–3, com testes.
+  2. Rodar um piloto de confirmação (os mesmos 10 painéis + `p0_0` + os 4 que excedem o contexto, com `temperature` baixa e 2 execuções para medir a variância), avaliado por fidelidade de cada painel.
+  3. Só então trocar `NB_LOCAL_VLM_MODEL`.
+- A separação recomendada no Adendo 13 continua válida: SFX e identidade de personagens na etapa narrativa, com contexto de vários painéis.
