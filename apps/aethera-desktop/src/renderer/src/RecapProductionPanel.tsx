@@ -837,11 +837,14 @@ function RealPipelineTimeline({
   liveMessage,
   isActivelyRunning = false,
   onResumeFromCheckpoint,
+  pausedNote = null,
 }: {
   record: RecapProjectRecordView | null;
   liveMessage: string | null;
   isActivelyRunning?: boolean;
-  onResumeFromCheckpoint?: () => void;
+  onResumeFromCheckpoint?: (() => void) | undefined;
+  /** Set when the project's job was paused on purpose, so it is not reported as a crash. */
+  pausedNote?: string | null;
 }) {
   const timeline = useMemo(() => derivePipelineTimeline(record, liveMessage), [record, liveMessage]);
   const isOrphanedRun = Boolean(
@@ -876,7 +879,9 @@ function RealPipelineTimeline({
         <div>
           <SectionLabel>Timeline Real do Processo</SectionLabel>
           <p style={{ margin: 0, fontSize: 13, color: T.ink, fontWeight: 500 }}>
-            {isOrphanedRun
+            {pausedNote
+              ? pausedNote
+              : isOrphanedRun
               ? 'Produção interrompida ao reiniciar o app. O checkpoint salvo está preservado — clique em Continuar para retomar de onde parou.'
               : timeline.detailMessage}
           </p>
@@ -916,7 +921,7 @@ function RealPipelineTimeline({
               borderRadius: T.radiusSm,
             }}
           >
-            {isOrphanedRun ? 'Interrompido · Checkpoint salvo' : timeline.stateLabel}
+            {pausedNote ? 'Pausado · Checkpoint salvo' : isOrphanedRun ? 'Interrompido · Checkpoint salvo' : timeline.stateLabel}
           </span>
           <span
             style={{
@@ -1818,6 +1823,23 @@ export function RecapProductionPanel() {
   activeProjectRunIdRef.current = activeProject?.runId ?? null;
   const jobIsActive = Boolean(activeJob && RECAP_JOB_ACTIVE.includes(activeJob.status));
   const isRunning = isSubmitting || isApproving || jobIsActive;
+  // A project already in progress continues instead of starting over; "Novo Projeto" starts another one.
+  const projectJob = activeJob && activeProject && activeJob.projectId === activeProject.runId ? activeJob : null;
+  const projectJobResumable = Boolean(projectJob && RECAP_JOB_RESUMABLE.includes(projectJob.status));
+  const projectRunUnfinished = Boolean(
+    activeProject &&
+      !projectJob &&
+      ['importing', 'preflight', 'story_engine', 'audiovisual_preview', 'master_export', 'paused_provider_unavailable'].includes(
+        activeProject.state ?? '',
+      ),
+  );
+  const canContinueProduction = !isRunning && (projectJobResumable || projectRunUnfinished);
+  const projectPausedNote =
+    projectJob && (projectJob.status === 'paused' || projectJob.status === 'paused_provider_unavailable')
+      ? projectJob.status === 'paused'
+        ? `Produção pausada em ponto seguro (${projectJob.stage ?? 'início'}). Use Continuar Produção para retomar do checkpoint.`
+        : `${projectJob.message} Use Continuar Produção quando os provedores voltarem.`
+      : null;
 
   useEffect(() => {
     if (!isRunning) {
@@ -2927,6 +2949,11 @@ export function RecapProductionPanel() {
     }
   };
 
+  const handleContinueProduction = () => {
+    if (projectJobResumable) void handleJobControl('resume');
+    else void handleStart(true);
+  };
+
   const handleApprovePreview = async () => {
     const bridge = getRecapBridge();
     if (!bridge?.recapApprovePreview || !activeProject?.runId) {
@@ -3283,13 +3310,18 @@ export function RecapProductionPanel() {
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginTop: 16 }}>
         <button
           type="button"
-          disabled={isRunning}
-          onClick={() => void handleStart(false)}
+          disabled={isRunning || jobActionPending}
+          onClick={() => (canContinueProduction ? handleContinueProduction() : void handleStart(false))}
           style={{ ...btnLime, opacity: isRunning ? 0.55 : 1 }}
         >
           {isRunning ? (
             <>
-              <RefreshCw className="animate-spin" style={{ width: 14, height: 14 }} /> Produzindo…
+              <RefreshCw className="animate-spin" style={{ width: 14, height: 14 }} />
+              {activeJob?.status === 'pause_requested' ? ' Pausando…' : activeJob?.status === 'cancel_requested' ? ' Cancelando…' : ' Produzindo…'}
+            </>
+          ) : canContinueProduction ? (
+            <>
+              <Play style={{ width: 14, height: 14 }} /> Continuar Produção
             </>
           ) : (
             <>
@@ -3298,7 +3330,7 @@ export function RecapProductionPanel() {
           )}
         </button>
 
-        {readiness.checkpoint.canResume && (
+        {readiness.checkpoint.canResume && !canContinueProduction && (
           <button
             type="button"
             disabled={isRunning}
@@ -3381,9 +3413,9 @@ export function RecapProductionPanel() {
                 <PauseCircle style={{ width: 14, height: 14 }} aria-hidden="true" /> Pausar
               </button>
             )}
-            {(RECAP_JOB_RESUMABLE.includes(activeJob.status) || activeJob.status === 'pause_requested') && (
+            {activeJob.status === 'pause_requested' && (
               <button type="button" disabled={jobActionPending} onClick={() => void handleJobControl('resume')} style={btnSecondary}>
-                <Play style={{ width: 14, height: 14 }} aria-hidden="true" /> Retomar
+                <Play style={{ width: 14, height: 14 }} aria-hidden="true" /> Não pausar
               </button>
             )}
             {activeJob.status !== 'cancel_requested' && (
@@ -4890,7 +4922,8 @@ export function RecapProductionPanel() {
                 record={activeProject}
                 liveMessage={statusNote}
                 isActivelyRunning={isRunning}
-                onResumeFromCheckpoint={() => void handleStart(true)}
+                onResumeFromCheckpoint={canContinueProduction ? undefined : () => void handleStart(true)}
+                pausedNote={projectPausedNote}
               />
               {productionConfigCard}
             </>
@@ -4901,7 +4934,8 @@ export function RecapProductionPanel() {
                 record={activeProject}
                 liveMessage={statusNote}
                 isActivelyRunning={isRunning}
-                onResumeFromCheckpoint={() => void handleStart(true)}
+                onResumeFromCheckpoint={canContinueProduction ? undefined : () => void handleStart(true)}
+                pausedNote={projectPausedNote}
               />
             </>
           )}
