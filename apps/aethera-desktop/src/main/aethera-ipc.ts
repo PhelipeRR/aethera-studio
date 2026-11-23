@@ -5565,7 +5565,9 @@ productionConsole,
     });
   };
 
-  const buildRecapHumanizePort = (): import('@neuralbridge/cinema').TextEnhancementPort | undefined => {
+  const buildRecapTextEnhancementPort = (
+    kind: 'humanize' | 'script',
+  ): import('@neuralbridge/cinema').TextEnhancementPort | undefined => {
     const gwCfg = (() => {
       try {
         return claudeGatewaySecretStore.load();
@@ -5604,8 +5606,11 @@ productionConsole,
 
     let preferredIndex = 0;
 
+    const outputField = kind === 'script' ? 'narrationText' : 'humanizedText';
+    const taskLabel = kind === 'script' ? 'fallback do roteiro' : 'humanização da narração';
+
     return {
-      name: `direct-cli-humanizer[${cliCandidates.map((c) => c.agentId).join(',')}]`,
+      name: `direct-cli-${kind}[${cliCandidates.map((c) => c.agentId).join(',')}]`,
       async enhance(request) {
         const ordered = [
           ...cliCandidates.slice(preferredIndex),
@@ -5614,11 +5619,18 @@ productionConsole,
         const errors: string[] = [];
 
         const userPrompt = [
-          'Reescreva a narração da cena abaixo seguindo estritamente as regras do sistema.',
-          'Responda APENAS com JSON válido no formato {"humanizedText": "..."} sem markdown ou explicações.',
+          kind === 'script'
+            ? 'Recupere a narração da cena abaixo para corrigir uma reprovação no Gate G, preservando somente fatos comprovados pelos painéis.'
+            : 'Reescreva a narração da cena abaixo seguindo estritamente as regras do sistema.',
+          `Responda APENAS com JSON válido no formato {"${outputField}": "..."} sem markdown ou explicações.`,
+          kind === 'script'
+            ? 'Use o contexto estruturado como fonte de verdade. Não antecipe a próxima cena, não invente eventos, falas ou personagens e não altere a ordem dos acontecimentos.'
+            : '',
+          '',
+          `Contexto estruturado da cena:\n${JSON.stringify(request.context)}`,
           '',
           `Texto atual da cena:\n${request.text}`,
-        ].join('\n');
+        ].filter(Boolean).join('\n');
 
         for (const candidate of ordered) {
           try {
@@ -5632,6 +5644,7 @@ productionConsole,
                 mode: 'read-only',
                 timeoutMs: 45_000,
                 lean: { systemPrompt: request.systemPrompt },
+                outputSchema: request.outputSchema,
                 ...(candidate.model ? { model: candidate.model } : {}),
               },
               request.signal,
@@ -5649,7 +5662,7 @@ productionConsole,
             if (!runFailed && trimmed.length > 0) {
               // Unwrap markdown code fences if the model wrapped the JSON
               const unwrapped = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-              const jsonMatch = unwrapped.match(/\{[\s\S]*"humanizedText"[\s\S]*\}/);
+              const jsonMatch = unwrapped.match(new RegExp(`\\{[\\s\\S]*"${outputField}"[\\s\\S]*\\}`));
               const finalPayload = jsonMatch ? jsonMatch[0] : unwrapped;
               preferredIndex = cliCandidates.findIndex((c) => c.agentId === candidate.agentId);
               return {
@@ -5678,11 +5691,13 @@ productionConsole,
           agentId: 'none',
           model: null,
           ok: false,
-          error: errors.join('; ') || 'Nenhum agente de texto disponível para humanizar a narração.',
+          error: errors.join('; ') || `Nenhum agente de texto disponível para ${taskLabel}.`,
         };
       },
     };
   };
+
+  const buildRecapHumanizePort = () => buildRecapTextEnhancementPort('humanize');
 
   const buildRecapTtsPort = (preferredProvider?: string) => {
     const elevenLabsCreds = elevenLabsProvider.getSynthesisCredentials();
@@ -5894,6 +5909,7 @@ productionConsole,
         const motionVelixKit = resolveMotionVelixKit();
         const recapVisionAdapter = buildRecapVisionAdapter(recapWorkspace);
         const recapHumanizePort = buildRecapHumanizePort();
+        const recapScriptFallbackPort = buildRecapTextEnhancementPort('script');
         const resolvedStyle: ScriptStyle =
           input.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(input.scriptStyle)
             ? (input.scriptStyle as ScriptStyle)
@@ -5928,6 +5944,7 @@ productionConsole,
                 },
               }
             : {}),
+          ...(recapScriptFallbackPort ? { scriptFallbackPort: recapScriptFallbackPort } : {}),
           ttsPort: chainedTtsPort,
           ...(motionVelixKit.sfxDir ? { sfxAssetsDir: motionVelixKit.sfxDir } : {}),
           plannerOptions: {
@@ -6194,6 +6211,7 @@ productionConsole,
           : 'natural_recap';
       const visionAdapter = buildRecapVisionAdapter(recapWorkspace);
       const humanizePort = buildRecapHumanizePort();
+      const scriptFallbackPort = buildRecapTextEnhancementPort('script');
       const regenCheckpointDir = join(recapWorkspace, 'checkpoints', `${detail.record.chapterId}-regen-${Date.now()}`);
 
       try {
@@ -6218,6 +6236,7 @@ productionConsole,
                 },
               }
             : {}),
+          ...(scriptFallbackPort ? { scriptFallbackPort } : {}),
         });
         const mergedNarration = storyRes.script.scenes.map((s) => s.narrationText).join(' ').trim();
         const firstRegen = storyRes.script.scenes[0];
@@ -6299,6 +6318,7 @@ productionConsole,
           : 'natural_recap';
       const visionAdapter = buildRecapVisionAdapter(recapWorkspace);
       const humanizePort = buildRecapHumanizePort();
+      const scriptFallbackPort = buildRecapTextEnhancementPort('script');
 
       let seriesMemory: ReturnType<typeof loadStoryMemoryProject> | undefined;
       try {
@@ -6345,6 +6365,7 @@ productionConsole,
                 },
               }
             : {}),
+          ...(scriptFallbackPort ? { scriptFallbackPort } : {}),
         });
         const invalidatedSteps = (detail.record.completedSteps ?? []).filter(
           (st) => st !== 'tts' && st !== 'timeline' && st !== 'render_preview' && st !== 'render_master',

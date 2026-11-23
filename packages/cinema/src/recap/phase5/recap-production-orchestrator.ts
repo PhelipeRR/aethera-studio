@@ -153,6 +153,8 @@ export interface RunRecapProductionOrchestratorInput {
 	visionAdapter?: VisionAdapter;
 	/** Optional LLM port for rich narrative script generation. */
 	scriptPort?: TextEnhancementPort;
+	/** Optional text-agent fallback used only when the generated script fails Gate G. */
+	scriptFallbackPort?: TextEnhancementPort;
 	/** Optional humanization pass after valid factual script generation. */
 	humanize?: HumanizeOptions & { port: TextEnhancementPort };
 	/** Optional pre-approved script (allows running Phase 3 directly without LLM agents). */
@@ -475,6 +477,7 @@ export async function runRecapProductionOrchestrator(
 				...(input.humorVolume !== undefined ? { humorVolume: input.humorVolume } : {}),
 				...(instrumentedVisionAdapter ? { visionAdapter: instrumentedVisionAdapter } : {}),
 				...(input.scriptPort ? { scriptPort: input.scriptPort } : {}),
+				...(input.scriptFallbackPort ? { scriptFallbackPort: input.scriptFallbackPort } : {}),
 				...(input.humanize ? { humanize: input.humanize } : {}),
 				...(input.seriesProjectId && input.chapterNumber
 					? {

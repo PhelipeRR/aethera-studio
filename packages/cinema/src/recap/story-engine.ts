@@ -98,6 +98,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		minBeatConfidence = 0.5,
 		analysisConcurrency = 1,
 		scriptPort,
+		scriptFallbackPort,
 		regenerateScriptOnly = false,
 		humanize,
 		research,
@@ -358,6 +359,33 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		} else {
 			break;
 		}
+		preHumanizeGateG = runGateGNarrativeFidelity({
+			script: workingScript,
+			panels,
+			minSceneConfidence: minBeatConfidence * 0.8,
+		});
+	}
+
+	// Gate G is a script-quality boundary, so recover with the configured text-agent
+	// chain before returning a hard failure. Panel analyses remain cached; only narration
+	// is regenerated. A failed recovery still returns the original safety verdict.
+	const MAX_SCRIPT_FALLBACK_ATTEMPTS = 2;
+	for (
+		let attempt = 1;
+		attempt <= MAX_SCRIPT_FALLBACK_ATTEMPTS && preHumanizeGateG.verdict === 'fail' && scriptFallbackPort;
+		attempt++
+	) {
+		warnings.push(
+			`Gate G reprovou o roteiro. Acionando fallback textual ${scriptFallbackPort.name} (tentativa ${attempt}/${MAX_SCRIPT_FALLBACK_ATTEMPTS}) sem reprocessar a visão dos painéis.`,
+		);
+		const retried = await refineScriptWithPort({
+			script: workingScript,
+			sequence: continuityResult.sequence,
+			port: scriptFallbackPort,
+			humorVolume,
+		});
+		workingScript = retried.script;
+		warnings.push(...retried.warnings);
 		preHumanizeGateG = runGateGNarrativeFidelity({
 			script: workingScript,
 			panels,

@@ -642,6 +642,8 @@ export interface StoryEngineOptions {
 	analysisConcurrency?: number;
 	/** Optional LLM port for rich narrative script generation from verified beats + continuity. */
 	scriptPort?: TextEnhancementPort;
+	/** Optional text-agent fallback used only when the generated script fails Gate G. */
+	scriptFallbackPort?: TextEnhancementPort;
 	/** When true, preserves approved panel analyses & Story Memory and regenerates only continuity + script + Gate G. */
 	regenerateScriptOnly?: boolean;
 	/** Phase 2.2: optional humanization after script generation. */

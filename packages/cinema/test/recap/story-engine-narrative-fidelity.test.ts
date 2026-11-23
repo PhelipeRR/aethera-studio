@@ -230,6 +230,52 @@ describe('Story Engine Narrative Fidelity (Phases 2–8)', () => {
 		expect(gateG.hints.some((h) => h.issueCode === 'generic_narration')).toBe(true);
 	});
 
+	it('recovers a Gate G failure with the configured script fallback without re-running vision', async () => {
+		const p1 = makePanel(TEST_DIR, 'fallback_p0_0', 0, 0);
+		let visionCalls = 0;
+		let fallbackCalls = 0;
+		const visionAdapter: VisionAdapter = {
+			name: 'codex-vision',
+			async analyze() {
+				visionCalls++;
+				return {
+					visualDescription: 'Um jovem ergue a espada diante do adversário.',
+					characters: ['o jovem', 'o adversário'],
+					actions: [{ type: 'combat', description: 'O jovem se prepara para lutar no próximo capítulo.' }],
+					emotions: ['tension'],
+					setting: 'pátio de treinamento',
+					confidence: 0.95,
+				};
+			},
+		};
+		const scriptFallbackPort: TextEnhancementPort = {
+			name: 'codex-script-fallback',
+			async enhance() {
+				fallbackCalls++;
+				return {
+					text: JSON.stringify({ narrationText: 'O jovem ergue a espada diante do adversário.' }),
+					agentId: 'codex',
+					model: 'codex-test',
+					ok: true,
+				};
+			},
+		};
+
+		const result = await runStoryEngine({
+			chapterId: 'fallback-test',
+			panels: [p1],
+			outputDir: join(TEST_DIR, 'out-fallback'),
+			visionAdapter,
+			scriptFallbackPort,
+		});
+
+		expect(visionCalls).toBe(1);
+		expect(fallbackCalls).toBeGreaterThan(0);
+		expect(result.gateGReport.verdict).toBe('pass');
+		expect(result.script.scenes[0]?.narrationText).toBe('O jovem ergue a espada diante do adversário.');
+		expect(result.warnings.some((warning) => warning.includes('fallback'))).toBe(true);
+	});
+
 	it('Phase 6: Humanizer reverts if LLM replaces narration with a generic phrase or drops essential dialogue', async () => {
 		const p1 = makePanel(TEST_DIR, 'h_p0_0', 0, 0);
 		const script: RecapScript = {

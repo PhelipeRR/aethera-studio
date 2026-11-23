@@ -426,7 +426,11 @@ export function createTaskEngineTextEnhancementAdapter(input: {
 					const runInput: Parameters<TextTaskEnginePort['runStructuredReadOnly']>[0] = {
 						projectId: input.projectId,
 						agent,
-						prompt: request.text,
+						prompt: [
+							request.text,
+							'',
+							`Contexto estruturado da cena:\n${JSON.stringify(request.context)}`,
+						].join('\n'),
 						outputSchema: request.outputSchema,
 						origin: 'neura',
 						lean: { systemPrompt: request.systemPrompt },
