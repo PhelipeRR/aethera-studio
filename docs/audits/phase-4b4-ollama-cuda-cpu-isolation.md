@@ -362,3 +362,34 @@ Testes (TDD): `packages/orchestrator/test/ollama-local-contract.test.ts` (novo, 
 
 ### Próximo passo da Fase 4B
 Piloto de ~10 painéis reais deduplicados na GPU, com `NB_LOCAL_VLM_CPU_FALLBACK=1` e `NB_LOCAL_VLM_MAX_CPU_FALLBACKS` baixo, medindo a taxa de degeneração, a taxa de schema válido, a frequência das notas de normalização, a dispersão das confianças e o tempo por painel. Depois, commitar o provider Ollama junto com o P1 e o contrato, com a revisão dos donos.
+
+## Adendo 12 — piloto com 10 painéis reais (20:22:40–20:23:45): FAIL no contrato, degeneração GPU em 1/10
+Script `scratchpad/p4b4/pilot.mts` com o adapter real, `cpuFallbackOnDegenerateOutput: true`, `maxCpuFallbacks: 3`, prazo de 15 min, sem retries.
+- Seleção: 437 painéis, todos únicos por sha256. `p0_0` foi excluído, porque é o caso conhecido. **4 painéis foram excluídos por não caberem no contexto**: `p24_1` (~3915 tokens de imagem), `p28_1` (~9106), `p58_12` (~3741) e `p71_0` (~2755). Restaram 432 elegíveis, e os 10 foram escolhidos em intervalo fixo ao longo do capítulo (p0_1 … p67_0, 800×293 a 800×827).
+- Log: **11 chamadas** (10 painéis + 1 fallback), todas com HTTP 200, 3 inícios de runner (GPU → CPU → GPU). Houve 1 exceção `@ (31)`.
+
+| Métrica | Valor |
+| --- | --- |
+| Degeneração na GPU | **1/10** (`p39_1`, 1404 tokens no total; não depende do tamanho, já que essa imagem é pequena) → fallback CPU de 29,1 s |
+| Schema válido | **3/10** (`p19_1`, `p26_3`, `p47_3`) |
+| `RECAP_LOCAL_SCHEMA_INVALID` | **7/10** |
+| Tempo na GPU | 2,1–5,4 s por painel; o fallback CPU levou 29,8 s; wall total ~65 s |
+| Tokens | 1404–1439 de entrada por painel (sempre ~1024+ de imagem por causa de `--image-min-tokens 1024`, mesmo com imagem de 319 tokens) e 171–451 de saída. Total ≈ 14,3 k de entrada e 3,2 k de saída. Custo 0 (local) |
+| VRAM | ≤ ~6,2 GB |
+
+### Causas das 7 falhas (todas no prompt v2 do Adendo 11)
+1. **`characters[].evidence` ausente em 7/7.** Ao compactar o prompt, o exemplo de `characters` saiu do esqueleto e ficou só a lista `{name,basis,evidence,confidence}`. O modelo omite `evidence`. A normalização **não** preenche esse campo, porque seria inventar.
+2. **`dialogue[].region` fora do enum** (1 painel, 2 falas). O valor exato não foi capturado, porque o piloto não grava a saída bruta.
+3. **`nature` copiado literalmente do enum** (`"action|exploration|landscape|…"`) em `p19_1`. A normalização mapeou para `other` e registrou a nota. É um efeito do prompt.
+4. **Confiança ancorada:** nas 3 válidas, `natureConfidence` e `confidence` vieram 0.8, o mesmo valor do exemplo do esqueleto.
+5. Nas 3 válidas, `entities=0`, `actions=0` e `environment=null`. É pouca informação, coerente com o modelo copiando os `[]`/`null` do esqueleto.
+
+### Conclusão
+- O P1 (classificação + fallback) se comportou como projetado em uso real.
+- **O prompt v2 não está pronto.** O caso sintético e o `p0_0` passaram, mas os painéis com personagens e diálogo falham, e o esqueleto ancora valores (`[]`, `null`, `0.8`, a string do enum).
+- **Não processar os 437 painéis** com a rota local neste estado.
+
+### Correção proposta (prompt v3), a validar com os mesmos 10 painéis (≤13 chamadas)
+- Esqueleto sem valores que o modelo copie: `nature` como um único valor válido, com o enum listado separadamente; confiança sem número fixo (descrita como "número 0–1 que você estimar"); e um item de exemplo em `characters`, `actions` e `dialogue` mostrando **todos** os campos, incluindo `evidence`.
+- Para caber no limite de 2000 caracteres do teste, tirar texto redundante da linha de formatos. A alternativa é Ollama structured outputs (`format` = JSON schema, que restringe tipos e enums na geração), mas isso muda o contrato `format:'json'` do teste da outra sessão e precisa de aprovação.
+- O piloto deve gravar a saída bruta de cada painel (local, limitada) para diagnosticar valores fora do enum.
