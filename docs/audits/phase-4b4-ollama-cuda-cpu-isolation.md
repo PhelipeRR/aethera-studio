@@ -759,3 +759,49 @@ Isso confirma que nomes não devem ser decididos por painel.
   2. **Painéis muito altos** como o `p28_1` (800×8781): recortar em blocos ou aumentar `num_ctx`.
   3. **Commit do provider:** o arquivo está misturado com a outra sessão e precisa de coordenação.
   4. **Piloto maior**, de 40 a 60 painéis.
+
+## Adendo 18 — nomes fora da análise por painel (21:05–21:08)
+
+### Mudanças (**não commitadas**, no mesmo arquivo misturado)
+1. **Prompt:** a frase "Identifique nomes somente se houver evidência…", que incentivava nomes, foi trocada por "characters.name: rótulo visual (ex.: homem de coque), nunca nome lido no texto." O prompt ficou mais curto que antes.
+2. **Regra determinística `stripTextDerivedNames`** (opção `panelNames`, padrão `'visual-only'`; `NB_LOCAL_VLM_PANEL_NAMES=model` restaura o comportamento antigo):
+   - Um personagem cujo nome tem palavra capitalizada (≥ 3 letras, fora de uma lista de termos genéricos) presente no diálogo do próprio painel **perde o nome**. Ele vira "personagem não identificado", numerado quando há mais de um, e mantém a evidência visual.
+   - Se a evidência do personagem só cita o texto (balão, diálogo, "mencionado", "addressed") e nada visual, ele é **removido**. Nesse caso, um papel em minúscula vindo do texto ("guard") também conta.
+   - Os nomes mencionados ficam declarados em `limitations`, para a etapa narrativa.
+- **Testes:**
+  - `test/ollama-panel-names.test.ts`, novo, com 7 testes, usando os formatos reais de `p71_0`, `p58_12` e `p59_0`. 4 falharam antes da implementação; o 7º (`guard` em minúscula, visto ao vivo no run20) falhou e depois passou com a extensão da regra. Os 2 que já passavam cobrem o que deve continuar igual.
+  - Suítes relacionadas: **50/50**.
+  - `tsc`: os mesmos 123 erros que já existiam.
+
+### Piloto (`run20-names`)
+- Configuração completa: `qwen3.5:4b-q4_K_M`, `structuredOutput`, `ocrPass: 'tall'`, filtro de SFX, `panelNames: 'visual-only'`.
+- Mesmos 15 painéis × 2, 38 chamadas, 28/28 válidos (o `p28_1` excede o contexto).
+- Latência média de 5,8 s; VRAM ≤ 6,1 GB.
+- O piloto rodou **antes** da extensão para papéis em minúscula, que só afeta o caso `guard` do `p58_12` (coberto pelo teste com o formato exato).
+
+| Identidade | Adendo 16 (sem mitigação) | Adendo 17 | **Adendo 18** |
+| --- | --- | --- | --- |
+| Personagem visível com nome tirado do balão | 2 (`p71_0` ×2) | 3 (`p71_0`, `p58_12`, `p59_0` "possibly Prince") | **0** |
+| Personagem que só existe no texto | 0–1 | 2 (`Yeo Woon`, `Guard Jang`) | 1 (`guard`, `p58_12`, execução 2) → **0** com a regra estendida |
+| Rótulos usados | nomes e genéricos | nomes e genéricos | só visuais: "homem de coque", "woman lying in bed", "homem de barba", "pessoa sentada/de pé", "mão desconhecida" |
+
+- **Quem fez a maior parte do trabalho foi o prompt:** a regra em código não precisou agir em nenhuma das 28 respostas, exceto no `guard` em minúscula. Ela fica como rede de segurança determinística.
+- As descrições e ações ainda **citam** nomes quando relatam o conteúdo dos balões. Por exemplo, no `p58_12`: "…dialogue boxes explaining backstory about Lady Hwa and Prince Cheon". Isso é conteúdo do texto, não atribuição de identidade, e foi mantido.
+- **Erros visuais que restam** (atributos, não identidade):
+  - `p24_1`, execução 1: "homem sem cabeça" (ele é calvo);
+  - `p67_0`, execução 1: "faca" (são hashi);
+  - `p71_0`: "homem de coque" para o menino (erro de idade).
+
+### Achado: o OCR dedicado também varia
+- Neste piloto, a execução 2 trouxe `p24_1` com 2/4 e `p58_12` com 2/5. Somando os Adendos 17 e 18, o OCR completo dos painéis altos ficou em **10/12 execuções**, e não 12/12.
+- A passada de OCR melhora a cobertura, mas não a garante em painéis muito altos (800×3587 e 800×3768).
+- O próximo passo natural é **recortar painéis altos em blocos**, tanto para o OCR quanto para o `p28_1` (800×8781), que não cabe no contexto.
+
+### Estado da configuração recomendada
+- `qwen3.5:4b-q4_K_M` + `structuredOutput` + `ocrPass: 'tall'` + filtro de SFX + `panelNames: 'visual-only'` + `think:false`.
+- Em 15 painéis × 2: schema 28/28, 0 SFX virando fala, 0 atribuição de identidade por painel.
+- Pendências:
+  1. recortar painéis altos (cobertura de OCR e `p28_1`);
+  2. a etapa narrativa precisa resolver identidades a partir dos rótulos visuais e do texto;
+  3. commitar o provider, o que exige coordenação com a outra sessão;
+  4. piloto de 40 a 60 painéis.
