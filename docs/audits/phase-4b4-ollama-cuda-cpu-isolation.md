@@ -692,3 +692,70 @@ O arquivo continua misturado com o provider Ollama da outra sessão. Os testes n
   2. **Antes de trocar o padrão**, commitar o provider (o arquivo está misturado com a outra sessão; isso exige coordenação) e rodar um piloto maior, de 40 a 60 painéis.
   3. Mitigações: tratar Hangul isolado como `sfx` em código; resolver nomes e vocativos na etapa narrativa; verificar a cobertura de OCR em painéis altos (contar balões ou usar uma etapa de OCR separada); usar `num_ctx` 6144 ou recorte para painéis com mais de ~3500 tokens.
   4. **Não processar os 437 painéis** sem essas condições e sem autorização explícita.
+
+## Adendo 17 — mitigação de SFX e de OCR incompleto (20:58–21:01)
+
+### Sondagem antes do código (`scratchpad/p4b4/ocr-probe.mts`, 8 chamadas diretas)
+- Chamada só de OCR (prompt de transcrição literal + schema `{texts:[{text,region}]}`, `think:false`, `temperature 0.2`) em 3 painéis altos e 1 controle, 2 execuções cada.
+- Resultado:
+  - `p58_12`: todas as 5 falas nas 2 execuções (a análise combinada trazia 2);
+  - `p71_0`: 2/2;
+  - `p31_7`: 2/2;
+  - `p24_1`: 2/4 e 4/4.
+- Nenhum SFX e nenhum texto inventado. Cada chamada levou 1–4 s.
+
+### Mudanças (**não commitadas**, no mesmo arquivo misturado)
+1. **Filtro de SFX** (`isLikelyDrawnSfx`, opção `sfxFilter`, ligado por padrão; `NB_LOCAL_VLM_SFX_FILTER=0` desliga para obras não traduzidas):
+   - remove do diálogo linhas sem letra latina nem dígito, só em Hangul/Han/kana, com no máximo 6 letras;
+   - o que foi removido fica declarado em `limitations` ("N SFX … não transcrito(s), fora do diálogo: …");
+   - frases longas em Hangul são mantidas.
+2. **Passada de OCR dedicada** (opção `ocrPass: 'off' | 'tall' | 'always'`, padrão `off`; `NB_LOCAL_VLM_OCR_PASS`; `ocrTallRatio`, padrão 2):
+   - uma chamada extra por painel com o mesmo modelo e a mesma imagem;
+   - o tamanho da imagem é lido do cabeçalho PNG/JPEG;
+   - o texto do OCR, com as quebras de linha unidas e o filtro de SFX aplicado, **substitui o diálogo só quando é mais longo**;
+   - o uso de tokens soma as 2 chamadas;
+   - se o OCR falhar, a análise é mantida e a falha fica declarada; não há fallback CPU nem retry.
+- **Testes:**
+  - `test/ollama-sfx-ocr.test.ts`, novo, com 7 testes: 5 falharam antes da implementação; os 2 que já passavam cobrem o padrão `off` e o painel largo.
+  - Suítes relacionadas: **43/43**.
+  - `tsc`: os mesmos 123 erros que já existiam.
+- **Defeito pego pelos testes durante a implementação:** um script de edição perdeu escapes, e `/^(?:…|\.{3})$/` virou `.{3}`, que descartaria qualquer fala de 3 letras. Foi corrigido, e o teste agora inclui a fala "WHY".
+
+### Piloto (`scratchpad/p4b4/pilot-sfx-ocr.mts`, saída em `run19-sfx-ocr`)
+- Mesmos 15 painéis × 2, com `qwen3.5:4b-q4_K_M`, `structuredOutput`, `temperature 0.2`, `ocrPass: 'tall'`.
+- **38 chamadas:** 28 análises, 8 OCR (`p0_0` 800×1645, `p24_1`, `p58_12`, `p71_0`) e 2 falhas de contexto do `p28_1` (800×8781, 4369 tokens).
+
+| Métrica | Adendo 16 | Com mitigação |
+| --- | --- | --- |
+| Schema válido | 28/30 | 28/30 (só o `p28_1` fica de fora) |
+| SFX virando fala | `p10_1` ×2 ("폭음"), `p59_0` ×1 | **0**; os 4 casos foram removidos e declarados |
+| Falas em inglês perdidas pelo filtro | — | 0 |
+| OCR completo nos painéis altos | `p24_1` 1–4/4, `p58_12` 2/5, `p71_0` 1–2/2 | **6/6 execuções completas** (`p24_1` 4/4, `p58_12` 5/5, `p71_0` 2/2) |
+| Texto inventado pelo OCR | — | 0 (`p0_0`: 0 texto, correto) |
+| Latência média | 4,7 s | 5,8 s (painéis altos: 7,6–12,6 s) |
+| Wall total | 131 s | 164 s |
+| VRAM | ≤ 5,9 GB | ≤ 5,9 GB |
+
+- Nos painéis comuns, o diálogo ficou idêntico e correto, e o OCR não rodou neles.
+- **Custo no capítulo:** 18 dos 437 painéis têm altura ≥ 2× a largura, então são ~18 chamadas a mais (~4%), algo como +1 min.
+
+### O que **não** mudou
+Identidade e nomes não faziam parte desta mitigação e continuam instáveis:
+- `p58_12`: na execução 1, "Guard Jang" e "Yeo Woon" viraram personagens (o segundo nem aparece no painel), e Lady Hwa recebeu um "rosto não mostrado" que está errado;
+- `p71_0`: na execução 1, a criança virou "Guard Jang"; na execução 2, "jovem feminino" (é um menino);
+- `p59_0`: na execução 2, "possibly 'Prince'".
+
+Isso confirma que nomes não devem ser decididos por painel.
+
+### Conclusão e recomendação
+- SFX e OCR incompleto estão **mitigados** nesta amostra. A configuração recomendada para o Recap passa a ser:
+  - `NB_LOCAL_VLM_MODEL=qwen3.5:4b-q4_K_M`;
+  - `NB_LOCAL_VLM_STRUCTURED_OUTPUT=1`;
+  - `NB_LOCAL_VLM_OCR_PASS=tall`;
+  - filtro de SFX ligado (padrão);
+  - `think:false` (padrão).
+- **Pendências antes da produção:**
+  1. **Identidade:** remover a decisão de nomes da etapa por painel (por exemplo, um rótulo visual no lugar do nome, ou nomes tratados apenas como "mencionados no texto") e resolvê-la na etapa narrativa, com contexto de vários painéis.
+  2. **Painéis muito altos** como o `p28_1` (800×8781): recortar em blocos ou aumentar `num_ctx`.
+  3. **Commit do provider:** o arquivo está misturado com a outra sessão e precisa de coordenação.
+  4. **Piloto maior**, de 40 a 60 painéis.
