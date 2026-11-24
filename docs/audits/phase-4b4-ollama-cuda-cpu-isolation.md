@@ -805,3 +805,96 @@ Isso confirma que nomes não devem ser decididos por painel.
   2. a etapa narrativa precisa resolver identidades a partir dos rótulos visuais e do texto;
   3. commitar o provider, o que exige coordenação com a outra sessão;
   4. piloto de 40 a 60 painéis.
+
+## Adendo 19 — recorte inteligente de painéis altos (Fase 4B.9, 21:15–21:24)
+
+### Mudanças (**não commitadas**: dependem de `vision-router.ts`, alterado e não commitado por outra sessão)
+- **`packages/orchestrator/src/aethera/panel-tiling.ts`** (novo). É um invólucro (`createTiledPanelProvider`) sobre o provider local, que não foi alterado. Em cada bloco o provider aplica as próprias regras: `think:false`, structured output, filtro de SFX e `panelNames: 'visual-only'`.
+- **Orçamento em tokens, não em pixels:**
+  - `estimateImageTokens = ceil(w/32)·ceil(h/32)`, conferido com o medido: `p0_0` 1300 + ~316 de prompt = 1615; `p71_0` 2100 + 316 = 2416.
+  - `maxTileHeightForContext` = contexto 4096 − prompt 420 − reserva de saída 1200 − margem 128 = 2348 tokens de imagem → 2976 px na largura 800.
+  - Há um teto opcional de proporção (`maxTileAspect: 2` → 1600 px) para a fidelidade do OCR.
+  - Se o plano passar de 8 blocos (limite de `frames` do schema), o teto de proporção é dispensado. Se ainda assim não couber, o erro é `RECAP_TILE_LIMIT`.
+- **Cortes determinísticos** (`planPanelTiles`):
+  - **Calha:** sequência de ≥ 8 linhas com desvio-padrão ≤ 6 em toda a largura; nada atravessa essa linha. O corte cai na calha mais baixa dentro de [início + ½ bloco, início + bloco], sem sobreposição.
+  - **Sem calha:** o corte vai para a linha mais "calma" da janela, com 160 px compartilhados entre os blocos, e é marcado `uncertain`.
+  - O original nunca é alterado; os blocos são PNGs em cache (`sharp`).
+- **Mesclagem** (`mergeTileAnalyses`):
+  - Um `frame` por bloco, em ordem de leitura, com o prefixo `[bloco i/n y=a–b]`.
+  - Falas repetidas só são deduplicadas na junção com sobreposição: igualdade ou contenção, mantendo a leitura mais longa. Uma repetição através de calha limpa é um segundo balão e fica.
+  - Nenhum texto é composto.
+  - Personagens sem nome não se fundem entre blocos (`… (bloco k)`). Ações iguais saem.
+  - Confiança = mínimo entre blocos; natureza = maioria.
+  - `limitations[0]` descreve os blocos e os cortes; as notas de cada bloco (SFX, nomes) são mantidas.
+- **Cache e checkpoint por bloco:**
+  - Chave = sha256(bytes do painel + y0/y1 + largura + modelo + `cacheVersion`).
+  - Escrita atômica. Um checkpoint corrompido refaz só aquele bloco.
+  - Um manifesto por painel guarda coordenadas, tipo de corte, chave, tokens, linhas e tempo.
+- **Ledger JSONL:** uma linha por bloco, novo ou do cache, com `panelId`, `tileIndex/Count`, `y0/y1`, `cutBelow`, `cacheHit`, `model`/`reportedModel`, tokens, `wallMs`, `status` (`ok|failed|cancelled`), `errorCode` e `rssMb`.
+- **Cancelamento e falha:**
+  - O `AbortSignal` é conferido antes de cada bloco e repassado ao provider.
+  - Uma falha vira `RECAP_TILE_ANALYSIS_FAILED`, com bloco e coordenadas. Os blocos já concluídos ficam em cache e nada é preenchido.
+- **Testes** (`test/panel-tiling.test.ts`, 14, escritos antes da implementação e de qualquer inferência). Cobrem:
+  - orçamento de contexto;
+  - cortes em calha;
+  - corte incerto com sobreposição;
+  - determinismo e reconstrução (todas as linhas cobertas);
+  - painel baixo sem recorte;
+  - deduplicação, sem texto inventado;
+  - mesclagem de observações;
+  - proveniência e ledger;
+  - cache, incluindo invalidação por versão;
+  - cancelamento com retomada;
+  - falha de bloco;
+  - backend `sharp` real.
+- **Resultados de teste e typecheck:**
+  - Suítes relacionadas: **52/52**.
+  - `tsc`: os mesmos 123 erros que já existiam, nenhum nos arquivos novos.
+- **Regressão encontrada no *dry-run* e corrigida com teste:**
+  - No `p58_12`, uma faixa preta (1405–1620) continua num degradê uniforme até ~1900. O centro da faixa caía fora da janela e o corte virava "incerto".
+  - Agora qualquer linha da faixa dentro da janela serve.
+
+### Plano de corte real (sem inferência)
+| Painel | Tamanho | Tokens da imagem inteira | Blocos (y0–y1, corte) |
+| --- | --- | --- | --- |
+| `p0_0` | 800×1645 | 1300 | 0–991 incerto · 831–1645 |
+| `p71_0` | 800×2660 | 2100 | 0–1193 calha · 1193–2660 |
+| `p58_12` | 800×3587 | 2825 | 0–1600 calha · 1600–3200 incerto · 3040–3587 |
+| `p24_1` | 800×3768 | 2950 | 0–1385 incerto · 1225–2413 incerto · 2253–3768 |
+| `p28_1` | 800×8781 | 6875 | 8 blocos: 6 calhas, 1 incerto (1849, entre dois personagens) |
+
+- Os 5 cortes incertos foram inspecionados em faixas renderizadas, e **nenhum atravessa texto de balão**.
+- O de 3120 no `p58_12` passa pelas pernas de um personagem: não há calha ali. O balão seguinte fica inteiro no bloco 3.
+
+### Piloto controlado (`run21-tiles`): só os 5 painéis altos
+- **Configuração:**
+  - `qwen3.5:4b-q4_K_M`, `think:false`, structured output, temperatura 0.2;
+  - filtro de SFX e nomes visual-only;
+  - `ocrPass: 'off'` (cada bloco ≤ 2:1);
+  - sem fallback de CPU, sem retry, prazo de 15 min.
+- O passe 2 repete os mesmos painéis para provar o cache.
+
+| Métrica | Adendo 18 (`run20`, painel inteiro + OCR dedicado) | **Adendo 19 (blocos)** |
+| --- | --- | --- |
+| `p28_1` | HTTP 400 (excede 4096) nas 2 execuções | **analisado**: 8 blocos, máx. 1596 tokens de entrada/bloco |
+| Erros de schema | 0 nos painéis que cabiam | **0/18 chamadas** |
+| Falas recuperadas `p71_0`, `p58_12`, `p24_1` (2 + 5 + 4) | exec. 1: 11/11; exec. 2: 2 + 2 + 2 (`p58_12` truncado numa linha) | **11/11** (`GUARD JANG...` separado de `PLEASE TAKE CARE…`) |
+| Falas recuperadas `p28_1` (11 textos reais, conferidos na imagem) | 0 | **9/11**; falta o bloco 6 (1584 px, 3 legendas): "IN A PLACE NOT TOO FAR AWAY…" e "I COULD RECOGNIZE RIGHT AWAY…"; 1 erro de grafia ("CORPSSES") |
+| Falas inventadas | 0 | **0** (toda linha existe no painel; o bloco 2 do `p24_1`, que só tinha a borda de uma caixa, retornou 0 falas) |
+| SFX como fala | 0 | 0 (`허억` ×3 filtrado e declarado; o modelo leu "허어") |
+| Fidelidade visual | ver Adendo 18 | `p0_0`, `p71_0`, `p58_12`: fiéis. `p24_1`: legendas 4/4, mas repete "sem cabeça" (calvo). `p28_1`: 7/8 blocos fiéis; no bloco 5 o homem morto, com uma adaga cravada na cabeça, virou "segurando espada brilhante" |
+| Chamadas (4 painéis comparáveis) | 8 (análise + OCR) | 10 (blocos) |
+| Tokens de entrada / saída (4 painéis) | 20 072 / 1 624 (exec. 1) | **13 026 (−35 %) / 3 184 (+96 %)** |
+| Tempo (4 painéis) | 37,7 s | 53,2 s (+41 %) |
+| `p28_1` | — | 9 760 entrada / 2 552 saída / 40,0 s |
+| Total do piloto | — | 18 chamadas; 22 786 entrada / 5 736 saída; 93,2 s; VRAM ≤ 5,9 GB; RSS do processo ≤ 149 MB |
+| Passe 2 (cache) | — | **18/18 do cache, 0 tokens, 17–51 ms por painel**, resultado idêntico |
+
+- A deduplicação na sobreposição **não teve caso real**: 0 falas repetidas, porque nenhum corte incerto passou por texto. Ela está coberta só pelos testes.
+- Um mesmo menino aparece como 2 personagens no `p71_0` (um por bloco). Unificar identidade entre blocos fica para a etapa narrativa.
+
+### Limitações e pendências
+1. **Blocos densos em legendas** ainda perdem texto: no bloco 6 do `p28_1`, 1 de 3 legendas foi lida. A medida candidata é o OCR dedicado por bloco a partir de ~1,5:1 (`ocrTallRatio`), a medir no próximo piloto. Não foi validada aqui, porque o pedido limitava a uma rodada.
+2. O invólucro **não está ligado ao fluxo do Recap no app**. Hoje é usado por script; ligá-lo toca arquivos alterados por outra sessão (adapter e IPC).
+3. `sharp` é resolvido pelo `node_modules` da raiz (dependência hoisted). O `package.json` do orchestrator não o declara; falta declará-lo junto com o commit do provider.
+4. Commitar o provider e o tiling exige coordenação com a sessão dona de `vision-providers.ts` e `vision-router.ts`.
