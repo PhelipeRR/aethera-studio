@@ -17,6 +17,7 @@ import {
 } from './recap-types.js';
 import type { RecapVisionRouterPort, RecapVisualAnalysisPort, StructuredVisionPayload } from './recap-vision-adapter.js';
 import type { ChapterMemoryContext } from './story-memory.js';
+import { annotateRecapDialogue } from './recap-text-classification.js';
 
 export const MANGA_VISION_ANALYST_VERSION = '1.0.0';
 export const MANGA_VISION_ANALYST_SCHEMA_VERSION = 1 as const;
@@ -256,7 +257,10 @@ export function toStoryMemoryPromptContext(memory: ChapterMemoryContext) {
  * Builds the model-agnostic Manga Vision Analyst prompt for a single panel.
  */
 export function buildMangaVisionAnalystPrompt(context?: VisionAnalysisContext): string {
-	const readingOrder: ReadingOrder = context?.readingOrder ?? 'vertical';
+	// Do not infer webtoon/vertical from the absence of metadata. Importer and
+	// caller configuration are authoritative; RTL is the conservative fallback
+	// for raster manga material when no reliable signal exists.
+	const readingOrder: ReadingOrder = context?.readingOrder ?? 'rtl';
 	const orderRule =
 		readingOrder === 'rtl'
 			? 'Direita para esquerda, de cima para baixo (mangá RTL).'
@@ -486,7 +490,8 @@ export function contractToVisionAnalysisResult(contract: MangaPanelContract): Vi
 				(b.attributionBasis === 'uncertain' && !b.speaker
 					? 'Falante não identificado com certeza visual.'
 					: undefined);
-			return {
+			return annotateRecapDialogue({
+				entry: {
 				text: b.translatedText?.trim() || b.originalText,
 				originalText: b.originalText,
 				...(b.translatedText?.trim() ? { translatedText: b.translatedText.trim() } : {}),
@@ -495,7 +500,12 @@ export function contractToVisionAnalysisResult(contract: MangaPanelContract): Vi
 				readingOrder: b.readingOrder,
 				...(b.speaker && b.speakerConfidence >= 0.4 ? { speaker: b.speaker } : {}),
 				...(uncertainty ? { uncertainty } : {}),
-			};
+				},
+				lineIndex: b.readingOrder,
+				source: 'vision',
+				balloonPresent: true,
+				balloon: b.kind === 'sfx' ? 'jagged' : b.kind === 'narration' ? 'narration' : b.kind === 'thought' ? 'thought' : 'speech',
+			});
 		});
 
 	const actions = contract.actions.map((a) => ({

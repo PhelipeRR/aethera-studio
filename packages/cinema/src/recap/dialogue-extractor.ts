@@ -1,4 +1,5 @@
 import type { DialogueEntry, DialogueKind, ExtractedPanel, NarrativeEvidence } from './recap-types.js';
+import { annotateRecapDialogue } from './recap-text-classification.js';
 
 const SFX_PATTERNS: readonly RegExp[] = [
 	/^(boom|bam|bang|crack|crash|slash|whoosh|swoosh|thud|thump|wham|pow|clang|clank|snap|smack|smash|roar|hiss|drip|zap|swish|fwoosh|rumble|shing|tsk|ugh|grr|ahh|gah|hmm)[!?.~…]*$/i,
@@ -177,7 +178,8 @@ export function extractStructuredOcrDialogues(panel: ExtractedPanel): {
 			uncertainties.push(`Balão #${i + 1} (${panel.panelId}): ${uncertainty}`);
 		}
 
-		dialogues.push({
+		const entry = annotateRecapDialogue({
+			entry: {
 			...(speaker ? { speaker } : {}),
 			text: cleaned,
 			originalText: cleaned,
@@ -185,7 +187,14 @@ export function extractStructuredOcrDialogues(panel: ExtractedPanel): {
 			isNarration: kind === 'narration',
 			readingOrder: i,
 			...(uncertainty ? { uncertainty } : {}),
+			},
+			panelId: panel.panelId,
+			lineIndex: i,
+			source: 'ocr',
+			balloonPresent: null,
+			visualContext: { actionTerms: [panel.metadata.classification] },
 		});
+		dialogues.push(entry);
 
 		evidence.push({
 			kind: 'ocr_text',
@@ -230,7 +239,20 @@ export function mergeVisionAndOcrDialogues(input: {
 		if (keyPrimary) seen.add(keyPrimary);
 		if (keyOriginal) seen.add(keyOriginal);
 
-		const kind = classifyBubbleKind(originalText, entry.kind, entry.isNarration);
+		const classified = annotateRecapDialogue({
+			entry,
+			panelId: input.panelId,
+			lineIndex: entry.readingOrder ?? merged.length,
+			source: 'vision',
+			balloonPresent: entry.kind === 'sfx' ? false : true,
+			balloon: entry.kind === 'sfx' ? 'jagged' : entry.kind === 'narration' ? 'narration' : entry.kind === 'thought' ? 'thought' : 'speech',
+		});
+		const contentKind = classified.contentKind ?? 'unknown';
+		const kind = contentKind === 'sound_effect'
+			? 'sfx'
+			: contentKind === 'narrative_caption'
+				? 'narration'
+				: classifyBubbleKind(originalText, entry.kind, entry.isNarration);
 		const normalized: DialogueEntry = {
 			...(entry.speaker?.trim() ? { speaker: entry.speaker.trim() } : {}),
 			text: primaryText || originalText,
@@ -240,6 +262,9 @@ export function mergeVisionAndOcrDialogues(input: {
 			isNarration: kind === 'narration',
 			readingOrder: merged.length,
 			...(entry.uncertainty ? { uncertainty: entry.uncertainty } : {}),
+			contentKind,
+			...(classified.contentEvidence ? { contentEvidence: classified.contentEvidence } : {}),
+			...(classified.contentProvenance ? { contentProvenance: classified.contentProvenance } : {}),
 		};
 		if (normalized.uncertainty) {
 			uncertainties.push(`Painel ${input.panelId}: ${normalized.uncertainty}`);

@@ -18,6 +18,7 @@ import { runNarrativeAnalyzer } from './narrative-analyzer.js';
 import { runStoryContinuityEngine } from './story-continuity-engine.js';
 import { runScriptGenerator, refineScriptWithPort } from './script-generator.js';
 import { runGateGNarrativeFidelity, buildGateGDivergenceReport } from './gate-g-narrative-fidelity.js';
+import { canForwardToStoryEngine } from './recap-fidelity-gate.js';
 import { runNarrativeHumanizer } from './narrative-humanizer.js';
 import { runContextualResearch } from './contextual-research.js';
 import {
@@ -97,6 +98,9 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		workTitle,
 		minBeatConfidence = 0.5,
 		analysisConcurrency = 1,
+		triage,
+		visionRoutes,
+		compactNarrativeContext = true,
 		scriptPort,
 		scriptFallbackPort,
 		regenerateScriptOnly = false,
@@ -104,6 +108,8 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		research,
 		storyMemory,
 		mangaVisionAnalyst,
+		onAnalysisEvent,
+		strictFidelity = false,
 	} = options;
 
 	const warnings: string[] = [];
@@ -130,9 +136,26 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 	let analyses: PanelAnalysis[] = [];
 
 	const existingCheckpoint = loadCheckpoint(checkpointDir);
-	const cachedAnalyses = (existingCheckpoint?.panelAnalyses ?? []) as PanelAnalysis[];
+	const sourceCheckpoint = options.analysisCacheCheckpointDir && options.analysisCacheCheckpointDir !== checkpointDir
+		? loadCheckpoint(options.analysisCacheCheckpointDir)
+		: null;
+	const persistedAnalyses = (existingCheckpoint?.panelAnalyses?.length ? existingCheckpoint.panelAnalyses : sourceCheckpoint?.panelAnalyses ?? []) as PanelAnalysis[];
+	// Historical pilot results are read-only inputs. Persisted productive analyses win when
+	// both exist; historical entries fill only panels absent from the current checkpoint.
+	const historicalAnalyses = options.allowHistoricalPanelCache ? [...(options.historicalPanelAnalyses ?? [])] : [];
+	const persistedIds = new Set(persistedAnalyses.map((analysis) => analysis.panelId));
+	const cachedAnalyses = [
+		...historicalAnalyses.filter((analysis) => !persistedIds.has(analysis.panelId)),
+		...persistedAnalyses,
+	];
 	const analysisCacheByHash: Record<string, PanelAnalysis> = {
+		...((sourceCheckpoint?.analysisCacheByHash ?? {}) as Record<string, PanelAnalysis>),
 		...((existingCheckpoint?.analysisCacheByHash ?? {}) as Record<string, PanelAnalysis>),
+	};
+	const panelAnalysisImageHashes: Record<string, string> = {
+		...(options.allowHistoricalPanelCache ? (options.historicalPanelImageHashes ?? {}) : {}),
+		...((sourceCheckpoint?.panelAnalysisImageHashes ?? {}) as Record<string, string>),
+		...((existingCheckpoint?.panelAnalysisImageHashes ?? {}) as Record<string, string>),
 	};
 	if (cachedAnalyses.length > 0 || Object.keys(analysisCacheByHash).length > 0) {
 		warnings.push(
@@ -158,14 +181,22 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 			: {}),
 		minConfidence: minBeatConfidence,
 		concurrency: analysisConcurrency,
+		...(triage ? { triage } : {}),
+		...(visionRoutes ? { visionRoutes } : {}),
+		compactNarrativeContext,
 		cachedAnalyses,
 		analysisCacheByHash,
+		cachedAnalysisImageHashes: panelAnalysisImageHashes,
+		allowLegacyPanelIdCache: Boolean((sourceCheckpoint && regenerateScriptOnly) || (options.allowHistoricalPanelCache && historicalAnalyses.length > 0)),
 		cacheModel: analyzedBy,
 		analyzerVersion: RECAP_ANALYZER_VERSION,
-		onPanelAnalyzed: (analysis, panel) => {
+		onAnalysisEvent: (event) => onAnalysisEvent?.(event),
+		onPanelAnalyzed: (analysis, panel, cacheKey) => {
 			if (analysis.analysisConfidence > 0) {
-				const key = computePanelCacheKey({ imageHash: panel.imageHash, model: analyzedBy, analyzerVersion: RECAP_ANALYZER_VERSION });
-				analysisCacheByHash[key] = analysis;
+				analysisCacheByHash[cacheKey] = analysis;
+				// Keep the old key readable for older tools; new lookups never use this alias.
+				analysisCacheByHash[computePanelCacheKey({ imageHash: panel.imageHash, model: analyzedBy, analyzerVersion: RECAP_ANALYZER_VERSION })] = analysis;
+				panelAnalysisImageHashes[panel.panelId] = panel.imageHash;
 				incrementalMap.set(analysis.panelId, analysis);
 				// Incremental atomic checkpoint save so interruptions preserve completed valid panels
 				saveCheckpoint(checkpointDir, {
@@ -176,6 +207,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 					extractedPanels: panels,
 					panelAnalyses: [...incrementalMap.values()],
 					analysisCacheByHash,
+					panelAnalysisImageHashes,
 					warnings,
 				});
 			}
@@ -183,6 +215,40 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 	});
 	analyses = analysisResult.analyses;
 	warnings.push(...analysisResult.warnings);
+	// Evaluation/recovery is deliberately after analysis. This prevents strict
+	// fidelity from creating a circular dependency where evidence cannot be
+	// produced because the analysis stage was blocked first.
+	if (options.fidelityRecovery) {
+		const recoveryResult = await options.fidelityRecovery.run({
+			panels,
+			analyses,
+			...(options.panelFidelityGate?.report ? { gateReport: options.panelFidelityGate.report } : {}),
+		});
+		if (recoveryResult.analyses) analyses = [...recoveryResult.analyses];
+		if (recoveryResult.gateReport) {
+			options.panelFidelityGate = {
+				report: recoveryResult.gateReport,
+				enforce: options.panelFidelityGate?.enforce,
+			};
+		}
+	}
+	if (strictFidelity) {
+		const report = options.panelFidelityGate?.report;
+		if (!report) {
+			throw new Error(
+				'Recap strict fidelity blocked Story Engine before script generation: ' +
+				'no evidence-backed RecapFidelityGateReport was supplied; model confidence alone is insufficient.',
+			);
+		}
+		if (!canForwardToStoryEngine(report)) {
+			throw new Error(
+				`Recap strict fidelity blocked Story Engine before script generation: ` +
+				`fidelity gate status=${report.status}, ` +
+				`eligible=${report.storyEngineEligiblePanelIds.length}/${report.metrics.panelCount}, ` +
+				`reviewQueue=${report.humanReviewQueue.length}.`,
+			);
+		}
+	}
 
 	// Resolve confirmed character names from prior-chapter Story Memory (preserves human overrides)
 	if (memoryContext && Object.keys(memoryContext.nameResolutionMap).length > 0) {
@@ -212,6 +278,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		if (p && a.analysisConfidence > 0) {
 			const key = computePanelCacheKey({ imageHash: p.imageHash, model: analyzedBy, analyzerVersion: RECAP_ANALYZER_VERSION });
 			analysisCacheByHash[key] = a;
+			panelAnalysisImageHashes[p.panelId] = p.imageHash;
 		}
 	}
 
@@ -224,6 +291,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		extractedPanels: panels,
 		panelAnalyses: analyses,
 		analysisCacheByHash,
+		panelAnalysisImageHashes,
 		warnings,
 	});
 
@@ -439,6 +507,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 			extractedPanels: panels,
 			panelAnalyses: analyses,
 			analysisCacheByHash,
+			panelAnalysisImageHashes,
 			scriptGeneratorVersion: RECAP_SCRIPT_GENERATOR_VERSION,
 			scriptStyle,
 			scriptCacheKey,
@@ -465,10 +534,20 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		try {
 			const humanizeOpts: import('./recap-types.js').HumanizeOptions & { port: import('./recap-types.js').TextEnhancementPort } = {
 				enabled: humanize.enabled,
+				...(humanize.mode ? { mode: humanize.mode } : {}),
 				style: humanize.style,
 				humorVolume: humanize.humorVolume ?? humorVolume,
 				port: humanize.port,
 			};
+			if (humanize.mode === 'flagged') {
+				const flaggedSceneIds = new Set<string>([
+					...preHumanizeGateG.hints.map((hint) => hint.sceneId).filter((sceneId): sceneId is string => Boolean(sceneId)),
+					...workingScript.scenes
+						.filter((scene) => scene.reviewStatus === 'needs_review' || scene.confidence < minBeatConfidence || (scene.uncertainties?.length ?? 0) > 0)
+						.map((scene) => scene.sceneId),
+				]);
+				humanizeOpts.targetSceneIds = [...flaggedSceneIds];
+			}
 			if (humanize.maxDurationDeviation !== undefined) humanizeOpts.maxDurationDeviation = humanize.maxDurationDeviation;
 			if (humanize.wordBudgetPerScene !== undefined) humanizeOpts.wordBudgetPerScene = humanize.wordBudgetPerScene;
 			if (humanize.signal !== undefined) humanizeOpts.signal = humanize.signal;
@@ -507,6 +586,7 @@ export async function runStoryEngine(options: StoryEngineOptions): Promise<Story
 		extractedPanels: panels,
 		panelAnalyses: analyses,
 		analysisCacheByHash,
+		panelAnalysisImageHashes,
 		scriptGeneratorVersion: RECAP_SCRIPT_GENERATOR_VERSION,
 		scriptStyle,
 		scriptCacheKey,

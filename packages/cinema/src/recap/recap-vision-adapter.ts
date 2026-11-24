@@ -1,16 +1,18 @@
-import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, relative } from 'node:path';
 import type {
 	VisionAdapter,
 	VisionAnalysisContext,
 	VisionAnalysisResult,
+	RecapPanelRouteTier,
 	ActionType,
 	Emotion,
 	DialogueEntry,
 	CharacterDetail,
 } from './recap-types.js';
 import { classifyBubbleKind } from './dialogue-extractor.js';
+import { annotateRecapDialogue } from './recap-text-classification.js';
 import { AllVisionProvidersUnavailableError, classifyVisionError, type VisionProviderDiagnostic } from './vision-error-classifier.js';
 import { AgentCircuitBreaker } from './vision-circuit-breaker.js';
 
@@ -37,6 +39,8 @@ export interface StructuredVisionPayload {
 	readingOrderHint?: string;
 	relationToPrevious?: string;
 	relationToNext?: string;
+	usage?: VisionAnalysisResult['usage'];
+	deduped?: boolean;
 }
 
 export interface RecapVisualAnalysisPort {
@@ -45,6 +49,8 @@ export interface RecapVisualAnalysisPort {
 	readonly supportsMultimodal?: boolean;
 	/** Model the provider reports it actually ran on its last call, when it knows. */
 	lastReportedModel?(): string | null;
+	/** Token/cost usage for the last provider call, when available. */
+	lastUsage?(): VisionAnalysisResult['usage'] | null;
 	describe?(input: {
 		frames: readonly { hash: string; path: string; atMs?: number }[];
 		signal?: AbortSignal;
@@ -73,6 +79,8 @@ export interface RecapVisionRouterPort {
 		costUsd: number;
 		attempts: readonly { provider: string; outcome: string; detail?: string; durationMs?: number }[];
 		reportedModel?: string | null;
+		usage?: VisionAnalysisResult['usage'];
+		deduped?: boolean;
 	}>;
 	analyze(input: {
 		frames: readonly { hash: string; path: string; atMs?: number }[];
@@ -86,6 +94,8 @@ export interface RecapVisionRouterPort {
 		costUsd: number;
 		attempts: readonly { provider: string; outcome: string; detail?: string; durationMs?: number }[];
 		reportedModel?: string | null;
+		usage?: VisionAnalysisResult['usage'];
+		deduped?: boolean;
 	}>;
 }
 
@@ -99,6 +109,12 @@ export interface RecapVisionAdapterOptions {
 	router?: RecapVisionRouterPort;
 	/** Vision policy chain for router mode. Defaults to a sensible recap chain. */
 	policyChain?: readonly string[];
+	/** Optional tier-specific chains selected by Phase 2 triage. */
+	routeChains?: Partial<Record<RecapPanelRouteTier, readonly string[]>>;
+	/** Version of the persisted routing policy, independent from the prompt/cache schema version. */
+	policyVersion?: string;
+	/** Host executing the provider call, when known. */
+	hostExecutor?: string;
 	/** Maximum latency per analysis call in ms. Default: 30000. */
 	maxLatencyMs?: number;
 	/** Budget ceiling in USD. Default: 0.50. */
@@ -116,6 +132,16 @@ interface AnalysisTrace {
 	costUsd: number;
 	attempts: readonly { provider: string; outcome: string; detail?: string; durationMs?: number }[];
 	durationMs?: number;
+	usage?: VisionAnalysisResult['usage'];
+	policyVersion?: string;
+	routeTier?: RecapPanelRouteTier | null;
+	routeReason?: string | null;
+	fallbackReason?: string | null;
+	hostExecutor?: string | null;
+}
+
+function firstFallbackReason(attempts: readonly { outcome: string; detail?: string }[]): string | null {
+	return attempts.find((attempt) => attempt.outcome !== 'ok' && attempt.outcome !== 'cached')?.detail ?? null;
 }
 
 const ACTION_TYPE_MAP: Record<string, ActionType> = {
@@ -190,7 +216,15 @@ const EMOTION_KEYWORDS: Record<string, Emotion> = {
 	confuso: 'confusion',
 };
 
-function buildVisionContextString(context?: VisionAnalysisContext): string {
+/**
+ * Prompt version of the recap analyze route. It is part of the VisionRouter persistent cache key,
+ * so it must change whenever the local analyze prompt or the vision context wording changes:
+ * otherwise an unchanged panel context replays the answer produced by the previous prompt.
+ * recap-v2-identity-sfx: hangul SFX never transcribed; visual labels only reused for the same person.
+ */
+export const RECAP_VISION_PROMPT_VERSION = 'recap-v2-identity-sfx';
+
+export function buildRecapVisionContextString(context?: VisionAnalysisContext): string {
 	const parts: string[] = [
 		'Análise multimodal de painel de mangá/manhwa em PT-BR: identifique personagens visíveis, cenário, ações observáveis, expressões, objetos relevantes e TODOS os balões/textos visíveis em ordem de leitura. Não use jargões de câmera (plano geral, plongée, close-up) nem invente falas ou nomes.',
 	];
@@ -211,10 +245,22 @@ function buildVisionContextString(context?: VisionAnalysisContext): string {
 		if (mem.recentEvents.length > 0) {
 			parts.push(`Eventos anteriores: ${mem.recentEvents.slice(0, 3).join(' | ').slice(0, 200)}.`);
 		}
-	} else if (context?.knownCharacters && context.knownCharacters.length > 0) {
-		parts.push(`Personagens já observados: ${context.knownCharacters.slice(0, 8).join(', ')}.`);
+	} else if (!context?.narrativeMemory && context?.knownCharacters && context.knownCharacters.length > 0) {
+		parts.push(`Rótulos visuais já usados (reutilize só para a mesma pessoa, com a mesma roupa): ${context.knownCharacters.slice(0, 8).join('; ')}.`);
 	}
-	if (context?.previousPanelSummary) {
+	if (context?.narrativeMemory) {
+		const memory = context.narrativeMemory;
+		if (memory.characters.length > 0 && !context?.storyMemoryContext) {
+			parts.push(`Rótulos visuais já usados (reutilize só para a mesma pessoa, com a mesma roupa): ${memory.characters.slice(-6).join('; ')}.`);
+		}
+		if (memory.recentEvents.length > 0) {
+			parts.push(`Evento recente compacto: ${memory.recentEvents[memory.recentEvents.length - 1]!.slice(0, 140)}.`);
+		}
+		// The current setting is already included in the bounded latest event;
+		// avoid sending it twice on every panel.
+		if (memory.openQuestions.length > 0) parts.push(`Incerteza aberta: ${memory.openQuestions[memory.openQuestions.length - 1]!.slice(0, 100)}.`);
+	}
+	if (context?.previousPanelSummary && !context?.narrativeMemory) {
 		parts.push(`Contexto do painel anterior: ${context.previousPanelSummary.slice(0, 220)}.`);
 	}
 	if (context?.ocrHint) {
@@ -253,9 +299,12 @@ function mapStructuredVisionResult(result: StructuredVisionPayload): VisionAnaly
 	// Extract speech bubbles from explicit speechBubbles OR fallback to frames[].visibleText
 	let speechBubbles: DialogueEntry[] = [];
 	if (result.speechBubbles && result.speechBubbles.length > 0) {
-		speechBubbles = result.speechBubbles.map((b, idx) => ({
-			...b,
-			readingOrder: b.readingOrder ?? idx,
+		speechBubbles = result.speechBubbles.map((b, idx) => annotateRecapDialogue({
+			entry: { ...b, readingOrder: b.readingOrder ?? idx },
+			lineIndex: b.readingOrder ?? idx,
+			source: 'vision',
+			balloonPresent: true,
+			balloon: b.kind === 'sfx' ? 'jagged' : b.kind === 'narration' ? 'narration' : b.kind === 'thought' ? 'thought' : 'speech',
 		}));
 	} else {
 		const rawTexts = result.frames.flatMap((f) => f.visibleText ?? []);
@@ -264,13 +313,19 @@ function mapStructuredVisionResult(result: StructuredVisionPayload): VisionAnaly
 				const text = vt.text.trim();
 				if (!text) return null;
 				const kind = classifyBubbleKind(text, undefined, vt.region === 'overlay');
-				return {
+				return annotateRecapDialogue({
+					entry: {
 					text,
 					originalText: text,
 					kind,
 					isNarration: kind === 'narration',
 					readingOrder: idx,
-				} as DialogueEntry;
+					},
+					lineIndex: idx,
+					source: 'vision',
+					balloonPresent: vt.region === 'overlay' ? false : true,
+					balloon: vt.region === 'overlay' ? 'none' : kind === 'narration' ? 'narration' : kind === 'sfx' ? 'jagged' : 'speech',
+				});
 			})
 			.filter((b): b is DialogueEntry => b !== null);
 	}
@@ -296,6 +351,7 @@ function mapStructuredVisionResult(result: StructuredVisionPayload): VisionAnaly
 		...(result.relationToNext ? { relationToNext: result.relationToNext } : {}),
 		...(uncertainties.length > 0 ? { uncertainties } : {}),
 		confidence: result.confidence,
+		...(result.usage ? { usage: result.usage } : {}),
 	};
 }
 
@@ -360,6 +416,9 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		providers,
 		router,
 		policyChain = ['codex', 'antigravity', 'claude', 'claude-gateway'],
+		routeChains,
+		policyVersion = 'recap-routing-4a-v1',
+		hostExecutor = 'unknown',
 		maxLatencyMs = 30_000,
 		budgetUsd = 0.5,
 		circuitBreaker = new AgentCircuitBreaker(),
@@ -373,11 +432,12 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 	const resolvedRoot = realpathSync(root);
 	let lastTrace: AnalysisTrace | null = null;
 	const detectionCache = new Map<string, { available: boolean; reason?: string }>();
+	const inFlight = new Map<string, Promise<VisionAnalysisResult>>();
 
-	const buildPolicy = () => ({
-		chain: policyChain.filter((id) => circuitBreaker.isAvailable(id)),
+	const buildPolicy = (context?: VisionAnalysisContext) => ({
+		chain: (context?.routeTier && routeChains?.[context.routeTier] ? routeChains[context.routeTier]! : policyChain).filter((id) => circuitBreaker.isAvailable(id)),
 		scope: 'recap',
-		version: 'recap-v1',
+		version: RECAP_VISION_PROMPT_VERSION,
 		budgetUsd,
 		maxLatencyMs,
 		thresholds: null as null,
@@ -389,11 +449,16 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		context?: VisionAnalysisContext,
 		signal?: AbortSignal,
 	): Promise<VisionAnalysisResult> => {
-		const frames = [{ hash: 'recap-panel', path: validatedPath }];
+		const imageHash = createHash('sha256').update(readFileSync(validatedPath)).digest('hex');
+		const frames = [{ hash: imageHash, path: validatedPath }];
+		const dedupeKey = `${target.id}::${imageHash}::${buildRecapVisionContextString(context)}`;
+		const existing = inFlight.get(dedupeKey);
+		if (existing) return existing.then((result) => ({ ...result, deduped: true }));
+		const operation = (async (): Promise<VisionAnalysisResult> => {
 		if (target.analyze) {
 			const analyzeInput: Parameters<NonNullable<RecapVisualAnalysisPort['analyze']>>[0] = {
 				frames,
-				context: buildVisionContextString(context),
+				context: buildRecapVisionContextString(context),
 			};
 			if (signal) analyzeInput.signal = signal;
 			const result = await target.analyze(analyzeInput);
@@ -404,8 +469,15 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 				reportedModel: null,
 				costUsd: 0,
 				attempts: [{ provider: target.id, outcome: 'ok' }],
+				...(target.lastUsage?.() ? { usage: target.lastUsage?.() ?? undefined } : {}),
+				policyVersion,
+				routeTier: context?.routeTier ?? null,
+				routeReason: context?.routeReason ?? null,
+						fallbackReason: null,
+				hostExecutor,
 			};
-			return mapStructuredVisionResult(result);
+			const usage = result.usage ?? target.lastUsage?.() ?? undefined;
+			return { ...mapStructuredVisionResult(result), ...(usage ? { usage } : {}) };
 		}
 		if (target.describe) {
 			const describeInput: Parameters<NonNullable<RecapVisualAnalysisPort['describe']>>[0] = { frames };
@@ -418,6 +490,11 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 				reportedModel: null,
 				costUsd: 0,
 				attempts: [{ provider: target.id, outcome: 'ok' }],
+				policyVersion,
+				routeTier: context?.routeTier ?? null,
+				routeReason: context?.routeReason ?? null,
+						fallbackReason: null,
+				hostExecutor,
 			};
 			return {
 				visualDescription: result.description,
@@ -430,6 +507,13 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 			};
 		}
 		throw classifyVisionError(`Provider ${target.id} has no analyze or describe capability.`, target.id, 'PROVIDER_UNAVAILABLE');
+		})();
+		inFlight.set(dedupeKey, operation);
+		try {
+			return await operation;
+		} finally {
+			if (inFlight.get(dedupeKey) === operation) inFlight.delete(dedupeKey);
+		}
 	};
 
 	const analyzeWithProviderChain = async (
@@ -483,12 +567,18 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 
 			try {
 				const res = await runSingleProvider(candidate, validatedPath, context, signal);
-				lastTrace = {
+					lastTrace = {
+						...(lastTrace ?? {}),
 					provider: candidate.id,
 					model: candidate.model,
 					reportedModel: null,
 					costUsd: 0,
 					attempts: [...attempts, { provider: candidate.id, outcome: 'ok' }],
+						fallbackReason: firstFallbackReason(attempts),
+						policyVersion,
+						routeTier: context?.routeTier ?? null,
+						routeReason: context?.routeReason ?? null,
+						hostExecutor,
 				};
 				return res;
 			} catch (err) {
@@ -511,6 +601,11 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 			reportedModel: null,
 			costUsd: 0,
 			attempts,
+				fallbackReason: firstFallbackReason(attempts),
+				policyVersion,
+				routeTier: context?.routeTier ?? null,
+				routeReason: context?.routeReason ?? null,
+				hostExecutor,
 		};
 		throw new AllVisionProvidersUnavailableError(diagnostics);
 	};
@@ -525,51 +620,7 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		}
 
 		const validatedPath = validateImagePath(resolvedRoot, imagePath);
-		const frames = [{ hash: 'recap-panel', path: validatedPath }];
-
-		// Prefer structured analyze if available
-		if (provider.analyze) {
-			const analyzeInput: Parameters<NonNullable<RecapVisualAnalysisPort['analyze']>>[0] = {
-				frames,
-				context: buildVisionContextString(context),
-			};
-			if (signal) analyzeInput.signal = signal;
-			const result = await provider.analyze(analyzeInput);
-			lastTrace = {
-				provider: provider.id,
-				model: provider.model,
-				reportedModel: null,
-				costUsd: 0,
-				attempts: [{ provider: provider.id, outcome: 'ok' }],
-			};
-			return mapStructuredVisionResult(result);
-		}
-
-		// Fallback to describe
-		if (provider.describe) {
-			const describeInput: Parameters<NonNullable<RecapVisualAnalysisPort['describe']>>[0] = { frames };
-			if (signal) describeInput.signal = signal;
-			const result = await provider.describe(describeInput);
-			lastTrace = {
-				provider: provider.id,
-				model: provider.model,
-				reportedModel: null,
-				costUsd: 0,
-				attempts: [{ provider: provider.id, outcome: 'ok' }],
-			};
-
-			return {
-				visualDescription: result.description,
-				characters: [],
-				actions: [{ type: 'none', description: result.description }],
-				emotions: extractEmotionsFromAnalysis(result.description, result.tags, []),
-				setting: undefined,
-				uncertainties: ['Análise obtida em modo describe-only (sem extração estruturada de balões/entidades).'],
-				confidence: 0.5, // describe-only is less reliable
-			};
-		}
-
-		throw new Error(`Provider ${provider.id} has no analyze or describe capability.`);
+		return runSingleProvider(provider, validatedPath, context, signal);
 	};
 
 	const analyzeWithRouter = async (
@@ -582,8 +633,9 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		}
 
 		const validatedPath = validateImagePath(resolvedRoot, imagePath);
-		const frames = [{ hash: 'recap-panel', path: validatedPath }];
-		const policy = buildPolicy();
+		const imageHash = createHash('sha256').update(readFileSync(validatedPath)).digest('hex');
+		const frames = [{ hash: imageHash, path: validatedPath }];
+		const policy = buildPolicy(context);
 
 		if (policy.chain.length === 0) {
 			const diagnostics: VisionProviderDiagnostic[] = policyChain.map((id) => {
@@ -601,6 +653,11 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 				reportedModel: null,
 				costUsd: 0,
 				attempts: diagnostics.map((d) => ({ provider: d.providerId, outcome: 'unavailable', detail: `circuit_open:${d.code}` })),
+					fallbackReason: firstFallbackReason(diagnostics.map((d) => ({ outcome: 'unavailable', detail: d.message }))),
+					policyVersion,
+					routeTier: context?.routeTier ?? null,
+					routeReason: context?.routeReason ?? null,
+					hostExecutor,
 			};
 			if (throwOnAllUnavailable) {
 				throw new AllVisionProvidersUnavailableError(diagnostics);
@@ -618,7 +675,7 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 		// Prefer structured analyze
 		const routerAnalyzeInput: Parameters<RecapVisionRouterPort['analyze']>[0] = {
 			frames,
-			context: buildVisionContextString(context),
+			context: buildRecapVisionContextString(context),
 			policy,
 		};
 		if (signal) routerAnalyzeInput.signal = signal;
@@ -643,24 +700,48 @@ export function createRecapVisionAdapter(options: RecapVisionAdapterOptions): Vi
 			reportedModel: analyzeResult.reportedModel ?? null,
 			costUsd: analyzeResult.costUsd,
 			attempts: analyzeResult.attempts,
+				fallbackReason: firstFallbackReason(analyzeResult.attempts),
+			...(analyzeResult.usage ? { usage: analyzeResult.usage } : {}),
+			...(analyzeResult.deduped ? { deduped: true } : {}),
+			policyVersion,
+			routeTier: context?.routeTier ?? null,
+			routeReason: context?.routeReason ?? null,
+			hostExecutor,
 		};
 
 		if (analyzeResult.value) {
-			return mapStructuredVisionResult(analyzeResult.value);
+			return {
+				...mapStructuredVisionResult(analyzeResult.value),
+				...(analyzeResult.usage ? { usage: analyzeResult.usage } : {}),
+				...(analyzeResult.deduped ? { deduped: true } : {}),
+			};
 		}
 
-		// Router returned no value — try describe fallback only if at least one provider remains available
-		const describePolicy = buildPolicy();
-		if (describePolicy.chain.length > 0) {
+		// Router returned no value — try describe fallback only if at least one provider remains available.
+		// A local hard-budget pause (RECAP_PILOT_*) is not a provider failure: falling back would
+		// spend another route on a job that must stop, so it goes straight to the pause path.
+		const budgetPaused = analyzeResult.attempts.some((attempt) => /RECAP_PILOT_(?:BUDGET_EXCEEDED|PAUSED|VRAM_EXCEEDED)/u.test(attempt.detail ?? ''));
+		const describePolicy = buildPolicy(context);
+		if (!budgetPaused && describePolicy.chain.length > 0) {
 			const routerDescribeInput: Parameters<RecapVisionRouterPort['describe']>[0] = { frames, policy: describePolicy };
 			if (signal) routerDescribeInput.signal = signal;
 			const describeResult = await router.describe(routerDescribeInput);
+			// Keep the analyze attempts first: the describe fallback must never replace the
+			// evidence of why structured analysis failed (it hid a budget pause behind a
+			// schema error in Fase 4B.11).
+			const combinedAttempts = [...analyzeResult.attempts, ...describeResult.attempts];
 			lastTrace = {
 				provider: describeResult.provider,
 				model: describeResult.model,
 				reportedModel: describeResult.reportedModel ?? null,
-				costUsd: describeResult.costUsd,
-				attempts: describeResult.attempts,
+				costUsd: analyzeResult.costUsd + describeResult.costUsd,
+				attempts: combinedAttempts,
+					fallbackReason: firstFallbackReason(combinedAttempts),
+				...(describeResult.usage ? { usage: describeResult.usage } : {}),
+				policyVersion,
+				routeTier: context?.routeTier ?? null,
+				routeReason: context?.routeReason ?? null,
+				hostExecutor,
 			};
 
 			if (describeResult.value) {
@@ -802,6 +883,9 @@ export function createRoutedRecapVisionAdapter(input: {
 	root: string;
 	router: RecapVisionRouterPort;
 	policyChain?: readonly string[];
+	routeChains?: Partial<Record<RecapPanelRouteTier, readonly string[]>>;
+	policyVersion?: string;
+	hostExecutor?: string;
 	maxLatencyMs?: number;
 	budgetUsd?: number;
 	circuitBreaker?: AgentCircuitBreaker;
@@ -809,6 +893,9 @@ export function createRoutedRecapVisionAdapter(input: {
 }): VisionAdapter & { getLastTrace(): AnalysisTrace | null; getCircuitBreaker(): AgentCircuitBreaker } {
 	const opts: RecapVisionAdapterOptions = { root: input.root, router: input.router };
 	if (input.policyChain) opts.policyChain = input.policyChain;
+	if (input.routeChains) opts.routeChains = input.routeChains;
+	if (input.policyVersion) opts.policyVersion = input.policyVersion;
+	if (input.hostExecutor) opts.hostExecutor = input.hostExecutor;
 	if (input.maxLatencyMs !== undefined) opts.maxLatencyMs = input.maxLatencyMs;
 	if (input.budgetUsd !== undefined) opts.budgetUsd = input.budgetUsd;
 	if (input.circuitBreaker) opts.circuitBreaker = input.circuitBreaker;

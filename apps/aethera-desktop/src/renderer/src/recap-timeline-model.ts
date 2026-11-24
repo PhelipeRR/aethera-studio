@@ -103,6 +103,15 @@ export interface RecapProjectRecordView {
   ttsProvider?: string;
   humorVolume?: number;
   enableOcr?: boolean;
+  analysisSettings?: {
+    localVisualAnalysis?: boolean;
+    complementaryOcr?: boolean;
+    strictFidelity?: boolean;
+    enablePanelTiling?: boolean;
+    maxModelCalls?: number;
+    maxInputTokens?: number;
+    maxOutputTokens?: number;
+  };
   panelCount?: number;
   sceneCount?: number;
   shotCount?: number;
@@ -348,6 +357,8 @@ export function getStateMetadata(state: string): {
       return { label: 'Aguardando aprovação', tone: 'warning' };
     case 'paused_provider_unavailable':
       return { label: 'Pausado (provedor indisponível)', tone: 'warning' };
+    case 'paused_budget':
+      return { label: 'Pausado (orçamento atingido)', tone: 'warning' };
     case 'failed':
       return { label: 'Falhou', tone: 'error' };
     case 'importing':
@@ -414,6 +425,7 @@ function inferCurrentStage(record: RecapProjectRecordView): RecapStageId | null 
     case 'preflight':
     case 'story_engine':
     case 'paused_provider_unavailable':
+    case 'paused_budget':
       return 'vision';
     case 'audiovisual_preview':
     case 'master_export':
@@ -464,7 +476,7 @@ export function derivePipelineTimeline(
     if (record.state === 'failed' && currentStage === stage.id) {
       return { ...stage, status: 'failed' };
     }
-    if (record.state === 'paused_provider_unavailable' && currentStage === stage.id) {
+    if ((record.state === 'paused_provider_unavailable' || record.state === 'paused_budget') && currentStage === stage.id) {
       return { ...stage, status: 'paused' };
     }
     if (done) {
@@ -1088,7 +1100,7 @@ export function deriveSeparatedImportAndProductionStatus(input: {
       detail: 'Prévia audiovisual pronta para revisão.',
       tone: 'warning',
     };
-  } else if (projState === 'paused_provider_unavailable') {
+  } else if (projState === 'paused_provider_unavailable' || projState === 'paused_budget') {
     productionStatus = {
       state: 'paused',
       label: 'Produção Pausada',

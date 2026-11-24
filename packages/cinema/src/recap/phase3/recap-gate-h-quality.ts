@@ -28,6 +28,14 @@ export interface GateHInput {
 		hasVideo: boolean;
 		hasAudio: boolean;
 		durationMs: number;
+		width?: number;
+		height?: number;
+		videoDurationMs?: number;
+		audioDurationMs?: number;
+		formatDurationMs?: number;
+		timestampsValid?: boolean;
+		decodeOk?: boolean;
+		decodeError?: string;
 	};
 	/** When true, checks that every shot's imagePath exists on disk. Default: true. */
 	verifyImageFilesOnDisk?: boolean;
@@ -37,6 +45,15 @@ export interface GateHInput {
 		speechDurationMs: number;
 		provider: string;
 		isFallback: boolean;
+	}>;
+	/** Per-segment PCM audit, including silence and clipping evidence. */
+	narrationAudits?: Array<{
+		sceneId: string;
+		durationMs: number;
+		silenceRatio: number;
+		clippedSamples: number;
+		ok: boolean;
+		issues: string[];
 	}>;
 	/** Fase 7 Gate E: quantidade de SFX do Motion Velix efetivamente aplicados na mixagem. */
 	sfxAppliedCount?: number;
@@ -107,6 +124,20 @@ export function runGateHAudiovisualQuality(input: GateHInput): GateHReport {
 	if (visualCoverageGaps > 0) {
 		reasons.push(`${visualCoverageGaps} lacuna(s) de cobertura visual na timeline.`);
 	}
+
+	// Every scripted scene must have visual coverage. A globally contiguous
+	// timeline can still hide an omitted scene, so this is a separate critical check.
+	const coveredSceneIds = new Set(plan.shots.map((shot) => shot.sceneId));
+	const uncoveredScenes = script.scenes.filter((scene) => !coveredSceneIds.has(scene.sceneId));
+	for (const scene of uncoveredScenes) {
+		findings.push({
+			code: 'scene_visual_coverage_gap',
+			severity: 'critical',
+			sceneId: scene.sceneId,
+			detail: `Cena "${scene.sceneId}" não possui nenhum shot visual na timeline.`,
+		});
+	}
+	if (uncoveredScenes.length > 0) reasons.push(`${uncoveredScenes.length} cena(s) sem cobertura visual.`);
 
 	// 3. Consecutive panel repetition check
 	let duplicateConsecutivePanels = 0;
@@ -226,6 +257,48 @@ export function runGateHAudiovisualQuality(input: GateHInput): GateHReport {
 				detail: `Duração real do MP4 (${mp4Probe.durationMs}ms) trunca a narração (${plan.durationAudit.measuredNarrationDurationMs}ms).`,
 			});
 		}
+		const audioDurationMs = mp4Probe.audioDurationMs ?? mp4Probe.durationMs;
+		const videoDurationMs = mp4Probe.videoDurationMs ?? mp4Probe.durationMs;
+		if (audioDurationMs + 250 < plan.durationAudit.measuredNarrationDurationMs) {
+			mp4ProbeMismatches++;
+			findings.push({
+				code: 'audio_truncated',
+				severity: 'critical',
+				detail: `Stream de áudio (${audioDurationMs}ms) termina antes da narração medida (${plan.durationAudit.measuredNarrationDurationMs}ms).`,
+			});
+		}
+		if (videoDurationMs + 250 < audioDurationMs) {
+			mp4ProbeMismatches++;
+			findings.push({
+				code: 'last_frame_missing',
+				severity: 'critical',
+				detail: `Stream de vídeo (${videoDurationMs}ms) termina antes do áudio (${audioDurationMs}ms).`,
+			});
+		}
+		if (mp4Probe.decodeOk === false) {
+			mp4ProbeMismatches++;
+			findings.push({
+				code: 'mp4_decode_error',
+				severity: 'critical',
+				detail: `Falha na decodificação de validação do MP4${mp4Probe.decodeError ? `: ${mp4Probe.decodeError}` : '.'}`,
+			});
+		}
+		if (mp4Probe.timestampsValid === false) {
+			mp4ProbeMismatches++;
+			findings.push({
+				code: 'mp4_probe_mismatch',
+				severity: 'critical',
+				detail: 'Timestamps de áudio/vídeo inválidos ou fora da janela de início esperada.',
+			});
+		}
+		if ((mp4Probe.width ?? 0) > 0 && (mp4Probe.height ?? 0) > 0 && (mp4Probe.width !== plan.width || mp4Probe.height !== plan.height)) {
+			mp4ProbeMismatches++;
+			findings.push({
+				code: 'mp4_probe_mismatch',
+				severity: 'critical',
+				detail: `Dimensões do MP4 (${mp4Probe.width}x${mp4Probe.height}) diferem do plano (${plan.width}x${plan.height}).`,
+			});
+		}
 	}
 	if (mp4ProbeMismatches > 0) {
 		reasons.push(`${mp4ProbeMismatches} divergência(s) na verificação FFprobe do MP4.`);
@@ -274,6 +347,32 @@ export function runGateHAudiovisualQuality(input: GateHInput): GateHReport {
 		});
 		reasons.push('Narração ausente: nenhum segmento TTS fornecido para validação.');
 	}
+	for (const audit of input.narrationAudits ?? []) {
+		if (audit.durationMs <= 0 || audit.issues.some((issue) => /duração insuficiente|ausente ou corrompido/i.test(issue))) {
+			findings.push({
+				code: 'audio_truncated',
+				severity: 'critical',
+				sceneId: audit.sceneId,
+				detail: `Áudio da cena "${audit.sceneId}" sem duração válida (${audit.durationMs}ms).`,
+			});
+		}
+		if (audit.silenceRatio > 0.65) {
+			findings.push({
+				code: 'unexpected_audio_silence',
+				severity: 'critical',
+				sceneId: audit.sceneId,
+				detail: `Silêncio inesperado na cena "${audit.sceneId}" (${Math.round(audit.silenceRatio * 100)}%).`,
+			});
+		}
+		if (audit.clippedSamples > 0) {
+			findings.push({
+				code: 'audio_clipped',
+				severity: 'critical',
+				sceneId: audit.sceneId,
+				detail: `Clipping detectado na narração da cena "${audit.sceneId}" (${audit.clippedSamples} amostras).`,
+			});
+		}
+	}
 
 	// 10. Fase 7 Gate E — Motion Velix: SFX efetivamente aplicados na mixagem
 	const sfxApplied = input.sfxAppliedCount ?? 0;
@@ -315,6 +414,8 @@ export function runGateHAudiovisualQuality(input: GateHInput): GateHReport {
 			framingCropRisks,
 			missingPanelFiles,
 			mp4ProbeMismatches,
+			mp4DecodeOk: mp4Probe?.decodeOk ?? true,
+			mp4TimestampsValid: mp4Probe?.timestampsValid ?? true,
 			narrationFallbackCount,
 			narrationSilentCount,
 			sfxPlanned,

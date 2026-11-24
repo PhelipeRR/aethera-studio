@@ -25,6 +25,17 @@ function analyzer(id: string, calls: string[], options: { fail?: boolean } = {})
 }
 
 describe('VisionRouter analyze (universal, multi-frame)', () => {
+  it('classifies a missing analyze result as a provider contract error instead of parsing undefined', async () => {
+    const broken: VisualAnalysisProvider = {
+      id: 'local-vlm', model: 'qwen3.5:4b-q4_K_M', capabilities: ['analyze'], limits: { maxImagesPerCall: 1 },
+      detect: async () => ({ available: true }),
+      analyze: async () => undefined as never,
+    };
+    const result = await new VisionRouter([broken], cache()).analyze({ frames: [first], policy: { ...policy, chain: ['local-vlm'] } });
+    expect(result.value).toBeNull();
+    expect(result.attempts[0]).toMatchObject({ provider: 'local-vlm', outcome: 'error', detail: expect.stringContaining('VISION_PROVIDER_CONTRACT') });
+  });
+
   it('sends every frame of a segment together with its timestamp, falls back from Claude to Codex and caches by frames', async () => {
     const calls: string[] = [];
     const store = cache();

@@ -187,6 +187,8 @@ export type RecapPhase3Stage =
 	| 'captions'
 	| 'preview_render'
 	| 'gate_h'
+	| 'gate_i'
+	| 'gate_j'
 	| 'master_render';
 
 export interface RecapPhase3Checkpoint {
@@ -201,6 +203,10 @@ export interface RecapPhase3Checkpoint {
 	previewMp4Path?: string;
 	masterMp4Path?: string;
 	gateHVerdict?: GateHVerdict;
+	gateIVerdict?: 'pass' | 'needs_review' | 'fail';
+	gateJVerdict?: 'pass' | 'needs_review' | 'fail';
+	/** Content/provider identity that makes synthesized audio reusable. */
+	audioCheckpointKey?: string;
 	warnings: string[];
 }
 
@@ -215,7 +221,12 @@ export type GateHIssueCode =
 	| 'missing_panel_file'
 	| 'synthetic_fixture_unapproved'
 	| 'mp4_probe_mismatch'
-	| 'framing_crop_risk';
+	| 'framing_crop_risk'
+	| 'audio_truncated'
+	| 'unexpected_audio_silence'
+	| 'scene_visual_coverage_gap'
+	| 'mp4_decode_error'
+	| 'last_frame_missing';
 
 export interface GateHFinding {
 	code: GateHIssueCode;

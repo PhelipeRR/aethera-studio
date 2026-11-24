@@ -30,6 +30,9 @@ describe('vision capabilities, batches and cache inputs (synthetic provider)', (
         tagsCalls += 1;
         return new Response(JSON.stringify({ models: [{ name: 'qwen2.5vl:3b' }] }), { status: 200 });
       }
+      if (String(input).endsWith('/api/show')) {
+        return new Response(JSON.stringify({ capabilities: ['completion', 'vision'] }), { status: 200 });
+      }
       chatCalls += 1;
       expect(init?.method).toBe('POST');
       const body = JSON.parse(String(init?.body));

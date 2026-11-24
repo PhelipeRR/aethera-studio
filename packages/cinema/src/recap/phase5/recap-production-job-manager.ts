@@ -29,6 +29,7 @@ export type RecapJobStatus =
 	| 'interrupted'
 	| 'awaiting_approval'
 	| 'paused_provider_unavailable'
+	| 'paused_budget'
 	| 'completed'
 	| 'failed';
 
@@ -37,7 +38,7 @@ export type RecapJobControlAction = 'pause' | 'resume' | 'cancel';
 /** Statuses in which an executor is (or should be) working on the job. */
 export const RECAP_JOB_ACTIVE_STATUSES: readonly RecapJobStatus[] = ['running', 'pause_requested', 'cancel_requested'];
 /** Statuses that can be resumed from a checkpoint. */
-export const RECAP_JOB_RESUMABLE_STATUSES: readonly RecapJobStatus[] = ['paused', 'interrupted', 'paused_provider_unavailable'];
+export const RECAP_JOB_RESUMABLE_STATUSES: readonly RecapJobStatus[] = ['paused', 'interrupted', 'paused_provider_unavailable', 'paused_budget'];
 /** Statuses that end the job for good; a new production may start for the same project. */
 export const RECAP_JOB_TERMINAL_STATUSES: readonly RecapJobStatus[] = ['cancelled', 'completed', 'failed', 'awaiting_approval'];
 
@@ -136,7 +137,7 @@ export interface RecapJobContext {
 }
 
 export interface RecapJobOutcome {
-	status: 'completed' | 'awaiting_approval' | 'paused_provider_unavailable' | 'failed';
+	status: 'completed' | 'awaiting_approval' | 'paused_provider_unavailable' | 'paused_budget' | 'failed';
 	message: string;
 	stage?: string | null;
 	completedSteps?: readonly string[];
@@ -535,7 +536,7 @@ export class RecapProductionJobManager {
 				const current = this.get(jobId) ?? started;
 				const completedSteps = outcome.completedSteps ? [...new Set(outcome.completedSteps)] : current.progress.completedSteps;
 				const atIso = new Date(this.now()).toISOString();
-				const resumable = outcome.status === 'paused_provider_unavailable';
+				const resumable = outcome.status === 'paused_provider_unavailable' || outcome.status === 'paused_budget';
 				const finished = this.update(current, {
 					status: outcome.status,
 					stage: outcome.stage !== undefined ? outcome.stage : current.stage,

@@ -159,28 +159,90 @@ export function computeShotRenderHash(
 		.slice(0, 16);
 }
 
-async function probeMp4(mp4Path: string): Promise<{ hasVideo: boolean; hasAudio: boolean; durationMs: number; audioSampleRateHz?: number }> {
+export interface RecapMp4Probe {
+	hasVideo: boolean;
+	hasAudio: boolean;
+	durationMs: number;
+	width: number;
+	height: number;
+	videoDurationMs: number;
+	audioDurationMs: number;
+	formatDurationMs: number;
+	timestampsValid: boolean;
+	audioSampleRateHz?: number;
+	decodeOk?: boolean;
+	decodeError?: string;
+}
+
+async function probeMp4(mp4Path: string): Promise<RecapMp4Probe> {
 	const { stdout } = await execFileAsync(
 		'ffprobe',
-		['-v', 'error', '-show_entries', 'format=duration:stream=codec_type,sample_rate', '-of', 'json', mp4Path],
+		['-v', 'error', '-show_entries', 'format=duration:stream=codec_type,duration,start_time,sample_rate,width,height', '-of', 'json', mp4Path],
 		{ timeout: 15_000, windowsHide: true },
 	);
 	const parsed = JSON.parse(stdout) as {
-		streams?: Array<{ codec_type?: string; sample_rate?: string }>;
+		streams?: Array<{ codec_type?: string; duration?: string; start_time?: string; sample_rate?: string; width?: number; height?: number }>;
 		format?: { duration?: string };
 	};
 	const streams = parsed.streams ?? [];
 	const hasVideo = streams.some((s) => s.codec_type === 'video');
 	const audioStream = streams.find((s) => s.codec_type === 'audio');
+	const videoStream = streams.find((s) => s.codec_type === 'video');
 	const hasAudio = Boolean(audioStream);
 	const sampleRateNum = audioStream?.sample_rate ? Number.parseInt(audioStream.sample_rate, 10) : undefined;
 	const durationSec = Number.parseFloat(parsed.format?.duration ?? '0');
+	const videoDurationSec = Number.parseFloat(videoStream?.duration ?? '0');
+	const audioDurationSec = Number.parseFloat(audioStream?.duration ?? '0');
+	const formatDurationMs = Number.isFinite(durationSec) ? Math.round(durationSec * 1000) : 0;
+	const avStreams = streams.filter((stream) => stream.codec_type === 'video' || stream.codec_type === 'audio');
+	const timestampsValid = avStreams.length > 0 && avStreams.every((stream) => {
+		const startSec = Number.parseFloat(stream.start_time ?? '0');
+		const streamDurationSec = Number.parseFloat(stream.duration ?? String(durationSec));
+		return Number.isFinite(startSec) && startSec >= -0.25 && Number.isFinite(streamDurationSec) && streamDurationSec > 0;
+	});
 	return {
 		hasVideo,
 		hasAudio,
-		durationMs: Number.isFinite(durationSec) ? Math.round(durationSec * 1000) : 0,
+		durationMs: formatDurationMs,
+		videoDurationMs: Number.isFinite(videoDurationSec) && videoDurationSec > 0 ? Math.round(videoDurationSec * 1000) : formatDurationMs,
+		audioDurationMs: Number.isFinite(audioDurationSec) && audioDurationSec > 0 ? Math.round(audioDurationSec * 1000) : formatDurationMs,
+		formatDurationMs,
+		timestampsValid,
+		width: Number.isFinite(videoStream?.width) ? videoStream!.width! : 0,
+		height: Number.isFinite(videoStream?.height) ? videoStream!.height! : 0,
 		...(sampleRateNum && Number.isFinite(sampleRateNum) ? { audioSampleRateHz: sampleRateNum } : {}),
 	};
+}
+
+async function validateRenderedMp4(mp4Path: string): Promise<RecapMp4Probe> {
+	const probe = await probeMp4(mp4Path);
+	try {
+		await execFileAsync('ffmpeg', ['-v', 'error', '-i', mp4Path, '-f', 'null', '-'], { timeout: 60_000, windowsHide: true });
+		return { ...probe, decodeOk: true };
+	} catch (err) {
+		return {
+			...probe,
+			decodeOk: false,
+			decodeError: (err instanceof Error ? err.message : String(err)).slice(0, 500),
+		};
+	}
+}
+
+export function computeAudioCheckpointKey(input: {
+	script: RecapScript;
+	ttsProviderIdentity: string;
+	preferContinuous: boolean;
+}): string {
+	return createHash('sha256')
+		.update(JSON.stringify({
+			version: 2,
+			chapterId: input.script.chapterId,
+			style: input.script.style,
+			scenes: input.script.scenes.map((scene) => ({ sceneId: scene.sceneId, narrationText: scene.narrationText })),
+			ttsProviderIdentity: input.ttsProviderIdentity,
+			preferContinuous: input.preferContinuous,
+		}))
+		.digest('hex');
 }
 
 export interface RenderRecapVideoInput {
@@ -193,6 +255,8 @@ export interface RenderRecapVideoInput {
 	ttsPort?: RecapTtsSynthesisPort;
 	/** Prefer single continuous TTS synthesis session for consistent voice tone/timbre (Phase 5). Default: true. */
 	preferContinuousNarration?: boolean;
+	/** Stable provider/voice/model identity used to invalidate incompatible audio checkpoints. */
+	ttsCheckpointIdentity?: string;
 	musicBedPath?: string;
 	/** Directory containing MotionVelix SFX WAVs (e.g. .agents/skills/motionvelix/assets/sfx). */
 	sfxAssetsDir?: string;
@@ -215,7 +279,7 @@ export interface RenderRecapVideoResult {
 	planPath: string;
 	captionsPath: string;
 	mp4Path: string | null;
-	mp4Probe?: { hasVideo: boolean; hasAudio: boolean; durationMs: number; audioSampleRateHz?: number };
+	mp4Probe?: RecapMp4Probe;
 	reusedShotsCount: number;
 	renderedShotsCount: number;
 	sfxAppliedCount: number;
@@ -258,6 +322,11 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 	const ttsPort = input.ttsPort;
 
 	const preferContinuous = input.preferContinuousNarration ?? true;
+	const audioCheckpointKey = computeAudioCheckpointKey({
+		script,
+		ttsProviderIdentity: input.ttsCheckpointIdentity ?? ttsPort.name,
+		preferContinuous,
+	});
 	const fullNarrationText = script.scenes
 		.map((s) => s.narrationText.trim())
 		.filter(Boolean)
@@ -270,6 +339,7 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 
 	const hasValidAudioCheckpoint =
 		completedStages.has('audio_sync') &&
+		existing?.audioCheckpointKey === audioCheckpointKey &&
 		synthesizedSegments.length > 0 &&
 		synthesizedSegments.every((seg) => existsSync(seg.audioPath)) &&
 		(synthesizedSegments.length === script.scenes.length ||
@@ -295,6 +365,7 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 				}
 				synthesizedSegments.push(continuousSeg);
 			} catch (err) {
+				if (err instanceof Error && err.name === 'RecapBudgetExceededError') throw err;
 				const msg = err instanceof Error ? err.message : String(err);
 				ttsErrors.push(`continuous-narration: ${msg}`);
 			}
@@ -316,6 +387,7 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 					}
 					synthesizedSegments.push(seg);
 				} catch (err) {
+					if (err instanceof Error && err.name === 'RecapBudgetExceededError') throw err;
 					const msg = err instanceof Error ? err.message : String(err);
 					ttsErrors.push(`${scene.sceneId}: ${msg}`);
 					// Provedor real falhou — interrompe imediatamente, sem fallback silencioso
@@ -343,9 +415,17 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 			completedStages: [...completedStages],
 			lastUpdatedAtIso: new Date().toISOString(),
 			synthesizedSegments,
+			audioCheckpointKey,
 			warnings,
 		});
 	}
+
+	const narrationAudits = await Promise.all(
+		synthesizedSegments.map(async (segment) => ({
+			sceneId: segment.sceneId,
+			...(await auditNarrationAudioClip(segment.audioPath, { minDurationMs: 400, maxSilenceRatio: 0.65 })),
+		})),
+	);
 
 	// ─── Stage 2 & 3: Semantic Event-to-Panel Alignment + Visual Plan + Captions ──
 	const rawBeatAlignments = buildNarrativeBeatAlignments({
@@ -425,6 +505,7 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		completedStages: [...completedStages],
 		lastUpdatedAtIso: new Date().toISOString(),
 		synthesizedSegments,
+		audioCheckpointKey,
 		planPath,
 		captionsPath,
 		warnings,
@@ -432,7 +513,7 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 
 	// ─── Stage 4: Render MP4 via FFmpeg (Motion + Ducking + Loudnorm) ────────
 	let mp4Path: string | null = null;
-	let mp4ProbeResult: { hasVideo: boolean; hasAudio: boolean; durationMs: number; audioSampleRateHz?: number } | undefined;
+	let mp4ProbeResult: RecapMp4Probe | undefined;
 	let reusedShotsCount = 0;
 	let renderedShotsCount = 0;
 	let sfxAppliedCount = 0;
@@ -627,8 +708,8 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 						'-preset', renderTarget === 'master' ? 'medium' : 'ultrafast',
 						'-pix_fmt', 'yuv420p',
 						'-c:a', 'copy',
+						'-t', totalSec,
 						'-movflags', '+faststart',
-						'-shortest',
 						targetFile,
 					],
 					{ timeout: 90_000, windowsHide: true },
@@ -648,8 +729,8 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 					'-i', mixedAudioPath,
 					'-c:v', 'copy',
 					'-c:a', 'copy',
+					'-t', totalSec,
 					'-movflags', '+faststart',
-					'-shortest',
 					targetFile,
 				],
 				{ timeout: 60_000, windowsHide: true },
@@ -657,7 +738,7 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		}
 
 		mp4Path = targetFile;
-		mp4ProbeResult = await probeMp4(targetFile);
+		mp4ProbeResult = await validateRenderedMp4(targetFile);
 		completedStages.add(renderTarget === 'master' ? 'master_render' : 'preview_render');
 	}
 
@@ -675,25 +756,10 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 			provider: seg.provider,
 			isFallback: seg.isFallback,
 		})),
+		narrationAudits,
 		sfxAppliedCount,
 	});
 	completedStages.add('gate_h');
-
-	const finalCheckpoint: RecapPhase3Checkpoint = {
-		schemaVersion: 1,
-		chapterId: script.chapterId,
-		renderTarget,
-		completedStages: [...completedStages],
-		lastUpdatedAtIso: new Date().toISOString(),
-		synthesizedSegments,
-		planPath,
-		captionsPath,
-		...(renderTarget === 'preview' && mp4Path ? { previewMp4Path: mp4Path } : {}),
-		...(renderTarget === 'master' && mp4Path ? { masterMp4Path: mp4Path } : {}),
-		gateHVerdict: gateHReport.verdict,
-		warnings,
-	};
-	savePhase3Checkpoint(checkpointDir, finalCheckpoint);
 
 	const gateIReport = runGateISemanticSync({
 		plan,
@@ -704,6 +770,27 @@ export async function renderRecapVideo(input: RenderRecapVideoInput): Promise<Re
 		segments: synthesizedSegments,
 		...(mp4ProbeResult?.audioSampleRateHz ? { outputSampleRateHz: mp4ProbeResult.audioSampleRateHz } : {}),
 	});
+	completedStages.add('gate_i');
+	completedStages.add('gate_j');
+
+	const finalCheckpoint: RecapPhase3Checkpoint = {
+		schemaVersion: 1,
+		chapterId: script.chapterId,
+		renderTarget,
+		completedStages: [...completedStages],
+		lastUpdatedAtIso: new Date().toISOString(),
+		synthesizedSegments,
+		audioCheckpointKey,
+		planPath,
+		captionsPath,
+		...(renderTarget === 'preview' && mp4Path ? { previewMp4Path: mp4Path } : {}),
+		...(renderTarget === 'master' && mp4Path ? { masterMp4Path: mp4Path } : {}),
+		gateHVerdict: gateHReport.verdict,
+		gateIVerdict: gateIReport.verdict,
+		gateJVerdict: gateJReport.verdict,
+		warnings,
+	};
+	savePhase3Checkpoint(checkpointDir, finalCheckpoint);
 
 	const gateHPath = join(outputDir, 'gate-h-report.json');
 	const gateIPath = join(outputDir, 'gate-i-report.json');

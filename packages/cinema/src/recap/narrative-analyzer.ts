@@ -5,6 +5,7 @@ import type {
 	NarrativeEvidence,
 	VisionAdapter,
 	VisionAnalysisContext,
+	VisionAnalysisResult,
 	StoryMemoryPromptContext,
 	OcrAdapter,
 	Emotion,
@@ -13,14 +14,21 @@ import type {
 	CharacterDetail,
 } from './recap-types.js';
 import { panelAnalysisSchema } from './recap-types.js';
-import { computePanelCacheKey, RECAP_ANALYZER_VERSION } from './checkpoint-persistence.js';
+import { computePanelCacheKey, computeVisionContextFingerprint, RECAP_ANALYZER_VERSION } from './checkpoint-persistence.js';
 import { AllVisionProvidersUnavailableError } from './vision-error-classifier.js';
 import { isRecapJobInterruptedError } from './phase5/recap-production-job-manager.js';
+import { RecapBudgetExceededError } from './phase5/recap-usage-telemetry.js';
 import { extractStructuredOcrDialogues, mergeVisionAndOcrDialogues } from './dialogue-extractor.js';
+import { createNarrativeMemory, updateNarrativeMemory } from './compact-narrative-context.js';
+import { triageRecapPanels, type RecapPanelTriageDecision } from './panel-triage.js';
+import { buildRecapMotionMetadata } from './recap-text-classification.js';
 
 export interface NarrativeAnalyzerOptions {
 	panels: ExtractedPanel[];
 	visionAdapter?: VisionAdapter | undefined;
+	visionRoutes?: Partial<Record<import('./recap-types.js').RecapPanelRouteTier, VisionAdapter>> | undefined;
+	triage?: import('./recap-types.js').RecapPanelTriageOptions | undefined;
+	compactNarrativeContext?: boolean | undefined;
 	ocrAdapter?: OcrAdapter | undefined;
 	/** Agent/model identifier recorded in each analysis. */
 	analyzedBy: string;
@@ -38,12 +46,21 @@ export interface NarrativeAnalyzerOptions {
 	cachedAnalyses?: readonly PanelAnalysis[] | undefined;
 	/** Previously completed panel analyses keyed by imageHash. */
 	analysisCacheByHash?: Readonly<Record<string, PanelAnalysis>> | undefined;
+	/** Image hashes belonging to cached panel ids; protects legacy id-based reuse. */
+	cachedAnalysisImageHashes?: Readonly<Record<string, string>> | undefined;
+	/** Explicitly allow scene/script regeneration to reuse a prior panel-id analysis when context is intentionally narrowed. */
+	allowLegacyPanelIdCache?: boolean | undefined;
 	/** Model identifier bound into the cache key. Defaults to analyzedBy. */
 	cacheModel?: string | undefined;
 	/** Analyzer version bound into the cache key. Defaults to RECAP_ANALYZER_VERSION. */
 	analyzerVersion?: string | undefined;
+	promptVersion?: string | undefined;
+	preprocessingVersion?: string | undefined;
+	cacheSchemaVersion?: string | undefined;
+	locale?: string | undefined;
 	/** Optional callback invoked after each valid fresh panel analysis for incremental checkpointing. */
-	onPanelAnalyzed?: ((analysis: PanelAnalysis, panel: ExtractedPanel) => void) | undefined;
+	onPanelAnalyzed?: ((analysis: PanelAnalysis, panel: ExtractedPanel, cacheKey: string) => void) | undefined;
+	onAnalysisEvent?: ((event: { panel: ExtractedPanel; cacheKey: string; cacheStatus: 'hit' | 'miss' | 'invalidated' | 'deduped' }) => void) | undefined;
 }
 
 export interface NarrativeAnalysisResult {
@@ -99,6 +116,70 @@ function sortPanelsByReadingOrder(panels: ExtractedPanel[]): ExtractedPanel[] {
 }
 
 /**
+ * Coalesces concurrent panel requests only when the provider explicitly exposes
+ * a batch contract and image limit. A malformed/failed batch falls back to the
+ * provider's single-image method so no result is fabricated or discarded.
+ */
+function withExplicitBatchSupport(adapter: VisionAdapter | undefined): VisionAdapter | undefined {
+	if (!adapter?.analyzeBatch || !adapter.maxImagesPerCall || adapter.maxImagesPerCall < 2) return adapter;
+	const maxImages = Math.max(2, Math.floor(adapter.maxImagesPerCall));
+	type Pending = {
+		imagePathOrBuffer: string | Buffer;
+		context?: VisionAnalysisContext;
+		resolve: (result: VisionAnalysisResult) => void;
+		reject: (error: unknown) => void;
+	};
+	const queue: Pending[] = [];
+	let scheduled = false;
+	const analyzeBatch = adapter.analyzeBatch;
+
+	const flush = async (): Promise<void> => {
+		scheduled = false;
+		while (queue.length > 0) {
+			const batch = queue.splice(0, maxImages);
+			if (batch.length === 1) {
+				try {
+					batch[0]!.resolve(await adapter.analyze(batch[0]!.imagePathOrBuffer, batch[0]!.context));
+				} catch (error) {
+					batch[0]!.reject(error);
+				}
+				continue;
+			}
+			try {
+				const results = await analyzeBatch!(
+					batch.map((item) => ({ imagePathOrBuffer: item.imagePathOrBuffer, ...(item.context ? { context: item.context } : {}) })),
+				);
+				if (results.length !== batch.length) throw new Error(`Batch provider returned ${results.length} results for ${batch.length} inputs.`);
+				batch.forEach((item, index) => item.resolve(results[index]!));
+			} catch (batchError) {
+				// A provider batch failure is recoverable without inventing a result.
+				await Promise.all(batch.map(async (item) => {
+					try {
+						item.resolve(await adapter.analyze(item.imagePathOrBuffer, item.context));
+					} catch (error) {
+						item.reject(error instanceof Error ? error : batchError);
+					}
+				}));
+			}
+		}
+	};
+
+	return {
+		name: adapter.name,
+		maxImagesPerCall: maxImages,
+		analyze(imagePathOrBuffer, context) {
+			return new Promise<VisionAnalysisResult>((resolve, reject) => {
+				queue.push({ imagePathOrBuffer, ...(context ? { context } : {}), resolve, reject });
+				if (!scheduled) {
+					scheduled = true;
+					queueMicrotask(() => { void flush(); });
+				}
+			});
+		},
+	};
+}
+
+/**
  * Analyzes a single panel using available adapters (vision + OCR).
  * Never fabricates information — returns low confidence when data is insufficient.
  */
@@ -106,8 +187,10 @@ async function analyzePanel(
 	panel: ExtractedPanel,
 	options: NarrativeAnalyzerOptions,
 	visionContext?: VisionAnalysisContext,
+	visionAdapterOverride?: VisionAdapter,
 ): Promise<PanelAnalysis> {
-	const { visionAdapter, analyzedBy } = options;
+	const { analyzedBy } = options;
+	const visionAdapter = visionAdapterOverride ?? options.visionAdapter;
 
 	// 1. Extract structured OCR-based evidence
 	const { dialogues: ocrDialogues, evidence: ocrEvidence, uncertainties: ocrUncertainties } = extractStructuredOcrDialogues(panel);
@@ -191,7 +274,11 @@ async function analyzePanel(
 				});
 			}
 		} catch (err) {
-			if (err instanceof AllVisionProvidersUnavailableError || isRecapJobInterruptedError(err)) {
+			if (
+				err instanceof AllVisionProvidersUnavailableError ||
+				isRecapJobInterruptedError(err) ||
+				err instanceof RecapBudgetExceededError
+			) {
 				throw err;
 			}
 			const msg = err instanceof Error ? err.message : String(err);
@@ -272,6 +359,12 @@ async function analyzePanel(
 		...(allUncertainties.length > 0 ? { uncertainties: allUncertainties } : {}),
 		evidence: allEvidence,
 		analysisConfidence,
+		motionMetadata: buildRecapMotionMetadata({
+			actions,
+			...(expressions ? { expressions } : {}),
+			dialogues,
+			...(visualDescription ? { visualDescription } : {}),
+		}),
 		analyzedBy,
 		analyzedAtIso: new Date().toISOString(),
 	});
@@ -291,9 +384,15 @@ export async function runNarrativeAnalyzer(
 		concurrency = 1,
 		cachedAnalyses,
 		analysisCacheByHash,
+		cachedAnalysisImageHashes,
 		cacheModel = options.analyzedBy,
 		analyzerVersion = RECAP_ANALYZER_VERSION,
+		promptVersion = 'recap-v1',
+		preprocessingVersion = 'recap-preprocess-v1',
+		cacheSchemaVersion = 'recap-vision-v1',
+		locale = 'pt-BR',
 		onPanelAnalyzed,
+		onAnalysisEvent,
 	} = options;
 	const warnings: string[] = [];
 
@@ -317,7 +416,32 @@ export async function runNarrativeAnalyzer(
 	}
 
 	const orderedPanels = sortPanelsByReadingOrder(panels);
+	const triage = triageRecapPanels({ panels: orderedPanels, ...(cachedAnalyses ? { cachedAnalyses } : {}), ...(options.triage ? { options: options.triage } : {}) });
+	const triageByPanelId = new Map<string, RecapPanelTriageDecision>(triage.decisions.map((decision) => [decision.panelId, decision]));
+	const compactContext = options.compactNarrativeContext !== false;
+	const initialMemoryCharacters = [
+		...(options.initialKnownCharacters ?? []),
+		...(options.storyMemoryContext?.characters ?? []).map((character) => character.displayName),
+	];
+	let narrativeMemory = createNarrativeMemory(initialMemoryCharacters);
+	const baseAdapter = withExplicitBatchSupport(options.visionAdapter);
+	const preparedRoutes: Partial<Record<import('./recap-types.js').RecapPanelRouteTier, VisionAdapter>> = {};
+	for (const tier of ['local', 'economic', 'premium'] as const) {
+		const route = options.visionRoutes?.[tier];
+		if (route) preparedRoutes[tier] = withExplicitBatchSupport(route)!;
+	}
+	const routeForDecision = (decision: RecapPanelTriageDecision): VisionAdapter | undefined => {
+		if (options.triage?.enabled === false) return baseAdapter;
+		const preferred = decision.routeTier;
+		const fallbackOrder = options.triage?.fallbackOrder ?? [preferred, 'economic', 'premium', 'local'];
+		for (const tier of [preferred, ...fallbackOrder]) {
+			const route = preparedRoutes[tier];
+			if (route) return route;
+		}
+		return baseAdapter;
+	};
 	const results: Array<PanelAnalysis | undefined> = new Array(orderedPanels.length);
+	const sameRunByImageHash = new Map<string, PanelAnalysis>();
 	const panelWarnings: string[][] = orderedPanels.map(() => []);
 	let cacheHits = 0;
 	let analyzedFresh = 0;
@@ -325,7 +449,10 @@ export async function runNarrativeAnalyzer(
 	// A pause/cancel requested at a panel boundary stops every worker and propagates unchanged.
 	let interruption: Error | null = null;
 
-	const maxWorkers = Math.max(1, Math.min(4, Math.floor(concurrency)));
+	// Compact memory is ordered by construction. Keep it sequential unless the
+	// caller explicitly opts out; explicit batch providers may still coalesce
+	// requests when concurrency > 1 and compact context is disabled.
+	const maxWorkers = compactContext ? 1 : Math.max(1, Math.min(4, Math.floor(concurrency)));
 	let nextIndex = 0;
 
 	const worker = async () => {
@@ -334,13 +461,69 @@ export async function runNarrativeAnalyzer(
 			const idx = nextIndex++;
 			if (idx >= orderedPanels.length) break;
 			const panel = orderedPanels[idx]!;
-			const compositeKey = computePanelCacheKey({
+			const prevAnalysis = idx > 0 ? results[idx - 1] : undefined;
+			const decision = triageByPanelId.get(panel.panelId) ?? {
+				panelId: panel.panelId,
+				ordinal: idx,
+				categories: ['ambiguous'] as const,
+				routeTier: 'premium' as const,
+				preserve: true as const,
+				reasons: ['triagem indisponível'],
+			};
+			const selectedAdapter = routeForDecision(decision);
+			const knownCharsSet = compactContext
+				? new Set(narrativeMemory.characters)
+				: new Set<string>(options.initialKnownCharacters ?? []);
+			if (!compactContext) {
+				for (let k = 0; k < idx; k++) {
+					for (const c of results[k]?.characters ?? []) knownCharsSet.add(c);
+				}
+			}
+			const visionContext: VisionAnalysisContext = {
+				panelIndex: idx,
+				totalPanels: orderedPanels.length,
+				readingOrder: panel.metadata.readingOrder,
+				...(options.workTitle ? { workTitle: options.workTitle } : {}),
+				...(options.storyMemoryContext ? { storyMemoryContext: options.storyMemoryContext } : {}),
+				...(compactContext ? { narrativeMemory } : {}),
+				...(prevAnalysis?.visualDescription
+					? { previousPanelSummary: prevAnalysis.visualDescription }
+					: prevAnalysis?.actions[0]?.description && prevAnalysis.actions[0].description !== 'No detectable action'
+						? { previousPanelSummary: prevAnalysis.actions[0].description }
+						: {}),
+				...(knownCharsSet.size > 0 ? { knownCharacters: [...knownCharsSet] } : {}),
+			};
+			const contextWithOcr: VisionAnalysisContext = {
+				...visionContext,
+				...(panel.metadata.textContent ? { ocrHint: panel.metadata.textContent } : {}),
+			};
+			const makeCompositeKey = (model: string) => computePanelCacheKey({
 				imageHash: panel.imageHash,
-				model: cacheModel,
+				cropCoordinates: JSON.stringify(panel.metadata.boundingBox),
+				model,
 				analyzerVersion,
+				promptVersion,
+				preprocessingVersion,
+				schemaVersion: cacheSchemaVersion,
+				locale,
+				contextFingerprint: computeVisionContextFingerprint(contextWithOcr),
 			});
+			let compositeKey = makeCompositeKey(selectedAdapter?.name ?? cacheModel);
+			const analysisContext: VisionAnalysisContext = { ...contextWithOcr };
+			// Keep correlation metadata out of JSON/spread-based provider prompts.
+			Object.defineProperty(analysisContext, 'cacheKey', { value: compositeKey, enumerable: false });
+			// Route metadata is consumed by the adapter/router but deliberately excluded
+			// from prompt text and cache fingerprints so valid Phase 1/2 analyses remain reusable.
+			Object.defineProperty(analysisContext, 'routeTier', { value: decision.routeTier, enumerable: false });
+			Object.defineProperty(analysisContext, 'routeReason', { value: decision.reasons.join('; '), enumerable: false });
 
-			const cached = cacheByKey.get(compositeKey) ?? cacheByPanelId.get(panel.panelId) ?? cacheByKey.get(panel.imageHash);
+			const legacyPanelCache = cacheByPanelId.get(panel.panelId);
+			const legacyPanelHashMatches = cachedAnalysisImageHashes?.[panel.panelId] === panel.imageHash;
+			const hasHashIndex = Boolean(cachedAnalysisImageHashes && Object.keys(cachedAnalysisImageHashes).length > 0);
+			const explicitCacheVersionChange = cacheModel !== options.analyzedBy || analyzerVersion !== RECAP_ANALYZER_VERSION || promptVersion !== 'recap-v1' || preprocessingVersion !== 'recap-preprocess-v1' || cacheSchemaVersion !== 'recap-vision-v1' || locale !== 'pt-BR';
+			const legacyReuseAllowed = options.allowLegacyPanelIdCache || (!hasHashIndex && !explicitCacheVersionChange);
+			const cached = cacheByKey.get(compositeKey) ?? (legacyPanelCache && legacyReuseAllowed && (legacyPanelHashMatches || !hasHashIndex) ? legacyPanelCache : undefined);
+			Object.defineProperty(analysisContext, 'cacheStatus', { value: legacyPanelCache && !cacheByKey.has(compositeKey) ? 'invalidated' : 'miss', enumerable: false });
 			if (cached) {
 				const reused: PanelAnalysis = cached.panelId === panel.panelId
 					? cached
@@ -350,7 +533,12 @@ export async function runNarrativeAnalyzer(
 						evidence: cached.evidence.map((e) => ({ ...e, sourcePanelId: panel.panelId })),
 					};
 				results[idx] = reused;
+				if (panel.imageHash) sameRunByImageHash.set(panel.imageHash, reused);
+				if (compactContext) narrativeMemory = updateNarrativeMemory(narrativeMemory, reused);
 				cacheHits++;
+				// Materialize the contextual key even when the source was a legacy panel-id cache.
+				onPanelAnalyzed?.(reused, panel, compositeKey);
+				onAnalysisEvent?.({ panel, cacheKey: compositeKey, cacheStatus: 'hit' });
 				if (reused.analysisConfidence < minConfidence) {
 					panelWarnings[idx]!.push(
 						`Panel ${panel.panelId}: analysis confidence ${reused.analysisConfidence.toFixed(2)} below threshold ${minConfidence}. Marked for review.`,
@@ -359,32 +547,51 @@ export async function runNarrativeAnalyzer(
 				continue;
 			}
 
-			try {
-				const prevAnalysis = idx > 0 ? results[idx - 1] : undefined;
-				const knownCharsSet = new Set<string>(options.initialKnownCharacters ?? []);
-				for (let k = 0; k < idx; k++) {
-					for (const c of results[k]?.characters ?? []) knownCharsSet.add(c);
-				}
-				const visionContext: VisionAnalysisContext = {
-					panelIndex: idx,
-					totalPanels: orderedPanels.length,
-					readingOrder: panel.metadata.readingOrder,
-					...(options.workTitle ? { workTitle: options.workTitle } : {}),
-					...(options.storyMemoryContext ? { storyMemoryContext: options.storyMemoryContext } : {}),
-					...(prevAnalysis?.visualDescription
-						? { previousPanelSummary: prevAnalysis.visualDescription }
-						: prevAnalysis?.actions[0]?.description && prevAnalysis.actions[0].description !== 'No detectable action'
-							? { previousPanelSummary: prevAnalysis.actions[0].description }
-							: {}),
-					...(knownCharsSet.size > 0 ? { knownCharacters: [...knownCharsSet] } : {}),
+			// Exact content duplicates are safe to reuse within the same ordered run.
+			// This preserves every panel reference while avoiding a second vision call;
+			// perceptual similarity is intentionally not used here.
+			const sameRunCandidate = options.triage?.enabled !== false && panel.imageHash && decision.categories.includes('redundant')
+				? sameRunByImageHash.get(panel.imageHash)
+				: undefined;
+			const sameRunDuplicate = sameRunCandidate && !sameRunCandidate.relationToPrevious && !sameRunCandidate.relationToNext
+				? sameRunCandidate
+				: undefined;
+			if (sameRunDuplicate) {
+				const reused: PanelAnalysis = {
+					...sameRunDuplicate,
+					panelId: panel.panelId,
+					evidence: sameRunDuplicate.evidence.map((evidence) => ({ ...evidence, sourcePanelId: panel.panelId })),
 				};
-				const analysis = await analyzePanel(panel, options, visionContext);
+				results[idx] = reused;
+				if (compactContext) narrativeMemory = updateNarrativeMemory(narrativeMemory, reused);
+				cacheHits++;
+				onPanelAnalyzed?.(reused, panel, compositeKey);
+				onAnalysisEvent?.({ panel, cacheKey: compositeKey, cacheStatus: 'deduped' });
+				continue;
+			}
+
+			try {
+				let analysis = await analyzePanel(panel, options, analysisContext, selectedAdapter);
+				const premiumAdapter = preparedRoutes.premium;
+				const shouldEscalate =
+					Boolean(options.triage?.fallbackOnLowConfidence ?? true) &&
+					Boolean(premiumAdapter && selectedAdapter && premiumAdapter !== selectedAdapter) &&
+					analysis.analysisConfidence < (options.triage?.minConfidence ?? minConfidence);
+				if (shouldEscalate) {
+					const escalated = await analyzePanel(panel, options, analysisContext, premiumAdapter);
+					if (escalated.analysisConfidence >= analysis.analysisConfidence) {
+						analysis = escalated;
+						compositeKey = makeCompositeKey(premiumAdapter!.name);
+					}
+				}
 				results[idx] = analysis;
+				if (panel.imageHash && analysis.analysisConfidence > 0) sameRunByImageHash.set(panel.imageHash, analysis);
+				if (compactContext) narrativeMemory = updateNarrativeMemory(narrativeMemory, analysis);
 				analyzedFresh++;
 				if (analysis.analysisConfidence > 0) {
 					cacheByKey.set(compositeKey, analysis);
-					cacheByKey.set(panel.imageHash, analysis);
-					onPanelAnalyzed?.(analysis, panel);
+					onPanelAnalyzed?.(analysis, panel, compositeKey);
+					onAnalysisEvent?.({ panel, cacheKey: compositeKey, cacheStatus: 'miss' });
 				}
 				if (analysis.analysisConfidence < minConfidence) {
 					panelWarnings[idx]!.push(
@@ -392,7 +599,7 @@ export async function runNarrativeAnalyzer(
 					);
 				}
 			} catch (err) {
-				if (isRecapJobInterruptedError(err)) {
+			if (isRecapJobInterruptedError(err) || err instanceof RecapBudgetExceededError) {
 					if (!interruption) interruption = err;
 					break;
 				}

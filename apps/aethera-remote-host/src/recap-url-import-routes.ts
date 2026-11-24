@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { defaultSiteAdapterRegistry } from '@neuralbridge/cinema/recap';
+import { defaultSiteAdapterRegistry } from '@neuralbridge/cinema';
 
 interface RemoteImportItem {
   url: string;

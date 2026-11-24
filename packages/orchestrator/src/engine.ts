@@ -132,6 +132,17 @@ export interface StructuredReadOnlyResult {
   sessionId: string | null;
   /** What the provider reported for this run; never guessed. */
   model: string | null;
+  /** Provider/CLI usage captured by the persisted read-only run, when reported. */
+  usage?: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    cachedTokens: number | null;
+    effectiveApiCostUsd: number | null;
+    estimatedCostUsd: number | null;
+    quotaUnits: number | null;
+    quotaKind: string | null;
+    cliQuotaWindows: readonly { id: string; utilization: number; resetsAt: string | null; status: string }[];
+  };
 }
 
 export interface AttachedImage {
@@ -168,6 +179,16 @@ interface StepResult {
   sessionId: string | null;
   model?: string | null;
   error: string | null;
+  usage?: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    cachedTokens: number | null;
+    effectiveApiCostUsd: number | null;
+    estimatedCostUsd: number | null;
+    quotaUnits: number | null;
+    quotaKind: string | null;
+    cliQuotaWindows: readonly { id: string; utilization: number; resetsAt: string | null; status: string }[];
+  };
 }
 
 class TaskStop extends Error {
@@ -412,7 +433,15 @@ export class TaskEngine extends EventEmitter<{ task: [TaskUpdate] }> {
     this.setStatus(id, 'running');
     const { result, agent } = await this.runResilient(run, { agent: input.agent, kind: 'plan', edit: false, prompt, outputSchema: input.outputSchema, lean: input.lean, ...(input.images?.length ? { images: input.images.map(({ path, mime }) => ({ path, mime })) } : {}), ...(input.model !== undefined ? { model: input.model } : {}) }, { auto: false, askedToRead: true, prompt: () => prompt, take: () => undefined, request: input.prompt });
     await this.complete(run, false, result.text, { agent, proposals: [] });
-    return { taskId: id, agent, text: result.text, structured: result.structured, sessionId: result.sessionId, model: result.model ?? null };
+    return {
+      taskId: id,
+      agent,
+      text: result.text,
+      structured: result.structured,
+      sessionId: result.sessionId,
+      model: result.model ?? null,
+      ...(result.usage ? { usage: result.usage } : {}),
+    };
   }
 
   private async gitReviewSnapshot(root: string, input: GitReviewStartInput): Promise<{ text: string; truncated: boolean }> {
@@ -1162,11 +1191,16 @@ export class TaskEngine extends EventEmitter<{ task: [TaskUpdate] }> {
 
     const result: StepResult = { ok: false, cancelled: false, text: '', structured: undefined, sessionId: null, error: null };
     const tokens = { input: 0, output: 0, cached: 0, cost: null as number | null, reported: false };
+    let cliQuotaWindows: readonly { id: string; utilization: number; resetsAt: string | null; status: string }[] = [];
     const touched = new Set<string>();
     const errors: string[] = [];
 
     for await (const event of this.options.adapters[step.agent].run(request, run.state.controller.signal)) {
-      if (event.kind === 'limits') continue;
+      if (event.kind === 'limits') {
+        cliQuotaWindows = event.windows;
+        this.record(run.id, stepId, event);
+        continue;
+      }
       this.record(run.id, stepId, event);
       switch (event.kind) {
         case 'session':
@@ -1199,6 +1233,18 @@ export class TaskEngine extends EventEmitter<{ task: [TaskUpdate] }> {
           if (!result.text && event.result) result.text = event.result;
           break;
       }
+    }
+    if (tokens.reported || cliQuotaWindows.length > 0) {
+      result.usage = {
+        inputTokens: tokens.reported ? tokens.input : null,
+        outputTokens: tokens.reported ? tokens.output : null,
+        cachedTokens: tokens.reported ? tokens.cached : null,
+        effectiveApiCostUsd: null,
+        estimatedCostUsd: tokens.cost,
+        quotaUnits: null,
+        quotaKind: cliQuotaWindows.length > 0 ? 'cli' : null,
+        cliQuotaWindows,
+      };
     }
     // Codex enforces output schemas but reports the validated JSON as its final text event;
     // Claude emits the same payload in `structured`. Parse only when a schema was requested;

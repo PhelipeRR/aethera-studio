@@ -91,6 +91,18 @@ test('derivePipelineTimeline marks exact active, completed, failed, and paused s
   assert.equal(paused.tone, 'warning');
   assert.equal(paused.stages.find((s) => s.id === 'vision')?.status, 'paused');
 
+  const pausedByBudget = derivePipelineTimeline(
+    makeRecord({
+      state: 'paused_budget',
+      currentStage: 'vision',
+      completedSteps: ['import', 'gate-f', 'preflight'],
+      lastError: 'tempo máximo do job atingido',
+    }),
+  );
+  assert.equal(pausedByBudget.stateLabel, 'Pausado (orçamento atingido)');
+  assert.equal(pausedByBudget.tone, 'warning');
+  assert.equal(pausedByBudget.stages.find((s) => s.id === 'vision')?.status, 'paused');
+
   const masterExport = derivePipelineTimeline(
     makeRecord({
       state: 'master_export',
@@ -308,6 +320,7 @@ test('formatTimecodeMs, toAetheraMediaUrl, and getStateMetadata behave determini
   );
   assert.equal(toAetheraMediaUrl('aethera-media://local?path=x'), 'aethera-media://local?path=x');
   assert.equal(getStateMetadata('awaiting_preview_approval').tone, 'warning');
+  assert.equal(getStateMetadata('paused_budget').label, 'Pausado (orçamento atingido)');
   assert.equal(getStateMetadata('completed').tone, 'success');
 });
 
@@ -436,6 +449,19 @@ test('Synchronization across Import, Queue, Project History, and Workflow Steps 
   assert.equal(separated.importStatus.tone, 'success');
   assert.equal(separated.productionStatus.state, 'ready_to_start');
   assert.equal(separated.isHistoricalFailedRecord, true);
+
+  const pausedByBudget = deriveSeparatedImportAndProductionStatus({
+    hasChapterSource: true,
+    chapterArchiveValidated: true,
+    archivePageCount: 24,
+    isImportingChapter: false,
+    importError: null,
+    isProducing: false,
+    activeProject: makeRecord({ state: 'paused_budget', currentStage: 'vision', completedSteps: ['import', 'gate-f'] }),
+    sceneCount: 0,
+  });
+  assert.equal(pausedByBudget.productionStatus.state, 'paused');
+  assert.equal(pausedByBudget.productionStatus.tone, 'warning');
 
   // 5. If CBZ integrity check fails (missing/corrupted on disk), Capítulos becomes 'error' and blocks ready state
   const stepsCorruptedCbz = deriveWorkflowSteps({

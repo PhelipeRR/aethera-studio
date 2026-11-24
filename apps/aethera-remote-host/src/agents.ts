@@ -9,6 +9,8 @@ import type {
   RemoteAgentId,
   RemoteAgentsResponse,
   RemoteAgentStatus,
+  RemoteGpuCapability,
+  RemoteVisionCapability,
 } from './contracts/v1';
 import { REMOTE_CONTRACT_VERSION } from './contracts/v1';
 import { redactSecrets } from './security';
@@ -67,6 +69,14 @@ export interface AgentRunnerOverrides {
   binaryOverrides?: Partial<Record<RemoteAgentId, { command: string; prefixArgs?: string[] }>>;
   ollamaBaseUrl?: string;
   env?: Record<string, string | undefined>;
+  /** Read-only hardware probe override used by tests and hosts without nvidia-smi. */
+  gpuProbe?: () => Promise<RemoteGpuCapability>;
+  /** Read-only package probe override; it never downloads or runs OCR inference. */
+  paddleOcrProbe?: () => Promise<{ available: boolean | null; version: string | null }>;
+}
+
+function knownVisionModels(models: readonly string[]): string[] {
+  return models.filter((name) => /(?:qwen(?:2(?:\.5)?|3(?:\.5)?)?vl|qwen3\.5|llava|gemma(?:2|3).*vision|minicpm-v|moondream|internvl|phi-3-vision)/i.test(name));
 }
 
 export function classifyAgentFailure(reason: string): RemoteAgentFailureKind {
@@ -238,10 +248,65 @@ export class RemoteAgentManager {
     }
   }
 
+  private async probeOllamaVision(baseUrl: string, model: string): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const res = await fetch(`${baseUrl}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!res.ok) return false;
+      const body = (await res.json()) as { capabilities?: unknown };
+      return Array.isArray(body.capabilities) && body.capabilities.includes('vision');
+    } catch {
+      return false;
+    }
+  }
+
+  private async probeGpu(env: Record<string, string | undefined>): Promise<RemoteGpuCapability> {
+    if (this.overrides.gpuProbe) return this.overrides.gpuProbe();
+    const located = locateBinary('nvidia-smi', env, []);
+    if (!located) return { available: null, name: null, vramMb: null };
+    try {
+      const { stdout } = await execFileAsync(located, ['--query-gpu=name,memory.total', '--format=csv,noheader,nounits'], { timeout: 2_500, windowsHide: true, env });
+      const [name, vramText] = stdout.trim().split(/,\s*/u);
+      const vramMb = Number(vramText);
+      return { available: true, name: name?.trim() || null, vramMb: Number.isFinite(vramMb) ? vramMb : null };
+    } catch {
+      return { available: false, name: null, vramMb: null };
+    }
+  }
+
+  private async probePaddleOcr(env: Record<string, string | undefined>): Promise<{ available: boolean | null; version: string | null }> {
+    if (this.overrides.paddleOcrProbe) return this.overrides.paddleOcrProbe();
+    const configured = env['AETHERA_PADDLEOCR_PYTHON']?.trim();
+    const python = configured && fs.existsSync(configured) ? configured : locateBinary('python', env, []);
+    if (!python) return { available: null, version: null };
+    try {
+      const { stdout } = await execFileAsync(python, ['-c', "import importlib.metadata as m; print(m.version('paddleocr'))"], { timeout: 3_000, windowsHide: true, env });
+      const version = stdout.trim().split(/\r?\n/u)[0]?.trim() ?? '';
+      return version ? { available: true, version } : { available: false, version: null };
+    } catch {
+      return { available: false, version: null };
+    }
+  }
+
   public async discoverAgents(): Promise<RemoteAgentsResponse> {
     const env = this.getEnv();
     const checkedAt = new Date().toISOString();
     const ollamaInfo = await this.probeOllama(env);
+    const gpu = await this.probeGpu(env);
+    const paddleOcr = await this.probePaddleOcr(env);
+    const visualModels = knownVisionModels(ollamaInfo.models);
+    const configuredVisionModel = env['NB_LOCAL_VLM_MODEL'] || env['OLLAMA_MODEL'] || 'qwen2.5vl:3b';
+    const configuredVisionMaxImagesRaw = Number(env['NB_LOCAL_VLM_MAX_IMAGES_PER_CALL']);
+    const configuredVisionMaxImages = Number.isFinite(configuredVisionMaxImagesRaw) && configuredVisionMaxImagesRaw >= 1 ? Math.floor(configuredVisionMaxImagesRaw) : 1;
+    const selectedVisionModelAvailable = visualModels.includes(configuredVisionModel);
+    const selectedVisionModelIsMultimodal = selectedVisionModelAvailable && await this.probeOllamaVision(ollamaInfo.baseUrl, configuredVisionModel);
 
     const agents: RemoteAgentStatus[] = await Promise.all(
       RF07_AGENT_SPECS.map(async (spec) => {
@@ -268,8 +333,27 @@ export class RemoteAgentManager {
               ? `Serviço Ollama indisponível em ${ollamaInfo.baseUrl}.`
               : ollamaInfo.models.length === 0
                 ? 'Ollama ativo, porém nenhum modelo instalado (rode `ollama pull llama3.2`).'
+                : visualModels.length === 0
+                  ? 'Ollama ativo, mas nenhum modelo visual conhecido foi detectado; análise multimodal desabilitada.'
+                  : !selectedVisionModelAvailable
+                    ? `Modelo visual configurado para Recap (${configuredVisionModel}) não está instalado; rota local desabilitada.`
+                    : !selectedVisionModelIsMultimodal
+                      ? `Ollama não comprovou capacidade vision para ${configuredVisionModel}; rota local desabilitada.`
                 : null,
             checkedAt,
+            vision: {
+              available: ollamaInfo.reachable && selectedVisionModelIsMultimodal && !cd.active,
+              multimodal: selectedVisionModelIsMultimodal,
+              selectedModel: configuredVisionModel,
+              models: visualModels,
+              maxImagesPerCall: visualModels.length > 0 ? configuredVisionMaxImages : null,
+              gpu,
+              telemetry: { tokens: true, cache: false, effectiveApiCost: false, estimatedCost: false, cliQuota: false },
+              ocr: { ...paddleOcr, engine: paddleOcr.available === true ? 'paddleocr' : null, cpuPreferred: true },
+              worker: { maxConcurrent: Number(env['NB_RECAP_WORKER_COUNT']) === 1 ? 1 : 1, active: null },
+              vramLimitMb: Number(env['NB_RECAP_MAX_VRAM_MB']) > 0 ? Number(env['NB_RECAP_MAX_VRAM_MB']) : 6_500,
+              host: 'remote_host',
+            } satisfies RemoteVisionCapability,
           };
         }
 

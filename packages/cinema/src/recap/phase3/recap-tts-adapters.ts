@@ -162,7 +162,7 @@ export function createVoiceStudioRecapTtsPort(options: {
 	};
 
 	return {
-		name: `voicestudio-tts[${options.voiceId}]`,
+		name: `voicestudio-tts[${options.voiceId}|${modelId}|${speed}|${language}|pause=${pauseAfterMs}]`,
 		async synthesizeScene(input): Promise<SynthesizedSceneAudio> {
 			const speechDurationMs = await callVoiceStudio(input.text, input.outputPath);
 			return {
@@ -207,7 +207,7 @@ export function createElevenLabsRecapTtsPort(options: {
 	const pauseAfterMs = options.pauseAfterMs ?? 300;
 	const modelId = options.modelId ?? 'eleven_multilingual_v2';
 	return {
-		name: `elevenlabs-tts[${options.voiceId}]`,
+		name: `elevenlabs-tts[${options.voiceId}|${modelId}|pause=${pauseAfterMs}]`,
 		async synthesizeScene(input): Promise<SynthesizedSceneAudio> {
 			await synthesizeElevenLabsWav({
 				apiKey: options.apiKey,
@@ -285,7 +285,7 @@ export function createWindowsSapiRecapTtsPort(options?: {
 	};
 
 	return {
-		name: 'windows-sapi-tts',
+		name: `windows-sapi-tts[${voiceLabel}|rate=${rate}|pause=${pauseAfterMs}]`,
 		async synthesizeScene(input): Promise<SynthesizedSceneAudio> {
 			const speechDurationMs = await speakToWav(input.text, input.outputPath);
 			return {

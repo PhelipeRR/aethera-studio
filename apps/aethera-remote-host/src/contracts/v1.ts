@@ -140,6 +140,44 @@ export interface RemoteAgentStatus {
   cooldownReason: RemoteAgentFailureKind | null;
   problem: string | null;
   checkedAt: string;
+  /** Optional capability handshake; omitted for legacy agents that cannot prove vision support. */
+  vision?: RemoteVisionCapability;
+}
+
+export interface RemoteGpuCapability {
+  available: boolean | null;
+  name: string | null;
+  vramMb: number | null;
+}
+
+export interface RemoteVisionCapability {
+  available: boolean;
+  multimodal: boolean | null;
+  /** Configured model selected for Recap; availability is false when this exact model is absent. */
+  selectedModel: string | null;
+  models: string[];
+  maxImagesPerCall: number | null;
+  gpu: RemoteGpuCapability;
+  telemetry: {
+    tokens: boolean;
+    cache: boolean;
+    effectiveApiCost: boolean;
+    estimatedCost: boolean;
+    cliQuota: boolean;
+  };
+  /** Local OCR capability handshake; model availability is intentionally separate from Python package availability. */
+  ocr?: {
+    available: boolean | null;
+    engine: 'paddleocr' | null;
+    version: string | null;
+    cpuPreferred: boolean;
+  };
+  worker?: {
+    maxConcurrent: number | null;
+    active: number | null;
+  };
+  vramLimitMb?: number | null;
+  host: 'remote_host';
 }
 
 export interface RemoteAgentsResponse {

@@ -27,6 +27,8 @@ export function recapRecordToJobOutcome(record: RecapOrchestratorRecord, fallbac
 			return { ...base, status: 'awaiting_approval' };
 		case 'paused_provider_unavailable':
 			return { ...base, status: 'paused_provider_unavailable', canResume: true };
+		case 'paused_budget':
+			return { ...base, status: 'paused_budget', canResume: true };
 		case 'failed':
 			return { ...base, status: 'failed' };
 		default:

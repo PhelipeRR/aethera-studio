@@ -35,7 +35,7 @@ export {
 } from './recap-types.js';
 
 // ─── Chapter Importer ────────────────────────────────────────────────────────
-export { importChapter } from './chapter-importer.js';
+export { importChapter, sortPageFiles } from './chapter-importer.js';
 
 // ─── Panel Extractor ─────────────────────────────────────────────────────────
 export { extractPanels, segmentVerticalStrip, type ExtractPanelsOptions } from './panel-extractor.js';
@@ -77,6 +77,8 @@ export {
 	EMOTION_VALUES,
 	ACTION_TYPE_VALUES,
 	DIALOGUE_KIND_VALUES,
+	RECAP_TEXT_CONTENT_KIND_VALUES,
+	RECAP_TEXT_EVIDENCE_SOURCE_VALUES,
 	DURATION_SOURCE_VALUES,
 	NARRATIVE_INTENT_VALUES,
 	REVIEW_STATUS_VALUES,
@@ -98,6 +100,10 @@ export {
 	type Emotion,
 	type ActionType,
 	type DialogueKind,
+	type RecapTextContentKind,
+	type RecapTextEvidenceSource,
+	type RecapTextEvidence,
+	type RecapTextProvenance,
 	type DurationSource,
 	type DialogueEntry,
 	type CharacterDetail,
@@ -120,8 +126,22 @@ export {
 	type VisionAnalysisContext,
 	type VisionAnalysisResult,
 	type VisionAdapter,
+	type RecapPanelRouteTier,
+	type RecapPanelTriageCategory,
+	type RecapPanelTriageOptions,
+	type RecapAnalysisSettings,
+	type RecapNarrativeMemory,
 	type StoryEngineOptions,
 } from './recap-types.js';
+
+export {
+	classifyRecapTextContent,
+	dialogueKindForContent,
+	annotateRecapDialogue,
+	buildRecapMotionMetadata,
+	type RecapTextClassification,
+	type RecapTextClassificationInput,
+} from './recap-text-classification.js';
 
 // ─── Dialogue Extractor ──────────────────────────────────────────────────────
 export {
@@ -136,6 +156,18 @@ export {
 	type NarrativeAnalyzerOptions,
 	type NarrativeAnalysisResult,
 } from './narrative-analyzer.js';
+
+export {
+	triageRecapPanels,
+	type RecapPanelTriageDecision,
+	type RecapPanelTriageResult,
+} from './panel-triage.js';
+
+export {
+	createNarrativeMemory,
+	updateNarrativeMemory,
+	estimateContextTokens,
+} from './compact-narrative-context.js';
 
 // ─── Story Continuity Engine ─────────────────────────────────────────────────
 export {
@@ -165,8 +197,93 @@ export {
 // ─── Gate G — Narrative Fidelity ─────────────────────────────────────────────
 export { runGateGNarrativeFidelity, buildGateGDivergenceReport, type GateGInput } from './gate-g-narrative-fidelity.js';
 
+// ─── Independent Recap Narrative Fidelity Gate (Phase 4B.7) ────────────────
+export {
+	runRecapFidelityGate,
+	canForwardToStoryEngine,
+	getStoryEngineEligiblePanelIds,
+	RECAP_FIDELITY_STATUS_VALUES,
+	RECAP_FIDELITY_ELIGIBILITY_VALUES,
+	RECAP_FIDELITY_CHECK_STATUS_VALUES,
+	RECAP_FIDELITY_SEVERITY_VALUES,
+	RECAP_FIDELITY_ISSUE_CODES,
+	type RecapFidelityStatus,
+	type RecapFidelityEligibility,
+	type RecapFidelityCheckStatus,
+	type RecapFidelitySeverity,
+	type RecapFidelityIssueCode,
+	type RecapFidelityEvidence,
+	type RecapFidelityIssue,
+	type RecapFidelityCheck,
+	type RecapFidelityCheckpoint,
+	type RecapFidelityHumanReview,
+	type RecapFidelityPanelInput,
+	type RecapFidelityPanelReport,
+	type RecapFidelityGateInput,
+	type RecapFidelityGateMetrics,
+	type RecapFidelityGateReport,
+} from './recap-fidelity-gate.js';
+
+// ─── Selective Fidelity Auto-Recovery (Phase 4B.8) ──────────────────────────
+export {
+	runRecapFidelityRecovery,
+	applyRecapRecoveryToReview,
+	recoveryIssueCodes,
+	RecapFidelityRecoveryStore,
+	DEFAULT_RECAP_RECOVERY_BUDGET,
+	RECAP_FIDELITY_RECOVERY_VERSION,
+	type RecapRecoveryStatus,
+	type RecapRecoveryStrategy,
+	type RecapRecoveryBoundingBox,
+	type RecapRecoveryContext,
+	type RecapRecoveryPanel,
+	type RecapLocalizedOcrRequest,
+	type RecapLocalizedOcrResult,
+	type RecapLocalizedOcrAdapter,
+	type RecapRecoveryBudget,
+	type RecapRecoveryCorrection,
+	type RecapRecoveryLedgerEntry,
+	type RecapRecoveryRecord,
+	type RecapRecoveryRunResult,
+	type RecapRecoveryStoreOptions,
+} from './recap-fidelity-recovery.js';
+
+// ─── PaddleOCR local adapter ─────────────────────────────────────────────────
+export {
+	createPaddleOcrAdapter,
+	createPaddleOcrTextAdapter,
+	PADDLE_OCR_ADAPTER_VERSION,
+	type PaddleOcrAdapter,
+	type PaddleOcrAdapterOptions,
+	type PaddleOcrBudgetPort,
+	type PaddleOcrLine,
+	type PaddleOcrResult,
+} from './paddleocr-adapter.js';
+
 // ─── Story Engine Orchestrator ───────────────────────────────────────────────
 export { runStoryEngine, type StoryEngineResult } from './story-engine.js';
+
+// Historical pilot checkpoints: read-only validation and deterministic migration into the
+// productive PanelAnalysis contract. Original artifacts are never overwritten.
+export {
+	resolveHistoricalRecapCheckpoints,
+	mergeHistoricalRecapCheckpointReports,
+	historicalAnalysesForProductiveCache,
+	type HistoricalCheckpointStatus,
+	type HistoricalCheckpointIdentity,
+	type HistoricalCheckpointResolution,
+	type HistoricalCheckpointResolutionReport,
+} from './historical-checkpoint-cache.js';
+
+// Incremental fidelity progress: pending analysis is explicit and never treated
+// as evidence-backed approval for Story Engine.
+export {
+	buildRecapFidelityProgress,
+	saveRecapFidelityProgress,
+	type RecapFidelityProgressStatus,
+	type RecapFidelityProgressPanel,
+	type RecapFidelityProgressReport,
+} from './fidelity-progress.js';
 
 // ─── Recap Vision Adapter (Bridge to Orchestrator VisionRouter) ──────────────
 export {
@@ -174,10 +291,13 @@ export {
 	createTaskEngineRecapVisionAdapter,
 	createRoutedRecapVisionAdapter,
 	formatVisionRoutingSummary,
+	buildRecapVisionContextString,
+	RECAP_VISION_PROMPT_VERSION,
 	type VisionRoutingStepSummary,
 	type RecapVisualAnalysisPort,
 	type RecapVisionRouterPort,
 	type RecapVisionAdapterOptions,
+	type StructuredVisionPayload,
 } from './recap-vision-adapter.js';
 
 // ─── Claude Vision Provider (E2E Phase 2.2.4) ────────────────────────────────
@@ -276,6 +396,30 @@ export * from './phase4/recap-prompt-revision.js';
 export * from './phase5/recap-production-orchestrator.js';
 export * from './phase5/recap-project-store.js';
 export * from './phase5/recap-production-job-manager.js';
+export * from './phase5/recap-usage-telemetry.js';
 export * from './recap-chapter-markers.js';
 export * from './url-importer/index.js';
 
+
+// ─── Independent fidelity review ledger (Phase 4B.11) ───────────────────────
+export {
+	buildRecapFidelityGateFromReviews,
+	loadRecapFidelityReviewLedger,
+	recapAnalysisFingerprint,
+	recapFidelityReviewLedgerSchema,
+	recapFidelityReviewRecordSchema,
+	type RecapFidelityReviewLedger,
+	type RecapFidelityReviewRecord,
+	type RecapFidelityReviewGateResult,
+} from './recap-fidelity-review-ledger.js';
+
+// ─── Explicit per-panel re-analysis request (Phase 4B.11) ───────────────────
+export {
+	RECAP_REANALYSIS_REQUEST_FILENAME,
+	applyRecapReanalysisRequest,
+	excludeReanalysisPanels,
+	loadRecapReanalysisRequest,
+	recapReanalysisRequestSchema,
+	type RecapReanalysisRequest,
+	type RecapReanalysisApplyResult,
+} from './recap-reanalysis-request.js';

@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { extname } from 'node:path';
 import type { AgentAdapter } from '@neuralbridge/agents';
 import type { RecapVisualAnalysisPort } from './recap-vision-adapter.js';
+import type { VisionAnalysisResult } from './recap-types.js';
 import { classifyVisionError, detectProviderErrorInText, RecapVisionError, sanitizeErrorMessage } from './vision-error-classifier.js';
 
 export function detectImageMimeType(imagePath: string): string {
@@ -196,11 +197,13 @@ export function createClaudeVisionProvider(options: ClaudeVisionProviderOptions)
 	// Model the CLI says it actually ran (session event). Without an explicit model the CLI uses the
 	// account's own default, so no model name is assumed here.
 	let reportedModel: string | null = null;
+	let lastUsage: VisionAnalysisResult['usage'] | null = null;
 
 	return {
 		id: providerId,
 		model: model ?? 'claude-cli-default',
 		lastReportedModel: () => reportedModel,
+		lastUsage: () => lastUsage,
 
 		async detect() {
 			try {
@@ -228,6 +231,7 @@ export function createClaudeVisionProvider(options: ClaudeVisionProviderOptions)
 				let runFailed = false;
 				let exitCode: number | null = null;
 				let timedOut = false;
+				lastUsage = null;
 
 				const userPrompt = input.context
 					? `Analise este painel de mangá/manhwa e extraia todos os elementos visuais e balões de texto.\nContexto narrativo (apenas referência, nunca sobrescreva o que é visível na imagem): ${input.context}`
@@ -249,6 +253,27 @@ export function createClaudeVisionProvider(options: ClaudeVisionProviderOptions)
 				)) {
 					if (event.kind === 'session' && event.model) {
 						reportedModel = event.model;
+					} else if (event.kind === 'usage') {
+						lastUsage = {
+							...(lastUsage ?? {}),
+							inputTokens: event.inputTokens,
+							outputTokens: event.outputTokens,
+							cachedTokens: event.cachedTokens,
+							cacheWriteTokens: null,
+							// AgentEvent documents this as API-equivalent pricing on subscription plans.
+							estimatedCostUsd: event.costUsd,
+							effectiveApiCostUsd: null,
+						};
+					} else if (event.kind === 'limits') {
+						lastUsage = {
+							...(lastUsage ?? {}),
+							cliQuotaWindows: event.windows.map((window: { id: string; utilization: number; resetsAt: string | null; status: string }) => ({
+								id: window.id,
+								utilization: window.utilization,
+								resetsAt: window.resetsAt,
+								status: window.status,
+							})),
+						};
 					} else if (event.kind === 'result' && event.text) {
 						resultText = event.text;
 						if (event.ok === false) runFailed = true;
@@ -382,6 +407,7 @@ export function createClaudeVisionProvider(options: ClaudeVisionProviderOptions)
 					...(parsed.readingOrderHint ? { readingOrderHint: parsed.readingOrderHint } : {}),
 					...(parsed.relationToPrevious ? { relationToPrevious: parsed.relationToPrevious } : {}),
 					...(parsed.relationToNext ? { relationToNext: parsed.relationToNext } : {}),
+					...(lastUsage ? { usage: lastUsage } : {}),
 				};
 			} catch (err) {
 				const classified = classifyVisionError(err, providerId);

@@ -16,6 +16,10 @@
     "resolveJsonModule": true,
     "allowImportingTsExtensions": false,
     "paths": {
+      "@neuralbridge/shared": ["./packages/shared/src/index.ts"],
+      "@neuralbridge/shared/*": ["./packages/shared/src/*"],
+      "@neuralbridge/agents": ["./packages/agents/src/index.ts"],
+      "@neuralbridge/workspace": ["./packages/workspace/src/index.ts"],
       "@neuralbridge/integration-contracts": ["./packages/integration-contracts/src/index.ts"],
       "@neuralbridge/cinema/browser": ["./packages/cinema/src/browser.ts"],
       "@neuralbridge/cinema": ["./packages/cinema/src/index.ts"],

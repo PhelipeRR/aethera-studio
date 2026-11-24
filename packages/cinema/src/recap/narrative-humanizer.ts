@@ -285,8 +285,11 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 	const warnings: string[] = [];
 	const diffs: HumanizeSceneDiff[] = [];
 
-	// Skip when disabled
-	if (!options.enabled) {
+	const mode = options.mode ?? 'all';
+	// Skip when disabled. `mode` defaults to `all` for direct library callers,
+	// preserving the pre-Phase-2 contract; production entrypoints can opt into
+	// `flagged` explicitly.
+	if (!options.enabled || mode === 'disabled') {
 		const gateG = runGateGNarrativeFidelity({ script, panels });
 		return {
 			script,
@@ -321,6 +324,7 @@ export async function runNarrativeHumanizer(input: RunNarrativeHumanizerInput): 
 		const scene = humanizedScenes[i]!;
 		const originalText = scene.narrationText;
 		const sceneWarnings = indexedWarnings[i]!;
+		if (mode === 'flagged' && !(options.targetSceneIds ?? []).includes(scene.sceneId)) return;
 
 		// Only humanize scenes that already have a valid factual narration
 		if (isReviewRequiredPlaceholder(originalText) || isGenericNarration(originalText)) {

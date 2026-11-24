@@ -1,0 +1,24 @@
+{
+  "chapterId": "fixture",
+  "completedStages": [
+    "import",
+    "extraction",
+    "narrative",
+    "fidelity"
+  ],
+  "lastUpdatedAtIso": "2026-11-24T16:17:43.610Z",
+  "sourceHash": "unknown",
+  "extractedPanels": [],
+  "panelAnalyses": [],
+  "analysisCacheByHash": {},
+  "panelAnalysisImageHashes": {},
+  "scriptGeneratorVersion": "3.0.0",
+  "scriptStyle": "natural_recap",
+  "scriptCacheKey": "fixture::natural_recap::3.0.0::default",
+  "warnings": [
+    "Manga Vision Quality Gate FAILED: Qualidade insuficiente: 0/0 painéis cobertos ou violação crítica detectada.",
+    "No panel analyses provided.",
+    "No panel analyses provided.",
+    "Gate G FAILED on initial script. Humanization skipped because no valid factual script exists yet."
+  ]
+}

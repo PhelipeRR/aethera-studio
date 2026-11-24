@@ -23,21 +23,47 @@ function detectFormat(archivePath: string): 'pdf' | 'cbz' | 'zip' | 'images' {
 }
 
 function inferReadingOrder(format: 'pdf' | 'cbz' | 'zip' | 'images'): ReadingOrder {
-	// Manhwa/webtoon archives typically use vertical scroll reading order.
-	// CBZ with sequential numeric filenames (001, 002, ...) is a strong indicator.
-	// For now, default CBZ to 'vertical' since most modern manhwa uses this format.
-	// Future: inspect aspect ratios or metadata to distinguish manga (rtl) from manhwa (vertical).
-	if (format === 'cbz') return 'vertical';
+	// Raster archives do not reliably encode RTL/LTR metadata. Use RTL as the
+	// conservative manga default; vertical is selected only by an explicit option
+	// or by the long-strip detector below. Never assume that CBZ means vertical.
+	void format;
 	return 'rtl';
 }
 
-function sortPageFiles(files: string[]): string[] {
+export function sortPageFiles(files: string[]): string[] {
 	return [...files].sort((a, b) => {
 		const numA = parseInt(a.replace(/\D/g, '') || '0', 10);
 		const numB = parseInt(b.replace(/\D/g, '') || '0', 10);
 		if (numA !== numB) return numA - numB;
 		return a.localeCompare(b);
 	});
+}
+
+/**
+ * Detects only the high-confidence webtoon case: a majority of sampled pages
+ * are extreme long strips. Regular portrait pages remain RTL by default and
+ * can be explicitly overridden to LTR/vertical by the caller.
+ */
+async function detectReadingOrderFromImages(
+	format: 'pdf' | 'cbz' | 'zip' | 'images',
+	imageFiles: readonly string[],
+): Promise<ReadingOrder> {
+	if (format === 'pdf' || imageFiles.length === 0) return inferReadingOrder(format);
+	const sample = imageFiles.slice(0, Math.min(8, imageFiles.length));
+	let known = 0;
+	let longStripCount = 0;
+	for (const imagePath of sample) {
+		try {
+			const metadata = await sharp(imagePath).metadata();
+			if (!metadata.width || !metadata.height) continue;
+			known++;
+			if (metadata.height / metadata.width >= 2.2) longStripCount++;
+		} catch {
+			// Unknown/corrupt dimensions are not evidence for vertical ordering.
+		}
+	}
+	if (known > 0 && longStripCount >= Math.max(1, Math.ceil(known * 0.6))) return 'vertical';
+	return inferReadingOrder(format);
 }
 
 /**
@@ -154,7 +180,6 @@ export async function importChapter(options: ImportChapterOptions): Promise<Impo
 	}
 
 	const format = detectFormat(archivePath);
-	const readingOrder = explicitReadingOrder ?? inferReadingOrder(format);
 
 	const chapterOutputDir = join(outputDir, chapterId);
 	if (!existsSync(chapterOutputDir)) {
@@ -166,9 +191,9 @@ export async function importChapter(options: ImportChapterOptions): Promise<Impo
 	if (format === 'images') {
 		const stat = statSync(archivePath);
 		if (stat.isDirectory()) {
-			imageFiles = readdirSync(archivePath)
+			imageFiles = sortPageFiles(readdirSync(archivePath)
 				.filter((f) => IMAGE_EXTENSIONS.has(extname(f).toLowerCase()))
-				.map((f) => join(archivePath, f));
+				).map((f) => join(archivePath, f));
 		} else {
 			imageFiles = [archivePath];
 		}
@@ -193,6 +218,8 @@ export async function importChapter(options: ImportChapterOptions): Promise<Impo
 	if (imageFiles.length === 0) {
 		throw new Error(`No image files found in: ${archivePath}`);
 	}
+
+	const readingOrder = explicitReadingOrder ?? await detectReadingOrderFromImages(format, imageFiles);
 
 	const pages: ImportedPage[] = [];
 	for (let i = 0; i < imageFiles.length; i++) {

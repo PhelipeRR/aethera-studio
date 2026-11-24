@@ -152,6 +152,7 @@ type RecapJobStatusView =
   | 'interrupted'
   | 'awaiting_approval'
   | 'paused_provider_unavailable'
+  | 'paused_budget'
   | 'completed'
   | 'failed';
 
@@ -173,7 +174,7 @@ interface RecapJobView {
 }
 
 const RECAP_JOB_ACTIVE: readonly RecapJobStatusView[] = ['running', 'pause_requested', 'cancel_requested'];
-const RECAP_JOB_RESUMABLE: readonly RecapJobStatusView[] = ['paused', 'interrupted', 'paused_provider_unavailable'];
+const RECAP_JOB_RESUMABLE: readonly RecapJobStatusView[] = ['paused', 'interrupted', 'paused_provider_unavailable', 'paused_budget'];
 const RECAP_JOB_STATUS_LABEL: Record<RecapJobStatusView, string> = {
   running: 'Em execução',
   pause_requested: 'Pausando…',
@@ -183,6 +184,7 @@ const RECAP_JOB_STATUS_LABEL: Record<RecapJobStatusView, string> = {
   interrupted: 'Interrompido',
   awaiting_approval: 'Aguardando aprovação',
   paused_provider_unavailable: 'Pausado: provedores',
+  paused_budget: 'Pausado: orçamento',
   completed: 'Concluído',
   failed: 'Falhou',
 };
@@ -435,6 +437,16 @@ interface RecapBridge {
     ttsProvider: string;
     humorVolume: number;
     enableOcr: boolean;
+    analysisSettings?: {
+      localVisualAnalysis?: boolean;
+      complementaryOcr?: boolean;
+      strictFidelity?: boolean;
+      enablePanelTiling?: boolean;
+      maxModelCalls?: number;
+      maxInputTokens?: number;
+      maxOutputTokens?: number;
+    };
+    budget?: { maxModelCalls?: number; maxInputTokens?: number; maxOutputTokens?: number; maxWallTimeMs?: number };
     resumeCheckpoint: boolean;
     seriesProjectId?: string;
     chapterNumber?: number;
@@ -1759,6 +1771,11 @@ export function RecapProductionPanel() {
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
   const [ttsProvider, setTtsProvider] = useState('voicestudio_tts');
   const [enableOcr, setEnableOcr] = useState(false);
+  const [localVisualAnalysis, setLocalVisualAnalysis] = useState(true);
+  const [complementaryOcr, setComplementaryOcr] = useState(false);
+  const [strictFidelity, setStrictFidelity] = useState(true);
+  const [enablePanelTiling, setEnablePanelTiling] = useState(true);
+  const [maxModelCalls, setMaxModelCalls] = useState(80);
   const [readiness, setReadiness] = useState<RecapReadinessView>({
     ready: false,
     operationalProviders: [],
@@ -1830,16 +1847,18 @@ export function RecapProductionPanel() {
   const projectRunUnfinished = Boolean(
     activeProject &&
       !projectJob &&
-      ['importing', 'preflight', 'story_engine', 'audiovisual_preview', 'master_export', 'paused_provider_unavailable'].includes(
+      ['importing', 'preflight', 'story_engine', 'audiovisual_preview', 'master_export', 'paused_provider_unavailable', 'paused_budget'].includes(
         activeProject.state ?? '',
       ),
   );
   const canContinueProduction = !isRunning && (projectJobResumable || projectRunUnfinished);
   const projectPausedNote =
-    projectJob && (projectJob.status === 'paused' || projectJob.status === 'paused_provider_unavailable')
+    projectJob && (projectJob.status === 'paused' || projectJob.status === 'paused_provider_unavailable' || projectJob.status === 'paused_budget')
       ? projectJob.status === 'paused'
         ? `Produção pausada em ponto seguro (${projectJob.stage ?? 'início'}). Use Continuar Produção para retomar do checkpoint.`
-        : `${projectJob.message} Use Continuar Produção quando os provedores voltarem.`
+        : projectJob.status === 'paused_budget'
+          ? `${projectJob.message} O checkpoint e o orçamento consumido foram preservados; retome quando houver orçamento disponível.`
+          : `${projectJob.message} Use Continuar Produção quando os provedores voltarem.`
       : null;
 
   useEffect(() => {
@@ -2038,6 +2057,19 @@ export function RecapProductionPanel() {
     }
   }, []);
 
+  const hydrateProjectJob = useCallback(async (projectId: string) => {
+    const bridge = getRecapBridge();
+    if (!bridge?.recapListJobs) return null;
+    try {
+      const jobs = await bridge.recapListJobs({ limit: 100 });
+      const match = (Array.isArray(jobs) ? jobs : []).find((job) => job.projectId === projectId) ?? null;
+      setActiveJob((previous) => (match ? match : previous?.projectId === projectId ? null : previous));
+      return match;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const handleTestVisionReal = useCallback(async () => {
     const bridge = getRecapBridge();
     if (!bridge?.cinemaTestVisionProviders) return;
@@ -2086,6 +2118,13 @@ export function RecapProductionPanel() {
       if (project.ttsProvider) setTtsProvider(project.ttsProvider);
       if (typeof project.humorVolume === 'number') setHumorVolume(project.humorVolume);
       if (typeof project.enableOcr === 'boolean') setEnableOcr(project.enableOcr);
+      if (project.analysisSettings) {
+        if (typeof project.analysisSettings.localVisualAnalysis === 'boolean') setLocalVisualAnalysis(project.analysisSettings.localVisualAnalysis);
+        if (typeof project.analysisSettings.complementaryOcr === 'boolean') setComplementaryOcr(project.analysisSettings.complementaryOcr);
+        if (typeof project.analysisSettings.strictFidelity === 'boolean') setStrictFidelity(project.analysisSettings.strictFidelity);
+        if (typeof project.analysisSettings.enablePanelTiling === 'boolean') setEnablePanelTiling(project.analysisSettings.enablePanelTiling);
+        if (typeof project.analysisSettings.maxModelCalls === 'number') setMaxModelCalls(project.analysisSettings.maxModelCalls);
+      }
       setStatusNote(project.lastError ?? null);
       setPublishNote(null);
 
@@ -2107,6 +2146,11 @@ export function RecapProductionPanel() {
         }
       }
 
+      // Project metadata and the durable job registry are separate stores. Rebind the
+      // matching job after loading the project so a renderer restart never presents a
+      // paused_budget record as a new idle production.
+      await hydrateProjectJob(project.runId);
+
       void refreshReadiness(project.chapterId);
 
       if (autoNavigate) {
@@ -2117,7 +2161,7 @@ export function RecapProductionPanel() {
         }
       }
     },
-    [refreshReadiness],
+    [hydrateProjectJob, refreshReadiness],
   );
 
   const refreshStoryMemory = useCallback(async () => {
@@ -2213,7 +2257,7 @@ export function RecapProductionPanel() {
       // Reconnect to a production that kept running (or paused) while this screen was closed.
       const bridge = getRecapBridge();
       const openJobs = (await bridge?.recapListJobs?.().catch(() => [] as RecapJobView[])) ?? [];
-      const openJob = openJobs[0] ?? null;
+      const openJob = openJobs.find((job) => !['failed', 'cancelled', 'completed', 'awaiting_approval'].includes(job.status)) ?? null;
       if (openJob) setActiveJob(openJob);
       const jobProject = openJob ? list.find((p) => p.runId === openJob.projectId) : undefined;
       // Only auto-bind the latest project if it is not a failed run; failed runs remain preserved in "Projetos Recentes" history without contaminating a new chapter import session.
@@ -2902,6 +2946,21 @@ export function RecapProductionPanel() {
         ttsProvider,
         humorVolume,
         enableOcr,
+        analysisSettings: {
+          localVisualAnalysis,
+          complementaryOcr,
+          strictFidelity,
+          enablePanelTiling,
+          maxModelCalls,
+          maxInputTokens: 90_000,
+          maxOutputTokens: 30_000,
+        },
+        budget: {
+          maxModelCalls,
+          maxInputTokens: 90_000,
+          maxOutputTokens: 30_000,
+          maxWallTimeMs: 15 * 60_000,
+        },
         resumeCheckpoint,
         ...(activeSeries ? { seriesProjectId: activeSeries.projectId, chapterNumber } : {}),
       });
@@ -3306,6 +3365,42 @@ export function RecapProductionPanel() {
           {resolvedArchivePath ? `Fonte: ${resolvedArchivePath.split(/[/\\]/).pop()}` : 'Nenhuma fonte selecionada'}
         </span>
       </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 10, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: T.ink, cursor: 'pointer' }}>
+          <input type="checkbox" checked={localVisualAnalysis} onChange={(e) => setLocalVisualAnalysis(e.target.checked)} style={{ accentColor: T.accent }} />
+          Análise visual local (Ollama)
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: T.ink, cursor: 'pointer' }}>
+          <input type="checkbox" checked={complementaryOcr} onChange={(e) => setComplementaryOcr(e.target.checked)} style={{ accentColor: T.accent }} />
+          OCR complementar local (PaddleOCR)
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: T.ink, cursor: 'pointer' }}>
+          <input type="checkbox" checked={strictFidelity} onChange={(e) => setStrictFidelity(e.target.checked)} style={{ accentColor: T.accent }} />
+          Gate de fidelidade estrito
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: T.ink, cursor: 'pointer' }}>
+          <input type="checkbox" checked={enablePanelTiling} onChange={(e) => setEnablePanelTiling(e.target.checked)} style={{ accentColor: T.accent }} />
+          Recorte determinístico de painéis altos
+        </label>
+        <label style={{ fontSize: 12, fontWeight: 600, color: T.inkMuted, display: 'flex', flexDirection: 'column', gap: 5 }}>
+          Máximo de chamadas de IA por job
+          <input
+            type="number"
+            min={1}
+            max={500}
+            step={1}
+            value={maxModelCalls}
+            onChange={(e) => setMaxModelCalls(Math.max(1, Math.min(500, Number(e.target.value) || 1)))}
+            style={inputStyle}
+          />
+        </label>
+      </div>
+      <p style={{ margin: '10px 0 0', fontSize: 11, color: T.inkSubtle }}>
+        {readiness.providers.some((provider) => provider.providerId === 'local-vlm' && provider.status === 'available')
+          ? 'Ollama local disponível; OCR e recorte respeitam o orçamento persistente do job.'
+          : 'Ollama local não comprovado nesta verificação; a rota local permanecerá desabilitada até ficar disponível.'}
+      </p>
 
       {/* Primary Actions */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginTop: 16 }}>

@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { join, relative, resolve } from 'node:path';
 import type { GateGReport, RecapScript } from '../recap-types.js';
 import type { GateHReport, RecapAudiovisualPlan } from '../phase3/recap-audiovisual-types.js';
+import type { GateIReport, GateJReport } from '../phase3/recap-semantic-alignment.js';
 import type { RecapOrchestratorRecord } from './recap-production-orchestrator.js';
 
 const STATE_FILE = 'recap-orchestrator-state.json';
@@ -24,12 +25,16 @@ const SCRIPT_FILE = 'recap-script.json';
 const PLAN_FILE = 'recap-audiovisual-plan.json';
 const GATE_G_FILE = 'gate-g-report.json';
 const GATE_H_FILE = 'gate-h-report.json';
+const GATE_I_FILE = 'gate-i-report.json';
+const GATE_J_FILE = 'gate-j-report.json';
 
 export interface RecapProjectArtifacts {
 	script?: RecapScript;
 	plan?: RecapAudiovisualPlan;
 	gateGReport?: GateGReport;
 	gateHReport?: GateHReport;
+	gateIReport?: GateIReport;
+	gateJReport?: GateJReport;
 }
 
 export interface RecapProjectDetail {
@@ -38,6 +43,8 @@ export interface RecapProjectDetail {
 	plan: RecapAudiovisualPlan | null;
 	gateGReport: GateGReport | null;
 	gateHReport: GateHReport | null;
+	gateIReport: GateIReport | null;
+	gateJReport: GateJReport | null;
 }
 
 export interface DeleteRecapProjectResult {
@@ -105,6 +112,12 @@ export function saveRecapProjectRecord(
 	}
 	if (artifacts?.gateHReport) {
 		writeJsonAtomic(join(projectDir, GATE_H_FILE), artifacts.gateHReport);
+	}
+	if (artifacts?.gateIReport) {
+		writeJsonAtomic(join(projectDir, GATE_I_FILE), artifacts.gateIReport);
+	}
+	if (artifacts?.gateJReport) {
+		writeJsonAtomic(join(projectDir, GATE_J_FILE), artifacts.gateJReport);
 	}
 
 	// Backward-compatible mirror for callers reading `<workspaceDir>/state/recap-orchestrator-state.json`
@@ -225,12 +238,26 @@ export function loadRecapProjectDetail(
 		readJsonSafe<GateHReport>(join(renderDir, GATE_H_FILE)) ??
 		(exportDir ? readJsonSafe<GateHReport>(join(exportDir, GATE_H_FILE)) : null);
 
+	const gateIReport =
+		readJsonSafe<GateIReport>(join(projectDir, GATE_I_FILE)) ??
+		readJsonSafe<GateIReport>(join(renderDir, 'master', GATE_I_FILE)) ??
+		readJsonSafe<GateIReport>(join(renderDir, GATE_I_FILE)) ??
+		(exportDir ? readJsonSafe<GateIReport>(join(exportDir, GATE_I_FILE)) : null);
+
+	const gateJReport =
+		readJsonSafe<GateJReport>(join(projectDir, GATE_J_FILE)) ??
+		readJsonSafe<GateJReport>(join(renderDir, 'master', GATE_J_FILE)) ??
+		readJsonSafe<GateJReport>(join(renderDir, GATE_J_FILE)) ??
+		(exportDir ? readJsonSafe<GateJReport>(join(exportDir, GATE_J_FILE)) : null);
+
 	return {
 		record,
 		script,
 		plan,
 		gateGReport,
 		gateHReport,
+		gateIReport,
+		gateJReport,
 	};
 }
 

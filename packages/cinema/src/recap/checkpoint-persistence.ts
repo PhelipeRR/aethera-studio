@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PanelAnalysis, RecapCheckpoint } from './recap-types.js';
@@ -14,10 +15,38 @@ export function computePanelCacheKey(input: {
 	imageHash: string;
 	model?: string;
 	analyzerVersion?: string;
+	cropCoordinates?: string;
+	promptVersion?: string;
+	preprocessingVersion?: string;
+	schemaVersion?: string;
+	locale?: string;
+	contextFingerprint?: string;
 }): string {
 	const model = (input.model ?? 'default').trim() || 'default';
 	const version = (input.analyzerVersion ?? RECAP_ANALYZER_VERSION).trim() || RECAP_ANALYZER_VERSION;
-	return `${input.imageHash}::${model}::${version}`;
+	if (
+		input.cropCoordinates === undefined &&
+		input.promptVersion === undefined &&
+		input.preprocessingVersion === undefined &&
+		input.schemaVersion === undefined &&
+		input.locale === undefined &&
+		input.contextFingerprint === undefined
+	) {
+		return `${input.imageHash}::${model}::${version}`;
+	}
+	const crop = (input.cropCoordinates ?? 'full').trim() || 'full';
+	const prompt = (input.promptVersion ?? 'recap-v1').trim() || 'recap-v1';
+	const preprocessing = (input.preprocessingVersion ?? 'recap-preprocess-v1').trim() || 'recap-preprocess-v1';
+	const schema = (input.schemaVersion ?? 'recap-vision-v1').trim() || 'recap-vision-v1';
+	const locale = (input.locale ?? 'pt-BR').trim() || 'pt-BR';
+	const context = (input.contextFingerprint ?? 'context-none').trim() || 'context-none';
+	return [input.imageHash, crop, prompt, model, preprocessing, schema, locale, context, version].join('::');
+}
+
+/** Stable hash for the parts of visual context that can change a panel interpretation. */
+export function computeVisionContextFingerprint(context: unknown): string {
+	const canonical = JSON.stringify(context ?? null);
+	return createHash('sha256').update(canonical).digest('hex').slice(0, 32);
 }
 
 /**
@@ -62,6 +91,12 @@ function sanitizeCheckpointAnalyses(checkpoint: RecapCheckpoint): RecapCheckpoin
 			}
 		}
 		clean.analysisCacheByHash = validCache;
+	}
+
+	if (checkpoint.panelAnalysisImageHashes && typeof checkpoint.panelAnalysisImageHashes === 'object') {
+		clean.panelAnalysisImageHashes = Object.fromEntries(
+			Object.entries(checkpoint.panelAnalysisImageHashes).filter(([, value]) => typeof value === 'string' && value.length > 0),
+		);
 	}
 
 	return clean;
@@ -110,6 +145,7 @@ export function invalidateCheckpointCache(checkpointDir: string): boolean {
 		...existing,
 		panelAnalyses: [],
 		analysisCacheByHash: {},
+		panelAnalysisImageHashes: {},
 		lastUpdatedAtIso: new Date().toISOString(),
 	});
 	return true;

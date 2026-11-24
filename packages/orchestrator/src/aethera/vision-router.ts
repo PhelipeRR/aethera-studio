@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { z } from 'zod';
 import { calibratedProbability, confidenceBand, segmentAnalysisSchema, segmentKinds, type SegmentAnalysis, type ConfidenceCalibration, type ConfidenceBand, type SegmentKind, type VisionCapability, type VisionPolicy, type VisionTask } from '@neuralbridge/shared';
 import { visionGpuScheduler, type VisualWorkScheduler } from './visual-work-scheduler.js';
@@ -6,14 +8,49 @@ import { visionGpuScheduler, type VisualWorkScheduler } from './visual-work-sche
 export const DEFAULT_MULTIMODAL_AGENT_PRIORITY = ['codex', 'antigravity', 'claude', 'claude-gateway'] as const;
 
 /** `atMs` is the frame's position in the source, kept so an analysis can cite when something was seen. */
-export interface VisionFrame { hash: string; path: string; atMs?: number }
+export interface VisionFrame { hash: string; path: string; atMs?: number; id?: string }
 export interface VisionClassification { kind: SegmentKind; confidence: number }
 export interface VisionDescription { description: string; tags: string[] }
+export type VisionProviderRouteTier = 'deterministic' | 'local' | 'economic' | 'premium' | 'unknown';
+export type VisionProviderHost = 'desktop' | 'remote_host' | 'api' | 'unknown';
+export type VisionProviderCostMode = 'effective_api' | 'estimated' | 'cli_quota' | 'local' | 'unknown';
+export interface VisionProviderUsage {
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cachedTokens?: number | null;
+  cacheWriteTokens?: number | null;
+  effectiveApiCostUsd?: number | null;
+  estimatedCostUsd?: number | null;
+  quotaUnits?: number | null;
+  quotaKind?: string | null;
+  cliQuotaWindows?: readonly { id: string; utilization: number; resetsAt: string | null; status: string }[];
+}
+export interface VisionOcrLine { text: string; region: string }
+export interface VisionOcrResult { lines: readonly VisionOcrLine[]; sfxFiltered: number }
+export interface VisionProviderCapabilityProfile {
+  multimodal: boolean | null;
+  routeTier: VisionProviderRouteTier;
+  host: VisionProviderHost;
+  maxImagesPerCall: number | null;
+  vramMb: number | null;
+  gpuAvailable: boolean | null;
+  gpuName?: string | null;
+  telemetry: {
+    tokens: boolean;
+    cache: boolean;
+    effectiveApiCost: boolean;
+    estimatedCost: boolean;
+    cliQuota: boolean;
+  };
+  costMode: VisionProviderCostMode;
+}
 export interface VisualAnalysisProvider {
   id: string; model: string; capabilities: readonly VisionCapability[];
   /** Explicit multimodal capability flag. When `false`, image payloads are never dispatched to this provider. */
   supportsMultimodal?: boolean;
   limits: { maxImagesPerCall: number; vramMb?: number; costPerImageUsd?: number };
+  /** Runtime capability handshake. Missing fields remain unknown; they are never inferred as free/capable. */
+  capabilityProfile?: VisionProviderCapabilityProfile;
   detect(signal?: AbortSignal): Promise<
     | { available: true; multimodal?: boolean }
     | { available: false; reason: string; code?: string; resetAtMs?: number; resetAtText?: string }
@@ -24,12 +61,50 @@ export interface VisualAnalysisProvider {
   embedText?(input: { texts: readonly string[]; signal?: AbortSignal }): Promise<number[][]>;
   ocr?(input: { frames: readonly VisionFrame[]; signal?: AbortSignal }): Promise<string[]>;
   /** Universal segment analysis (AP-04): every frame of one segment in one call. */
-  analyze?(input: { frames: readonly VisionFrame[]; context?: string; signal?: AbortSignal }): Promise<SegmentAnalysis>;
+  analyze?(input: { frames: readonly VisionFrame[]; context?: string; signal?: AbortSignal | undefined }): Promise<SegmentAnalysis>;
+  /** Optional literal OCR pass used by the tall-panel tiler; it never replaces analysis silently. */
+  analyzeOcr?(input: { frames: readonly VisionFrame[]; signal?: AbortSignal | undefined }): Promise<VisionOcrResult>;
   /** Model the provider reported for its last fresh call (provider version for the record), when known. */
   lastReportedModel?(): string | null;
+  /** Provider-reported token/cost usage for its last fresh call, when available. */
+  lastUsage?(): VisionProviderUsage | null;
 }
 export type VisionCacheKey = { frameHash: string; provider: string; model: string; promptVersion: string; task: VisionTask };
 export interface VisionCachePort { get(key: VisionCacheKey): unknown; put(key: VisionCacheKey, value: unknown): void }
+
+/**
+ * Durable cache for router-level provider results. The Recap checkpoint remains
+ * authoritative for panel analyses; this cache prevents repeated provider work
+ * across process restarts and keeps provider/model/prompt keys isolated.
+ */
+export function createPersistentVisionCache(filePath: string): VisionCachePort {
+  const values = new Map<string, unknown>();
+  if (existsSync(filePath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+      for (const [key, value] of Object.entries(parsed)) values.set(key, value);
+    } catch {
+      // A corrupt cache is a miss; the production checkpoint is not replaced.
+    }
+  }
+  const persist = (): void => {
+    try {
+      mkdirSync(dirname(filePath), { recursive: true });
+      const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+      writeFileSync(tempPath, JSON.stringify(Object.fromEntries(values)), 'utf8');
+      renameSync(tempPath, filePath);
+    } catch {
+      // Cache persistence is best effort; provider calls remain valid without it.
+    }
+  };
+  return {
+    get: (key) => values.get(JSON.stringify(key)) ?? null,
+    put: (key, value) => {
+      values.set(JSON.stringify(key), value);
+      persist();
+    },
+  };
+}
 export interface VisionSpendPort { get(key: string): number; add(key: string, amount: number): number }
 export type VisionAttemptOutcome = 'ok' | 'cached' | 'low_confidence' | 'unavailable' | 'over_budget' | 'error';
 export interface VisionCooldownEntry { untilMs: number; reason: string; kind?: 'quota' | 'timeout'; resetAtText?: string }
@@ -90,7 +165,7 @@ export function parseVisionResetAtMs(resetAtText?: string, nowMs = Date.now()): 
 export type VisionAttempt = { provider: string; outcome: VisionAttemptOutcome; detail?: string; durationMs?: number };
 type Attempt = VisionAttempt;
 export interface VisionRouting extends VisionClassification { provider: string | null; model: string | null; band: ConfidenceBand; calibratedConfidence: number | null; costUsd: number; attempts: Attempt[] }
-export interface VisionResult<T> { value: T | null; provider: string | null; model: string | null; costUsd: number; attempts: Attempt[]; refs: string[]; reportedModel?: string | null; durationMs?: number }
+export interface VisionResult<T> { value: T | null; provider: string | null; model: string | null; costUsd: number; attempts: Attempt[]; refs: string[]; reportedModel?: string | null; durationMs?: number; usage?: VisionProviderUsage; deduped?: boolean }
 type Request = { frames?: readonly VisionFrame[]; texts?: readonly string[]; labels?: readonly SegmentKind[]; context?: string; policy: VisionPolicy; signal?: AbortSignal; budgetKey?: string };
 const classification = z.strictObject({ kind: z.enum(segmentKinds), confidence: z.number().min(0).max(1) });
 const description = z.strictObject({ description: z.string().min(1), tags: z.array(z.string().min(1)) });
@@ -124,7 +199,9 @@ const recapPanelAnalysisSchema = z.object({
   }).nullable(),
   overlays: z.object({
     burnedText: z.boolean(),
-    burnedTextRegion: z.string().nullable(),
+    // Local providers and the tiling merger omit the region when no burned text
+    // is present; keep this aligned with the shared segment contract.
+    burnedTextRegion: z.string().nullable().optional(),
     watermark: z.boolean(),
     webcam: z.boolean(),
   }),
@@ -151,6 +228,7 @@ export class VisionRouter {
   private readonly timeoutFailures: Map<string, number>;
   private readonly healthTimeoutMs: number;
   private readonly config: VisionRouterConfig;
+  private readonly inFlight = new Map<string, Promise<unknown>>();
   private readonly telemetry = new Map<string, { calls: number; successes: number; failures: number; timeouts: number; totalLatencyMs: number; lastError?: string }>();
   constructor(
     providersOrOpts:
@@ -341,6 +419,7 @@ export class VisionRouter {
       const attemptStart = Date.now();
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
+        let joinedInFlight = false;
         const execute = async (): Promise<VisionResult<unknown>> => {
           const size = provider.limits.maxImagesPerCall;
           if (!Number.isInteger(size) || size < 1) throw new Error('invalid batch size');
@@ -359,7 +438,7 @@ export class VisionRouter {
               if (capability === 'classify') { const parsed = classification.parse(value); if (!input.labels?.includes(parsed.kind) && parsed.kind !== 'unknown') throw new Error('unrequested label'); return parsed; }
               if (capability === 'describe') return description.parse(value);
               if (capability === 'analyze') {
-                return input.policy.scope === 'recap'
+                return (input.policy.scope as string) === 'recap'
                   ? recapPanelAnalysisSchema.parse(value)
                   : segmentAnalysisSchema.parse(value);
               }
@@ -387,21 +466,44 @@ export class VisionRouter {
               }
               const cost = (provider.limits.costPerImageUsd ?? 0) * (capability === 'embed_text' ? texts.length : frames.length);
               if (cost < 0 || !Number.isFinite(cost)) { attempts.push({ provider: id, outcome: 'over_budget', detail: 'invalid provider cost' }); return empty(); }
+              // Every capability is held to the same contract. A provider that advertises a
+              // capability without implementing it (local-vlm advertised `describe`) used to
+              // resolve `undefined` through optional chaining, which the schema reported as
+              // "expected object, received undefined" and hid the real failure upstream.
               const call = async () => {
+                const contract = (method: unknown): void => {
+                  if (typeof method !== 'function') throw new Error(`VISION_PROVIDER_CONTRACT: provider ${id} advertises ${capability} but does not implement it.`);
+                };
+                let result: unknown;
                 switch (capability) {
-                  case 'classify': return provider.classify?.({ frames, labels: input.labels ?? [], signal: controller.signal });
-                  case 'describe': return provider.describe?.({ frames, signal: controller.signal });
-                  case 'embed_image': return provider.embedImage?.({ frames, signal: controller.signal });
-                  case 'embed_text': return provider.embedText?.({ texts, signal: controller.signal });
-                  case 'ocr': return provider.ocr?.({ frames, signal: controller.signal });
-                  case 'analyze': return provider.analyze?.({ frames, ...(input.context ? { context: input.context } : {}), signal: controller.signal });
+                  case 'classify': contract(provider.classify); result = await provider.classify!({ frames, labels: input.labels ?? [], signal: controller.signal }); break;
+                  case 'describe': contract(provider.describe); result = await provider.describe!({ frames, signal: controller.signal }); break;
+                  case 'embed_image': contract(provider.embedImage); result = await provider.embedImage!({ frames, signal: controller.signal }); break;
+                  case 'embed_text': contract(provider.embedText); result = await provider.embedText!({ texts, signal: controller.signal }); break;
+                  case 'ocr': contract(provider.ocr); result = await provider.ocr!({ frames, signal: controller.signal }); break;
+                  case 'analyze': contract(provider.analyze); result = await provider.analyze!({ frames, ...(input.context ? { context: input.context } : {}), signal: controller.signal }); break;
                 }
+                if (result === undefined || result === null) {
+                  throw new Error(`VISION_PROVIDER_CONTRACT: provider ${id} resolved ${capability} without a structured result.`);
+                }
+                return result;
               };
-              value = parse(await this.scheduler.run(async () => {
-                if (this.spend.get(budgetKey) + cost > input.policy.budgetUsd + 1e-9) throw new VisionOverBudgetError();
-                this.spend.add(budgetKey, cost); costUsd += cost;
-                return call();
-              }, controller.signal));
+              const inFlightKey = JSON.stringify(key);
+              let sharedCall = this.inFlight.get(inFlightKey);
+              if (!sharedCall) {
+                const createdCall = this.scheduler.run(async () => {
+                  if (this.spend.get(budgetKey) + cost > input.policy.budgetUsd + 1e-9) throw new VisionOverBudgetError();
+                  this.spend.add(budgetKey, cost); costUsd += cost;
+                  return call();
+                }, controller.signal);
+                sharedCall = createdCall;
+                this.inFlight.set(inFlightKey, sharedCall);
+              } else joinedInFlight = true;
+              try {
+                value = parse(await sharedCall);
+              } finally {
+                if (this.inFlight.get(inFlightKey) === sharedCall) this.inFlight.delete(inFlightKey);
+              }
               controller.signal.throwIfAborted();
               // A zero-confidence analysis is a failed reading (no image received, unreadable frames): never sticky.
               if (!(capability === 'analyze' && (value as SegmentAnalysis).confidence === 0)) this.cache.put(key, value);
@@ -429,7 +531,8 @@ export class VisionRouter {
             this.telemetry.set(id, t);
           }
           attempts.push({ provider: id, outcome: allCached ? 'cached' : 'ok', durationMs });
-          return { value, provider: id, model: provider.model, costUsd, attempts, refs, durationMs, ...(capability === 'analyze' && !allCached ? { reportedModel: provider.lastReportedModel?.() ?? null } : {}) };
+          const reportedUsage = capability === 'analyze' && !allCached ? provider.lastUsage?.() : undefined;
+          return { value, provider: id, model: provider.model, costUsd, attempts, refs, durationMs, ...(capability === 'analyze' && !allCached ? { reportedModel: provider.lastReportedModel?.() ?? null } : {}), ...(reportedUsage ? { usage: reportedUsage } : {}), ...(joinedInFlight ? { deduped: true } : {}) };
         };
         const interrupted = new Promise<never>((_, reject) => {
           controller.signal.addEventListener('abort', () => reject(new Error(input.signal?.aborted ? 'cancelled: visual analysis interrupted.' : 'vision provider timeout')), { once: true });

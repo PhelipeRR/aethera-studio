@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { RecapFidelityGateReport } from './recap-fidelity-gate.js';
 
 // ─── Reading Order & Classification ──────────────────────────────────────────
 
@@ -121,6 +122,8 @@ export const recapCheckpointSchema = z.object({
 	panelAnalyses: z.array(z.any()).optional(),
 	/** Cache keyed by panel imageHash (Phase 2.2.4) for deduplicated/resumable vision analysis. */
 	analysisCacheByHash: z.record(z.string(), z.any()).optional(),
+	/** Image hash captured alongside panel analyses so legacy panel-id reuse can be validated. */
+	panelAnalysisImageHashes: z.record(z.string(), z.string()).optional(),
 	/** Script generator version & style cache metadata to prevent stale script reuse. */
 	scriptGeneratorVersion: z.string().optional(),
 	scriptStyle: z.string().optional(),
@@ -205,6 +208,45 @@ export type ActionType = (typeof ACTION_TYPE_VALUES)[number];
 export const DIALOGUE_KIND_VALUES = ['dialogue', 'thought', 'narration', 'sfx'] as const;
 export type DialogueKind = (typeof DIALOGUE_KIND_VALUES)[number];
 
+/** Structured classification of visible text. SFX is deliberately separate from speech. */
+export const RECAP_TEXT_CONTENT_KIND_VALUES = [
+	'dialogue',
+	'narrative_caption',
+	'sound_effect',
+	'visual_effect',
+	'decorative_text',
+	'unknown',
+] as const;
+export type RecapTextContentKind = (typeof RECAP_TEXT_CONTENT_KIND_VALUES)[number];
+
+export const RECAP_TEXT_EVIDENCE_SOURCE_VALUES = [
+	'ocr',
+	'vision',
+	'checkpoint',
+	'position',
+	'typography',
+	'balloon',
+	'context',
+	'deterministic',
+] as const;
+export type RecapTextEvidenceSource = (typeof RECAP_TEXT_EVIDENCE_SOURCE_VALUES)[number];
+
+export const recapTextEvidenceSchema = z.object({
+	source: z.enum(RECAP_TEXT_EVIDENCE_SOURCE_VALUES),
+	detail: z.string().min(1),
+	weight: z.number().min(0).max(1).optional(),
+});
+export type RecapTextEvidence = z.infer<typeof recapTextEvidenceSchema>;
+
+export const recapTextProvenanceSchema = z.object({
+	source: z.enum(['ocr', 'vision', 'checkpoint', 'deterministic']),
+	panelId: z.string().optional(),
+	lineIndex: z.number().int().min(0).optional(),
+	region: boundingBoxSchema.optional(),
+	ref: z.string().optional(),
+});
+export type RecapTextProvenance = z.infer<typeof recapTextProvenanceSchema>;
+
 export const dialogueEntrySchema = z.object({
 	speaker: z.string().optional(),
 	/** Primary display text (PT-BR translation when translated, otherwise original). */
@@ -220,6 +262,10 @@ export const dialogueEntrySchema = z.object({
 	readingOrder: z.number().int().min(0).optional(),
 	/** Recorded uncertainty when text is partially illegible or speaker is ambiguous. */
 	uncertainty: z.string().optional(),
+	/** Phase 4B.10 content boundary; optional for backwards-compatible checkpoints. */
+	contentKind: z.enum(RECAP_TEXT_CONTENT_KIND_VALUES).optional(),
+	contentEvidence: z.array(recapTextEvidenceSchema).optional(),
+	contentProvenance: recapTextProvenanceSchema.optional(),
 });
 export type DialogueEntry = z.infer<typeof dialogueEntrySchema>;
 
@@ -253,12 +299,38 @@ export const panelAnalysisSchema = z.object({
 	evidence: z.array(narrativeEvidenceSchema),
 	/** Overall confidence in this analysis. Below threshold → needs_review. */
 	analysisConfidence: z.number().min(0).max(1),
+	/** Deterministic metadata consumed by Story Engine and later MotionVelix stages. */
+	motionMetadata: z.object({
+		actions: z.array(z.string()),
+		impacts: z.array(z.string()),
+		movements: z.array(z.string()),
+		soundEffects: z.array(z.string()),
+		expressions: z.array(z.string()),
+		transitions: z.array(z.string()),
+		intensity: z.number().min(0).max(1).nullable(),
+	}).optional(),
 	/** Agent/model that produced this analysis. */
 	analyzedBy: z.string().min(1),
 	/** ISO timestamp of when the analysis was produced. */
 	analyzedAtIso: z.string().datetime(),
 });
 export type PanelAnalysis = z.infer<typeof panelAnalysisSchema>;
+
+/** Explicit per-job controls for the local/structured Recap analysis path. */
+export interface RecapAnalysisSettings {
+	/** Keep the Ollama local-VLM route enabled for this job. Defaults to true for compatibility. */
+	localVisualAnalysis?: boolean;
+	/** Run the configured local OCR adapter during panel extraction. */
+	complementaryOcr?: boolean;
+	/** Require the fidelity boundary to be satisfied before Story Engine forwarding. */
+	strictFidelity?: boolean;
+	/** Use the validated deterministic tall-panel tiling path for the local provider. */
+	enablePanelTiling?: boolean;
+	/** Optional hard per-job ceiling exposed by the production controls. */
+	maxModelCalls?: number;
+	maxInputTokens?: number;
+	maxOutputTokens?: number;
+}
 
 // ─── Story Continuity State (chapter-wide narrative memory) ──────────────────
 
@@ -498,6 +570,18 @@ export interface TextEnhancementResult {
 	ok: boolean;
 	/** Error detail when ok is false. */
 	error?: string;
+	/** Optional provider telemetry when the text adapter exposes it. */
+	usage?: {
+		inputTokens?: number | null;
+		outputTokens?: number | null;
+		cachedTokens?: number | null;
+		cacheWriteTokens?: number | null;
+		effectiveApiCostUsd?: number | null;
+		estimatedCostUsd?: number | null;
+		quotaUnits?: number | null;
+		quotaKind?: string | null;
+		cliQuotaWindows?: readonly { id: string; utilization: number; resetsAt: string | null; status: string }[];
+	};
 }
 
 // ─── Narrative Humanizer ─────────────────────────────────────────────────────
@@ -510,6 +594,13 @@ export type HumanizeStyle = (typeof HUMANIZE_STYLE_VALUES)[number];
 export interface HumanizeOptions {
 	/** Enable or disable humanization. When false, returns the original script unchanged. */
 	enabled: boolean;
+	/**
+	 * Selective humanization policy. `all` preserves the legacy behaviour; `flagged`
+	 * only processes scenes identified by the factuality gates or explicit target ids.
+	 */
+	mode?: 'disabled' | 'flagged' | 'all';
+	/** Optional explicit scene allow-list used by the `flagged` mode. */
+	targetSceneIds?: readonly string[];
 	/** Target narration style. Must match the original script style. */
 	style: HumanizeStyle;
 	/** Humor level configured in UI (0..100). Shapes tone without inventing facts. */
@@ -628,6 +719,14 @@ export interface StoryEngineOptions {
 	outputDir: string;
 	/** Optional durable checkpoint directory (defaults to <outputDir>/<chapterId>/checkpoints). */
 	checkpointDir?: string;
+	/** Optional prior checkpoint used only as a source of valid panel analyses during regeneration. */
+	analysisCacheCheckpointDir?: string;
+	/** Read-only analyses migrated from a validated historical pilot checkpoint. */
+	historicalPanelAnalyses?: readonly PanelAnalysis[];
+	/** Image hashes used to bind migrated historical analyses to current panels. */
+	historicalPanelImageHashes?: Readonly<Record<string, string>>;
+	/** Explicitly allow deterministic historical migration after identity validation. */
+	allowHistoricalPanelCache?: boolean;
 	visionAdapter?: VisionAdapter;
 	ocrAdapter?: OcrAdapter;
 	scriptStyle?: ScriptStyle;
@@ -640,12 +739,24 @@ export interface StoryEngineOptions {
 	minBeatConfidence?: number;
 	/** Optional bounded concurrency (1..4) for fresh panel visual analysis. Default: 1. */
 	analysisConcurrency?: number;
+	/** Phase 2 local triage and provider routing policy. */
+	triage?: RecapPanelTriageOptions;
+	/** Optional explicit local/economic/premium adapters. Missing tiers fall back safely. */
+	visionRoutes?: Partial<Record<RecapPanelRouteTier, VisionAdapter>>;
+	/** Enable the bounded incremental narrative memory used in provider context. Default: true. */
+	compactNarrativeContext?: boolean;
 	/** Optional LLM port for rich narrative script generation from verified beats + continuity. */
 	scriptPort?: TextEnhancementPort;
 	/** Optional text-agent fallback used only when the generated script fails Gate G. */
 	scriptFallbackPort?: TextEnhancementPort;
 	/** When true, preserves approved panel analyses & Story Memory and regenerates only continuity + script + Gate G. */
 	regenerateScriptOnly?: boolean;
+	/** Optional audit hook for cache hits and invalidations; it does not alter narrative output. */
+	onAnalysisEvent?: (event: {
+		panel: ExtractedPanel;
+		cacheKey: string;
+		cacheStatus: 'hit' | 'miss' | 'invalidated' | 'deduped';
+	}) => void;
 	/** Phase 2.2: optional humanization after script generation. */
 	humanize?: HumanizeOptions & { port: TextEnhancementPort };
 	/** Phase 2.2.3: optional contextual research before script generation. */
@@ -665,6 +776,24 @@ export interface StoryEngineOptions {
 		minConfidence?: number;
 		maxPanelsPerSequence?: number;
 	};
+	/** Optional Phase 4B.7 panel-fidelity boundary. When enforced, uncertain/rejected claims cannot enter Story Engine. */
+	panelFidelityGate?: {
+		report: RecapFidelityGateReport;
+		enforce?: boolean;
+	};
+	/** Independent evaluation/recovery hook. It runs after visual analysis and before narrative forwarding. */
+	fidelityRecovery?: {
+		run(input: {
+		panels: readonly ExtractedPanel[];
+		analyses: readonly PanelAnalysis[];
+		gateReport?: RecapFidelityGateReport;
+	}): Promise<{
+		analyses?: readonly PanelAnalysis[];
+		gateReport?: RecapFidelityGateReport;
+	}>;
+	};
+	/** Strict production mode: low-confidence/unknown panel analyses stop before script generation. */
+	strictFidelity?: boolean;
 }
 
 // ─── Vision Adapter Interface (for panel visual analysis) ────────────────────
@@ -683,6 +812,43 @@ export interface StoryMemoryPromptContext {
 	recentEvents: readonly string[];
 }
 
+export type RecapPanelRouteTier = 'local' | 'economic' | 'premium';
+
+export type RecapPanelTriageCategory =
+	| 'simple'
+	| 'redundant'
+	| 'dialogue_important'
+	| 'first_character'
+	| 'scene_change'
+	| 'action_relevant'
+	| 'transition'
+	| 'ambiguous'
+	| 'low_confidence';
+
+export interface RecapPanelTriageOptions {
+	/** Disable routing while keeping the triage result available to diagnostics. */
+	enabled?: boolean;
+	/** Confidence below this value is escalated when a premium route exists. */
+	minConfidence?: number;
+	/** Escalate a low-confidence economic/local result to premium when available. */
+	fallbackOnLowConfidence?: boolean;
+	/** Categories that require the premium route. */
+	premiumCategories?: readonly RecapPanelTriageCategory[];
+	/** Ordered fallback tiers. Missing tiers are skipped; the base adapter remains final fallback. */
+	fallbackOrder?: readonly RecapPanelRouteTier[];
+	/** Maximum panels per batch when an adapter explicitly supports batching. */
+	batchSize?: number;
+}
+
+export interface RecapNarrativeMemory {
+	version: 'recap-memory-v1';
+	characters: readonly string[];
+	recentEvents: readonly string[];
+	currentSetting?: string;
+	openQuestions: readonly string[];
+	lastPanelId?: string;
+}
+
 export interface VisionAnalysisContext {
 	panelIndex?: number;
 	totalPanels?: number;
@@ -691,7 +857,17 @@ export interface VisionAnalysisContext {
 	previousPanelSummary?: string;
 	knownCharacters?: readonly string[];
 	storyMemoryContext?: StoryMemoryPromptContext;
+	/** Bounded chapter-local memory; adapters should prefer this over full history. */
+	narrativeMemory?: RecapNarrativeMemory;
 	ocrHint?: string;
+	/** Internal correlation key; adapters must not include it in provider prompts. */
+	cacheKey?: string;
+	/** Internal cache disposition for telemetry; adapters must not include it in prompts. */
+	cacheStatus?: 'miss' | 'invalidated';
+	/** Internal Phase 4A route selection; adapters must not include it in provider prompts. */
+	routeTier?: RecapPanelRouteTier;
+	/** Internal Phase 4A triage reason; adapters must not include it in provider prompts. */
+	routeReason?: string;
 }
 
 export interface VisionAnalysisResult {
@@ -711,6 +887,20 @@ export interface VisionAnalysisResult {
 	relationToNext?: string;
 	uncertainties?: string[];
 	confidence: number;
+	/** True when this request joined an in-flight equivalent request. */
+	deduped?: boolean;
+	/** Provider-reported usage, when the adapter can expose it. */
+	usage?: {
+		inputTokens?: number | null;
+		outputTokens?: number | null;
+		cachedTokens?: number | null;
+		cacheWriteTokens?: number | null;
+		effectiveApiCostUsd?: number | null;
+		estimatedCostUsd?: number | null;
+		quotaUnits?: number | null;
+		quotaKind?: string | null;
+		cliQuotaWindows?: readonly { id: string; utilization: number; resetsAt: string | null; status: string }[];
+	};
 }
 
 /**
@@ -721,5 +911,12 @@ export interface VisionAnalysisResult {
 export interface VisionAdapter {
 	readonly name: string;
 	analyze(imagePathOrBuffer: string | Buffer, context?: VisionAnalysisContext): Promise<VisionAnalysisResult>;
+	/** Explicit opt-in batch capability. Results must correspond to inputs by index. */
+	analyzeBatch?(inputs: readonly {
+		imagePathOrBuffer: string | Buffer;
+		context?: VisionAnalysisContext;
+	}[], options?: { signal?: AbortSignal }): Promise<readonly VisionAnalysisResult[]>;
+	/** Maximum images accepted by `analyzeBatch`; absent means batching is unsupported. */
+	maxImagesPerCall?: number;
 }
 

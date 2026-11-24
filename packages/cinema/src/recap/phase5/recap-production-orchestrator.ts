@@ -13,24 +13,41 @@ import type {
 	ExtractedPanel,
 	GateGReport,
 	HumanizeOptions,
+	ReadingOrder,
 	RecapScript,
 	ScriptStyle,
 	TextEnhancementPort,
 	VisionAdapter,
+	RecapPanelTriageOptions,
+	RecapAnalysisSettings,
 } from '../recap-types.js';
+import type { RecapFidelityGateReport } from '../recap-fidelity-gate.js';
 import { SCRIPT_STYLE_VALUES } from '../recap-types.js';
+import { loadCheckpoint } from '../checkpoint-persistence.js';
 import type { GateFReport } from '../gate-f-panel-integrity.js';
 import type { GateHReport, RecapAudiovisualPlan, RecapTtsSynthesisPort, RecapVisualPlannerOptions } from '../phase3/recap-audiovisual-types.js';
+import type { GateIReport, GateJReport } from '../phase3/recap-semantic-alignment.js';
 import { renderRecapVideo } from '../phase3/recap-mp4-renderer.js';
 import { checkRecapProductionReadiness, type ReadinessProviderProbe, type RecapProductionReadinessReport } from '../production-readiness.js';
 import { AgentCircuitBreaker } from '../vision-circuit-breaker.js';
 import { AllVisionProvidersUnavailableError } from '../vision-error-classifier.js';
 import { formatVisionRoutingSummary } from '../recap-vision-adapter.js';
 import { runStoryEngine } from '../story-engine.js';
+import {
+	RecapBudgetController,
+	RecapBudgetExceededError,
+	RecapUsageTelemetry,
+	estimateRecapInputTokens,
+	type RecapJobBudget,
+	type RecapModelUsage,
+	type RecapUsageStage,
+} from './recap-usage-telemetry.js';
 
 import type { MotionVelixRenderReport } from '../phase3/recap-motionvelix.js';
 import { getRecapProjectDir, saveRecapProjectRecord, type RecapProjectArtifacts } from './recap-project-store.js';
 import { isRecapJobInterruptedError } from './recap-production-job-manager.js';
+import { buildRecapFidelityProgress, saveRecapFidelityProgress } from '../fidelity-progress.js';
+import { buildRecapFidelityGateFromReviews, type RecapFidelityReviewLedger } from '../recap-fidelity-review-ledger.js';
 
 export type RecapOrchestratorState =
 	| 'idle'
@@ -42,6 +59,7 @@ export type RecapOrchestratorState =
 	| 'master_export'
 	| 'completed'
 	| 'paused_provider_unavailable'
+	| 'paused_budget'
 	| 'failed';
 
 export type RecapPipelineStageId =
@@ -52,12 +70,15 @@ export type RecapPipelineStageId =
 	| 'script'
 	| 'humanize'
 	| 'motion'
-	| 'gate-h';
+	| 'gate-h'
+	| 'gate-i'
+	| 'gate-j';
 
 export interface RecapOrchestratorProgressEvent {
 	runId: string;
 	chapterId: string;
 	workTitle: string;
+	readingOrder?: ReadingOrder;
 	state: RecapOrchestratorState;
 	currentStage: RecapPipelineStageId | null;
 	completedSteps: string[];
@@ -95,12 +116,17 @@ export interface RecapOrchestratorRecord {
 	chapterId: string;
 	workTitle: string;
 	archivePath?: string;
+	readingOrder?: ReadingOrder;
 	language?: string;
 	scriptStyle?: string;
 	aspectRatio?: '16:9' | '9:16';
 	ttsProvider?: string;
 	humorVolume?: number;
+	humanizeMode?: 'disabled' | 'flagged' | 'all';
 	enableOcr?: boolean;
+	analysisSettings?: RecapAnalysisSettings;
+	/** Evidence-backed panel fidelity report used by strict Story Engine runs. */
+	fidelityGate?: RecapFidelityGateReport;
 	panelCount?: number;
 	sceneCount?: number;
 	shotCount?: number;
@@ -113,6 +139,8 @@ export interface RecapOrchestratorRecord {
 	gateFVerdict?: GateFReport['verdict'];
 	gateGVerdict?: GateGReport['verdict'];
 	gateHVerdict?: GateHReport['verdict'];
+	gateIVerdict?: GateIReport['verdict'];
+	gateJVerdict?: GateJReport['verdict'];
 	motionVelix?: MotionVelixRenderReport;
 	previewMp4Path?: string | null;
 	masterMp4Path?: string | null;
@@ -120,6 +148,7 @@ export interface RecapOrchestratorRecord {
 	lastError?: string;
 	createdAtIso?: string;
 	updatedAtIso: string;
+	usage?: import('./recap-usage-telemetry.js').RecapUsageSummary;
 }
 
 const STATE_FILE = 'recap-orchestrator-state.json';
@@ -144,6 +173,7 @@ export function loadOrchestratorState(stateDir: string): RecapOrchestratorRecord
 
 export interface RunRecapProductionOrchestratorInput {
 	runId: string;
+	jobId?: string;
 	chapterId: string;
 	workTitle: string;
 	panels: ExtractedPanel[];
@@ -151,6 +181,10 @@ export interface RunRecapProductionOrchestratorInput {
 	providers: readonly ReadinessProviderProbe[];
 	circuitBreaker?: AgentCircuitBreaker;
 	visionAdapter?: VisionAdapter;
+	/** Optional local/economic/premium routes selected by deterministic panel triage. */
+	visionRoutes?: Partial<Record<'local' | 'economic' | 'premium', VisionAdapter>>;
+	triage?: RecapPanelTriageOptions;
+	compactNarrativeContext?: boolean;
 	/** Optional LLM port for rich narrative script generation. */
 	scriptPort?: TextEnhancementPort;
 	/** Optional text-agent fallback used only when the generated script fails Gate G. */
@@ -160,6 +194,8 @@ export interface RunRecapProductionOrchestratorInput {
 	/** Optional pre-approved script (allows running Phase 3 directly without LLM agents). */
 	existingScript?: RecapScript;
 	ttsPort?: RecapTtsSynthesisPort;
+	/** Stable provider/voice/model identity for invalidating audio checkpoints. */
+	ttsCheckpointIdentity?: string;
 	sfxAssetsDir?: string;
 	plannerOptions?: RecapVisualPlannerOptions;
 	/** Set to true after reviewing preview to authorize master export. */
@@ -170,11 +206,29 @@ export interface RunRecapProductionOrchestratorInput {
 	chapterNumber?: number;
 	/** Project metadata persisted for recent projects listing & resume. */
 	archivePath?: string;
+	readingOrder?: ReadingOrder;
 	language?: string;
 	scriptStyle?: string;
 	ttsProvider?: string;
 	humorVolume?: number;
+	humanizeMode?: 'disabled' | 'flagged' | 'all';
 	enableOcr?: boolean;
+	analysisSettings?: RecapAnalysisSettings;
+	/** Read-only, identity-validated historical analyses migrated into the productive cache. */
+	historicalPanelAnalyses?: readonly import('../recap-types.js').PanelAnalysis[];
+	historicalPanelImageHashes?: Readonly<Record<string, string>>;
+	/** Optional independent fidelity evidence. Strict mode never infers approval from confidence. */
+	panelFidelityGate?: {
+		report: RecapFidelityGateReport;
+		enforce?: boolean;
+	};
+	/** Runs independent evaluation/recovery only after visual analysis is available. */
+	fidelityRecovery?: import('../recap-types.js').StoryEngineOptions['fidelityRecovery'];
+	/**
+	 * Independent per-panel review evidence (bound to crop SHA and analysis fingerprint).
+	 * Used to build the strict fidelity gate after analysis when no explicit gate/recovery is supplied.
+	 */
+	fidelityReviewLedger?: RecapFidelityReviewLedger | null;
 	gateFVerdict?: GateFReport['verdict'];
 	initialCompletedSteps?: readonly string[];
 	onProgress?: (event: RecapOrchestratorProgressEvent) => void;
@@ -184,6 +238,8 @@ export interface RunRecapProductionOrchestratorInput {
 	 * The interruption propagates to the caller; the record keeps its last persisted state.
 	 */
 	control?: { checkpoint(stage: string | null): void };
+	/** Per-job AI budget. Missing limits remain unbounded and are reported as unknown. */
+	budget?: RecapJobBudget;
 }
 
 export interface RunRecapProductionOrchestratorResult {
@@ -192,6 +248,8 @@ export interface RunRecapProductionOrchestratorResult {
 	plan?: RecapAudiovisualPlan;
 	gateGReport?: GateGReport;
 	gateHReport?: GateHReport;
+	gateIReport?: GateIReport;
+	gateJReport?: GateJReport;
 	motionVelix?: MotionVelixRenderReport;
 }
 
@@ -208,6 +266,22 @@ export function formatVisionProgressMessage(completedPanels: number, totalPanels
 	return `Analisando painéis (0/${safeTotal}) via ${provider}…`;
 }
 
+export type MandatoryRecapGateId = 'H' | 'I' | 'J';
+
+export function getMandatoryRecapGateFailures(reports: ReadonlyArray<{
+	gate: MandatoryRecapGateId;
+	verdict: 'pass' | 'needs_review' | 'fail';
+}>): MandatoryRecapGateId[] {
+	return reports.filter((report) => report.verdict === 'fail').map((report) => report.gate);
+}
+
+export function hasMandatoryRecapGateReview(reports: ReadonlyArray<{
+	gate: MandatoryRecapGateId;
+	verdict: 'pass' | 'needs_review' | 'fail';
+}>): boolean {
+	return reports.some((report) => report.verdict === 'needs_review');
+}
+
 export async function runRecapProductionOrchestrator(
 	input: RunRecapProductionOrchestratorInput,
 ): Promise<RunRecapProductionOrchestratorResult> {
@@ -217,6 +291,28 @@ export async function runRecapProductionOrchestrator(
 	mkdirSync(projectDir, { recursive: true });
 	mkdirSync(checkpointDir, { recursive: true });
 	mkdirSync(renderDir, { recursive: true });
+	const usageTelemetry = new RecapUsageTelemetry({
+		workspaceDir: input.workspaceDir,
+		runId: input.runId,
+		chapterId: input.chapterId,
+		...(input.jobId ? { jobId: input.jobId } : {}),
+		...(input.budget ? { budget: input.budget } : {}),
+	});
+	usageTelemetry.beginExecution();
+	const budgetController = new RecapBudgetController(input.budget, usageTelemetry);
+	// Gate built from the independent review ledger once analyses exist (never from model confidence).
+	let reviewGateReport: RecapFidelityGateReport | undefined;
+	const reviewFidelityRecovery: RunRecapProductionOrchestratorInput['fidelityRecovery'] =
+		input.fidelityReviewLedger && !input.fidelityRecovery && !input.panelFidelityGate
+			? {
+				run: async ({ panels, analyses }) => {
+					const result = buildRecapFidelityGateFromReviews({ panels, analyses, ledger: input.fidelityReviewLedger ?? null });
+					reviewGateReport = result.report;
+					return { gateReport: result.report };
+				},
+			}
+			: undefined;
+	const effectiveFidelityRecovery = input.fidelityRecovery ?? reviewFidelityRecovery;
 
 	const circuitBreaker = input.circuitBreaker ?? new AgentCircuitBreaker();
 	// Only reuse previous orchestrator state if it belongs to THIS exact runId
@@ -229,6 +325,7 @@ export async function runRecapProductionOrchestrator(
 	]);
 
 	let latestRecord: RecapOrchestratorRecord | null = prev;
+	let panelAnalysesForFidelity: import('../recap-types.js').PanelAnalysis[] = [];
 
 	const persist = (
 		state: RecapOrchestratorState,
@@ -237,20 +334,31 @@ export async function runRecapProductionOrchestrator(
 		extra: Partial<RecapOrchestratorRecord> = {},
 		artifacts?: RecapProjectArtifacts,
 	): RecapOrchestratorRecord => {
+		if (state === 'paused' || state === 'paused_budget' || state === 'paused_provider_unavailable' || state === 'failed' || state === 'completed' || state === 'awaiting_approval') {
+			usageTelemetry.endExecution();
+		}
 		const updatedAtIso = new Date().toISOString();
 		const base = latestRecord;
+		const archivePath = input.archivePath ?? base?.archivePath;
+		const readingOrder = input.readingOrder ?? base?.readingOrder;
+		const language = input.language ?? base?.language;
+		const scriptStyle = input.scriptStyle ?? base?.scriptStyle;
+		const aspectRatio = input.plannerOptions?.aspectRatio ?? base?.aspectRatio;
+		const ttsProvider = input.ttsProvider ?? base?.ttsProvider;
+		const humanizeMode = input.humanizeMode ?? base?.humanizeMode;
+		const analysisSettings = input.analysisSettings ?? base?.analysisSettings;
 		const rec: RecapOrchestratorRecord = {
 			schemaVersion: 1,
 			runId: input.runId,
 			chapterId: input.chapterId,
 			workTitle: input.workTitle,
-			...(input.archivePath ?? base?.archivePath ? { archivePath: input.archivePath ?? base?.archivePath } : {}),
-			...(input.language ?? base?.language ? { language: input.language ?? base?.language } : {}),
-			...(input.scriptStyle ?? base?.scriptStyle ? { scriptStyle: input.scriptStyle ?? base?.scriptStyle } : {}),
-			...(input.plannerOptions?.aspectRatio ?? base?.aspectRatio
-				? { aspectRatio: input.plannerOptions?.aspectRatio ?? base?.aspectRatio }
-				: {}),
-			...(input.ttsProvider ?? base?.ttsProvider ? { ttsProvider: input.ttsProvider ?? base?.ttsProvider } : {}),
+			...(archivePath ? { archivePath } : {}),
+			...(readingOrder ? { readingOrder } : {}),
+			...(language ? { language } : {}),
+			...(scriptStyle ? { scriptStyle } : {}),
+			...(aspectRatio ? { aspectRatio } : {}),
+			...(ttsProvider ? { ttsProvider } : {}),
+			...(humanizeMode ? { humanizeMode } : {}),
 			...(input.humorVolume !== undefined
 				? { humorVolume: input.humorVolume }
 				: base?.humorVolume !== undefined
@@ -261,6 +369,8 @@ export async function runRecapProductionOrchestrator(
 				: base?.enableOcr !== undefined
 					? { enableOcr: base.enableOcr }
 					: {}),
+			...(analysisSettings ? { analysisSettings } : {}),
+			...(input.panelFidelityGate?.report ? { fidelityGate: input.panelFidelityGate.report } : reviewGateReport ? { fidelityGate: reviewGateReport } : base?.fidelityGate ? { fidelityGate: base.fidelityGate } : {}),
 			panelCount: input.panels.length,
 			...(base?.sceneCount !== undefined ? { sceneCount: base.sceneCount } : {}),
 			...(base?.shotCount !== undefined ? { shotCount: base.shotCount } : {}),
@@ -268,10 +378,13 @@ export async function runRecapProductionOrchestrator(
 			state,
 			currentStage,
 			completedSteps: [...completedSteps],
-			...(input.gateFVerdict ?? base?.gateFVerdict ? { gateFVerdict: input.gateFVerdict ?? base?.gateFVerdict } : {}),
+			...(input.gateFVerdict ? { gateFVerdict: input.gateFVerdict } : base?.gateFVerdict ? { gateFVerdict: base.gateFVerdict } : {}),
 			...(base?.gateGVerdict ? { gateGVerdict: base.gateGVerdict } : {}),
 			...(base?.gateHVerdict ? { gateHVerdict: base.gateHVerdict } : {}),
+			...(base?.gateIVerdict ? { gateIVerdict: base.gateIVerdict } : {}),
+			...(base?.gateJVerdict ? { gateJVerdict: base.gateJVerdict } : {}),
 			...(base?.visionTelemetry ? { visionTelemetry: base.visionTelemetry } : {}),
+			usage: usageTelemetry.summary(),
 			...(base?.motionVelix ? { motionVelix: base.motionVelix } : {}),
 			...(base?.previewMp4Path ? { previewMp4Path: base.previewMp4Path } : {}),
 			...(base?.masterMp4Path ? { masterMp4Path: base.masterMp4Path } : {}),
@@ -280,12 +393,19 @@ export async function runRecapProductionOrchestrator(
 			createdAtIso,
 			updatedAtIso,
 		};
+		saveRecapFidelityProgress(projectDir, buildRecapFidelityProgress({
+			panels: input.panels,
+			analyses: panelAnalysesForFidelity,
+			gateReport: input.panelFidelityGate?.report ?? reviewGateReport ?? base?.fidelityGate,
+			updatedAtIso,
+		}));
 		saveRecapProjectRecord(input.workspaceDir, rec, artifacts);
 		latestRecord = rec;
 		input.onProgress?.({
 			runId: rec.runId,
 			chapterId: rec.chapterId,
 			workTitle: rec.workTitle,
+			...(rec.readingOrder ? { readingOrder: rec.readingOrder } : {}),
 			state: rec.state,
 			currentStage: rec.currentStage ?? null,
 			completedSteps: rec.completedSteps,
@@ -294,6 +414,132 @@ export async function runRecapProductionOrchestrator(
 			updatedAtIso,
 		});
 		return rec;
+	};
+
+	const instrumentTextPort = (port: TextEnhancementPort, stage: RecapUsageStage): TextEnhancementPort => ({
+		name: port.name,
+		enhance: async (request) => {
+			const startedAt = Date.now();
+			const unitId = typeof request.context['sceneId'] === 'string' ? request.context['sceneId'] : undefined;
+			let release: (() => void) | undefined;
+			try {
+				release = budgetController.beforeCall({
+					stage,
+					operation: 'text_enhancement',
+					...(unitId ? { unitId } : {}),
+					estimatedInputTokens: estimateRecapInputTokens({ text: request.text, context: request.context, systemPrompt: request.systemPrompt }),
+				});
+				const result = await port.enhance(request);
+				usageTelemetry.record({
+					stage,
+					operation: 'text_enhancement',
+					...(unitId ? { unitId } : {}),
+					cacheStatus: 'not_applicable',
+					status: result.ok ? 'completed' : 'failed',
+					attempt: 1,
+					provider: result.agentId,
+					model: result.model,
+					...(result.usage ?? {}),
+					durationMs: Date.now() - startedAt,
+					...(result.ok ? {} : { errorCode: 'TEXT_ENHANCEMENT_FAILED', ...(result.error ? { errorMessage: result.error.slice(0, 240) } : {}) }),
+				});
+				return result;
+			} catch (err) {
+				if (err instanceof RecapBudgetExceededError) {
+					usageTelemetry.record({
+						stage,
+						operation: 'text_enhancement',
+						...(unitId ? { unitId } : {}),
+						cacheStatus: 'not_applicable',
+						status: 'blocked',
+						attempt: 1,
+						errorCode: err.code,
+						errorMessage: err.reason,
+						durationMs: Date.now() - startedAt,
+					});
+				} else {
+					usageTelemetry.record({
+						stage,
+						operation: 'text_enhancement',
+						...(unitId ? { unitId } : {}),
+						cacheStatus: 'not_applicable',
+						status: 'failed',
+						attempt: 1,
+						provider: port.name,
+						model: null,
+						errorCode: 'TEXT_ENHANCEMENT_ERROR',
+						errorMessage: (err instanceof Error ? err.message : String(err)).slice(0, 240),
+						durationMs: Date.now() - startedAt,
+					});
+				}
+				throw err;
+			} finally {
+				release?.();
+			}
+		},
+	});
+
+	const instrumentTtsPort = (port: RecapTtsSynthesisPort): RecapTtsSynthesisPort => {
+		const run = async <T extends { provider?: string; modelId?: string }>(
+			operation: string,
+			unitId: string,
+			request: unknown,
+			invoke: () => Promise<T>,
+		): Promise<T> => {
+			const startedAt = Date.now();
+			let release: (() => void) | undefined;
+			try {
+				release = budgetController.beforeCall({
+					stage: 'tts',
+					operation,
+					unitId,
+					estimatedInputTokens: estimateRecapInputTokens(request),
+				});
+				const result = await invoke();
+				const observable = result as T & { usage?: RecapModelUsage };
+				usageTelemetry.record({
+					stage: 'tts',
+					operation,
+					unitId,
+					cacheStatus: 'not_applicable',
+					status: 'completed',
+					attempt: 1,
+					provider: result.provider ?? port.name,
+					model: result.modelId ?? null,
+					...(observable.usage ?? {}),
+					durationMs: Date.now() - startedAt,
+				});
+				return result;
+			} catch (err) {
+				usageTelemetry.record({
+					stage: 'tts',
+					operation,
+					unitId,
+					cacheStatus: 'not_applicable',
+					status: err instanceof RecapBudgetExceededError ? 'blocked' : 'failed',
+					attempt: 1,
+					provider: port.name,
+					model: null,
+					errorCode: err instanceof RecapBudgetExceededError ? err.code : 'TTS_FAILED',
+					errorMessage: (err instanceof RecapBudgetExceededError ? err.reason : err instanceof Error ? err.message : String(err)).slice(0, 240),
+					durationMs: Date.now() - startedAt,
+				});
+				throw err;
+			} finally {
+				release?.();
+			}
+		};
+
+		return {
+			name: port.name,
+			synthesizeScene: (request) => run('scene_tts', request.sceneId, request, () => port.synthesizeScene(request)),
+			...(port.synthesizeContinuous
+				? {
+						synthesizeContinuous: (request: Parameters<NonNullable<RecapTtsSynthesisPort['synthesizeContinuous']>>[0]) =>
+							run('continuous_tts', request.chapterId, request, () => port.synthesizeContinuous!(request)),
+				  }
+				: {}),
+		};
 	};
 
 	// ─── Step 1: Preflight (circuit breakers + checkpoint inspection) ─────────
@@ -423,7 +669,15 @@ export async function runRecapProductionOrchestrator(
 				provider: string | null;
 				model: string | null;
 				reportedModel?: string | null;
+				costUsd?: number;
 				attempts: readonly { provider: string; outcome: string; detail?: string }[];
+				usage?: import('../recap-types.js').VisionAnalysisResult['usage'];
+				policyVersion?: string;
+				routeTier?: 'local' | 'economic' | 'premium' | null;
+				routeReason?: string | null;
+				fallbackReason?: string | null;
+				hostExecutor?: string | null;
+				providerAttemptDetails?: readonly { provider: string; outcome: string; detail?: string; durationMs?: number }[];
 			} | null;
 		};
 
@@ -434,41 +688,117 @@ export async function runRecapProductionOrchestrator(
 					analyze: async (imagePathOrBuffer, context) => {
 						// Every earlier panel is already in the incremental checkpoint: safe to stop here.
 						input.control?.checkpoint('vision');
-						const res = await rawVisionAdapter.analyze(imagePathOrBuffer, context);
-						liveCompletedPanels = Math.min(totalPanelsCount, liveCompletedPanels + 1);
-						const trace = rawVisionAdapter.getLastTrace?.() ?? null;
-						const failedList = buildFailedProvidersSnapshot(trace?.attempts);
-						const activeProvider = trace?.provider ?? readiness.operationalProviders[0] ?? null;
-						const activeModel = trace?.reportedModel ?? trace?.model ?? null;
-						const fallbackFrom = failedList.find((f) => f.providerId !== activeProvider)?.providerId ?? null;
-						const visionTelemetry: RecapVisionLiveTelemetry = {
-							activeProvider,
-							activeModel,
-							priorityOrder,
-							nextFallback: resolveNextFallback(activeProvider, failedList),
-							completedPanels: liveCompletedPanels,
-							totalPanels: totalPanelsCount,
-							...(context?.panelIndex !== undefined ? { currentPanelIndex: context.panelIndex + 1 } : {}),
-							failedProviders: failedList,
-							fallbackActive: Boolean(fallbackFrom && activeProvider),
-							fallbackFrom,
-							canResumeFromCheckpoint: liveCompletedPanels > 0 && liveCompletedPanels < totalPanelsCount,
-							updatedAtIso: new Date().toISOString(),
-						};
-						const providerBadge = activeProvider
-							? `${activeProvider}${activeModel ? ` (${activeModel})` : ''}`
-							: 'VisionRouter';
-						const fallbackNote =
-							visionTelemetry.fallbackActive && fallbackFrom
-								? ` · fallback de ${fallbackFrom}`
-								: '';
-						persist(
-							'story_engine',
-							'vision',
-							`Painel ${liveCompletedPanels}/${totalPanelsCount} analisado via ${providerBadge}${fallbackNote}`,
-							{ readiness, visionTelemetry },
-						);
-						return res;
+						const startedAt = Date.now();
+						let release: (() => void) | undefined;
+						try {
+							release = budgetController.beforeCall({
+								stage: 'vision',
+								operation: 'panel_analysis',
+								...(context?.panelIndex !== undefined ? { unitId: `panel-${context.panelIndex}` } : {}),
+								estimatedInputTokens: estimateRecapInputTokens(context),
+							});
+							const res = await rawVisionAdapter.analyze(imagePathOrBuffer, context);
+							const trace = rawVisionAdapter.getLastTrace?.() ?? null;
+							const providerAttempts = res.deduped ? 0 : Math.max(1, trace?.attempts.filter((a) => a.outcome === 'ok' || a.outcome === 'error').length ?? 1);
+							const retryCount = res.deduped ? 0 : Math.max(0, providerAttempts - 1);
+							usageTelemetry.record({
+								stage: 'vision',
+								operation: 'panel_analysis',
+								...(context?.panelIndex !== undefined ? { unitId: `panel-${context.panelIndex}` } : {}),
+								...(context?.cacheKey ? { cacheKey: context.cacheKey } : {}),
+								cacheStatus: res.deduped ? 'deduped' : (context?.cacheStatus ?? 'miss'),
+								status: 'completed',
+								attempt: 1,
+								provider: trace?.provider ?? null,
+								model: trace?.reportedModel ?? trace?.model ?? null,
+								policyVersion: trace?.policyVersion ?? null,
+								routeTier: trace?.routeTier ?? null,
+								routeReason: trace?.routeReason ?? null,
+								fallbackReason: trace?.fallbackReason ?? null,
+								hostExecutor: trace?.hostExecutor ?? null,
+								...(trace?.attempts ? { providerAttemptDetails: trace.attempts } : {}),
+								providerAttempts,
+								retryCount,
+								...((trace?.costUsd ?? 0) > 0 ? { estimatedCostUsd: trace?.costUsd ?? 0 } : {}),
+								...(res.usage ?? {}),
+								durationMs: Date.now() - startedAt,
+							});
+							liveCompletedPanels = Math.min(totalPanelsCount, liveCompletedPanels + 1);
+							const failedList = buildFailedProvidersSnapshot(trace?.attempts);
+							const activeProvider = trace?.provider ?? readiness.operationalProviders[0] ?? null;
+							const activeModel = trace?.reportedModel ?? trace?.model ?? null;
+							const fallbackFrom = failedList.find((f) => f.providerId !== activeProvider)?.providerId ?? null;
+							const visionTelemetry: RecapVisionLiveTelemetry = {
+								activeProvider,
+								activeModel,
+								priorityOrder,
+								nextFallback: resolveNextFallback(activeProvider, failedList),
+								completedPanels: liveCompletedPanels,
+								totalPanels: totalPanelsCount,
+								...(context?.panelIndex !== undefined ? { currentPanelIndex: context.panelIndex + 1 } : {}),
+								failedProviders: failedList,
+								fallbackActive: Boolean(fallbackFrom && activeProvider),
+								fallbackFrom,
+								canResumeFromCheckpoint: liveCompletedPanels > 0 && liveCompletedPanels < totalPanelsCount,
+								updatedAtIso: new Date().toISOString(),
+							};
+							const providerBadge = activeProvider
+								? `${activeProvider}${activeModel ? ` (${activeModel})` : ''}`
+								: 'VisionRouter';
+							const fallbackNote =
+								visionTelemetry.fallbackActive && fallbackFrom
+									? ` · fallback de ${fallbackFrom}`
+									: '';
+							persist(
+								'story_engine',
+								'vision',
+								`Painel ${liveCompletedPanels}/${totalPanelsCount} analisado via ${providerBadge}${fallbackNote}`,
+								{ readiness, visionTelemetry },
+							);
+							return res;
+						} catch (err) {
+							if (err instanceof RecapBudgetExceededError) {
+								usageTelemetry.record({
+									stage: 'vision',
+									operation: 'panel_analysis',
+									...(context?.panelIndex !== undefined ? { unitId: `panel-${context.panelIndex}` } : {}),
+									cacheStatus: 'not_applicable',
+									status: 'blocked',
+									attempt: 1,
+									errorCode: err.code,
+									errorMessage: err.reason,
+									durationMs: Date.now() - startedAt,
+								});
+							} else {
+								const trace = rawVisionAdapter.getLastTrace?.() ?? null;
+								const providerAttempts = Math.max(1, trace?.attempts.filter((a) => a.outcome === 'ok' || a.outcome === 'error').length ?? 1);
+								usageTelemetry.record({
+									stage: 'vision',
+									operation: 'panel_analysis',
+									...(context?.panelIndex !== undefined ? { unitId: `panel-${context.panelIndex}` } : {}),
+									...(context?.cacheKey ? { cacheKey: context.cacheKey } : {}),
+									cacheStatus: context?.cacheStatus ?? 'miss',
+									status: 'failed',
+									attempt: 1,
+									provider: trace?.provider ?? null,
+									model: trace?.reportedModel ?? trace?.model ?? null,
+								policyVersion: trace?.policyVersion ?? null,
+								routeTier: trace?.routeTier ?? null,
+								routeReason: trace?.routeReason ?? null,
+								fallbackReason: trace?.fallbackReason ?? null,
+								hostExecutor: trace?.hostExecutor ?? null,
+								...(trace?.attempts ? { providerAttemptDetails: trace.attempts } : {}),
+									providerAttempts,
+									retryCount: Math.max(0, providerAttempts - 1),
+									errorCode: err instanceof Error ? err.name : 'VISION_CALL_FAILED',
+									errorMessage: (err instanceof Error ? err.message : String(err)).slice(0, 240),
+									durationMs: Date.now() - startedAt,
+								});
+							}
+							throw err;
+						} finally {
+							release?.();
+						}
 					},
 				}
 			: undefined;
@@ -489,9 +819,37 @@ export async function runRecapProductionOrchestrator(
 				...(input.language ? { language: input.language } : {}),
 				...(input.humorVolume !== undefined ? { humorVolume: input.humorVolume } : {}),
 				...(instrumentedVisionAdapter ? { visionAdapter: instrumentedVisionAdapter } : {}),
-				...(input.scriptPort ? { scriptPort: input.scriptPort } : {}),
-				...(input.scriptFallbackPort ? { scriptFallbackPort: input.scriptFallbackPort } : {}),
-				...(input.humanize ? { humanize: input.humanize } : {}),
+				...(input.visionRoutes ? { visionRoutes: input.visionRoutes } : {}),
+				...(input.triage ? { triage: input.triage } : {}),
+				...(input.compactNarrativeContext !== undefined ? { compactNarrativeContext: input.compactNarrativeContext } : {}),
+				...(input.analysisSettings?.strictFidelity !== undefined ? { strictFidelity: input.analysisSettings.strictFidelity } : {}),
+				...(input.historicalPanelAnalyses?.length
+					? {
+						historicalPanelAnalyses: input.historicalPanelAnalyses,
+						...(input.historicalPanelImageHashes ? { historicalPanelImageHashes: input.historicalPanelImageHashes } : {}),
+						allowHistoricalPanelCache: true,
+					}
+					: {}),
+				...(input.panelFidelityGate ? { panelFidelityGate: input.panelFidelityGate } : {}),
+				...(effectiveFidelityRecovery ? { fidelityRecovery: effectiveFidelityRecovery } : {}),
+				...(input.scriptPort ? { scriptPort: instrumentTextPort(input.scriptPort, 'script') } : {}),
+				...(input.scriptFallbackPort ? { scriptFallbackPort: instrumentTextPort(input.scriptFallbackPort, 'script') } : {}),
+				...(input.humanize ? { humanize: { ...input.humanize, port: instrumentTextPort(input.humanize.port, 'humanize') } } : {}),
+				onAnalysisEvent: (event) => {
+					if (event.cacheStatus === 'hit') {
+						usageTelemetry.record({
+							stage: 'vision',
+							operation: 'panel_analysis',
+							unitId: event.panel.panelId,
+							cacheKey: event.cacheKey,
+							cacheStatus: 'hit',
+							status: 'completed',
+							attempt: 1,
+							provider: null,
+							model: null,
+						});
+					}
+				},
 				...(input.seriesProjectId && input.chapterNumber
 					? {
 							storyMemory: {
@@ -505,6 +863,7 @@ export async function runRecapProductionOrchestrator(
 			script = storyResult.script;
 			gateGReport = storyResult.gateGReport;
 			panelAnalyses = storyResult.analyses;
+			panelAnalysesForFidelity = storyResult.analyses;
 			completedSteps.add('vision');
 			completedSteps.add('continuity');
 			completedSteps.add('script');
@@ -562,6 +921,20 @@ export async function runRecapProductionOrchestrator(
 		} catch (err) {
 			if (isRecapJobInterruptedError(err)) throw err;
 			const errMsg = err instanceof Error ? err.message : String(err);
+			// The Story Engine throws before returning its analyses when a gate (strict fidelity,
+			// budget, provider) stops it, so the incremental fidelity report would keep every panel
+			// as "pending_analysis". The durable checkpoint is the source of truth for analysed panels.
+			if (panelAnalysesForFidelity.length === 0) {
+				const durable = loadCheckpoint(checkpointDir)?.panelAnalyses;
+				if (Array.isArray(durable)) panelAnalysesForFidelity = durable as typeof panelAnalysesForFidelity;
+			}
+			if (err instanceof RecapBudgetExceededError) {
+				const budgetStage: RecapPipelineStageId = err.stage === 'vision' ? 'vision' : err.stage === 'humanize' ? 'humanize' : err.stage === 'tts' ? 'motion' : 'script';
+				const paused = persist('paused_budget', budgetStage, errMsg, {
+					lastError: errMsg,
+				});
+				return { record: paused };
+			}
 			const postFailReadiness = await checkRecapProductionReadiness({
 				providers: input.providers,
 				circuitBreaker,
@@ -635,13 +1008,22 @@ export async function runRecapProductionOrchestrator(
 			...(panelAnalyses ? { analyses: panelAnalyses } : {}),
 			outputDir: renderDir,
 			checkpointDir: join(checkpointDir, 'phase3'),
-			...(input.ttsPort ? { ttsPort: input.ttsPort } : {}),
+			...(input.ttsPort ? { ttsPort: instrumentTtsPort(input.ttsPort) } : {}),
+			...(input.ttsPort ? { ttsCheckpointIdentity: input.ttsCheckpointIdentity ?? input.ttsPort.name } : {}),
 			...(input.sfxAssetsDir ? { sfxAssetsDir: input.sfxAssetsDir } : {}),
 			plannerOptions: { ...input.plannerOptions, renderTarget: 'preview' },
 			...(input.dryRunRender ? { dryRunRender: true } : {}),
 		});
 	} catch (err) {
 		const errMsg = err instanceof Error ? err.message : String(err);
+		if (err instanceof RecapBudgetExceededError) {
+			const paused = persist('paused_budget', 'motion', errMsg, {
+				readiness,
+				sceneCount: script.scenes.length,
+				lastError: errMsg,
+			}, { script, ...(gateGReport ? { gateGReport } : {}) });
+			return { record: paused, script, ...(gateGReport ? { gateGReport } : {}) };
+		}
 		const failed = persist(
 			'failed',
 			'motion',
@@ -684,11 +1066,26 @@ export async function runRecapProductionOrchestrator(
 		}
 	}
 
-	if (previewResult.gateHReport.verdict === 'fail') {
-		const errMsg = `Gate H falhou na prévia: ${previewResult.gateHReport.reasons.join('; ')}`;
+	const previewGateReports = [
+		{ gate: 'H' as const, report: previewResult.gateHReport },
+		{ gate: 'I' as const, report: previewResult.gateIReport },
+		{ gate: 'J' as const, report: previewResult.gateJReport },
+	];
+	const failedPreviewGates = getMandatoryRecapGateFailures(previewGateReports.map(({ gate, report }) => ({ gate, verdict: report.verdict })));
+	const previewNeedsHumanReview = hasMandatoryRecapGateReview(previewGateReports.map(({ gate, report }) => ({ gate, verdict: report.verdict })));
+	completedSteps.add('gate-h');
+	completedSteps.add('gate-i');
+	completedSteps.add('gate-j');
+
+	if (failedPreviewGates.length > 0) {
+		const failedReasons = previewGateReports
+			.filter(({ gate }) => failedPreviewGates.includes(gate))
+			.map(({ gate, report }) => `Gate ${gate}: ${report.reasons.join('; ')}`)
+			.join(' | ');
+		const errMsg = `Gates obrigatórios falharam na prévia: ${failedReasons}`;
 		const failed = persist(
 			'failed',
-			'gate-h',
+			failedPreviewGates[0] === 'I' ? 'gate-i' : failedPreviewGates[0] === 'J' ? 'gate-j' : 'gate-h',
 			errMsg,
 			{
 				readiness,
@@ -696,6 +1093,8 @@ export async function runRecapProductionOrchestrator(
 				shotCount: previewResult.plan.shots.length,
 				totalDurationMs: previewResult.plan.totalDurationMs,
 				gateHVerdict: previewResult.gateHReport.verdict,
+				gateIVerdict: previewResult.gateIReport.verdict,
+				gateJVerdict: previewResult.gateJReport.verdict,
 				motionVelix: previewResult.motionVelix,
 				previewMp4Path: previewResult.mp4Path,
 				lastError: errMsg,
@@ -705,6 +1104,8 @@ export async function runRecapProductionOrchestrator(
 				plan: previewResult.plan,
 				...(gateGReport ? { gateGReport } : {}),
 				gateHReport: previewResult.gateHReport,
+				gateIReport: previewResult.gateIReport,
+				gateJReport: previewResult.gateJReport,
 			},
 		);
 		return {
@@ -713,18 +1114,21 @@ export async function runRecapProductionOrchestrator(
 			plan: previewResult.plan,
 			...(gateGReport ? { gateGReport } : {}),
 			gateHReport: previewResult.gateHReport,
+			gateIReport: previewResult.gateIReport,
+			gateJReport: previewResult.gateJReport,
 			motionVelix: previewResult.motionVelix,
 		};
 	}
 
-	completedSteps.add('gate-h');
-
 	// Human review gate before master export
 	if (!input.masterApproved) {
+		const reviewMessage = previewNeedsHumanReview
+			? 'Prévia exige revisão humana nos Gates H/I/J antes da aprovação master.'
+			: 'Prévia aprovada tecnicamente pelos Gates H/I/J; aguardando aprovação explícita para exportação master.';
 		const awaiting = persist(
 			'awaiting_preview_approval',
-			'gate-h',
-			'Prévia pronta e auditada pelo Gate H. Aguardando aprovação para exportação master.',
+			'gate-j',
+			reviewMessage,
 			{
 				readiness,
 				sceneCount: script.scenes.length,
@@ -732,15 +1136,18 @@ export async function runRecapProductionOrchestrator(
 				totalDurationMs: previewResult.plan.totalDurationMs,
 				...(gateGReport ? { gateGVerdict: gateGReport.verdict } : {}),
 				gateHVerdict: previewResult.gateHReport.verdict,
+				gateIVerdict: previewResult.gateIReport.verdict,
+				gateJVerdict: previewResult.gateJReport.verdict,
 				motionVelix: previewResult.motionVelix,
 				previewMp4Path: previewResult.mp4Path,
-				lastError: undefined,
 			},
 			{
 				script,
 				plan: previewResult.plan,
 				...(gateGReport ? { gateGReport } : {}),
 				gateHReport: previewResult.gateHReport,
+				gateIReport: previewResult.gateIReport,
+				gateJReport: previewResult.gateJReport,
 			},
 		);
 		return {
@@ -749,6 +1156,8 @@ export async function runRecapProductionOrchestrator(
 			plan: previewResult.plan,
 			...(gateGReport ? { gateGReport } : {}),
 			gateHReport: previewResult.gateHReport,
+			gateIReport: previewResult.gateIReport,
+			gateJReport: previewResult.gateJReport,
 			motionVelix: previewResult.motionVelix,
 		};
 	}
@@ -767,7 +1176,8 @@ export async function runRecapProductionOrchestrator(
 			...(panelAnalyses ? { analyses: panelAnalyses } : {}),
 			outputDir: join(renderDir, 'master'),
 			checkpointDir: join(checkpointDir, 'phase3-master'),
-			...(input.ttsPort ? { ttsPort: input.ttsPort } : {}),
+			...(input.ttsPort ? { ttsPort: instrumentTtsPort(input.ttsPort) } : {}),
+			...(input.ttsPort ? { ttsCheckpointIdentity: input.ttsCheckpointIdentity ?? input.ttsPort.name } : {}),
 			...(input.sfxAssetsDir ? { sfxAssetsDir: input.sfxAssetsDir } : {}),
 			plannerOptions: { ...input.plannerOptions, renderTarget: 'master' },
 			masterApproved: true,
@@ -775,14 +1185,74 @@ export async function runRecapProductionOrchestrator(
 		});
 	} catch (err) {
 		const errMsg = err instanceof Error ? err.message : String(err);
+		if (err instanceof RecapBudgetExceededError) {
+			const paused = persist('paused_budget', 'motion', errMsg, {
+				readiness,
+				previewMp4Path: previewResult.mp4Path,
+				lastError: errMsg,
+			});
+			return { record: paused, script, plan: previewResult.plan, ...(gateGReport ? { gateGReport } : {}), gateHReport: previewResult.gateHReport, gateIReport: previewResult.gateIReport, gateJReport: previewResult.gateJReport };
+		}
 		const failed = persist('failed', 'motion', errMsg, {
 			readiness,
 			previewMp4Path: previewResult.mp4Path,
 			lastError: errMsg,
 		});
-		return { record: failed, script, plan: previewResult.plan, ...(gateGReport ? { gateGReport } : {}), gateHReport: previewResult.gateHReport };
+		return {
+			record: failed,
+			script,
+			plan: previewResult.plan,
+			...(gateGReport ? { gateGReport } : {}),
+			gateHReport: previewResult.gateHReport,
+			gateIReport: previewResult.gateIReport,
+			gateJReport: previewResult.gateJReport,
+		};
 	}
 	completedSteps.add('master_export');
+
+	const masterGateReports = [
+		{ gate: 'H' as const, report: masterResult.gateHReport },
+		{ gate: 'I' as const, report: masterResult.gateIReport },
+		{ gate: 'J' as const, report: masterResult.gateJReport },
+	];
+	const failedMasterGates = getMandatoryRecapGateFailures(masterGateReports.map(({ gate, report }) => ({ gate, verdict: report.verdict })));
+	if (failedMasterGates.length > 0) {
+		const errMsg = `Gates obrigatórios falharam no master: ${masterGateReports
+			.filter(({ gate }) => failedMasterGates.includes(gate))
+			.map(({ gate, report }) => `Gate ${gate}: ${report.reasons.join('; ')}`)
+			.join(' | ')}`;
+		const failed = persist(
+			'failed',
+			failedMasterGates[0] === 'I' ? 'gate-i' : failedMasterGates[0] === 'J' ? 'gate-j' : 'gate-h',
+			errMsg,
+			{
+				readiness,
+				gateHVerdict: masterResult.gateHReport.verdict,
+				gateIVerdict: masterResult.gateIReport.verdict,
+				gateJVerdict: masterResult.gateJReport.verdict,
+				masterMp4Path: masterResult.mp4Path,
+				lastError: errMsg,
+			},
+			{
+				script,
+				plan: masterResult.plan,
+				...(gateGReport ? { gateGReport } : {}),
+				gateHReport: masterResult.gateHReport,
+				gateIReport: masterResult.gateIReport,
+				gateJReport: masterResult.gateJReport,
+			},
+		);
+		return {
+			record: failed,
+			script,
+			plan: masterResult.plan,
+			...(gateGReport ? { gateGReport } : {}),
+			gateHReport: masterResult.gateHReport,
+			gateIReport: masterResult.gateIReport,
+			gateJReport: masterResult.gateJReport,
+			motionVelix: masterResult.motionVelix,
+		};
+	}
 
 	const bundleDir = exportRecapReleaseBundle({
 		exportRoot: join(input.workspaceDir, 'exports'),
@@ -792,6 +1262,8 @@ export async function runRecapProductionOrchestrator(
 		script,
 		plan: masterResult.plan,
 		gateHReport: masterResult.gateHReport,
+		gateIReport: masterResult.gateIReport,
+		gateJReport: masterResult.gateJReport,
 		...(gateGReport ? { gateGReport } : {}),
 		...(masterResult.mp4Path ? { mp4Path: masterResult.mp4Path } : {}),
 		captionsPath: masterResult.captionsPath,
@@ -801,7 +1273,7 @@ export async function runRecapProductionOrchestrator(
 
 	const completed = persist(
 		'completed',
-		'gate-h',
+		'gate-j',
 		'Exportação master concluída e pacote de release salvo.',
 		{
 			readiness,
@@ -810,17 +1282,20 @@ export async function runRecapProductionOrchestrator(
 			totalDurationMs: masterResult.plan.totalDurationMs,
 			...(gateGReport ? { gateGVerdict: gateGReport.verdict } : {}),
 			gateHVerdict: masterResult.gateHReport.verdict,
+			gateIVerdict: masterResult.gateIReport.verdict,
+			gateJVerdict: masterResult.gateJReport.verdict,
 			motionVelix: masterResult.motionVelix,
 			previewMp4Path: previewResult.mp4Path,
 			masterMp4Path: masterResult.mp4Path,
 			exportBundleDir: bundleDir,
-			lastError: undefined,
 		},
 		{
 			script,
 			plan: masterResult.plan,
 			...(gateGReport ? { gateGReport } : {}),
 			gateHReport: masterResult.gateHReport,
+			gateIReport: masterResult.gateIReport,
+			gateJReport: masterResult.gateJReport,
 		},
 	);
 
@@ -830,6 +1305,8 @@ export async function runRecapProductionOrchestrator(
 		plan: masterResult.plan,
 		...(gateGReport ? { gateGReport } : {}),
 		gateHReport: masterResult.gateHReport,
+		gateIReport: masterResult.gateIReport,
+		gateJReport: masterResult.gateJReport,
 		motionVelix: masterResult.motionVelix,
 	};
 }
@@ -848,10 +1325,20 @@ export function exportRecapReleaseBundle(input: {
 	plan: RecapAudiovisualPlan;
 	gateGReport?: GateGReport;
 	gateHReport: GateHReport;
+	gateIReport: GateIReport;
+	gateJReport: GateJReport;
 	mp4Path?: string;
 	captionsPath?: string;
 	thumbnailPanelPath?: string;
 }): string {
+	const failedGates = getMandatoryRecapGateFailures([
+		{ gate: 'H', verdict: input.gateHReport.verdict },
+		{ gate: 'I', verdict: input.gateIReport.verdict },
+		{ gate: 'J', verdict: input.gateJReport.verdict },
+	]);
+	if (failedGates.length > 0) {
+		throw new Error(`master_export_blocked_by_quality_gates: ${failedGates.join(', ')}`);
+	}
 	const slug = `${input.workTitle}-${input.chapterId}`
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, '-')
@@ -862,9 +1349,13 @@ export function exportRecapReleaseBundle(input: {
 	const scriptFile = join(bundleDir, 'recap-script.json');
 	const planFile = join(bundleDir, 'recap-audiovisual-plan.json');
 	const gateHFile = join(bundleDir, 'gate-h-report.json');
+	const gateIFile = join(bundleDir, 'gate-i-report.json');
+	const gateJFile = join(bundleDir, 'gate-j-report.json');
 	writeFileSync(scriptFile, JSON.stringify(input.script, null, 2), 'utf-8');
 	writeFileSync(planFile, JSON.stringify(input.plan, null, 2), 'utf-8');
 	writeFileSync(gateHFile, JSON.stringify(input.gateHReport, null, 2), 'utf-8');
+	writeFileSync(gateIFile, JSON.stringify(input.gateIReport, null, 2), 'utf-8');
+	writeFileSync(gateJFile, JSON.stringify(input.gateJReport, null, 2), 'utf-8');
 
 	let exportedMp4: string | null = null;
 	if (input.mp4Path && existsSync(input.mp4Path)) {
@@ -895,10 +1386,14 @@ export function exportRecapReleaseBundle(input: {
 		totalDurationMs: input.plan.totalDurationMs,
 		gateGVerdict: input.gateGReport?.verdict ?? null,
 		gateHVerdict: input.gateHReport.verdict,
+		gateIVerdict: input.gateIReport.verdict,
+		gateJVerdict: input.gateJReport.verdict,
 		artifacts: {
 			script: basename(scriptFile),
 			plan: basename(planFile),
 			gateH: basename(gateHFile),
+			gateI: basename(gateIFile),
+			gateJ: basename(gateJFile),
 			mp4: exportedMp4 ? basename(exportedMp4) : null,
 			captions: exportedCaptions ? basename(exportedCaptions) : null,
 			thumbnail: exportedThumb ? basename(exportedThumb) : null,

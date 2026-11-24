@@ -9,7 +9,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } 
 import { ClaudeCliAdapter, CodexCliAdapter } from '@neuralbridge/agents';
 import { detectAntigravityCli, runAntigravityPrompt } from './antigravity-cli.js';
 import { VisionPriorityStore, type MultimodalAgentId } from './vision-priority-store.js';
-import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, classifyVisionError, composeVideoWithOutroMp4, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createRecapVisionAdapter, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, inspectPassiveMultimodalHealth, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapProjectDetail, loadStoryMemoryProject, loadVisionHealthCheckCache, mergeChapterArchivesForProduction, mergeStoryMemoryCharacters, parseResetAtMs, planRecapRevisionImpact, RecapImportJobManager, RecapProductionJobManager, RECAP_JOB_RESUMABLE_STATUSES, isRecapJobInterruptedError, renderMotionVelixOutroMp4, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runMultimodalVisionHealthCheck, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, VideoOutroConfigStore, type MultimodalProviderHealthRecord, type RecapJobContext, type RecapJobOutcome, type RecapJobRecord, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type RecapVisualAnalysisPort, type ScriptStyle, type VideoOutroConfig, type VisionErrorCode, type VisionHealthProbeCandidate } from '@neuralbridge/cinema';
+import { AcquisitionRouter, AgentCircuitBreaker, analyzeChapterUrl, auditNarrationAudioClip, checkRecapProductionReadiness, classifyVisionError, composeVideoWithOutroMp4, correctCharacterIdentity, createChainedRecapTtsPort, createClaudeVisionProvider, createDirectFetchAcquisitionProvider, createElevenLabsRecapTtsPort, createFirecrawlSelfHostedProvider, createOrLoadStoryMemoryProject, createPaddleOcrTextAdapter, createRecapVisionAdapter, createRoutedRecapVisionAdapter, createTaskEngineTextEnhancementAdapter, createTesseractOcrAdapter, createVoiceStudioRecapTtsPort, createWindowsSapiRecapTtsPort, deleteRecapProject, estimateNarrationDurationSec, extractPanels, historicalAnalysesForProductiveCache, importAssistedChapterSources, importChapter, importChapterFromCdnUrls, inspectPassiveMultimodalHealth, InteractiveRecapBrowserSessionManager, invalidateCheckpointCache, listRecapLibrary, listRecapProjects, listStoryMemoryProjects, loadCheckpoint, loadRecapFidelityReviewLedger, loadRecapReanalysisRequest, applyRecapReanalysisRequest, excludeReanalysisPanels, loadRecapProjectDetail, loadStoryMemoryProject, loadVisionHealthCheckCache, mergeChapterArchivesForProduction, mergeHistoricalRecapCheckpointReports, mergeStoryMemoryCharacters, parseResetAtMs, planRecapRevisionImpact, RecapImportJobManager, RecapProductionJobManager, RECAP_JOB_RESUMABLE_STATUSES, isRecapJobInterruptedError, renderMotionVelixOutroMp4, resolveHistoricalRecapCheckpoints, resolveMotionVelixKit, resolveStoryMemoryPendingUpdate, runGateFPanelIntegrity, runGateGNarrativeFidelity, runMultimodalVisionHealthCheck, runRecapProductionOrchestrator, runStoryEngine, saveRecapProjectRecord, SCRIPT_STYLE_VALUES, verifyChapterArchiveIntegrity, VideoOutroConfigStore, type MultimodalProviderHealthRecord, type RecapAnalysisSettings, type RecapJobBudget, type RecapJobContext, type RecapJobOutcome, type RecapJobRecord, type RecapOrchestratorProgressEvent, type RecapOrchestratorRecord, type RecapScript, type RecapTtsSynthesisPort, type RecapVisualAnalysisPort, type ReadingOrder, type ScriptStyle, type VideoOutroConfig, type VisionErrorCode, type VisionHealthProbeCandidate } from '@neuralbridge/cinema';
 import { AetheraCreativeStudioService, registerCreativeStudioIpc } from './creative-studio-service.js';
 import { registerMogrtStudioIpc } from './mogrt-studio-ipc.js';
 import { broadcastRecapJobUpdate, recapJobRecoveryBlocker, recapRecordToJobOutcome, registerRecapJobIpc } from './recap-production-jobs.js';
@@ -180,8 +180,13 @@ import {
   createSyncStageAdapter,
   createAgentAdapterVisionProvider,
   createOllamaLocalVlmProvider,
+  createTiledPanelProvider,
+  RecapPilotBudget,
+  type RecapPilotBudgetConfig,
+  sampleNvidiaVramMb,
   createAntigravityCliVisionProvider,
   createTaskEngineVisionProvider,
+  createPersistentVisionCache,
   createVisionProviders,
   type VisualAnalysisProvider,
   type VisionCachePort,
@@ -5349,7 +5354,7 @@ productionConsole,
   const buildRecapProviders = () => {
     const gwCfg = claudeGatewaySecretStore.load();
     const claudeCli = findClientCli('claude');
-    const byId = new Map<MultimodalAgentId, {
+    const byId = new Map<string, {
       id: string;
       label: string;
       detect: () => Promise<{ available: boolean; reason?: string; code?: VisionErrorCode; resetAtText?: string; multimodal?: boolean }>;
@@ -5428,24 +5433,154 @@ productionConsole,
         },
       ],
     ]);
-    return visionPriorityStore
+    const localModel = process.env['NB_RECAP_PRODUCTION_MODEL'] ?? 'qwen3.5:4b-q4_K_M';
+    const localReadinessProbe = async (): Promise<{ available: boolean; reason?: string; multimodal?: boolean }> => {
+      const baseUrl = (process.env['NB_LOCAL_VLM_URL'] ?? 'http://127.0.0.1:11434').replace(/\/+$/u, '');
+      const timeoutSignal = AbortSignal.timeout(2_000);
+      try {
+        const tagsResponse = await fetch(`${baseUrl}/api/tags`, { signal: timeoutSignal });
+        if (!tagsResponse.ok) return { available: false, reason: `Ollama HTTP ${tagsResponse.status}` };
+        const tagsBody = await tagsResponse.json().catch(() => null) as { models?: unknown } | null;
+        const models = Array.isArray(tagsBody?.models)
+          ? tagsBody.models.filter((entry): entry is { name?: unknown } => typeof entry === 'object' && entry !== null)
+          : [];
+        if (!models.some((entry) => entry.name === localModel)) {
+          return { available: false, reason: `Ollama ativo, mas modelo ${localModel} não está instalado.` };
+        }
+        const showResponse = await fetch(`${baseUrl}/api/show`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: localModel }),
+          signal: timeoutSignal,
+        });
+        if (!showResponse.ok) return { available: false, reason: `Ollama /api/show HTTP ${showResponse.status}; capacidades do modelo não comprovadas.` };
+        const showBody = await showResponse.json().catch(() => null) as { capabilities?: unknown } | null;
+        const capabilities = Array.isArray(showBody?.capabilities) ? showBody.capabilities : [];
+        if (!capabilities.includes('vision')) {
+          return { available: false, multimodal: false, reason: `Ollama não comprovou capacidade vision em ${localModel}.` };
+        }
+        return { available: true, multimodal: true };
+      } catch (error) {
+        return { available: false, reason: `Local VLM (Ollama) indisponível: ${error instanceof Error ? error.message : 'falha desconhecida'}` };
+      }
+    };
+    return [
+      {
+        id: 'local-vlm',
+        label: `Ollama local (${localModel})`,
+        detect: localReadinessProbe,
+      },
+      ...visionPriorityStore
       .getPriority()
       .map((id) => byId.get(id))
-      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    ];
   };
 
-  const buildRecapVisionAdapter = (rootDir: string) => {
+  const buildRecapVisionAdapter = (
+    rootDir: string,
+    options: { runId?: string; panelCount?: number; settings?: RecapAnalysisSettings; pilotBudgetConfig?: Partial<RecapPilotBudgetConfig> } = {},
+  ) => {
     mkdirSync(rootDir, { recursive: true });
     const gwCfg = claudeGatewaySecretStore.load();
-    const priorityOrder = visionPriorityStore.getPriority();
+    type RecapProviderId = 'local-vlm' | MultimodalAgentId;
+    const localEnabled = options.settings?.localVisualAnalysis !== false;
+    const tilingEnabled = localEnabled && options.settings?.enablePanelTiling !== false;
+    const phase4b11 = /^(1|true|yes|on)$/iu.test(process.env['NB_RECAP_PHASE_4B11'] ?? '');
+    const localOnly = /^(1|true|yes|on)$/iu.test(process.env['NB_RECAP_LOCAL_ONLY'] ?? '') || phase4b11;
+    const localPilotBudget = tilingEnabled
+      ? new RecapPilotBudget({
+          jobId: options.runId ?? 'recap-production',
+          vramSampler: () => sampleNvidiaVramMb(),
+          ledgerPath: join(rootDir, 'usage', 'recap', `${options.runId ?? 'recap-production'}-tiling.jsonl`),
+          config: {
+            maxPanels: Math.max(1, options.panelCount ?? 40),
+            maxBlocks: Math.max(64, (options.panelCount ?? 40) * 8),
+            maxCalls: Math.max(80, (options.panelCount ?? 40) * 8 + 12),
+            maxInputTokens: 90_000,
+            maxOutputTokens: 30_000,
+            maxWallTimeMs: 15 * 60_000,
+            maxVramMb: 7_168, // 7 GiB host ceiling (user decision 24/11, 8 GiB GPU)
+            maxOcrCalls: 12,
+            maxCpuFallbacks: 2,
+            workerCount: 1,
+            unknownInputTokensPerCall: 4_096,
+            unknownOutputTokensPerCall: 1_200,
+            // Local inference (Ollama on this machine) has no consumption ceiling by user
+            // decision (24/11): panels, blocks, calls, OCR, tokens and active time are recorded
+            // in the ledger but never block. Resource guards remain: VRAM, one worker, CPU
+            // fallback count, and zero automatic retries.
+            maxPanels: Number.POSITIVE_INFINITY,
+            maxBlocks: Number.POSITIVE_INFINITY,
+            maxCalls: Number.POSITIVE_INFINITY,
+            maxOcrCalls: Number.POSITIVE_INFINITY,
+            maxInputTokens: Number.POSITIVE_INFINITY,
+            maxOutputTokens: Number.POSITIVE_INFINITY,
+            maxWallTimeMs: Number.POSITIVE_INFINITY,
+            maxCpuFallbacks: 2,
+            maxVramMb: 7_168,
+            ...(options.pilotBudgetConfig ?? {}),
+          },
+        })
+      : null;
+    const configuredOrder = (process.env['NB_RECAP_VISION_CHAIN'] ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter((id): id is RecapProviderId => (id === 'local-vlm' ? localEnabled : visionPriorityStore.getPriority().includes(id as MultimodalAgentId)));
+    const priorityOrder: RecapProviderId[] = localOnly
+      ? (localEnabled ? ['local-vlm'] : [])
+      : [...new Set<RecapProviderId>([
+          ...(localEnabled ? ['local-vlm' as const] : []),
+          ...configuredOrder,
+          ...visionPriorityStore.getPriority(),
+        ])];
     const providers: VisualAnalysisProvider[] = [];
     const policyChain: string[] = [];
 
-    const createProviderForId = (id: MultimodalAgentId): VisualAnalysisProvider | null => {
+    const createProviderForId = (id: RecapProviderId): VisualAnalysisProvider | null => {
+      if (id === 'local-vlm') {
+        const configuredModel = process.env['NB_RECAP_PRODUCTION_MODEL'] ?? (phase4b11 ? 'qwen3.5:4b-q4_K_M' : process.env['NB_LOCAL_VLM_MODEL']);
+        const base = createOllamaLocalVlmProvider({
+          host: 'desktop',
+          ...(configuredModel ? { model: configuredModel } : {}),
+          think: false,
+          structuredOutput: true,
+          temperature: 0.2,
+          panelNames: 'visual-only',
+          sfxFilter: true,
+          maxImagesPerCall: 1,
+          stream: false,
+          contextTokens: 4096,
+          // 560 truncated dense panels (panel-38: 560/560, JSON cut). 1024 still fits 4096 context.
+          maxOutputTokens: 1024,
+          estimateVisualTokensFromImage: true,
+          ocrPass: 'off',
+          ...(localPilotBudget ? { budget: localPilotBudget, maxVramMb: 7_168, maxCpuFallbacks: 2, cpuFallbackOnDegenerateOutput: true } : {}),
+        });
+        if (!localPilotBudget) return base;
+        return createTiledPanelProvider({
+          base,
+          cacheDir: join(rootDir, 'cache', 'recap-panel-tiling'),
+          ledgerPath: join(rootDir, 'usage', 'recap', `${options.runId ?? 'recap-production'}-tiling-ledger.jsonl`),
+          // v2: prompt now forbids Hangul transliteration and roster label reuse (Fase 4B.11 audit);
+          // only panels without a cached checkpoint analysis ever reach this cache.
+          cacheVersion: 'recap-production-tiling-v2-identity-sfx',
+          contextTokens: 4096,
+          promptTokens: 420,
+          outputReserveTokens: 560,
+          safetyTokens: 128,
+          patchPx: 32,
+          overlapPx: 160,
+          maxTileAspect: 2,
+          ocr: { enabled: options.settings?.complementaryOcr === true, maxCalls: phase4b11 ? 15 : 12, minScore: 0.22 },
+          budget: localPilotBudget,
+        });
+      }
       if (id === 'codex') {
         const codexProvider = createAgentAdapterVisionProvider({
           id: 'codex',
           root: rootDir,
+          host: 'desktop',
           adapter: codex,
         });
         return {
@@ -5460,6 +5595,7 @@ productionConsole,
       if (id === 'antigravity') {
         return createAntigravityCliVisionProvider({
           root: rootDir,
+          host: 'desktop',
           detect: async () => {
             const st = await detectAntigravityCli();
             if (!st.installed || st.authenticated === false || st.problems.length > 0) {
@@ -5488,8 +5624,11 @@ productionConsole,
           id: 'claude',
           model: claudeLean.model,
           lastReportedModel: () => claudeLean.lastReportedModel?.() ?? null,
+          lastUsage: () => claudeLean.lastUsage?.() ?? null,
           capabilities: ['analyze', 'describe'],
+          supportsMultimodal: true,
           limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
+          capabilityProfile: { multimodal: true, routeTier: 'premium', host: 'desktop', maxImagesPerCall: 1, vramMb: null, gpuAvailable: null, telemetry: { tokens: true, cache: true, effectiveApiCost: false, estimatedCost: true, cliQuota: true }, costMode: 'cli_quota' },
           detect: async (signal) => {
             const base = await claudeLean.detect(signal);
             if (!base.available) return base;
@@ -5497,7 +5636,7 @@ productionConsole,
           },
           analyze: (req) => claudeLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
           describe: async ({ frames, signal }) => {
-            const result = await claudeLean.analyze!({ frames, signal });
+            const result = await claudeLean.analyze!({ frames, ...(signal ? { signal } : {}) });
             return { description: result.description, tags: result.entities?.map((e) => e.name).filter(Boolean).slice(0, 8) ?? [] };
           },
         };
@@ -5513,8 +5652,11 @@ productionConsole,
           id: 'claude-gateway',
           model: gwLean.model,
           lastReportedModel: () => gwLean.lastReportedModel?.() ?? null,
+          lastUsage: () => gwLean.lastUsage?.() ?? null,
           capabilities: ['analyze', 'describe'],
+          supportsMultimodal: true,
           limits: { maxImagesPerCall: 1, costPerImageUsd: 0 },
+          capabilityProfile: { multimodal: true, routeTier: 'premium', host: 'desktop', maxImagesPerCall: 1, vramMb: null, gpuAvailable: null, telemetry: { tokens: true, cache: true, effectiveApiCost: false, estimatedCost: true, cliQuota: true }, costMode: 'cli_quota' },
           detect: async (signal) => {
             const base = await gwLean.detect(signal);
             if (!base.available) return base;
@@ -5522,7 +5664,7 @@ productionConsole,
           },
           analyze: (req) => gwLean.analyze!(req) as ReturnType<NonNullable<VisualAnalysisProvider['analyze']>>,
           describe: async ({ frames, signal }) => {
-            const result = await gwLean.analyze!({ frames, signal });
+            const result = await gwLean.analyze!({ frames, ...(signal ? { signal } : {}) });
             return { description: result.description, tags: result.entities?.map((e) => e.name).filter(Boolean).slice(0, 8) ?? [] };
           },
         };
@@ -5543,22 +5685,33 @@ productionConsole,
       }
     }
 
-    const memCacheStore = new Map<string, unknown>();
-    const cache: VisionCachePort = {
-      get: (key) => memCacheStore.get(JSON.stringify(key)),
-      put: (key, value) => { memCacheStore.set(JSON.stringify(key), value); },
-    };
+    const cache: VisionCachePort = createPersistentVisionCache(join(recapWorkspace, 'cache', 'vision-router.json'));
+    const economicChain = localOnly ? [] : priorityOrder.filter((id) => id === 'codex' || id === 'antigravity');
+    const premiumChain = localOnly ? [] : priorityOrder.filter((id) => id === 'claude' || id === 'claude-gateway');
     const visionRouter = new VisionRouter({
       providers,
       cache,
       cooldowns: visionProviderCooldowns,
       timeoutFailures: visionProviderTimeoutFailures,
-      config: { priority: priorityOrder, unregisteredReasons },
+      config: {
+        enabledProviders: priorityOrder,
+        priority: priorityOrder,
+        maxAttempts: 3,
+        unregisteredReasons,
+        perProviderTimeoutMs: { 'local-vlm': 30_000, antigravity: 60_000, codex: 60_000, claude: 60_000, 'claude-gateway': 60_000 },
+      },
     });
     return createRoutedRecapVisionAdapter({
       root: rootDir,
       router: visionRouter as unknown as Parameters<typeof createRoutedRecapVisionAdapter>[0]['router'],
       policyChain,
+      routeChains: {
+        local: policyChain,
+        economic: [...economicChain, ...premiumChain],
+        premium: premiumChain,
+      },
+      policyVersion: 'recap-routing-4a-v1',
+      hostExecutor: 'desktop',
       circuitBreaker: recapCircuitBreaker,
       maxLatencyMs: 90_000,
       throwOnAllUnavailable: true,
@@ -5770,12 +5923,17 @@ productionConsole,
     archivePath: string;
     archivePaths?: string[];
     workTitle: string;
+    readingOrder?: ReadingOrder;
     language?: string;
     scriptStyle?: string;
     aspectRatio?: '16:9' | '9:16';
     ttsProvider?: string;
     humorVolume?: number;
+    /** Fase 2: disabled, flagged (default) or all (explicit legacy mode). */
+    humanizeMode?: 'disabled' | 'flagged' | 'all';
     enableOcr?: boolean;
+    analysisSettings?: RecapAnalysisSettings;
+    budget?: RecapJobBudget;
     resumeCheckpoint?: boolean;
     masterApproved?: boolean;
     seriesProjectId?: string;
@@ -5799,11 +5957,28 @@ productionConsole,
 
   const executeRecapProduction = async (job: RecapJobRecord, ctx: RecapJobContext): Promise<RecapJobOutcome> => {
       const input = job.input as RecapStartProductionInput;
+      const requestedReadingOrder: ReadingOrder | undefined = input.readingOrder && ['rtl', 'ltr', 'vertical'].includes(input.readingOrder)
+        ? input.readingOrder
+        : undefined;
       const workTitle = job.workTitle;
       const chapterId = job.chapterId;
       const runId = job.projectId;
       const importDir = join(recapWorkspace, 'import', chapterId);
       const createdAtIso = job.createdAtIso;
+      const settingsBudget: RecapJobBudget | undefined = input.analysisSettings
+        ? {
+            ...(input.analysisSettings.maxModelCalls !== undefined ? { maxModelCalls: input.analysisSettings.maxModelCalls } : {}),
+            ...(input.analysisSettings.maxInputTokens !== undefined ? { maxInputTokens: input.analysisSettings.maxInputTokens } : {}),
+            ...(input.analysisSettings.maxOutputTokens !== undefined ? { maxOutputTokens: input.analysisSettings.maxOutputTokens } : {}),
+            maxWallTimeMs: 15 * 60_000,
+          }
+        : undefined;
+      // A local-only route (no external provider can run) is not consumption-capped; only the
+      // zero-retry rule is kept. Mixed/external routes keep the persisted job budget.
+      const localOnlyRoute = /^(1|true|yes|on)$/iu.test(process.env['NB_RECAP_LOCAL_ONLY'] ?? '') || /^(1|true|yes|on)$/iu.test(process.env['NB_RECAP_PHASE_4B11'] ?? '');
+      const effectiveBudget: RecapJobBudget | undefined = localOnlyRoute
+        ? { maxRetries: input.budget?.maxRetries ?? 0 }
+        : input.budget ?? settingsBudget;
       let effectiveArchivePath = input.archivePath;
       let lastReachedStage: RecapOrchestratorRecord['currentStage'] = 'import';
       let lastCompletedSteps: string[] = [];
@@ -5822,14 +5997,17 @@ productionConsole,
           chapterId,
           workTitle,
           archivePath: effectiveArchivePath,
+          ...(requestedReadingOrder ? { readingOrder: requestedReadingOrder } : {}),
           ...(input.language ? { language: input.language } : {}),
           ...(input.scriptStyle ? { scriptStyle: input.scriptStyle } : {}),
           aspectRatio: input.aspectRatio ?? '16:9',
           ...(input.ttsProvider ? { ttsProvider: input.ttsProvider } : {}),
           ...(input.humorVolume !== undefined ? { humorVolume: input.humorVolume } : {}),
+          ...(input.humanizeMode ? { humanizeMode: input.humanizeMode } : {}),
           ...(input.enableOcr !== undefined ? { enableOcr: input.enableOcr } : {}),
+          ...(input.analysisSettings ? { analysisSettings: input.analysisSettings } : {}),
           state,
-          currentStage,
+          ...(currentStage !== undefined ? { currentStage } : {}),
           completedSteps,
           createdAtIso,
           updatedAtIso,
@@ -5868,18 +6046,34 @@ productionConsole,
           chapterId,
           archivePath: effectiveArchivePath,
           outputDir: importDir,
-          readingOrder: 'vertical',
+          ...(requestedReadingOrder ? { readingOrder: requestedReadingOrder } : {}),
         });
         ctx.checkpoint('import');
         lastReachedStage = 'gate-f';
         lastCompletedSteps = ['import'];
         persistAndEmit('importing', 'gate-f', ['import'], `Capítulo importado (${imported.pages.length} páginas). Extraindo painéis e validando Gate F…`);
 
-        const extracted = await extractPanels({
-          chapter: imported,
-          outputDir: importDir,
-          ...(input.enableOcr ? { ocrAdapter: createTesseractOcrAdapter({ languages: 'por+eng' }) } : {}),
-        });
+        const extractionOcr = input.analysisSettings?.complementaryOcr
+          ? createPaddleOcrTextAdapter({
+              cacheDirectory: join(recapWorkspace, 'cache', 'paddleocr'),
+              ledgerPath: join(recapWorkspace, 'usage', 'recap', `${runId}-paddleocr.jsonl`),
+              lang: input.language === 'pt-BR' ? 'pt' : input.language === 'es-ES' ? 'es' : 'en',
+            })
+          : input.enableOcr
+            ? createTesseractOcrAdapter({ languages: 'por+eng' })
+            : undefined;
+        let extracted: Awaited<ReturnType<typeof extractPanels>>;
+        try {
+          extracted = await extractPanels({
+            chapter: imported,
+            outputDir: importDir,
+            ...(extractionOcr ? { ocrAdapter: extractionOcr } : {}),
+          });
+        } finally {
+          if (extractionOcr && 'terminate' in extractionOcr && typeof extractionOcr.terminate === 'function') {
+            await extractionOcr.terminate();
+          }
+        }
         // Every extracted panel is narrated: a cap here silently dropped most of a chapter
         // (e.g. 80 pages reduced to the first 24 panels). Small panels share the screen at render time.
         const panels = extracted.panels;
@@ -5907,9 +6101,16 @@ productionConsole,
 
         const chainedTtsPort = buildRecapTtsPort(input.ttsProvider);
         const motionVelixKit = resolveMotionVelixKit();
-        const recapVisionAdapter = buildRecapVisionAdapter(recapWorkspace);
-        const recapHumanizePort = buildRecapHumanizePort();
-        const recapScriptFallbackPort = buildRecapTextEnhancementPort('script');
+        const recapVisionAdapter = buildRecapVisionAdapter(recapWorkspace, {
+          runId,
+          panelCount: panels.length,
+          ...(input.analysisSettings ? { settings: input.analysisSettings } : {}),
+        });
+        // Local-only route: zero external APIs. The job budget is lifted for local-vlm only, so the
+        // external text ports (Claude/Codex CLI script fallback and Humanizer) must not be wired at all;
+        // otherwise they would run without any consumption ceiling. Script generation stays deterministic.
+        const recapHumanizePort = localOnlyRoute ? null : buildRecapHumanizePort();
+        const recapScriptFallbackPort = localOnlyRoute ? null : buildRecapTextEnhancementPort('script');
         const resolvedStyle: ScriptStyle =
           input.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(input.scriptStyle)
             ? (input.scriptStyle as ScriptStyle)
@@ -5922,12 +6123,80 @@ productionConsole,
             ? priorDetail.script
             : undefined;
 
+        const historicalRootCandidates = [
+          ...(process.env['AETHERA_MONOREPO_ROOT'] ? [resolve(process.env['AETHERA_MONOREPO_ROOT'])] : []),
+          resolve(process.cwd()),
+          resolve(app.getAppPath()),
+          resolve(app.getAppPath(), '..'),
+          resolve(app.getAppPath(), '..', '..'),
+          resolve(app.getAppPath(), '..', '..', '..'),
+        ];
+        const historicalRoot = historicalRootCandidates.find((candidate) =>
+          existsSync(join(candidate, '.aethera-recap-data')),
+        ) ?? historicalRootCandidates[0]!;
+        const historicalCheckpointDirs = process.env['NB_RECAP_HISTORICAL_CHECKPOINT_DIR']
+          ? [resolve(process.env['NB_RECAP_HISTORICAL_CHECKPOINT_DIR'])]
+          : [
+              resolve(historicalRoot, '.aethera-recap-data', 'phase4b5-qwen35-pilot-20261123', 'qwen-cache', 'panels'),
+              resolve(historicalRoot, '.aethera-recap-data', 'phase4b9-qwen35-expansion-20261124', 'qwen-cache-5', 'panels'),
+            ];
+        const historicalReports = historicalCheckpointDirs
+          .filter((directory) => existsSync(directory))
+          .map((directory) => resolveHistoricalRecapCheckpoints({
+            rootDirectory: directory,
+            panels,
+            identity: {
+              provider: 'local-vlm',
+              model: process.env['NB_RECAP_PRODUCTION_MODEL'] ?? 'qwen3.5:4b-q4_K_M',
+              promptVersion: 'local-panel-v3',
+              schemaVersion: 1,
+              preprocessingVersion: 'crop-v1',
+              cacheVersion: 'recap-pilot-qwen35-structured-ocr-evidence-v1',
+            },
+          }));
+        const historicalReport = historicalReports.length > 0
+          ? mergeHistoricalRecapCheckpointReports(historicalReports)
+          : null;
+        if (historicalReport) {
+          mkdirSync(join(recapWorkspace, 'compatibility'), { recursive: true });
+          writeFileSync(join(recapWorkspace, 'compatibility', 'historical-checkpoints.json'), `${JSON.stringify(historicalReport, null, 2)}\n`, 'utf8');
+        }
+        const historicalCacheRaw = historicalReport ? historicalAnalysesForProductiveCache(historicalReport) : null;
+        // Explicit per-panel re-analysis (e.g. fidelity audit findings): drop only the listed panels'
+        // stale cached analyses; idempotent once they were re-analysed after the request.
+        const chapterCheckpointDir = join(recapWorkspace, 'checkpoints', chapterId);
+        const reanalysisRequest = loadRecapReanalysisRequest(chapterCheckpointDir);
+        if (reanalysisRequest) {
+          const applied = applyRecapReanalysisRequest(chapterCheckpointDir, reanalysisRequest);
+          console.info(`[recap] reanalysis-request: invalidated=${applied.invalidatedPanelIds.length} alreadyReanalysed=${applied.alreadyReanalysedPanelIds.length} removedCacheEntries=${applied.removedCacheEntries}`);
+        }
+        const historicalCache = historicalCacheRaw && reanalysisRequest
+          ? {
+              analyses: excludeReanalysisPanels(historicalCacheRaw.analyses, reanalysisRequest),
+              imageHashes: Object.fromEntries(Object.entries(historicalCacheRaw.imageHashes).filter(([panelId]) => !reanalysisRequest.panelIds.includes(panelId))),
+            }
+          : historicalCacheRaw;
+        // Independent per-panel review evidence (bound to crop SHA + analysis fingerprint). A malformed
+        // ledger fails the job loudly instead of silently approving or silently ignoring evidence.
+        // Chapter-level, next to the checkpoint whose analyses the reviews are bound to.
+        const fidelityReviewLedger = loadRecapFidelityReviewLedger(join(chapterCheckpointDir, 'fidelity-review-ledger.json'));
+
         const result = await runRecapProductionOrchestrator({
           runId,
+          jobId: job.jobId,
           chapterId,
           workTitle,
           panels,
           workspaceDir: recapWorkspace,
+          ...(effectiveBudget ? { budget: effectiveBudget } : {}),
+          ...(input.analysisSettings ? { analysisSettings: input.analysisSettings } : {}),
+          ...(historicalCache?.analyses.length
+            ? {
+                historicalPanelAnalyses: historicalCache.analyses,
+                historicalPanelImageHashes: historicalCache.imageHashes,
+              }
+            : {}),
+          ...(fidelityReviewLedger ? { fidelityReviewLedger } : {}),
           circuitBreaker: recapCircuitBreaker,
           visionAdapter: recapVisionAdapter,
           ...(resumeScript ? { existingScript: resumeScript } : {}),
@@ -5937,7 +6206,8 @@ productionConsole,
           ...(recapHumanizePort
             ? {
                 humanize: {
-                  enabled: true,
+                  enabled: input.humanizeMode !== 'disabled',
+                  mode: input.humanizeMode ?? 'flagged',
                   style: resolvedStyle,
                   ...(input.humorVolume !== undefined ? { humorVolume: input.humorVolume } : {}),
                   port: recapHumanizePort,
@@ -5956,6 +6226,7 @@ productionConsole,
           ...(input.scriptStyle ? { scriptStyle: input.scriptStyle } : {}),
           ...(input.ttsProvider ? { ttsProvider: input.ttsProvider } : {}),
           ...(input.humorVolume !== undefined ? { humorVolume: input.humorVolume } : {}),
+          ...(requestedReadingOrder ? { readingOrder: requestedReadingOrder } : {}),
           ...(input.enableOcr !== undefined ? { enableOcr: input.enableOcr } : {}),
           gateFVerdict: gateFReport.verdict,
           initialCompletedSteps: initialSteps,
@@ -5998,7 +6269,7 @@ productionConsole,
         chapterId: detail.record.chapterId,
         archivePath: detail.record.archivePath,
         outputDir: importDir,
-        readingOrder: 'vertical',
+        ...(detail.record.readingOrder ? { readingOrder: detail.record.readingOrder } : {}),
       });
       const extracted = await extractPanels({ chapter: imported, outputDir: importDir });
       panels = extracted.panels;
@@ -6013,10 +6284,13 @@ productionConsole,
 
     const result = await runRecapProductionOrchestrator({
       runId: detail.record.runId,
+      jobId: job.jobId,
       chapterId: detail.record.chapterId,
       workTitle: detail.record.workTitle,
       panels,
       workspaceDir: recapWorkspace,
+      ...(detail.record.readingOrder ? { readingOrder: detail.record.readingOrder } : {}),
+      ...(detail.record.usage?.budget ? { budget: detail.record.usage.budget } : {}),
       circuitBreaker: recapCircuitBreaker,
       existingScript: detail.script,
       ttsPort: chainedTtsPort,
@@ -6032,6 +6306,7 @@ productionConsole,
       ...(detail.record.ttsProvider ? { ttsProvider: detail.record.ttsProvider } : {}),
       ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
       ...(detail.record.enableOcr !== undefined ? { enableOcr: detail.record.enableOcr } : {}),
+      ...(detail.record.analysisSettings ? { analysisSettings: detail.record.analysisSettings } : {}),
       ...(detail.record.gateFVerdict ? { gateFVerdict: detail.record.gateFVerdict } : {}),
       initialCompletedSteps: detail.record.completedSteps,
       onProgress: (ev) => {
@@ -6209,7 +6484,11 @@ productionConsole,
         detail.record.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(detail.record.scriptStyle)
           ? (detail.record.scriptStyle as ScriptStyle)
           : 'natural_recap';
-      const visionAdapter = buildRecapVisionAdapter(recapWorkspace);
+      const visionAdapter = buildRecapVisionAdapter(recapWorkspace, {
+        runId: detail.record.runId,
+        panelCount: scenePanels.length,
+        ...(detail.record.analysisSettings ? { settings: detail.record.analysisSettings } : {}),
+      });
       const humanizePort = buildRecapHumanizePort();
       const scriptFallbackPort = buildRecapTextEnhancementPort('script');
       const regenCheckpointDir = join(recapWorkspace, 'checkpoints', `${detail.record.chapterId}-regen-${Date.now()}`);
@@ -6221,15 +6500,18 @@ productionConsole,
           panels: scenePanels,
           outputDir: join(recapWorkspace, 'story'),
           checkpointDir: regenCheckpointDir,
+          analysisCacheCheckpointDir: checkpointDir,
           visionAdapter,
           scriptStyle: resolvedStyle,
           regenerateScriptOnly: true,
           ...(detail.record.language ? { language: detail.record.language } : {}),
           ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
+          ...(detail.record.analysisSettings?.strictFidelity !== undefined ? { strictFidelity: detail.record.analysisSettings.strictFidelity } : {}),
           ...(humanizePort
             ? {
                 humanize: {
-                  enabled: true,
+                  enabled: detail.record.humanizeMode !== 'disabled',
+                  mode: detail.record.humanizeMode ?? 'flagged',
                   style: resolvedStyle,
                   ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
                   port: humanizePort,
@@ -6316,7 +6598,11 @@ productionConsole,
         detail.record.scriptStyle && (SCRIPT_STYLE_VALUES as readonly string[]).includes(detail.record.scriptStyle)
           ? (detail.record.scriptStyle as ScriptStyle)
           : 'natural_recap';
-      const visionAdapter = buildRecapVisionAdapter(recapWorkspace);
+      const visionAdapter = buildRecapVisionAdapter(recapWorkspace, {
+        runId: detail.record.runId,
+        panelCount: panels.length,
+        ...(detail.record.analysisSettings ? { settings: detail.record.analysisSettings } : {}),
+      });
       const humanizePort = buildRecapHumanizePort();
       const scriptFallbackPort = buildRecapTextEnhancementPort('script');
 
@@ -6355,10 +6641,12 @@ productionConsole,
             : {}),
           ...(detail.record.language ? { language: detail.record.language } : {}),
           ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
+          ...(detail.record.analysisSettings?.strictFidelity !== undefined ? { strictFidelity: detail.record.analysisSettings.strictFidelity } : {}),
           ...(humanizePort
             ? {
                 humanize: {
-                  enabled: true,
+                  enabled: detail.record.humanizeMode !== 'disabled',
+                  mode: detail.record.humanizeMode ?? 'flagged',
                   style: resolvedStyle,
                   ...(detail.record.humorVolume !== undefined ? { humorVolume: detail.record.humorVolume } : {}),
                   port: humanizePort,
